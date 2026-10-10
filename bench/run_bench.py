@@ -95,13 +95,14 @@ BENCHMARKS = [
              dict(label="cpp vector+reserve", file="sum.cpp", variant=1, tier="expert")],
         rust=[dict(label="rust Vec, collect", file="sum.rs")],
         summary=(
-            "The control is a narrow Goose win under v145 and a tie under clang: 293 "
-            "ms against Rust 309 and the exactly-reserved vector 335, then 314 "
-            "against the same Rust 309 once clang builds it, on memory identical to "
-            "within 0.1%. For this flat scalar workload, improvements come from the "
-            "push loop. The only row that really loses is the unreserved vector at "
-            "1.6x, and that gap does not exist against Rust, because collect() over a"
-            " TrustedLen iterator sizes the allocation exactly."),
+            "The control is level with Rust under both backends and a narrow win "
+            "over the exactly-reserved vector: Goose 299 ms under v145 and 307 under "
+            "clang, against Rust 302 and the reserved vector 322/346, on memory "
+            "identical to within 0.1%. For this flat scalar workload, improvements "
+            "come from the push loop. The only row that really loses is the "
+            "unreserved vector at 1.6x, and that gap does not exist against Rust, "
+            "because collect() over a TrustedLen iterator sizes the allocation "
+            "exactly."),
     ),
     dict(
         name="push",
@@ -113,8 +114,8 @@ BENCHMARKS = [
              dict(label="cpp deque, pointers", file="push.cpp", variant=2, tier="idiomatic")],
         rust=[dict(label="rust Vec+reserve, indices", file="push.rs")],
         summary=(
-            "Goose 154-160 ms against the exactly-reserved C++ vector 197 and Rust "
-            "176, on 504 MB for all three: a 10-15% Goose lead on the loop this "
+            "Goose 147-148 ms against the exactly-reserved C++ vector 185 and Rust "
+            "168, on 500 MB for all three: a 13-26% Goose lead on the loop this "
             "benchmark is made of. The benchmark also shows a difference in how the "
             "languages express references. Goose keeps real Item& pointers that stay "
             "valid across every later push. Safe Rust cannot: a &Item borrows the "
@@ -136,13 +137,13 @@ BENCHMARKS = [
               dict(label="rust Vec<&str>", file="strlist_borrowed.rs")],
         summary=(
             "Against the two rows that own their bytes the way Goose does, Goose is "
-            "2.8-3.1x faster than vector<string> and 2.8x faster than Rust "
-            "Vec<String>, on 3.1x and 2.2x less memory. Against the borrowing rows it"
-            " is 14-16% ahead of Rust Vec<&str> and 13-26% ahead of hand-rolled C++ "
-            "offsets -- but those are views into a text buffer they cannot outlive, "
-            "which the Goose list is not. Vec<&str> avoids string copies, but its "
-            "ownership requirements differ from the Goose list. The split is the "
-            "standard library's each_split, slightly faster here than the "
+            "3.0-3.3x faster than vector<string> and 2.9-3.0x faster than Rust "
+            "Vec<String>, on 3.2x and 2.2x less memory. Against the borrowing rows "
+            "it is 21-24% ahead of Rust Vec<&str> and 16-35% ahead of hand-rolled "
+            "C++ offsets -- but those are views into a text buffer they cannot "
+            "outlive, which the Goose list is not. Vec<&str> avoids string copies, "
+            "but its ownership requirements differ from the Goose list. The split is "
+            "the standard library's each_split, slightly faster here than the "
             "hand-written scan it replaces."),
     ),
     dict(
@@ -156,9 +157,9 @@ BENCHMARKS = [
              dict(label="cpp variant + buffer", file="records.cpp", variant=2, tier="expert")],
         rust=[dict(label="rust enum + String", file="records.rs")],
         summary=(
-            "This benchmark has the largest margin over Rust in the suite: 2.0-2.3x "
-            "faster on 4.0x less memory, and 1.4x faster than the best C++ row on "
-            "3.7x less. Rust has the best of the fixed-tag shapes here -- niche "
+            "This benchmark has the largest margin over Rust in the suite: 2.1-2.3x "
+            "faster on 4.1x less memory, and 1.4-1.5x faster than the best C++ row "
+            "on 3.8x less. Rust has the best of the fixed-tag shapes here -- niche "
             "optimisation hides the tag inside the String pointer, so its enum beats "
             "std::variant with a string on both time and memory -- but it is still a "
             "fixed enum, so every element pays for the largest variant and the Say "
@@ -177,15 +178,16 @@ BENCHMARKS = [
         rust=[dict(label="rust Box nodes", file="tree_box.rs"),
               dict(label="rust arena + indices", file="tree_arena.rs")],
         summary=(
-            "Goose is 4.4x faster than owning-pointer nodes in both languages "
-            "(new/delete 2,855 ms, Rust Box 2,873) on 2.7x less memory, and 3-12% "
-            "faster than the two arena rows while matching their memory to within "
-            "0.1%. The three arena implementations have similar performance: to get "
-            "there both Rust and C++ give up pointers for u32 indices into a Vec, "
-            "because neither will let a node hold a reference into the container that"
-            " owns it. Goose links the same layout with typed, nullable, 4-byte "
-            "relative references, and never frees. Compare bintrees, the same node "
-            "built and discarded many times, which produces different results."),
+            "Goose is 4.1-4.5x faster than owning-pointer nodes in both languages "
+            "(new/delete 2,569-2,666 ms, Rust Box 2,699) on 2.7x less memory, and "
+            "6-14% faster than the two arena rows while matching their memory to "
+            "within 0.1%. The three arena implementations have similar performance: "
+            "to get there both Rust and C++ give up pointers for u32 indices into a "
+            "Vec, because neither will let a node hold a reference into the "
+            "container that owns it. Goose links the same layout with typed, "
+            "nullable, 4-byte relative references, and never frees. Compare "
+            "bintrees, the same node built and discarded many times, which produces "
+            "different results."),
     ),
     dict(
         name="interp",
@@ -201,15 +203,15 @@ BENCHMARKS = [
         rust=[dict(label="rust enum + Box", file="interp_box.rs"),
               dict(label="rust enum + arena indices", file="interp_arena.rs")],
         summary=(
-            "Goose is 1.3x faster than the best Rust row on 2.0x less memory, and "
-            "1.3-1.4x faster than a C++ tagged union on 2.3x less. Rust dispatches "
-            "well -- a byte tag, a jump table, no vtable pointer -- and its arena row"
-            " is the most compact of the non-Goose rows, so the remaining gap is "
-            "representation: a variable-mode leaf costs 5 bytes and a binary node 9, "
-            "where every fixed enum pays max-payload for both. The Rust Box row is "
-            "the slowest in the benchmark at 449 ms, slower than C++ virtual "
-            "dispatch, because an allocation per node plus a recursive drop costs "
-            "more than a vtable does."),
+            "Goose is 1.3-1.5x faster than the best Rust row on 2.2x less memory, "
+            "and 1.3-1.4x faster than a C++ tagged union on 2.4x less. Rust "
+            "dispatches well -- a byte tag, a jump table, no vtable pointer -- and "
+            "its arena row is the most compact of the non-Goose rows, so the "
+            "remaining gap is representation: a variable-mode leaf costs 5 bytes and "
+            "a binary node 9, where every fixed enum pays max-payload for both. The "
+            "Rust Box row is the slowest in the benchmark at 436 ms, slower than C++ "
+            "virtual dispatch, because an allocation per node plus a recursive drop "
+            "costs more than a vtable does."),
     ),
     dict(
         name="graph",
@@ -228,15 +230,18 @@ BENCHMARKS = [
               dict(label="rust arena + indices", file="graph_arena.rs")],
         summary=(
             "The CSR implementations in Goose, C++, and Rust perform similarly "
-            "(794-943 ms with the same memory use). CSR is the fastest representation"
-            " in each language. The one-pass linked build is 5x slower than CSR in "
-            "all three, so that is a data-structure effect and not a language one. "
-            "Goose's one-pass version uses typed Edge& references into a growing "
-            "pool; the Rust equivalent must chain u32 indices, allowing its Vec to "
-            "grow without retaining borrows into it. Rust Vec<Vec> is 1.6x faster "
-            "than the C++ vector<vector> it mirrors. This is the noisiest benchmark "
-            "in the suite: between full harness runs the linked rows move by up to "
-            "23%, in every language at once, so small differences are inconclusive."),
+            "(791-833 ms with the same memory use). CSR is the fastest "
+            "representation in each language. The one-pass linked build is 5-6x "
+            "slower than CSR in all three, so that is a data-structure effect and "
+            "not a language one. Goose's one-pass version uses typed Edge& "
+            "references into a growing pool; the Rust equivalent must chain u32 "
+            "indices, allowing its Vec to grow without retaining borrows into it. "
+            "Rust Vec<Vec> is 1.6x faster than the C++ vector<vector> it mirrors. "
+            "This is the noisiest benchmark in the suite: between full harness runs "
+            "the linked rows move by up to 23%, in every language at once, and the "
+            "C++ CSR row under v145 moved from 1,065 to 803 ms between the last two "
+            "runs with no change to its source, so small differences are "
+            "inconclusive."),
     ),
     dict(
         name="words",
@@ -250,20 +255,25 @@ BENCHMARKS = [
         rust=[dict(label="rust HashMap<&str>", file="words_hashmap.rs"),
               dict(label="rust open addressing", file="words_open.rs")],
         summary=(
-            "Level with the best safe Rust and 1.2x smaller: the standard library's "
-            "dictionary is the fastest Goose row under v145 (2,180 ms) and the "
-            "hand-rolled open-addressed table under clang (2,148), against Rust's "
-            "hand-rolled table at 2,190 and its HashMap<&str> at 2,972. The two Goose"
-            " rows differ in table policy as much as in code: the hand-rolled one "
+            "Well ahead of the best safe Rust under both backends: the hand-rolled "
+            "open-addressed table is the fastest Goose row under both backends "
+            "(1,537/1,154 ms), 1.4-1.8x ahead of Rust's hand-rolled table at 2,092 "
+            "and 2.0-2.7x ahead of its HashMap<&str> at 3,115, and 1.3x smaller. Two "
+            "things moved this row since the previous report: a key comparison is "
+            "now an inline word compare rather than a memcmp call, and std's hash "
+            "reads 8 bytes a step where the C++ and Rust tables hash a byte at a "
+            "time with FNV-1a. With FNV-1a written into the Goose row as well it "
+            "runs at 1,481/1,368 ms, so the hash is worth 1.19x under clang and "
+            "nothing under v145; the rest of the gain is the compiler. The two Goose "
+            "rows differ in table policy as much as in code: the hand-rolled one "
             "takes a power-of-two table four times the vocabulary and ends up 13% "
-            "full, where the dictionary grows on a two-thirds threshold and ends up "
-            "half full on 1.1M distinct keys. That is where its 1.2x memory advantage"
-            " over the hand-rolled row comes from, with no measurable time penalty. "
-            "Both other languages get borrowed keys from their idiomatic map, so the "
-            "HashMap gap is the hash function: std SipHash-1-3 is keyed and "
-            "DoS-resistant by policy, which costs about 36% here, and which the Rust "
-            "community answers with a third-party hasher crate that this std-only "
-            "suite does not use."),
+            "full, where the dictionary grows on a two-thirds threshold, in place, "
+            "and ends up half full on 1.1M distinct keys. That is where its 1.27x "
+            "memory advantage over the hand-rolled row comes from, at a cost of "
+            "14-19% in time. Rust's HashMap gap is the hash function: std "
+            "SipHash-1-3 is keyed and DoS-resistant by policy, which costs about 50% "
+            "here, and which the Rust community answers with a third-party hasher "
+            "crate that this std-only suite does not use."),
     ),
     dict(
         name="particles",
@@ -277,14 +287,15 @@ BENCHMARKS = [
         rust=[dict(label="rust AoS, elementwise", file="particles.rs"),
               dict(label="rust AoS, per component", file="particles_scalar.rs")],
         summary=(
-            "Goose does not lead this flat floating-point workload: Rust 864 ms "
-            "against Goose 907 under v145 and 884 under clang, with C++ spanning "
-            "852-1,055, on identical memory. Elementwise notation costs a few percent"
-            " in both languages that can express it: Goose 939 against 907, Rust 886 "
-            "against 864. The struct-of-arrays C++ row is slower than "
-            "array-of-structs under both toolchains. The vector type is the standard "
-            "library's float3, which is the three floats a local struct would have "
-            "been."),
+            "Every row but the struct-of-arrays one is within about 10% of every "
+            "other on this flat floating-point workload: Goose 860 ms under v145 and "
+            "841 under clang against Rust 877 and C++ 853-1,026, on identical "
+            "memory. That is a 2-4% Goose lead, inside the noise of the row; the "
+            "design predicted no advantage here. Elementwise notation costs 2% in "
+            "Rust and in Goose under clang, and 14% in Goose under v145. The "
+            "struct-of-arrays C++ row is slower than array-of-structs under both "
+            "toolchains. The vector type is the standard library's float3, which is "
+            "the three floats a local struct would have been."),
     ),
     dict(
         name="sexp",
@@ -298,17 +309,17 @@ BENCHMARKS = [
         rust=[dict(label="rust enum + Box + String", file="sexp_box.rs"),
               dict(label="rust arena + &str", file="sexp_arena.rs")],
         summary=(
-            "This parser has the suite's largest memory advantage: Rust's arena 1,606"
-            " ms against Goose 1,394-1,497 on 2.4x the memory, with the idiomatic "
-            "owning shapes 3.1x slower in Rust and 3.9x in C++ on up to 5.0x the "
-            "memory. Both fast rows are arenas whose symbols borrow the source text; "
-            "Goose stores symbol bytes inline behind a varint length in nodes exactly"
-            " as big as their variant needs, links them with 4-byte offsets -- "
-            "including the null that ends every sibling chain, since a null relative "
-            "reference needs no root of its own -- and never frees. The Rust borrow "
-            "works here only because the text is complete before parsing starts: a "
-            "parser that interned or rewrote text while building nodes would be back "
-            "to owned Strings or offsets."),
+            "This parser has the suite's largest memory advantage: Rust's arena "
+            "1,577 ms against Goose 1,334-1,409 on 2.4x the memory, with the "
+            "idiomatic owning shapes 3.2-3.3x slower in Rust and 3.4-3.8x in C++ on "
+            "up to 5.1x the memory. Both fast rows are arenas whose symbols borrow "
+            "the source text; Goose stores symbol bytes inline behind a varint "
+            "length in nodes exactly as big as their variant needs, links them with "
+            "4-byte offsets -- including the null that ends every sibling chain, "
+            "since a null relative reference needs no root of its own -- and never "
+            "frees. The Rust borrow works here only because the text is complete "
+            "before parsing starts: a parser that interned or rewrote text while "
+            "building nodes would be back to owned Strings or offsets."),
     ),
     dict(
         name="lru",
@@ -323,18 +334,18 @@ BENCHMARKS = [
               dict(label="rust open addressing + arena", file="lru_open.rs")],
         summary=(
             "Ahead of both arenas under clang and the clearest loss in the suite "
-            "under v145: Goose 3,751/2,205 ms against the C++ arena 2,568/2,382 and "
-            "Rust's open-addressed arena 2,563, on the smallest memory of the three "
-            "(133 MB against 181 and 137). The textbook std::list + unordered_map is "
-            "2.6-4.4x slower than Goose and Rust's HashMap row 1.4-2.4x, showing the "
+            "under v145: Goose 3,163/2,065 ms against the C++ arena 2,607/2,437 and "
+            "Rust's open-addressed arena 2,274, on the smallest memory of the three "
+            "(130 MB against 177 and 133). The textbook std::list + unordered_map is "
+            "3.0-4.4x slower than Goose and Rust's HashMap row 1.8-2.7x, showing the "
             "benefit of the arena representation. The links are pool-relative (spec "
             "3.9's `in pool` form): 4-byte offsets from the pool's base in the nodes "
             "and in the 8-byte map slots, so the map holds references and the lookup "
             "path has no index arithmetic. What separates the two backends is "
             "scheduling -- the store subtracts a register-resident base instead of "
             "the field's own address, and clang schedules the base add where v145 "
-            "does not. lru_indices.goose is the same program with i32 index slots and"
-            " self-relative list links, for the encoding comparison."),
+            "does not. lru_indices.goose is the same program with i32 index slots "
+            "and self-relative list links, for the encoding comparison."),
     ),
     dict(
         name="scene",
@@ -349,17 +360,17 @@ BENCHMARKS = [
         rust=[dict(label="rust Box children", file="scene_box.rs"),
               dict(label="rust arena + child indices", file="scene_arena.rs")],
         summary=(
-            "Under clang Goose is 5% behind the Rust arena (395 against 377 ms) "
-            "on 1.35x less memory; under v145 it is 30% behind, and so is the C++ "
-            "arena (509), so that is the backend's handling of this "
-            "float-and-pointer mix and not the layout -- padding the 117-byte "
-            "node to an aligned 120 changes nothing. Against the idiomatic rows, "
-            "a vector<unique_ptr> or Vec<Box> of children per node, Goose is "
-            "5.4-6.7x faster on 1.3x less memory. The Rust arena has to compose "
-            "each transform in a stack local and copy it in, because two borrows "
-            "of one Vec cannot be split; Goose composes straight into the pool "
-            "through references, and walks a node's children by iterating the "
-            "inline array of relative references itself."),
+            "Under clang Goose is level with the Rust arena (382 against 383 ms) on "
+            "1.35x less memory; under v145 it is 21% behind (462), and the C++ arena "
+            "further still (493), so that is the backend's handling of this "
+            "float-and-pointer mix and not the layout -- padding the 117-byte node "
+            "to an aligned 120 changes nothing. Against the idiomatic rows, a "
+            "vector<unique_ptr> or Vec<Box> of children per node, Goose is 5.7-6.9x "
+            "faster on 1.3x less memory. The Rust arena has to compose each "
+            "transform in a stack local and copy it in, because two borrows of one "
+            "Vec cannot be split; Goose composes straight into the pool through "
+            "references, and walks a node's children by iterating the inline array "
+            "of relative references itself."),
     ),
     dict(
         name="calc",
@@ -373,15 +384,15 @@ BENCHMARKS = [
         rust=[dict(label="rust Box + Result", file="calc_box.rs"),
               dict(label="rust arena + Result", file="calc_arena.rs")],
         summary=(
-            "Goose beats the idiomatic rows by a wide margin -- 4.3x against "
-            "unique_ptr nodes with exceptions, 2.2x against Box with Result -- "
-            "and trails the arena rows: the C++ arena with error codes by 2% "
-            "under v145 and 11% under clang, the Rust arena with Result by "
-            "14-18%. The per-input local pool is not the cost: a variant that "
-            "builds into a global pool never reset times the same. What remains "
-            "is the discriminant threaded through every return (spec 7.9), the "
-            "global cursor, and the varint decode per evaluated number, on inputs "
-            "of about 40 bytes, in a run that never leaves L1."),
+            "Goose beats the idiomatic rows by a wide margin -- 3.9-4.0x against "
+            "unique_ptr nodes with exceptions, 2.1x against Box with Result -- and "
+            "trails the arena rows: level with the C++ arena with error codes under "
+            "v145 and 11% behind it under clang, and 15-19% behind the Rust arena "
+            "with Result. The per-input local pool is not the cost: a variant that "
+            "builds into a global pool never reset times the same. What remains is "
+            "the discriminant threaded through every return (spec 7.9), the global "
+            "cursor, and the varint decode per evaluated number, on inputs of about "
+            "40 bytes, in a run that never leaves L1."),
     ),
     dict(
         name="bintrees",
@@ -396,14 +407,15 @@ BENCHMARKS = [
         rust=[dict(label="rust Box", file="bintrees_box.rs"),
               dict(label="rust Vec arena", file="bintrees_arena.rs")],
         summary=(
-            "The allocator benchmark: Goose is 13-15x faster than new/delete and "
-            "Box on 2x less memory, 1.4-1.7x faster than the C++ vector arena, "
-            "level with the Rust Vec arena under v145 (232 against 228 ms) and "
-            "24% behind it under clang (282). It is not the by-reference push (a "
-            "global-pool variant is slower, because it never reuses memory) and "
-            "not the range-checked 4-byte links (8-byte links time the same); the "
-            "C++ arena is behind both, so the clang gap is between what LLVM "
-            "makes of rustc's recursion and what it makes of the same shape in C."),
+            "The allocator benchmark: Goose is 15-16x faster than new/delete and Box "
+            "on 2.4x less memory, 1.9-2.0x faster than the C++ vector arena, and "
+            "13-16% ahead of the Rust Vec arena under both backends (196/191 against "
+            "221 ms). The builder takes its pool by reference, and the compiler "
+            "keeps that pool's top and count in locals across the recursion rather "
+            "than reading and writing them through its header at every push; that "
+            "took the row from 239/285 ms to 196/191 and closed what used to be a "
+            "24% gap to Rust under clang. It is not the range-checked 4-byte links "
+            "(8-byte links time the same)."),
     ),
     dict(
         name="respond",
@@ -418,15 +430,17 @@ BENCHMARKS = [
         rust=[dict(label="rust DTO + String", file="respond_dto.rs"),
               dict(label="rust streaming", file="respond_stream.rs")],
         summary=(
-            "The DTO implementations demonstrate the benefit of inline storage: Goose"
-            " builds and renders the response object 1.7-1.9x faster than the "
-            "idiomatic C++ DTO and 2.3x faster than the Rust one, on the same 8 MB, "
-            "because the string, the item list and the skus are one inline value and "
-            "the render reads it back with no allocation anywhere. The streaming rows"
-            " are the same code in all three languages -- Goose 433/395 ms, C++ "
-            "491/399, Rust 537 -- and the two Goose rows are 20-24% apart, which "
-            "measures the cost of constructing and reading the object even without "
-            "heap allocation."),
+            "The DTO implementations demonstrate the benefit of inline storage: "
+            "Goose builds and renders the response object 1.7-1.9x faster than the "
+            "idiomatic C++ DTO and 2.2-2.3x faster than the Rust one, on the same "
+            "4-5 MB, because the string, the item list and the skus are one inline "
+            "value and the render reads it back with no allocation anywhere. The "
+            "streaming rows are the same code in all three languages -- Goose "
+            "439/385 ms, C++ 482/392, Rust 553 -- and the two Goose rows are 15-24% "
+            "apart, which measures the cost of constructing and reading the object "
+            "even without heap allocation. Every row checksums its output with "
+            "FNV-1a, which in the Goose rows is written out, since std's hash is a "
+            "different function."),
     ),
     dict(
         name="blur",
@@ -440,21 +454,17 @@ BENCHMARKS = [
         rust=[dict(label="rust flat indexing", file="blur_index.rs"),
               dict(label="rust row slices", file="blur_windows.rs")],
         summary=(
-            "This benchmark tests bounds-check overhead in an image kernel and shows "
-            "a loss under one backend. The flat form is 1.9x slower than flat C++ and"
-            " 7.0x slower than flat Rust under v145, where the nine bounds checks per"
-            " pixel stop the loop vectorising; under clang the same source is level "
-            "with flat Rust (271 against 291 ms), because the loop-view hoist reaches"
-            " the arrays behind the fat references and the checks then add no "
-            "measurable cost under clang. Written over row slices with one assert per"
-            " row, every check is proven away and both backends agree: Goose 307/266 "
-            "ms against Rust 291-292 and C++ with __restrict 561/307. Rust's flat row"
-            " is as fast as its slice row because LLVM vectorises around bounds "
-            "checks it cannot remove; MSVC does not, which is what the single length "
-            "assert in blur_assert.goose was for: the compiler has since carried the "
-            "length from main into the kernel by itself (notes.md, bounds-check "
-            "section), so the flat version eliminates its checks without an explicit "
-            "assertion and the next run should show it at the asserted row's speed."),
+            "This benchmark tests bounds-check overhead in an image kernel. All ten "
+            "checks of the flat form are proven from the lengths main establishes, "
+            "so what still separates the backends is vectorisation: under clang the "
+            "flat source is ahead of flat Rust (256 against 282 ms), while under "
+            "v145 it runs at 930, ahead of flat C++ (1,044) but 3.3x behind Rust, "
+            "because MSVC reports a possible dependence between the loads through "
+            "src and the stores through dst and leaves the loop scalar. Written over "
+            "row slices with one assert per row, MSVC vectorises it too and both "
+            "backends agree: Goose 285/255 ms against Rust 280-282 and C++ with "
+            "__restrict 541/296. Rust's flat row is as fast as its slice row because "
+            "LLVM vectorises around bounds checks it cannot remove."),
     ),
 ]
 

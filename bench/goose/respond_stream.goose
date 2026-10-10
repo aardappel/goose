@@ -7,7 +7,6 @@
 // and the checksum -- are identical.
 
 import rng;
-import std;
 
 let N = 400000;                          // BENCH_N
 
@@ -44,6 +43,14 @@ fn emit_sku(out: u8[>..]&, seed: u64) {
     out.push('"');
 }
 
+// FNV-1a, the checksum the C++ and Rust rows compute. std's hash is another
+// function, and every row of a benchmark has to print the same checksum.
+fn fnv(s: u8[:]) -> u64 {
+    var h: u64 = 14695981039346656037;
+    for b in s { h = (h ^ b) * 1099511628211; }
+    return h;
+}
+
 fn handle(seed: u64) -> u64, i64 {
     let r0 = xs_next(seed);
     let n = 1 + xs_mod(r0, 8);
@@ -72,7 +79,7 @@ fn handle(seed: u64) -> u64, i64 {
     out.append("],\"total\":");
     emit_int(out, total);
     out.push('}');
-    return hash(out[..]), out.len;
+    return fnv(out[..]), out.len;
 }
 
 fn main() {
