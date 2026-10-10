@@ -463,6 +463,14 @@ recursive fn rec_mark(n: RecNode&, d: i64) {         // Valueless base case.
     if l { rec_mark(l, d - 1); }
 }
 
+// UFCS self-calls, the receiver an array viewed as a slice at the outer
+// call and a slice parameter at the inner ones.
+recursive fn rec_half(xs: i64[:], lo: i64, hi: i64) -> i64 {
+    if hi - lo == 1 { return xs[lo]; }
+    let mid = (lo + hi) / 2;
+    return xs.rec_half(lo, mid) * 2 + xs.rec_half(mid, hi);
+}
+
 // Left alone: the test reads a local, which the call site cannot see.
 recursive fn rec_local(n: RecNode&, d: i64) -> i64 {
     let stop = d <= 0;
@@ -485,6 +493,8 @@ fn recursion_op() {
     print(rec_marks);                                // 3
     print(rec_local(root, 3));                       // 8
     print(rec_even(7) + rec_odd(7));                 // 0 + 1
+    var bits: i64[8] = [1, 0, 1, 1, 0, 0, 1, 0];
+    print(bits.rec_half(0, 8));                      // 16
 }
 
 // --- guarded base-case inlining ---------------------------------------------
@@ -566,6 +576,36 @@ recursive fn gb_arith(n: RecNode&, d: i64) -> i64 {
     return t;
 }
 
+// UFCS self-calls, the receiver a reference parameter: an arena by index,
+// pushed through the reference, and nodes walked through optional links.
+struct GbSlot { v: i64, l: i64 = -1, r: i64 = -1 }
+
+recursive fn gb_arena(arena: GbSlot[>..]&, depth: i64, v: i64) -> i64 {
+    gb_visits += 1;
+    let idx = arena.len;
+    arena.push(GbSlot { v: v });
+    if depth > 0 {
+        let l = arena.gb_arena(depth - 1, v * 2);
+        let r = arena.gb_arena(depth - 1, v * 2 + 1);
+        let s .= arena[idx];
+        s.l = l;
+        s.r = r;
+    }
+    return idx;
+}
+
+recursive fn gb_method(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if d > 0 {
+        let l = n.l;
+        if l { t += l.gb_method(d - 1); }
+        let r = n.r;
+        if r { t += r.gb_method(d - 1); }
+    }
+    return t;
+}
+
 recursive fn gb_var(n: RecNode&, var d: i64) -> i64 {
     gb_visits += 1;
     var t = n.v;
@@ -588,6 +628,12 @@ fn guarded_op() {
     print(gb_global(root, 3), " ", gb_field(root, 3)); // 120 120
     print(gb_arith(root, 3), " ", gb_var(root, 3));  // 120 120
     print(gb_visits);                                // 96
+    var arena: GbSlot[>..] = [];
+    arena.gb_arena(3, 1);
+    var sum = 0;
+    for s in arena { sum += s.v + s.l + s.r; }
+    print(arena.len, " ", sum, " ", arena[0].l, " ", arena[0].r); // 15 209 1 8
+    print(root.gb_method(3), " ", gb_visits);        // 120 126
 }
 
 // --- inlining heuristics ------------------------------------------------------

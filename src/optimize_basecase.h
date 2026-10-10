@@ -8,7 +8,7 @@
 // `if c { return e; }` — or with `if c { ... } else { return e; }`, the same
 // test negated, as `guard c else { return e; }` parses — and both c and e
 // read nothing but the parameters, globals and their own bindings, every
-// direct self-call `f(a...)` is rewritten to
+// direct self-call `f(a...)` (or `a1.f(a2...)`) is rewritten to
 //
 //     { let p1 = a1; ...; if c[p := t] { e[p := t] } else { f(t...) } }
 //
@@ -80,13 +80,14 @@ struct BaseCaseInliner {
         return k;
     }
 
-    // The direct self-call sites the rewrite would copy the base case to.
+    // The direct self-call sites the rewrite would copy the base case to, in
+    // either spelling: `f(a, b)` or `a.f(b)`.
     static int SelfCalls(Node *n, FnSpec *sp) {
         if (!n) return 0;
         auto k = 0;
         if (auto c = Is<Call>(n))
             if (c->spec == sp && c->builtin < 0 && c->dispatch.empty() &&
-                Is<Ident>(c->callee)) k++;
+                (Is<Ident>(c->callee) || Is<Dot>(c->callee))) k++;
         // The children include a UFCS receiver, which can be one too.
         RunChildren(n, [&](Node *ch) { k += SelfCalls(ch, sp); });
         return k;
@@ -276,11 +277,13 @@ struct BaseCaseInliner {
         // global initializers the driver optimizes after its loop are not it.
         if (!basespec || basespec != o.curspec) return nullptr;
         if (c->spec != basespec || c->builtin >= 0 || !c->dispatch.empty()) return nullptr;
-        // A plain call only: a UFCS receiver arrives as the Dot's object, which
-        // is not in general the same expression shape as the bound temporary.
-        if (!Is<Ident>(c->callee)) return nullptr;
+        if (!Is<Ident>(c->callee) && !Is<Dot>(c->callee)) return nullptr;
         auto K = basespec;
-        if (c->args.size() != K->params.size()) return nullptr;
+        // The arguments in parameter order, a UFCS receiver first: the checker
+        // has already made each the node its parameter takes (an `&` it binds
+        // by reference included), so a receiver binds as any argument does.
+        auto argnodes = c->ArgNodes();
+        if (argnodes.size() != K->params.size()) return nullptr;
         // Passed where a slice is expected, the call was checked as that
         // slice (§3.10), while the arms would yield the array itself: built
         // inside an arm, it would be released before the slice is used.
@@ -291,7 +294,7 @@ struct BaseCaseInliner {
         vector<Node *> decls;
         for (size_t i = 0; i < K->params.size(); i++) {
             auto pv = K->params[i];
-            auto vd = inl.BindArg(pv, c->args[i], c->line);
+            auto vd = inl.BindArg(pv, argnodes[i], c->line);
             if (!vd) continue;
             vd->inline_arg = true;
             decls.push_back(vd);
@@ -300,7 +303,7 @@ struct BaseCaseInliner {
             auto id = ast.New<Ident>(c->line, pv->name);
             id->vdef = vd->defs[0];
             id->exprtype = pv->type;
-            c->args[i] = id;
+            c->SetArgNode(i, id);
         }
         auto vt = c->exprtype ? c->exprtype : ast.voidtype;
         auto cond = o.Opt(inl.Cp(basecond));

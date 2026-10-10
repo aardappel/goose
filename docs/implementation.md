@@ -2963,7 +2963,10 @@ benchmarks lands 18 blocks deep.
 `c` a pure read of parameters and
 globals, and `e` calling nothing in the cycle, gets each direct self-call
 `f(a...)` rewritten to `{ let p = a; ...; if c[p] { e[p] } else {
-f(p...) } }` under the inliner's size thresholds. This removes
+f(p...) } }` under the inliner's size thresholds. A UFCS self-call
+`a1.f(a2...)` is the same call: its receiver binds as the first argument,
+as the checker left it (an `&` it binds by reference included), and the
+recursing arm's receiver is that binding. This removes
 half the calls of a complete tree walk. The bindings are marked
 `inline_arg`, like an inlined call's, and made in the scope around the block
 (`GenInlineArgs`): a slice argument can view a temporary, which has to last
@@ -2978,8 +2981,7 @@ and parameters the body never assigns (`GuardOK`): such a test gives the
 same answer at both points and cannot abort. `s1`, `s3` and `e` may not
 return, jump out, call into the cycle or call a function that may `return
 ... from` this one, whose copy would leave the caller's frame. Neither form
-fires on mutual recursion, on UFCS-spelled self-calls, or on a self-call
-whose array result is passed where a slice is expected: the array has to
+fires on mutual recursion or on a self-call whose array result is passed where a slice is expected: the array has to
 outlive the `if`, and each arm would build it in a scope of its own.
 
 **Accumulator tail-recursion elimination** (`TailRecursion`,
@@ -4785,11 +4787,12 @@ cached stack.
 
 ### 9.6 Recursion and dispatch
 
-* A `recursive fn` whose body starts with the base case `if c { return e; }`
-  has that base case inlined at every self-call (`-O1` and above), halving
-  the calls of a complete tree walk; a statement before the test, a UFCS
-  self-call, or mutual recursion disables it, and a self-call whose array
-  result a slice destination takes whole stays a call.
+* A `recursive fn` whose body starts with the base case `if c { return e; }`,
+  or has every self-call inside one `if c { ... }` that compares parameters
+  it never assigns, has that base case inlined at every self-call, in either
+  call spelling (`-O1` and above), halving the calls of a complete tree
+  walk; mutual recursion disables it, and a self-call whose array result a
+  slice destination takes whole stays a call.
 * A self-recursive integer function whose tail returns fold with one
   associative operator becomes a loop; `1 + f(l) + f(r)` loses its right
   spine. Floats, `%`, returns inside nested loops, and callees that can

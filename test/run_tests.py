@@ -870,6 +870,8 @@ class Runner:
             "gb_build": 3 if optimized else 1,
             "gb_walk": 2 if optimized else 1,
             "gb_count": 3 if optimized else 1,
+            "gb_arena": 3 if optimized else 1,
+            "gb_method": 3 if optimized else 1,
             "gb_global": 1,
             "gb_field": 1,
             "gb_arith": 1,
