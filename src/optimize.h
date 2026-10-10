@@ -86,9 +86,10 @@ struct Optimizer {
         int nodecount = 0;
         int nest = 0;
         bool noinline = false;
-        // Not inlined only because it returns more than one value, which
-        // the inliner does not splice: the C compiler may (TryInline).
-        bool multiret_only = false;
+        // Goose's inliner cannot paste this body into a caller, but the C
+        // compiler could inline the function: TryInline asks it to
+        // (FnSpec::cinline).
+        bool c_inlinable = false;
         bool nestedcalls = false;
     };
     unordered_map<FnSpec *, InlineInfo> inlineinfo;
@@ -493,7 +494,7 @@ struct Optimizer {
         };
         rec(sp->body, 0);
         info.noinline = noin || multiret;
-        info.multiret_only = multiret && !noin;
+        info.c_inlinable = multiret && !noin;
     }
 
     // Optimizes the body of sp. A callee K used once that only the used-once
@@ -734,9 +735,8 @@ inline Node *Optimizer::TryInline(Call *c) {
     // An `inline fn` passes the size rules wherever inlining is on.
     auto small = (K->sf->isinline && nc > 0) || info.nodecount < nc || info.nodecount * K->uses < ncuhere;
     if (info.noinline) {
-        // A body the size rules would inline here, kept a call only because
-        // it returns several values: the C compiler is told to inline it.
-        if (info.multiret_only && small && !K->outofline) K->cinline = true;
+        // Goose would inline it here but cannot: let the C compiler do it.
+        if (info.c_inlinable && small && !K->outofline) K->cinline = true;
         return nullptr;
     }
     // Never into a recursive cycle: the inlined body's locals would become

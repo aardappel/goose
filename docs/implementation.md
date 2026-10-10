@@ -2895,10 +2895,10 @@ back. A callee F calls on every run is inlined into it as before: calling
 it instead of F saves nothing. Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a `simd` function (its callers would run the
 baseline only, §6.13), a function returning more than one value (where
-that is the only reason and the thresholds pass at a call site, the
-function is declared `GS_INLINE` in C instead, `FnSpec::cinline`, so the C
-compiler inlines it: always_inline under gcc and clang, `__forceinline`
-under MSVC), and
+that is the only reason, `InlineInfo::c_inlinable`, and the thresholds pass
+at a call site, the function is declared `GS_INLINE` in C instead,
+`FnSpec::cinline`, so the C compiler inlines it: always_inline under gcc
+and clang, `__forceinline` under MSVC), and
 a body that a *separate* live tree still references in a way a copy cannot
 follow -- a remaining call to a specialization with bound function values
 reaches its locals as free variables, and a remaining callee that does

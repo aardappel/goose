@@ -1973,9 +1973,9 @@ struct FnSpec {
     // branch's only callee (Optimizer::TryInline): the C compiler is told so
     // too, since it inlines a function with one caller whatever its size.
     bool outofline = false;
-    // Returns several values, which the inliner does not splice, and is small
-    // enough for it at some call site (Optimizer::TryInline): declared
-    // GS_INLINE in C, so the C compiler inlines it instead.
+    // Goose wanted to inline this function at some call but could not
+    // (Optimizer::TryInline), so it is declared GS_INLINE in C and the C
+    // compiler inlines it.
     bool cinline = false;
 };
 

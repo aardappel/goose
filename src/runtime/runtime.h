@@ -97,7 +97,7 @@
 #define GS_NOINLINE __attribute__((noinline))
 #endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
-   function the inliner would splice but for returning several values. */
+   function Goose wanted to inline but could not (FnSpec::cinline). */
 #if defined(__GNUC__) || defined(__clang__)
 #define GS_INLINE __attribute__((always_inline)) inline
 #elif defined(_MSC_VER)

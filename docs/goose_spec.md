@@ -2663,7 +2663,7 @@ places.
 
 `inline` has no meaning of its own: a program computes the same with or
 without it. It is a request the implementation may not be able to grant
-at every call. Where the inliner does not splice a body (one returning
+at every call. Where Goose cannot inline a function itself (one returning
 several values, §7.3), the C backend asks the C compiler to inline it
 instead. Where inlining is off (`-O0`), every call stays a call.
 
