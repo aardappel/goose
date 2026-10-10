@@ -350,11 +350,12 @@ struct CodeGen {
 
     // ------------------------------------------------------------------
     // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
-    // bytes values as pointers. Gap-free fixed types without floats shortcut
-    // to memcmp.
+    // bytes values as pointers. Gap-free fixed types without floats of more
+    // than a few scalars shortcut to memcmp.
 
     bool BitwiseEq(TypeExpr *t);
     bool ScalarEq(TypeExpr *t);
+    int64_t EqScalars(TypeExpr *t, int64_t cap);
     string EqX(TypeExpr *t, const string &a, const string &b);
     string EqFn(TypeExpr *t);
     void EmitEqFixed(string &bo, TypeExpr *t);

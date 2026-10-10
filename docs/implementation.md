@@ -3837,9 +3837,13 @@ the receiver zeroes the object C gives it rather than reading past the image.
 ### 6.9 Generated walkers
 
 Per type on demand: `gs_size_<T>` (the byte size of a dynamic value),
-`gs_eq_<T>` (structural equality, a `memcmp` for gap-free fixed types and
-canonical-encoding bytes values that hold no floats, a cursor walk
-otherwise; a static-capacity limited array of such elements compares its
+`gs_eq_<T>` (structural equality, a `memcmp` for gap-free fixed types of
+more than four scalars and canonical-encoding bytes values that hold no
+floats, a cursor walk otherwise; a fixed value of at most four integer or
+bool scalars compares field by field, through its `gs_eq_<T>`, which the C
+compiler inlines: through `memcmp` an operand just built in registers is
+stored field by field and read back in one wider load, which store
+forwarding cannot serve; a static-capacity limited array of such elements compares its
 lengths, then, up to 64 bytes of slots, whole 8-byte words of both values'
 own storage with the bytes past the length masked off, which takes no
 branch on the data -- a last word that would end past the slots ends at

@@ -1170,8 +1170,8 @@ inline void CodeGen::EmitDefaultInto(const string &lv, TypeExpr *t) {
 
 // ------------------------------------------------------------------
 // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
-// bytes values as pointers. Gap-free fixed types without floats shortcut
-// to memcmp.
+// bytes values as pointers. Gap-free fixed types without floats of more
+// than a few scalars shortcut to memcmp.
 
 inline bool CodeGen::BitwiseEq(TypeExpr *t) {
     if (!IsFix(t)) return false;
@@ -1195,6 +1195,29 @@ inline bool CodeGen::ScalarEq(TypeExpr *t) {
            (t->kind == TY_REF && t->ref->lenstorage < 0 && !IsFatRef(t));
 }
 
+// How many scalars an equality test of fixed type t compares, counting
+// no further than cap. A leaf EqX has no comparison of its own for (a
+// relative reference, a function) counts as cap, which keeps memcmp.
+inline int64_t CodeGen::EqScalars(TypeExpr *t, int64_t cap) {
+    switch (t->kind) {
+        case TY_STRUCT: case TY_VARIANT: {
+            int64_t n = 0;
+            for (auto &run : FieldRuns(t))
+                for (size_t i = 0; i < run.fields->size() && n < cap; i++)
+                    if (!(*run.fields)[i].ispad) n += EqScalars((*run.ftypes)[i], cap - n);
+            return min(n, cap);
+        }
+        case TY_ARRAY: {
+            auto per = EqScalars(t->arr->sub, cap);
+            auto size = ArrSize(t->arr);
+            return per && size > cap / per ? cap : per * size;
+        }
+        default:
+            return ScalarEq(t) || (t->kind == TY_REF && IsFatRef(t)) ||
+                   (t->kind == TY_SLICE && !IsBytesT(t->sub)) ? 1 : cap;
+    }
+}
+
 // Equality of two values as a C expression; a/b are values (fixed) or
 // byte pointers (bytes-class). May emit an eq function.
 inline string CodeGen::EqX(TypeExpr *t, const string &a, const string &b) {
@@ -1204,7 +1227,11 @@ inline string CodeGen::EqX(TypeExpr *t, const string &a, const string &b) {
     if (t->kind == TY_SLICE && !IsBytesT(t->sub))
         return cat("(", a, ".data == ", b, ".data && ", a, ".len == ", b, ".len)");
     if (IsFix(t)) {
-        if (BitwiseEq(t))
+        // A few scalars compare one by one, in an eq function the C compiler
+        // inlines. Through memcmp, an operand just built in registers would
+        // be stored field by field and read back in one wider load, which
+        // store forwarding cannot serve.
+        if (BitwiseEq(t) && EqScalars(t, 5) > 4)
             return cat("(memcmp(&", a, ", &", b, ", ", FixedSize(t), ") == 0)");
         return cat(EqFn(t), "(&", a, ", &", b, ")");
     }
