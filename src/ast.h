@@ -731,6 +731,47 @@ struct Val : Prov {
 // AST nodes. One base, leaves per construct; Dump implementations live
 // together in dump.h so that pass reads top to bottom.
 
+// Which NODE a Node is. Every pass asks often, so Is<T> compares this
+// instead of paying for a dynamic_cast.
+enum NodeKind : uint8_t {
+    NK_IntLit,
+    NK_FltLit,
+    NK_BoolLit,
+    NK_StrLit,
+    NK_Ident,
+    NK_ArrayLit,
+    NK_StructLit,
+    NK_Unary,
+    NK_Binary,
+    NK_Dot,
+    NK_Call,
+    NK_Index,
+    NK_SliceExpr,
+    NK_AsCast,
+    NK_NullLit,
+    NK_SelfRef,
+    NK_RangeExpr,
+    NK_Block,
+    NK_IfExpr,
+    NK_MatchExpr,
+    NK_EarlyBlock,
+    NK_While,
+    NK_LoopExpr,
+    NK_ForLoop,
+    NK_Return,
+    NK_Break,
+    NK_Continue,
+    NK_FunVal,
+    NK_VarDecl,
+    NK_Assign,
+    NK_IncDec,
+    NK_InlineBlock,
+    NK_FnDecl,
+    NK_StructDecl,
+    NK_EnumDecl,
+    NK_AliasDecl,
+};
+
 struct Node {
     Line line;
     TypeExpr *exprtype = nullptr;   // Filled by typecheck (the value's type; TY_VOID for none).
@@ -738,10 +779,11 @@ struct Node {
     // storage, so it is a temporary of its statement, held on a data stack
     // of the activation until the statement ends (TypeCheck::NoteTemp, §7.8).
     bool nftemp = false;
+    NodeKind nkind;
     // The node as the source has it, which every clone of it shares; null in
     // that one itself.
     const Node *origin = nullptr;
-    Node(Line _line) : line(_line) {}
+    Node(Line _line, NodeKind _nkind) : line(_line), nkind(_nkind) {}
     virtual ~Node() {}
     virtual void Dump(string &s, int ind) const = 0;
     // Deep copy of the tree (typecheck clones function bodies per specialization
@@ -782,10 +824,19 @@ struct Node {
     virtual void CgStmt(CodeGen &cg) = 0;
 };
 
+// The node as a T, or null when it is some other kind.
+template<typename T> const T *Is(const Node *n) {
+    return n && n->nkind == T::NKind ? static_cast<const T *>(n) : nullptr;
+}
+template<typename T> T *Is(Node *n) {
+    return n && n->nkind == T::NKind ? static_cast<T *>(n) : nullptr;
+}
+
 #define BCE_WALK bool BceWalk(BCE &bce) override;
 #define BCE_MARK void BceMark(BCE &bce) override;
 
 #define NODE(name) struct name : Node { \
+    static constexpr NodeKind NKind = NK_##name; \
     void Dump(string &s, int ind) const override; \
     Node *Clone1(Ast &ast) const override; \
     void Children(const function<void(Node *)> &f) const override; \
@@ -802,18 +853,18 @@ NODE(IntLit)
     string_view text;  // Original spelling, so hex/char literals dump readably.
     bool uns;          // Value above i64.max: a u64 constant carried as bits.
     IntLit(Line l, int64_t _val, string_view _text = {}, bool _uns = false)
-        : Node(l), val(_val), text(_text), uns(_uns) {}
+        : Node(l, NKind), val(_val), text(_text), uns(_uns) {}
 NODE_END
 
 NODE(FltLit)
     double val;
     string_view text;  // Original spelling, so hex floats and overflowing exponents dump as written.
-    FltLit(Line l, double _val, string_view _text = {}) : Node(l), val(_val), text(_text) {}
+    FltLit(Line l, double _val, string_view _text = {}) : Node(l, NKind), val(_val), text(_text) {}
 NODE_END
 
 NODE(BoolLit)
     bool val;
-    BoolLit(Line l, bool _val) : Node(l), val(_val) {}
+    BoolLit(Line l, bool _val) : Node(l, NKind), val(_val) {}
 NODE_END
 
 NODE(StrLit)
@@ -822,7 +873,7 @@ NODE(StrLit)
     // `line.line + k`, which embed_shader reports shader errors at.
     bool multiline = false;
     StrLit(Line l, string _val, bool _multiline = false)
-        : Node(l), val(std::move(_val)), multiline(_multiline) {}
+        : Node(l, NKind), val(std::move(_val)), multiline(_multiline) {}
 NODE_END
 
 NODE(Ident)
@@ -835,7 +886,7 @@ NODE(Ident)
     // Filled by typecheck: exactly one of these.
     VarDef *vdef = nullptr;         // A variable.
     SFunction *fnref = nullptr;     // A named function used as a function value.
-    Ident(Line l, string_view _name, string_view _ns = {}) : Node(l), name(_name), ns(_ns) {}
+    Ident(Line l, string_view _name, string_view _ns = {}) : Node(l, NKind), name(_name), ns(_ns) {}
 NODE_END
 
 NODE(ArrayLit)
@@ -843,7 +894,7 @@ NODE(ArrayLit)
     Node *fillval = nullptr;    // [v; n] fill form: fillval/fillcount, elems empty.
     Node *fillcount = nullptr;
     Node *capexpr = nullptr;    // [..cap]: an empty limited array with capacity.
-    ArrayLit(Line l) : Node(l) {}
+    ArrayLit(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(StructLit)
@@ -861,7 +912,7 @@ NODE(StructLit)
     SVariant *variant = nullptr;    //   "
     vector<int> fieldindices;       // Per init, the target field index.
     vector<int> sourcefieldindices; // Supplied fields before CheckInits sorts; retained on rechecks.
-    StructLit(Line l, TypeExpr *_type) : Node(l), type(_type) {}
+    StructLit(Line l, TypeExpr *_type) : Node(l, NKind), type(_type) {}
     // The initializer of field `fieldidx` once the literal is checked
     // (TypeCheck::CheckInits): the one written, the field's declared
     // default, or the default<T>() call a `..` or default<T>() fills it
@@ -880,7 +931,7 @@ NODE(Unary)
     bool synth = false;         // A `&` the checker inserted (§4.1), not written by the user.
     bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
     bool flexint = false;       // Filled by typecheck: its value is a Val::flexint.
-    Unary(Line l, TType _op, Node *_child) : Node(l), op(_op), child(_child) {}
+    Unary(Line l, TType _op, Node *_child) : Node(l, NKind), op(_op), child(_child) {}
 NODE_END
 
 NODE(Binary)
@@ -901,7 +952,7 @@ NODE(Binary)
     // is provably nonnegative and a divisor provably positive, so codegen
     // computes it unsigned, with no zero or overflow check to make.
     bool nonneg = false;
-    Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
+    Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l, NKind), op(_op), left(_l), right(_r) {}
 NODE_END
 
 NODE(Dot)
@@ -917,7 +968,7 @@ NODE(Dot)
     SVariant *variantconst = nullptr;
     EnumInst *einst = nullptr;
     Dot(Line l, Node *_obj, string_view _name, string_view _ns = {})
-        : Node(l), obj(_obj), name(_name), ns(_ns) {}
+        : Node(l, NKind), obj(_obj), name(_name), ns(_ns) {}
     // A field, which lies in its object's storage: a path, as codegen
     // addresses it (CodeGen::GenLoc). A property or a variant constant is a
     // value computed on the spot (Dot::CgX).
@@ -964,7 +1015,7 @@ NODE(Call)
     // so codegen checks at run time that it lies inside the pool (§5.4).
     bool poolcheck = false;
     const string *shaderblob = nullptr;  // embed_shader: its compiled blob, in Ast::shaders.
-    Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
+    Call(Line l, Node *_callee) : Node(l, NKind), callee(_callee) {}
     // What the call passes for the callee's free variable v (fvremap).
     VarDef *FreeVarArg(VarDef *v) const {
         for (auto &p : fvremap) if (p.first == v) return p.second;
@@ -972,7 +1023,7 @@ NODE(Call)
     }
     // The first argument in either spelling: a.f(b) is f(a, b) (§7.1).
     Node *FirstArg() const {
-        if (auto d = dynamic_cast<Dot *>(callee)) return d->obj;
+        if (auto d = Is<Dot>(callee)) return d->obj;
         return args[0];
     }
     // Every argument in either spelling, the receiver of a.f(b) first: what
@@ -980,7 +1031,7 @@ NODE(Call)
     // argument is among them, a trailing block is not.
     vector<Node *> ArgNodes() const {
         vector<Node *> an;
-        if (auto d = dynamic_cast<Dot *>(callee)) an.push_back(d->obj);
+        if (auto d = Is<Dot>(callee)) an.push_back(d->obj);
         for (auto a : args) an.push_back(a);
         return an;
     }
@@ -988,7 +1039,7 @@ NODE(Call)
     // check of the argument made of it (TypeCheck::AutoRef) stands in for
     // the original.
     void SetArgNode(size_t i, Node *n) {
-        if (auto d = dynamic_cast<Dot *>(callee)) {
+        if (auto d = Is<Dot>(callee)) {
             if (!i) { d->obj = n; return; }
             i--;
         }
@@ -1008,7 +1059,7 @@ NODE(Index)
     BCE_MARK
     Node *obj, *idx;
     bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
-    Index(Line l, Node *_obj, Node *_idx) : Node(l), obj(_obj), idx(_idx) {}
+    Index(Line l, Node *_obj, Node *_idx) : Node(l, NKind), obj(_obj), idx(_idx) {}
 NODE_END
 
 NODE(SliceExpr)
@@ -1019,7 +1070,7 @@ NODE(SliceExpr)
     bool lo_from_end = false, hi_from_end = false;  // ^k bounds.
     bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
     bool cmpview = false;       // The whole slice `==` takes of an operand (§4.5).
-    SliceExpr(Line l, Node *_obj) : Node(l), obj(_obj) {}
+    SliceExpr(Line l, Node *_obj) : Node(l, NKind), obj(_obj) {}
 NODE_END
 
 NODE(AsCast)
@@ -1034,7 +1085,7 @@ NODE(AsCast)
     // into an i64), and the cast still wraps and checks at its own type.
     TypeExpr *totype = nullptr;
     AsCast(Line l, Node *_child, TypeExpr *_type, bool _unchecked)
-        : Node(l), child(_child), type(_type), unchecked(_unchecked) {}
+        : Node(l, NKind), child(_child), type(_type), unchecked(_unchecked) {}
     // The cast as the source has it, which the checker's clones of it (one
     // per specialization) share. A redundant cast warns once for all of them
     // (TypeCheck::CastVerdict).
@@ -1042,16 +1093,16 @@ NODE(AsCast)
 NODE_END
 
 NODE(NullLit)                   // The null optional; adapts to any T? (§3.8).
-    NullLit(Line l) : Node(l) {}
+    NullLit(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(SelfRef)                   // `self`: the value a literal is constructing (§3.9).
-    SelfRef(Line l) : Node(l) {}
+    SelfRef(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(RangeExpr)                 // Only inside for-headers.
     Node *lo, *hi;
-    RangeExpr(Line l, Node *_lo, Node *_hi) : Node(l), lo(_lo), hi(_hi) {}
+    RangeExpr(Line l, Node *_lo, Node *_hi) : Node(l, NKind), lo(_lo), hi(_hi) {}
 NODE_END
 
 // A { stmt* expr? } sequence; tail is the value-producing trailing expression.
@@ -1059,7 +1110,7 @@ NODE(Block)
     BCE_WALK
     vector<Node *> stmts;
     Node *tail = nullptr;
-    Block(Line l) : Node(l) {}
+    Block(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(IfExpr)
@@ -1076,7 +1127,7 @@ NODE(IfExpr)
     // block for the then-block (Optimizer::Around).
     bool flat = false;
     IfExpr(Line l, Node *_cond, Block *_thenb, Node *_elseb)
-        : Node(l), cond(_cond), thenb(_thenb), elseb(_elseb) {}
+        : Node(l, NKind), cond(_cond), thenb(_thenb), elseb(_elseb) {}
 NODE_END
 
 NODE(MatchExpr)
@@ -1084,14 +1135,14 @@ NODE(MatchExpr)
     BCE_MARK
     Node *scrutinee;
     vector<MatchArm> arms;
-    MatchExpr(Line l, Node *_scrutinee) : Node(l), scrutinee(_scrutinee) {}
+    MatchExpr(Line l, Node *_scrutinee) : Node(l, NKind), scrutinee(_scrutinee) {}
 NODE_END
 
 NODE(EarlyBlock)                // "block { }": breakable early-out construct.
     BCE_WALK
     Block *body;
     vector<Break *> breaks;     // Filled by typecheck: the breaks giving it a value.
-    EarlyBlock(Line l, Block *_body) : Node(l), body(_body) {}
+    EarlyBlock(Line l, Block *_body) : Node(l, NKind), body(_body) {}
 NODE_END
 
 // A resizable array in a field: the variable holding or referencing the
@@ -1113,7 +1164,7 @@ NODE(While)
     bool countdown = false;
     Node *cond;
     Block *body;
-    While(Line l, Node *_cond, Block *_body) : Node(l), cond(_cond), body(_body) {}
+    While(Line l, Node *_cond, Block *_body) : Node(l, NKind), cond(_cond), body(_body) {}
 NODE_END
 
 NODE(LoopExpr)
@@ -1122,7 +1173,7 @@ NODE(LoopExpr)
     vector<FieldPath> hoistfields;
     Block *body;
     vector<Break *> breaks;       // Filled by typecheck: the breaks giving it a value.
-    LoopExpr(Line l, Block *_body) : Node(l), body(_body) {}
+    LoopExpr(Line l, Block *_body) : Node(l, NKind), body(_body) {}
 NODE_END
 
 NODE(ForLoop)
@@ -1164,7 +1215,7 @@ NODE(ForLoop)
     VarDef *idxdef = nullptr;
     int iterkind = 0;           // IterKind, typecheck.h.
     ForLoop(Line l, bool _byref, string_view _var, string_view _idxvar, Node *_iter, Block *_body)
-        : Node(l), byref(_byref), var(_var), idxvar(_idxvar), iter(_iter), body(_body) {}
+        : Node(l, NKind), byref(_byref), var(_var), idxvar(_idxvar), iter(_iter), body(_body) {}
 NODE_END
 
 NODE(Return)
@@ -1174,18 +1225,18 @@ NODE(Return)
     string_view ns;             // The namespace `from` resolves in first (Ident::ns).
     SFunction *target = nullptr;  // Filled by typecheck (the fn this exits; `from` or own).
     FnSpec *targetspec = nullptr; // Its concrete return contract and propagation channel.
-    Return(Line l) : Node(l) {}
+    Return(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(Break)
     BCE_WALK
     Node *val;
-    Break(Line l, Node *_val) : Node(l), val(_val) {}
+    Break(Line l, Node *_val) : Node(l, NKind), val(_val) {}
 NODE_END
 
 NODE(Continue)
     BCE_WALK
-    Continue(Line l) : Node(l) {}
+    Continue(Line l) : Node(l, NKind) {}
 NODE_END
 
 // A function value: trailing block or block with named params. Non-escaping,
@@ -1197,7 +1248,7 @@ NODE(FunVal)
     int col = 0;                // Of the `{`, 1-based: tells blocks on one line apart
                                 // in the instantiation chain (Line has no column).
     Block *body;
-    FunVal(Line l, Block *_body) : Node(l), body(_body) {}
+    FunVal(Line l, Block *_body) : Node(l, NKind), body(_body) {}
 NODE_END
 
 // let/var declarations, local and global.
@@ -1215,7 +1266,7 @@ NODE(VarDecl)
     TypeExpr *type = nullptr;
     vector<Node *> inits;       // Empty for uninitialized locals.
     vector<VarDef *> defs;      // Filled by typecheck, aligned with names.
-    VarDecl(Line l, bool _isvar) : Node(l), isvar(_isvar) {}
+    VarDecl(Line l, bool _isvar) : Node(l, NKind), isvar(_isvar) {}
 NODE_END
 
 NODE(Assign)
@@ -1224,7 +1275,7 @@ NODE(Assign)
     TType op;                   // T_ASSIGN, T_PLUSEQ, ...
     Node *lval, *rhs;
     bool pointee = false;       // Typecheck: lval is a reference and this writes its pointee.
-    Assign(Line l, TType _op, Node *_lval, Node *_rhs) : Node(l), op(_op), lval(_lval), rhs(_rhs) {}
+    Assign(Line l, TType _op, Node *_lval, Node *_rhs) : Node(l, NKind), op(_op), lval(_lval), rhs(_rhs) {}
 NODE_END
 
 NODE(IncDec)
@@ -1232,7 +1283,7 @@ NODE(IncDec)
     BCE_MARK
     TType op;                   // T_INC / T_DEC.
     Node *lval;
-    IncDec(Line l, TType _op, Node *_lval) : Node(l), op(_op), lval(_lval) {}
+    IncDec(Line l, TType _op, Node *_lval) : Node(l, NKind), op(_op), lval(_lval) {}
 NODE_END
 
 // Created by the optimizer (optimize.h), never by the parser: an inlined call
@@ -1249,7 +1300,7 @@ NODE(InlineBlock)
     FnSpec *spec;               // The specialization this body came from.
     Block *body;
     InlineBlock(Line l, SFunction *_sf, FnSpec *_spec, Block *_body)
-        : Node(l), sf(_sf), spec(_spec), body(_body) {}
+        : Node(l, NKind), sf(_sf), spec(_spec), body(_body) {}
     void EmitBody(CodeGen &cg, const Dst &d);   // CgAny, as the callee's own result type.
 NODE_END
 
@@ -1354,22 +1405,22 @@ inline string_view NominalNs(const TypeExpr *t) {
 
 NODE(FnDecl)
     SFunction *sf;
-    FnDecl(Line l, SFunction *_sf) : Node(l), sf(_sf) {}
+    FnDecl(Line l, SFunction *_sf) : Node(l, NKind), sf(_sf) {}
 NODE_END
 
 NODE(StructDecl)
     SStruct *st;
-    StructDecl(Line l, SStruct *_st) : Node(l), st(_st) {}
+    StructDecl(Line l, SStruct *_st) : Node(l, NKind), st(_st) {}
 NODE_END
 
 NODE(EnumDecl)
     SEnum *en;
-    EnumDecl(Line l, SEnum *_en) : Node(l), en(_en) {}
+    EnumDecl(Line l, SEnum *_en) : Node(l, NKind), en(_en) {}
 NODE_END
 
 NODE(AliasDecl)
     SAlias *al;
-    AliasDecl(Line l, SAlias *_al) : Node(l), al(_al) {}
+    AliasDecl(Line l, SAlias *_al) : Node(l, NKind), al(_al) {}
 NODE_END
 
 #undef NODE
