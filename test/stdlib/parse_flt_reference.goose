@@ -1,6 +1,6 @@
 // runtime-debug: std parse_flt reads up to 19 digits without an exponent
 // on a path of its own. reference_parse_flt below is the general algorithm
-// alone, as parse_flt was before that path existed; the two must agree to
+// alone, counting only significant mantissa digits; the two must agree to
 // the bit, and on the flag, for every input: edge cases, then a few hundred
 // thousand generated ones biased to what the parser decides on (signs,
 // points, exponents, lengths around 18 and 19 digits, runs of 0 and 9, a
@@ -22,7 +22,7 @@ fn reference_parse_flt(s: u8[:]) -> f64, bool {
     var exp10 = 0;
     var digits = 0;
     while i < s.len && s[i] >= '0' && s[i] <= '9' {
-        if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); mdigits += 1; }
+        if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); if mant != 0 { mdigits += 1; } }
         else { exp10 += 1; }
         digits += 1;
         i += 1;
@@ -30,7 +30,11 @@ fn reference_parse_flt(s: u8[:]) -> f64, bool {
     if i < s.len && s[i] == '.' {
         i += 1;
         while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); mdigits += 1; exp10 -= 1; }
+            if mdigits < 19 {
+                mant = mant * 10 + (s[i] - '0');
+                if mant != 0 { mdigits += 1; }
+                exp10 -= 1;
+            }
             digits += 1;
             i += 1;
         }

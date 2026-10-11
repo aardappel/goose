@@ -1164,13 +1164,15 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         return v, true;
     }
     if digits > 19 {
-        // mant wrapped above: read the same digits again keeping the first
-        // 19, with the exponent counting the integer digits dropped past
-        // them. These loops stop where those did, at i.
+        // mant may have wrapped above: read the digits again keeping the
+        // first 19 significant digits, with the exponent counting integer
+        // digits dropped past them. Leading fractional zeroes only adjust
+        // the exponent. These loops stop where those did, at i.
         mant = 0;
         exp10 = 0;
         var mdigits = 0;
         var j = start;
+        while j < s.len && s[j] == '0' { j += 1; }
         while j < s.len && s[j] - '0' < 10 {
             if mdigits < 19 { mant = mant * 10 + (s[j] - '0'); mdigits += 1; }
             else { exp10 += 1; }
@@ -1178,6 +1180,9 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         }
         if j < s.len && s[j] == '.' {
             j += 1;
+            if mant == 0 {
+                while j < s.len && s[j] == '0' { exp10 -= 1; j += 1; }
+            }
             while j < s.len && s[j] - '0' < 10 {
                 if mdigits < 19 { mant = mant * 10 + (s[j] - '0'); mdigits += 1; exp10 -= 1; }
                 j += 1;
