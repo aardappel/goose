@@ -88,8 +88,8 @@ file.goose` writes the C to the program's build directory under
 (`build.h`: the runtime object compiled once per toolchain and
 configuration, the native modules' response files, `-o`, `--debug`,
 `--standalone`, `-v`, `--dry-run`; `-O2` by default; a `--debug` build
-splits the C, `--split`, into a file per core for a large program and
-compiles the files side by side), `goose check
+splits the C, `--split`, into a file per core for a large program (not
+with MSVC) and compiles the files side by side), `goose check
 file.goose` typechecks it (`--check`); both build the native part a
 program's sidecar `foo.build` names (`packages.h`: `LoadSidecar`;
 `native.h`: the C compiled once per toolchain, a response file for the
@@ -133,7 +133,7 @@ are started through `process.h`, a translation unit of its own over
 | `--bce-lines` | print elided/kept counts per source line |
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
 | `-o out.c`, `--jit`, `--header`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, a C API header for the exports (which builds the C without a `main`, for a C host), a define written into the generated C, a user header, the stdlib directory, program arguments |
-| `--split n` | write the C as a header (`out_decls.h`: everything before the code) and `n` files dealing out the functions, `out.c` then `out_1.c` and on, which compile side by side. The program's functions become external (`GS_FN`) and its mutable globals are defined in `out.c` and declared in the others (`GS_SHARED`); `GS_INLINE` is dropped, since C gives an external inline function no definition. Needs the separate runtime. A debug `goose build` picks `n` itself: one file per 128 KB of code, at most one per core |
+| `--split n` | write the C as a header (`out_decls.h`: everything before the code) and `n` files dealing out the functions, `out.c` then `out_1.c` and on, which compile side by side. The program's functions become external (`GS_FN`) and its mutable globals are defined in `out.c` and declared in the others (`GS_SHARED`); `GS_INLINE` is dropped, since C gives an external inline function no definition. Needs the separate runtime. A debug `goose build` picks `n` itself: one file per 128 KB of code, at most one per core, and one file with MSVC (`cl`), which compiles one file at `/Od` faster than it starts and links several |
 | `--<name>-link msvc\|cc` | print the response file of link inputs a program using the blessed package imported as `name` (`gfx`, `audio`, `ui`, `physics`) needs, when the package is compiled into this compiler (`builtin.h`, `BuiltinLinkFile`) |
 | `--multi-test a.goose b.goose ...` | compile each file in turn with the other flags, as a process of its own on it would (an `Ast` and a compile thread each, which is all the state a compile has), each file's output on both streams ending in a line `==== goose --multi-test: exit <code> <file>`; an `-o` names each file's C with `%` for its name. It runs no programs and writes no dump files. The test runner's batches of compiler runs (`docs/testing.md`) |
 | `--compile-shader f [--shader-source msl\|hlsl]` | hidden: what a shader compiles to, without a program around it |

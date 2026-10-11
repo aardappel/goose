@@ -767,7 +767,13 @@ int Main(int argc, char **argv) {
         outname.clear();
         // A debug build is for the edit-build loop: C compiled in parallel.
         // A release one stays in one file, where the C compiler can inline.
-        if (debug && !standalone && !splitn) splitn = -1;
+        // MSVC compiles one file at /Od faster than it starts and links
+        // several, so its debug builds stay in one file too.
+        if (debug && !standalone && !splitn) {
+            Toolchain tc;
+            string why;
+            if (!FindToolchain(ccrequest, tc, why) || tc.name != "msvc") splitn = -1;
+        }
     }
     if (splitn && (standalone || multitest || forcejit)) {
         fprintf(stderr, "--split needs -o and the separate runtime: no --standalone, "
