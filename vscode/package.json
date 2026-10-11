@@ -2,7 +2,7 @@
   "name": "goose-language",
   "displayName": "Goose Language",
   "description": "Syntax highlighting, compiler diagnostics, navigation and tasks for Goose, without a language server.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "aardappel",
   "license": "Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/aardappel/goose.git", "directory": "vscode" },
@@ -30,8 +30,11 @@
     "vscode-textmate": "^9.2.0"
   },
   "contributes": {
-    "languages": [{ "id": "goose", "aliases": ["Goose", "goose"], "extensions": [".goose"], "configuration": "./language-configuration.json" }],
-    "grammars": [{ "language": "goose", "scopeName": "source.goose", "path": "./syntaxes/goose.tmLanguage.json" }],
+    "languages": [{ "id": "goose", "aliases": ["Goose", "goose"], "icon": { "dark": "./fileicons/goose-light-icon.svg", "light": "./fileicons/goose-dark-icon.svg" }, "extensions": [".goose"], "configuration": "./language-configuration.json" }],
+    "grammars": [
+      { "language": "goose", "scopeName": "source.goose", "path": "./syntaxes/goose.tmLanguage.json" },
+      { "scopeName": "markdown.goose.codeblock", "path": "./syntaxes/goose.markdown.json", "injectTo": ["text.html.markdown"], "embeddedLanguages": { "meta.embedded.block.goose": "goose" } }
+    ],
     "snippets": [{ "language": "goose", "path": "./snippets/goose.json" }],
     "commands": [
       { "command": "goose.check", "title": "Check Program", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },

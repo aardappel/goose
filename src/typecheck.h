@@ -132,6 +132,7 @@ struct TypeCheck {
     using TypePairCache = flat_map<pair<TypeExpr *, TypeExpr *>, bool>;
     TypePairCache cancontain, reachesthrough;
     bool library = false;   // Built for a C host (--header): fn main() is optional.
+    bool nomain = false;    // --check --module: a file without fn main() is checked on its own.
 
     // (Val, the checked value of an expression, lives in ast.h: node Check
     // overrides return it.)
@@ -2506,7 +2507,7 @@ struct TypeCheck {
     // ------------------------------------------------------------------
     // The driver: globals in order, then main, then thread entry points.
 
-    TypeCheck(Ast &_ast, bool _library = false) : ast(_ast), library(_library) {
+    TypeCheck(Ast &_ast, bool _library = false, bool _nomain = false) : ast(_ast), library(_library), nomain(_nomain) {
         // A checked program records values for about two thirds as many
         // nodes as it parsed to, clones included, so this is the size the
         // table grows to anyway.
@@ -2562,7 +2563,7 @@ struct TypeCheck {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool && !HasGenerics(t->ref->sub)) ValidatePool(t);
         auto mainsf = ast.MainFunction();
-        if (!mainsf && !library)
+        if (!mainsf && !library && !nomain)
             throw CompileError { "program needs exactly one global fn main()" };
         if (mainsf) {
             if (!mainsf->params.empty() || mainsf->has_rets || !mainsf->generics.empty() ||
@@ -2807,6 +2808,8 @@ struct TypeCheck {
 };
 
 // Runs the whole pass; errors throw CompileError.
-inline void TypeCheckProgram(Ast &ast, bool library = false) { TypeCheck tc(ast, library); }
+inline void TypeCheckProgram(Ast &ast, bool library = false, bool nomain = false) {
+    TypeCheck tc(ast, library, nomain);
+}
 
 }  // namespace goose

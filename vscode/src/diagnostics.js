@@ -34,6 +34,15 @@ function parseDiagnostics(output, cwd) {
     return diagnostics;
 }
 
+// Progress lines the compiler prints on success (parsed ok, typechecked ok, ...).
+const statusLine = /^(?:parsed ok|roundtrip ok|typechecked ok|bce|bce-line|bce-test):|^wrote .+ \(\d+ bytes\)$/;
+
+// The text of a failure that has no source location, without the progress lines.
+function failureMessage(output) {
+    return output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)
+        .filter(line => !statusLine.test(line)).join('\n').trim();
+}
+
 function runCompiler(config) {
     let child;
     const promise = new Promise(resolve => {
@@ -105,4 +114,4 @@ class CheckQueue {
     }
 }
 
-module.exports = { parseDiagnostics, runCompiler, CheckQueue };
+module.exports = { parseDiagnostics, failureMessage, runCompiler, CheckQueue };

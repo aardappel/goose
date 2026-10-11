@@ -88,3 +88,35 @@ test('unterminated strings stop at the newline', async () => {
     const [, line] = await tokenize('"unterminated\nfn next() {}');
     assert.ok(has(line, 'next', 'entity.name.function'));
 });
+
+test('Goose fenced code blocks in Markdown are highlighted and other fences are left alone', async () => {
+    const onigLib = Promise.resolve({ createOnigScanner: patterns => new oniguruma.OnigScanner(patterns), createOnigString: value => new oniguruma.OnigString(value) });
+    const injectionPath = path.resolve(__dirname, '../syntaxes/goose.markdown.json');
+    const read = file => textmate.parseRawGrammar(fs.readFileSync(file, 'utf8'), file);
+    const registry = new textmate.Registry({
+        onigLib,
+        getInjections: scope => scope === 'text.html.markdown' ? ['markdown.goose.codeblock'] : undefined,
+        loadGrammar: async scope => ({
+            'source.goose': () => read(grammarPath),
+            'markdown.goose.codeblock': () => read(injectionPath),
+            'text.html.markdown': () => ({ scopeName: 'text.html.markdown', patterns: [] })
+        })[scope]?.()
+    });
+    const markdown = await registry.loadGrammar('text.html.markdown');
+    const source = ['Text with fn main.', '```goose', 'fn main() {', '    let x = 1;', '}', '```', '', '```c', 'fn main() {}', '```', '', '~~~ goose', 'fn tilde() {}', '~~~', 'fn after() {}'];
+    let state = textmate.INITIAL;
+    const lines = source.map(line => {
+        const result = markdown.tokenizeLine(line, state);
+        state = result.ruleStack;
+        return result.tokens.map(token => ({ text: line.slice(token.startIndex, token.endIndex), scopes: token.scopes }));
+    });
+    assert.ok(has(lines[2], 'main', 'entity.name.function'));
+    assert.ok(has(lines[3], 'let', 'storage.type'));
+    assert.ok(lines[2].every(token => token.scopes.includes('meta.embedded.block.goose')));
+    assert.ok(has(lines[1], 'goose', 'fenced_code.block.language'));
+    assert.ok(!lines[0].some(token => token.scopes.includes('source.goose')));
+    assert.ok(!lines[8].some(token => token.scopes.includes('source.goose')));
+    assert.ok(has(lines[12], 'tilde', 'entity.name.function'));
+    assert.ok(!lines[14].some(token => token.scopes.includes('source.goose')));
+
+});
