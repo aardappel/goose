@@ -465,6 +465,7 @@ struct CodeGen {
     int stknext = 0, stkmax = 0;
     string spexpr;                       // "gs_sp" inside functions, "0" at global init.
     set<string> fnused;                  // Local C identifiers.
+    unordered_map<string, int> fnnextsuffix;
     unordered_map<const VarDef *, string> vnames;
     unordered_map<const VarDef *, string> vstk;    // Stack expr per nonfixed local.
     unordered_map<const VarDef *, pair<string, string>> vpool;  // fl base name, fl stack expr.

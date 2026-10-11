@@ -847,9 +847,15 @@ inline string CodeGen::VName(const VarDef *vd) {
     return git->second;
 }
 
+// Used names only accumulate within a function. A suffix rejected earlier
+// remains occupied, including one reserved globally or by another base.
 inline string CodeGen::Unique2(const string &base) {
     auto name = base;
-    for (auto n = 2; fnused.count(name) || used.count(name); n++) name = cat(base, "_", n);
+    if (fnused.count(name) || used.count(name)) {
+        auto &next = fnnextsuffix.try_emplace(base, 2).first->second;
+        do name = cat(base, "_", next++);
+        while (fnused.count(name) || used.count(name));
+    }
     fnused.insert(name);
     return name;
 }

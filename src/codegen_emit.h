@@ -353,6 +353,7 @@ inline void CodeGen::ResetFnState() {
     poolbases.clear();
     fvptr.clear();
     fnused.clear();
+    fnnextsuffix.clear();
     nrvo.clear();
     fdstsaves.clear();
     openat.clear();
