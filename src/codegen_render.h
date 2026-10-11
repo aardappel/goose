@@ -355,7 +355,7 @@ inline string CodeGen::RenderFn(TypeExpr *t, Line ln) {
     auto name = Unique(cat("gs_render_", m));
     renderfns[m] = name;
     auto vt = IsResz(t) ? string("gs_rref") : IsBytesT(t) ? string("uint8_t *") : cat(CT(t), " *");
-    auto sig = cat("static void ", name, "(gs_rref gs_out, ", vt, " gs_v)");
+    auto sig = cat("GS_FN void ", name, "(gs_rref gs_out, ", vt, " gs_v)");
     Append(protos, sig, ";\n");
     renderqueue.push_back({ t, ln, sig });
     return name;
@@ -407,6 +407,7 @@ inline void CodeGen::EmitRenderFn(RenderFnReq r) {
     code += decls;
     code += body;
     code += "}\n\n";
+    EndFn();
 }
 
 // Where a rendered argument lies: where GenLoc addresses it, but a call's

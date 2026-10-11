@@ -1305,6 +1305,12 @@ struct CodeGen {
     // the types in the first.
     string head;     // Types and data.
     string result;   // Includes, prototypes and code.
+    // Where the code starts in result, and where each top-level function in
+    // code ends: the places a split program (--split) may be cut.
+    size_t codestart = 0;
+    vector<size_t> cuts;
+    void EndFn() { cuts.push_back(code.size()); }
+    void AddFn(const string &fn) { code += fn; EndFn(); }
     string ExportHeader();
 
     // Extern-support C and user headers are inputs to this emission, not
@@ -1321,11 +1327,11 @@ struct CodeGen {
             for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);
         // Zero means "no long-distance return in flight", which is also the
         // state every propagating function's ordinary exit leaves behind.
-        if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";
+        if (!fromids.empty()) data += "GS_SHARED GS_TLS int32_t gs_rf;\n";
         EmitGlobalDecls();
         // Prototypes for every live specialization, then their bodies.
         for (auto sp : livespecs)
-            Append(protos, "static ", FnAttrs(sp), SigRet(sp), " ", sinfo[sp].cname, "(",
+            Append(protos, "GS_FN ", FnAttrs(sp), SigRet(sp), " ", sinfo[sp].cname, "(",
                    SigParams(sp, false), ");\n");
         for (auto sp : livespecs) EmitSpec(sp);
         EmitGlobalInit();
@@ -1341,7 +1347,7 @@ struct CodeGen {
         // The instance block: with workers each thread reaches its own
         // through gs_gl; without them there is only main's.
         Append(data, "typedef struct {\n", gblock.empty() ? "    uint8_t gs_none;\n" : gblock,
-               "} gs_globals_t;\nstatic gs_globals_t gs_globals_main;\n",
+               "} gs_globals_t;\nGS_SHARED gs_globals_t gs_globals_main;\n",
                usesthreads ? "#define GS_GL ((gs_globals_t *)gs_gl)\n"
                            : "#define GS_GL (&gs_globals_main)\n");
         // Extern fns: the runtime's own C follows the types it is written
@@ -1368,7 +1374,9 @@ struct CodeGen {
                "#pragma pack(pop)\n\n/* ---- data ---- */\n", data);
         Append(result, "\n/* ---- includes ---- */\n", includes,
                "\n/* ---- extern prototypes ---- */\n", externs,
-               "\n/* ---- prototypes ---- */\n", protos, "\n/* ---- code ---- */\n", code);
+               "\n/* ---- prototypes ---- */\n", protos, "\n/* ---- code ---- */\n");
+        codestart = result.size();
+        result += code;
     }
 };
 

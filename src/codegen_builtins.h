@@ -11,7 +11,7 @@ inline string CodeGen::QueueFor(TypeExpr *t) {
     auto it = queues.find(m);
     if (it != queues.end()) return it->second;
     auto name = Unique(cat("gs_q_", m));
-    Append(data, "static gs_queue ", name, " = GS_QUEUE_INIT;\n");
+    Append(data, "GS_SHARED gs_queue ", name, ";\n");
     return queues[m] = name;
 }
 
@@ -1001,7 +1001,7 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     if (it != thunks.end()) return it->second;
     auto name = Unique(cat("gs_tmain_", Sanitize(sp->sf->ns, sp->sf->name)));
     thunks[sp] = name;
-    Append(protos, "static void ", name, "(uint8_t *p);\n");
+    Append(protos, "GS_FN void ", name, "(uint8_t *p);\n");
     return name;
 }
 
@@ -1013,7 +1013,7 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     auto name = thunks[sp];
     auto &ki = sinfo[sp];
     string b;
-    Append(b, "static void ", name, "(uint8_t *p) {\n    gs_stack_block(", stacks, ");\n");
+    Append(b, "GS_FN void ", name, "(uint8_t *p) {\n    gs_stack_block(", stacks, ");\n");
     vector<string> args;
     int regions = 0;    // The dedicated stacks the thunk reserves (thunkregions).
     for (size_t i = 0; i < sp->argtypes.size(); i++) {
@@ -1117,7 +1117,7 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     string argstr;
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
     Append(b, "    ", ki.cname, "(", argstr, ");\n    free(gs_gl);\n}\n\n");
-    code += b;
+    AddFn(b);
     thunkregions[sp] = regions;
 }
 

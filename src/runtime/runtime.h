@@ -97,8 +97,12 @@
 #define GS_NOINLINE __attribute__((noinline))
 #endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
-   function Goose wanted to inline but could not (FnSpec::cinline). */
-#if defined(__GNUC__) || defined(__clang__)
+   function Goose wanted to inline but could not (FnSpec::cinline). A split
+   program's functions are external, and C99 gives an external inline
+   function no definition to link to, so there it is an ordinary one. */
+#ifdef GS_SPLIT
+#define GS_INLINE
+#elif defined(__GNUC__) || defined(__clang__)
 #define GS_INLINE __attribute__((always_inline)) inline
 #elif defined(_MSC_VER)
 #define GS_INLINE __forceinline
@@ -121,6 +125,22 @@
 #define GS_API extern
 #else
 #define GS_API static
+#endif
+
+/* The linkage of the program's own functions and mutable globals. One file
+   by default; a program split into several (goose --split) makes its
+   functions external, and defines its globals in the file that sets
+   GS_SPLIT_OWNER, the others declaring them. */
+#ifdef GS_SPLIT
+#define GS_FN
+#ifdef GS_SPLIT_OWNER
+#define GS_SHARED
+#else
+#define GS_SHARED extern
+#endif
+#else
+#define GS_FN static
+#define GS_SHARED static
 #endif
 
 #define GS_CAT_(a, b) a##b
@@ -772,15 +792,15 @@ GS_API gs_qnode *gs_qpoll(gs_queue *q);
 /* The current thread program's stack block: every stack the compiler
    counted for it, reserved as the program starts (gs_stack_block).
    gs_sp-relative indices resolve through it. */
-static GS_TLS gs_stack *gs_stks;
-static GS_TLS int64_t gs_nstks;
+GS_SHARED GS_TLS gs_stack *gs_stks;
+GS_SHARED GS_TLS int64_t gs_nstks;
 
 /* The current program instance's globals (goose_spec.md 11.1), a struct the
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
    at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
-static GS_TLS void *gs_gl;
+GS_SHARED GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 

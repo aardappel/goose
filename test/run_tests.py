@@ -1034,7 +1034,7 @@ class Runner:
         # function of the fixture must have the one it is named for, and no
         # keep_ function any.
         bodies = {}
-        for m in re.finditer(r"^static [^\n;]*?\b((?:shape|keep)_\w+?)_g\d*\([^\n]*\) \{\n(.*?)^\}\n",
+        for m in re.finditer(r"^GS_FN [^\n;]*?\b((?:shape|keep)_\w+?)_g\d*\([^\n]*\) \{\n(.*?)^\}\n",
                              text, re.MULTILINE | re.DOTALL):
             bodies[m[1]] = re.findall(r"/\* loop shape: ([^*]*?) \*/", m[2])
         strip = "strip-mined by"
@@ -1616,8 +1616,8 @@ def main():
             r.fail("inline fn C", out + err)
             return
         text = cfile.read_text()
-        pair = re.search(r"^static GS_INLINE [^\n;]*\bil_pair_g\d*\(", text, re.MULTILINE)
-        plain = re.search(r"^static GS_INLINE [^\n;]*\bil_plain_g\d*\(", text, re.MULTILINE)
+        pair = re.search(r"^GS_FN GS_INLINE [^\n;]*\bil_pair_g\d*\(", text, re.MULTILINE)
+        plain = re.search(r"^GS_FN GS_INLINE [^\n;]*\bil_plain_g\d*\(", text, re.MULTILINE)
         if not pair or plain:
             r.fail("inline fn C", f"il_pair GS_INLINE: {bool(pair)}, il_plain GS_INLINE: {bool(plain)}")
         else:
@@ -1632,7 +1632,7 @@ def main():
         if code != 0:
             r.fail(f"member parameters {f.name}", out + err)
             return
-        sig = re.search(r"^static void walk_g\w*\(([^)]*)\) \{$", cfile.read_text(),
+        sig = re.search(r"^GS_FN void walk_g\w*\(([^)]*)\) \{$", cfile.read_text(),
                         re.MULTILINE)
         want = (r"void \*\w+, int64_t \w+, int64_t \w+, gs_rhdr \*\w+, gs_stack \*\w+, "
                 r"void \*\w+, int64_t \w+")
@@ -1651,7 +1651,7 @@ def main():
         if code != 0:
             r.fail(f"member stores {f.name}", out + err)
             return
-        body = re.search(r"^static void store_links_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
+        body = re.search(r"^GS_FN void store_links_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
                          cfile.read_text(), re.MULTILINE | re.DOTALL)
         stores = body and all(re.search(rf"\)\.{fld}_g = ", body[1]) for fld in ("w", "prev"))
         if not stores or re.search(r"double \*t\d+ = &", body[1]):

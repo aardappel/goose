@@ -618,6 +618,9 @@ int Main(int argc, char **argv) {
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
     auto forcejit = false, standalone = false;
+    // --split: the number of C files -o writes; 0 is one, -1 as many as the
+    // program and the machine's cores call for (a debug build's choice).
+    int64_t splitn = 0;
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     string ccrequest;
     // A build is for a deliverable: the inlining and the C compiler's
@@ -656,6 +659,13 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
+        else if (arg == "--split" && i + 1 < argc) {
+            splitn = atoll(argv[++i]);
+            if (splitn < 1 || splitn > 256) {
+                fprintf(stderr, "--split takes a number of C files from 1 to 256: %s\n", argv[i]);
+                return 1;
+            }
+        }
         else if (arg == "--multi-test") multitest = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(exe.c_str()); return 0; }
         else if (arg == "--emit-runtime" && i + 1 < argc) {
@@ -755,6 +765,14 @@ int Main(int argc, char **argv) {
         }
         buildopts = BuildOptions { ccrequest, debug, verbose, dryrun, standalone, outname };
         outname.clear();
+        // A debug build is for the edit-build loop: C compiled in parallel.
+        // A release one stays in one file, where the C compiler can inline.
+        if (debug && !standalone && !splitn) splitn = -1;
+    }
+    if (splitn && (standalone || multitest || forcejit)) {
+        fprintf(stderr, "--split needs -o and the separate runtime: no --standalone, "
+                        "--multi-test or --jit\n");
+        return 1;
     }
     if (files.size() > 1 && !multitest) {
         fprintf(stderr, "multiple input files given\n");
@@ -779,7 +797,8 @@ int Main(int argc, char **argv) {
         fprintf(stderr, "   or: goose [--dump] [--parse] [--tokens] [--roundtrip] "
                         "[--dump-file out.goose] [--specs] [--stacks] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
-                        "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--stack-reserve size] "
+                        "[-o out.c [--standalone | --split n]] [--jit] [-DNAME=VALUE]... "
+                        "[--stack-reserve size] "
                         "[--include header.h]... "
                         "[--header out.h] "
                         "[--stdlib dir] file.goose [-- program args...] | "
@@ -824,6 +843,8 @@ int Main(int argc, char **argv) {
     // --include headers as that C file names them.
     string filename, outfile;
     vector<string> includes;
+    // The C files -o wrote: outfile, then the rest of a split program's.
+    vector<string> cfiles;
     // What a JIT run compiles and starts, once the compile produced it.
     string program;
     // The program's Ast outlives the compile: a build and a JIT run read
@@ -961,12 +982,64 @@ int Main(int argc, char **argv) {
                        cg.head, RuntimeSections({ "runtime_ext.h", "runtime_os.h" }), cg.result);
             return out;
         };
-        if (!outfile.empty() && !nocgen) {
-            auto out = assemble(!standalone);
-            auto f = fopen(outfile.c_str(), "wb");
-            if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
-            fwrite(out.data(), 1, out.size(), f);
+        auto write = [&](const string &path, const string &text) {
+            auto f = fopen(path.c_str(), "wb");
+            if (!f) throw CompileError { cat("cannot write output file: ", path) };
+            fwrite(text.data(), 1, text.size(), f);
             fclose(f);
+        };
+        cfiles.clear();
+        if (!outfile.empty() && !nocgen && splitn) {
+            // A split program: everything before the code in a header, and the
+            // functions dealt to the files, the largest first to the smallest.
+            auto out = assemble(true);
+            auto codeat = out.size() - cg.result.size() + cg.codestart;
+            vector<pair<size_t, size_t>> fns;
+            size_t from = codeat;
+            for (auto cut : cg.cuts) {
+                if (codeat + cut > from) fns.push_back({ from, codeat + cut });
+                from = codeat + cut;
+            }
+            if (out.size() > from) fns.push_back({ from, out.size() });
+            // Each file pays for the header, so a small program takes fewer.
+            auto n = splitn > 0 ? splitn
+                     : std::min<int64_t>(std::max(1u, std::thread::hardware_concurrency()),
+                                         std::max<int64_t>(1, (out.size() - codeat) >> 17));
+            n = std::min<int64_t>(n, std::max<size_t>(1, fns.size()));
+            vector<size_t> order(fns.size());
+            for (size_t i = 0; i < order.size(); i++) order[i] = i;
+            stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                return fns[a].second - fns[a].first > fns[b].second - fns[b].first;
+            });
+            vector<size_t> load(n);
+            vector<vector<size_t>> units(n);
+            for (auto i : order) {
+                auto u = std::min_element(load.begin(), load.end()) - load.begin();
+                load[u] += fns[i].second - fns[i].first;
+                units[u].push_back(i);
+            }
+            auto base = outfile.size() > 2 && outfile.compare(outfile.size() - 2, 2, ".c") == 0
+                        ? outfile.substr(0, outfile.size() - 2) : outfile;
+            auto header = cat(base, "_decls.h");
+            auto headerfile = header.substr(header.find_last_of("/\\") + 1);
+            write(header, cat("#pragma once\n#define GS_SPLIT 1\n", out.substr(0, codeat)));
+            for (int64_t u = 0; u < n; u++) {
+                // The first file defines the program's globals, which the others declare.
+                string text = cat(u ? "" : "#define GS_SPLIT_OWNER 1\n", "#include \"", headerfile,
+                                  "\"\n");
+                sort(units[u].begin(), units[u].end());
+                for (auto i : units[u])
+                    text.append(out, fns[i].first, fns[i].second - fns[i].first);
+                auto path = u ? cat(base, "_", u, ".c") : outfile;
+                write(path, text);
+                cfiles.push_back(path);
+            }
+            fprintf(msgs, "wrote %s and %d C file(s) from %s (%d bytes)\n", header.c_str(), (int)n,
+                    outfile.c_str(), (int)out.size());
+        } else if (!outfile.empty() && !nocgen) {
+            auto out = assemble(!standalone);
+            write(outfile, out);
+            cfiles.push_back(outfile);
             fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
         }
         if (!headername.empty()) {
@@ -1051,7 +1124,7 @@ int Main(int argc, char **argv) {
                         rsps.push_back(nb.rsp);
                     }
                 }
-                return BuildExecutable(filename, outfile, builddir, buildopts, DirOf(exe), msgs,
+                return BuildExecutable(filename, cfiles, builddir, buildopts, DirOf(exe), msgs,
                                        rsps, astp->packages[0].output);
             }
             if (program.empty()) return code;

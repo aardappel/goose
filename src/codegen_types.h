@@ -650,13 +650,13 @@ inline string CodeGen::SizeFn(TypeExpr *t) {
     auto name = cat("gs_size_", m);
     if (sizefns.count(m)) return name;
     sizefns.insert(m);
-    Append(protos, "static int64_t ", name, "(const uint8_t *p);\n");
+    Append(protos, "GS_FN int64_t ", name, "(const uint8_t *p);\n");
     string b;
-    Append(b, "static int64_t ", name, "(const uint8_t *p) {\n");
+    Append(b, "GS_FN int64_t ", name, "(const uint8_t *p) {\n");
     Append(b, "    const uint8_t *q = p;\n");
     EmitSizeWalk(b, t, "q");
     Append(b, "    return q - p;\n}\n\n");
-    code += b;
+    AddFn(b);
     return name;
 }
 
@@ -845,15 +845,15 @@ inline string CodeGen::VerifyFn(TypeExpr *elem) {
     auto name = cat("gs_verify_", m);
     if (verifyfns.count(m)) return name;
     verifyfns.insert(m);
-    Append(protos, "static int64_t ", name, "(const uint8_t *p, int64_t n, uint8_t *bm);\n");
+    Append(protos, "GS_FN int64_t ", name, "(const uint8_t *p, int64_t n, uint8_t *bm);\n");
     vtmpn = 0;
     string b;
-    Append(b, "static int64_t ", name, "(const uint8_t *p, int64_t n, uint8_t *bm) {\n");
+    Append(b, "GS_FN int64_t ", name, "(const uint8_t *p, int64_t n, uint8_t *bm) {\n");
     // A type whose values can occupy no bytes has no recoverable element
     // count: only the empty image is one of its arrays.
     if (MinBytes(elem) <= 0) {
         Append(b, "    (void)p; (void)bm;\n    return n == 0 ? 0 : -1;\n}\n\n");
-        code += b;
+        AddFn(b);
         return name;
     }
     auto fixed = IsFix(elem);
@@ -874,7 +874,7 @@ inline string CodeGen::VerifyFn(TypeExpr *elem) {
         Append(b, "    }\n");
     }
     Append(b, "    return cnt;\n}\n\n");
-    code += b;
+    AddFn(b);
     return name;
 }
 
@@ -1248,8 +1248,8 @@ inline string CodeGen::EqFn(TypeExpr *t) {
     if (eqfns.count(m)) return name;
     eqfns.insert(m);
     auto bytes = IsBytesT(t);
-    auto sig = bytes ? cat("static uint8_t ", name, "(const uint8_t *a, const uint8_t *b)")
-                     : cat("static uint8_t ", name, "(const ", CT(t), " *a, const ", CT(t),
+    auto sig = bytes ? cat("GS_FN uint8_t ", name, "(const uint8_t *a, const uint8_t *b)")
+                     : cat("GS_FN uint8_t ", name, "(const ", CT(t), " *a, const ", CT(t),
                            " *b)");
     Append(protos, sig, ";\n");
     string bo;
@@ -1257,7 +1257,7 @@ inline string CodeGen::EqFn(TypeExpr *t) {
     if (bytes) EmitEqBytes(bo, t);
     else EmitEqFixed(bo, t);
     Append(bo, "}\n\n");
-    code += bo;
+    AddFn(bo);
     return name;
 }
 

@@ -109,8 +109,12 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #define GS_NOINLINE __attribute__((noinline))
 #endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
-   function Goose wanted to inline but could not (FnSpec::cinline). */
-#if defined(__GNUC__) || defined(__clang__)
+   function Goose wanted to inline but could not (FnSpec::cinline). A split
+   program's functions are external, and C99 gives an external inline
+   function no definition to link to, so there it is an ordinary one. */
+#ifdef GS_SPLIT
+#define GS_INLINE
+#elif defined(__GNUC__) || defined(__clang__)
 #define GS_INLINE __attribute__((always_inline)) inline
 #elif defined(_MSC_VER)
 #define GS_INLINE __forceinline
@@ -133,6 +137,22 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #define GS_API extern
 #else
 #define GS_API static
+#endif
+
+/* The linkage of the program's own functions and mutable globals. One file
+   by default; a program split into several (goose --split) makes its
+   functions external, and defines its globals in the file that sets
+   GS_SPLIT_OWNER, the others declaring them. */
+#ifdef GS_SPLIT
+#define GS_FN
+#ifdef GS_SPLIT_OWNER
+#define GS_SHARED
+#else
+#define GS_SHARED extern
+#endif
+#else
+#define GS_FN static
+#define GS_SHARED static
 #endif
 
 #define GS_CAT_(a, b) a##b
@@ -179,7 +199,8 @@ GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line);
-GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line);
+)GSRT"
+R"GSRT(GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line);
 GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
                                     const char *file, int line);
 GS_API GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
@@ -188,8 +209,7 @@ GS_API GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *typ
 GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const char *type,
                                     const char *file, int line);
 
-)GSRT"
-R"GSRT(/* Bounds check as one unsigned compare; the index operand must be side-effect
+/* Bounds check as one unsigned compare; the index operand must be side-effect
    free (the compiler guarantees this at emission). The failing arm's int64_t
    gives the result the type of (i) and an int64_t together, and its call is
    one the C compiler knows does not return, also where gs_idxfail is in the
@@ -359,7 +379,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
         return ((gs_ld32(p) ^ gs_ld32(q)) | (gs_ld32(p + n - 4) ^ gs_ld32(q + n - 4))) == 0;
     if (n < 4)
         return n == 0 || ((p[0] ^ q[0]) | (p[n >> 1] ^ q[n >> 1]) | (p[n - 1] ^ q[n - 1])) == 0;
-    return gs_memeq_long(p, q, n);
+)GSRT"
+R"GSRT(    return gs_memeq_long(p, q, n);
 #else
     return n == 0 || memcmp(a, b, n) == 0;
 #endif
@@ -373,8 +394,7 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
    zero-checked always.
 
    Only division and modulo check anything in a release build, so only they
-)GSRT"
-R"GSRT(   need to be functions there; everything else is a macro whose body is the
+   need to be functions there; everything else is a macro whose body is the
    expression the release function would have returned. An optimizing backend
    inlines either form to the same instruction, but a backend that does not
    inline (libtcc, or any -O0 build) would otherwise pay a call for every
@@ -534,7 +554,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 #define gs_add_u32(a, b) ((uint32_t)((a) + (b)))
 #define gs_sub_u32(a, b) ((uint32_t)((a) - (b)))
-#define gs_mul_u32(a, b) ((uint32_t)((uint64_t)(a) * (uint64_t)(b)))
+)GSRT"
+R"GSRT(#define gs_mul_u32(a, b) ((uint32_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_shl_u32(a, n) ((uint32_t)((uint64_t)(a) << ((n) & 31)))
 #define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
 
@@ -545,8 +566,7 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
 #define gs_shr_i64(a, n) ((int64_t)((a) >> ((n) & 63)))
 
-)GSRT"
-R"GSRT(#define gs_add_u64(a, b) ((uint64_t)((a) + (b)))
+#define gs_add_u64(a, b) ((uint64_t)((a) + (b)))
 #define gs_sub_u64(a, b) ((uint64_t)((a) - (b)))
 #define gs_mul_u64(a, b) ((uint64_t)((a) * (b)))
 #define gs_shl_u64(a, n) ((uint64_t)((a) << ((n) & 63)))
@@ -730,7 +750,8 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
    use, bump-pointer allocation, watermark restore on scope exit. Emitted code
    holds them per thread program via gs_stks (index = the hidden gs_sp
    argument plus a per-function constant); globals own dedicated stacks. The
-   regions themselves, and what tells a fault in one from a crash, are the
+)GSRT"
+R"GSRT(   regions themselves, and what tells a fault in one from a crash, are the
    runtime's (runtime_impl.h). */
 
 typedef struct {
@@ -743,8 +764,7 @@ typedef struct {
    main program and any one worker hold (the compiler's static counts),
    which size their registries and give hardware_threads() its cap. */
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
-)GSRT"
-R"GSRT(                        uint64_t budget, int64_t mainregions, int64_t workerregions);
+                        uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
 GS_API uint8_t *gs_reserve_region(void);
 /* The calling thread program's stack use, on stderr (GS_STACK_STATS):
@@ -788,15 +808,15 @@ GS_API gs_qnode *gs_qpoll(gs_queue *q);
 /* The current thread program's stack block: every stack the compiler
    counted for it, reserved as the program starts (gs_stack_block).
    gs_sp-relative indices resolve through it. */
-static GS_TLS gs_stack *gs_stks;
-static GS_TLS int64_t gs_nstks;
+GS_SHARED GS_TLS gs_stack *gs_stks;
+GS_SHARED GS_TLS int64_t gs_nstks;
 
 /* The current program instance's globals (goose_spec.md 11.1), a struct the
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
    at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
-static GS_TLS void *gs_gl;
+GS_SHARED GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 
@@ -925,7 +945,8 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
 static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;
     for (;;) {
-        uint8_t b = v & 0x7f;
+)GSRT"
+R"GSRT(        uint8_t b = v & 0x7f;
         v >>= 7;
         if (v) *q++ = b | 0x80; else { *q++ = b; break; }
     }
@@ -943,8 +964,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 
 /* ---------------------------------------------------------------------------
    Verified loading (docs/design/serialization.md): what the generated
-)GSRT"
-R"GSRT(   gs_verify_<T> walkers are built from. The bytes are untrusted until the
+   gs_verify_<T> walkers are built from. The bytes are untrusted until the
    walk finishes, so every read here is bounded by the image end and reports
    a malformed encoding instead of running past it. */
 

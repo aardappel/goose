@@ -378,7 +378,7 @@ inline string CodeGen::EnsureEr(FnSpec *sp) {
     if (!ok) return ernames[sp] = "";
     auto name = Unique(cat(sinfo[sp].cname, "_er"));
     ernames[sp] = name;
-    Append(protos, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(",
+    Append(protos, "GS_FN ", FnAttrs(sp), SigRet(sp), " ", name, "(",
            SigParams(sp, false, true), ");\n");
     erqueue.push_back(sp);
     return name;
@@ -483,7 +483,7 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
         Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
                versions[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
     }
-    Append(code, "static ", ret, " ", name, "(", params, ") {\n",
+    Append(code, "GS_FN ", ret, " ", name, "(", params, ") {\n",
            "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         if (lv > 1) Append(code, "#if GS_SIMD >= ", lv, "\n");
@@ -493,6 +493,7 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
         if (lv > 1) Append(code, "#endif\n");
     }
     Append(code, "    }\n#endif\n", fnbody, "}\n\n");
+    EndFn();
 }
 
 inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
@@ -582,8 +583,9 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     fnbody += bodyout;
     auto name = er ? ernames[sp] : curinfo->cname;
     if (sp->sf->issimd) EmitSimdVersions(sp, name, params, fnbody);
-    else Append(code, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(", params, ") {\n", fnbody,
+    else Append(code, "GS_FN ", FnAttrs(sp), SigRet(sp), " ", name, "(", params, ") {\n", fnbody,
                 "}\n\n");
+    if (!sp->sf->issimd) EndFn();
     curspec = nullptr;
     curinfo = nullptr;
     emiter = false;
@@ -790,10 +792,12 @@ inline void CodeGen::EmitGlobalInit() {
     cscopes.clear();
     stackown[nullptr] = std::max(stackown[nullptr], stkmax);
     auto decls = HoistAggregateDecls(body);
-    Append(code, "static void gs_init_globals(void) {\n");
+    Append(protos, "GS_FN void gs_init_globals(void);\n");
+    Append(code, "GS_FN void gs_init_globals(void) {\n");
     code += decls;
     code += body;
     code += "}\n\n";
+    EndFn();
 }
 
 // A resizable global's receiving lvalue: its header's count, or the
@@ -824,7 +828,7 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
 }
 
 inline void CodeGen::EmitProgramInit() {
-    Append(data, "static int gs_program_initialized;\n");
+    Append(data, "GS_SHARED int gs_program_initialized;\n");
     // Every function is emitted by now, so the counts are final: the main
     // program's stacks, and the most regions it and any one worker hold.
     // The worker thunks follow, each opening its program's block.
@@ -839,7 +843,8 @@ inline void CodeGen::EmitProgramInit() {
         EmitThreadThunk(sp, stacks);
         workerregions = std::max(workerregions, stacks + thunkregions[sp]);
     }
-    Append(code, "static void gs_program_init(int argc, char **argv) {\n"
+    Append(protos, "GS_FN void gs_program_init(int argc, char **argv);\n");
+    Append(code, "GS_FN void gs_program_init(int argc, char **argv) {\n"
                  "    if (gs_program_initialized) return;\n"
                  "    gs_rt_init(argc, argv, ", mainstacks, ", ", mainstacks + globalregions,
            ", ", workerregions, ");\n");
@@ -857,6 +862,7 @@ inline void CodeGen::EmitProgramInit() {
                      "    if (gs_program_initialized) return;\n"
                      "    gs_program_init(argc, argv);\n",
                      MainCall(), "}\n\n");
+    EndFn();
 }
 
 // The statement that runs fn main(), or nothing for a library without one.
@@ -908,6 +914,7 @@ inline void CodeGen::EmitExports() {
             Append(code, "    return ", si.cname, "(", args, ");\n");
         }
         Append(code, "}\n\n");
+        EndFn();
     }
 }
 
@@ -927,6 +934,7 @@ inline string CodeGen::ExportHeader() {
 inline void CodeGen::EmitMain() {
     Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n",
            MainCall(), "    gs_rt_stats();\n    return 0;\n}\n");
+    EndFn();
 }
 
 }  // namespace goose

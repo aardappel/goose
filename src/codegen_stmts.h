@@ -1009,13 +1009,13 @@ inline void CodeGen::EnsureFromChannels(FnSpec *t) {
     auto &rets = t->rets;
     for (size_t i = 0; i < rets.size(); i++) {
         if (IsFix(rets[i])) {
-            Append(data, "static GS_TLS ", CT(rets[i]), " gs_lret_", tid, "_", i, ";\n");
+            Append(data, "GS_SHARED GS_TLS ", CT(rets[i]), " gs_lret_", tid, "_", i, ";\n");
             continue;
         }
-        Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
-        Append(data, "static GS_TLS uint8_t *gs_fval_", tid, "_", i, ";\n");
+        Append(data, "GS_SHARED GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
+        Append(data, "GS_SHARED GS_TLS uint8_t *gs_fval_", tid, "_", i, ";\n");
         if (IsResz(rets[i]))
-            Append(data, "static GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
+            Append(data, "GS_SHARED GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
                    " gs_lret_", tid, "_", i, ";\n");
     }
 }

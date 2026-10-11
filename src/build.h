@@ -134,9 +134,9 @@ struct Builder {
         return Run(argv, what, logfile);
     }
 
-    // Compiles `src` and links it with `objects` and the response files
+    // Compiles `srcs` and links them with `objects` and the response files
     // `rsps` into `exe`, with `builddir` taking the intermediates.
-    bool Link(const string &src, const vector<string> &objects, const vector<string> &rsps,
+    bool Link(const vector<string> &srcs, const vector<string> &objects, const vector<string> &rsps,
               const string &exe, const string &builddir, const string &logfile) const {
         vector<string> argv = { tc.cc };
         for (auto &f : CFlags()) argv.push_back(f);
@@ -144,11 +144,11 @@ struct Builder {
             argv.push_back(cat("/Fe:", exe));
             argv.push_back(cat("/Fo:", builddir, "\\"));
             if (opts.debug) argv.push_back(cat("/Fd:", builddir, "\\", PathStem(exe), ".pdb"));
-            argv.push_back(src);
+            for (auto &s : srcs) argv.push_back(s);
             for (auto &o : objects) argv.push_back(o);
             for (auto &r : rsps) argv.push_back(cat("@", r));
         } else {
-            argv.push_back(src);
+            for (auto &s : srcs) argv.push_back(s);
             for (auto &o : objects) argv.push_back(o);
             argv.push_back("-o");
             argv.push_back(exe);
@@ -195,11 +195,12 @@ inline string RuntimeObject(const Builder &b) {
 }
 
 // What `goose build` does once the compiler has written the program's C to
-// `cfile` in `builddir`: finds the toolchain, the runtime object and the
+// `cfiles` in `builddir`: finds the toolchain, the runtime object and the
 // response files of the native parts `nativersps` (native.h and builtin.h,
 // found by the caller), and links the executable, named by -o, the
 // program's sidecar (`output`) or the root file. The exit code.
-inline int BuildExecutable(const string &rootfile, const string &cfile, const string &builddir,
+inline int BuildExecutable(const string &rootfile, const vector<string> &cfiles,
+                           const string &builddir,
                            const BuildOptions &opts, const string &exedir, FILE *msgs,
                            const vector<string> &nativersps, const string &output) {
     Toolchain tc;
@@ -226,7 +227,26 @@ inline int BuildExecutable(const string &rootfile, const string &cfile, const st
             if (exe.size() < 4 || exe.compare(exe.size() - 4, 4, ".exe") != 0) exe += ".exe";
         #endif
     }
-    if (!b.Link(cfile, objects, rsps, exe, builddir, cat(builddir, "/cc.log"))) return 1;
+    // A split program's files compile side by side, then link as objects.
+    auto srcs = cfiles;
+    if (cfiles.size() > 1) {
+        vector<string> objs;
+        for (auto &c : cfiles)
+            objs.push_back(cat(c.substr(0, c.size() - 2), tc.style == "msvc" ? ".obj" : ".o"));
+        vector<char> ok(cfiles.size());
+        vector<std::thread> jobs;
+        for (size_t i = 0; i < cfiles.size(); i++)
+            jobs.emplace_back([&, i] {
+                ok[i] = b.CompileObject(cfiles[i], objs[i], cat("compiling ", cfiles[i]),
+                                        cat(objs[i], ".log"));
+            });
+        for (auto &j : jobs) j.join();
+        for (auto k : ok)
+            if (!k) return 1;
+        objects.insert(objects.begin(), objs.begin(), objs.end());
+        srcs.clear();
+    }
+    if (!b.Link(srcs, objects, rsps, exe, builddir, cat(builddir, "/cc.log"))) return 1;
     if (!opts.dryrun) fprintf(msgs, "built %s\n", exe.c_str());
     return 0;
 }
