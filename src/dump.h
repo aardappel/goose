@@ -4,10 +4,6 @@
 
 namespace goose {
 
-// Tiny RTTI helpers used by all passes.
-template<typename T> const T *Is(const Node *n) { return dynamic_cast<const T *>(n); }
-template<typename T> T *Is(Node *n) { return dynamic_cast<T *>(n); }
-
 inline void Indent(string &s, int ind) { s.append((size_t)ind * 4, ' '); }
 inline void NL(string &s, int ind) { s += '\n'; Indent(s, ind); }
 
@@ -561,6 +557,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
         if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
     }
     if (sf->issimd) s += "simd ";
+    if (sf->isinline) s += "inline ";
     if (sf->isrec) s += "recursive ";
     s += sf->isthread ? "thread_fn " : "fn ";
     s += sf->isnested ? sf->name : sf->qname;   // See VarDecl::Dump.

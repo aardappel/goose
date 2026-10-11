@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.27)
 project(goose C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -12,6 +12,15 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 add_executable(goose
     src/main.cpp
+    src/process.cpp
+    src/process.h
+    src/buildfile.h
+    src/toolchain.h
+    src/build.h
+    src/packages.h
+    src/json.h
+    src/native.h
+    src/builtin.h
     src/includes.h
     src/utils.h
     src/lexer.h
@@ -53,14 +62,13 @@ add_executable(goose
     src/runtime/runtime_ext.h
     src/runtime/runtime_os.h
     src/gfx.h
-    src/audio.h
-    src/physics.h
-    src/ui.h
 )
 
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
+# The library the process runner (process.cpp) is built on.
+target_include_directories(goose PRIVATE third_party/subprocess)
 
 # Editor tools are implemented in Goose and share one formatter between the
 # CLI and stdio LSP. Build explicitly with --target goose-tools; no JIT is
@@ -108,7 +116,7 @@ endif()
 # The shader compiler behind embed_shader: third-party C (third_party/
 # cute_spirv), always built, so a gfx program typechecks and emits the same C
 # with or without SDL.
-add_library(goose_shaderc STATIC src/shaderc.c src/shaderc.h src/gfx/gfx_blob.h)
+add_library(goose_shaderc STATIC src/shaderc.c src/shaderc.h src/gfx_blob.h)
 target_include_directories(goose_shaderc PRIVATE third_party/cute_spirv)
 if(MSVC)
     # ckit.h uses typeof and C11 atomics, which MSVC has only in its latest C
@@ -120,83 +128,30 @@ else()
 endif()
 target_link_libraries(goose PRIVATE goose_shaderc)
 
-# The optional in-process C backend. Present only when the TinyCC submodule has
-# been checked out (`git submodule update --init`); the compiler builds and
-# behaves exactly the same without it, minus JIT mode.
-option(GOOSE_LIBTCC "Build the in-process TinyCC backend when the submodule is present" ON)
-if(GOOSE_LIBTCC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinycc/libtcc.h")
-    include(cmake/libtcc.cmake)
-endif()
-if(GOOSE_HAVE_LIBTCC)
-    target_link_libraries(goose PRIVATE libtcc)
-    add_dependencies(goose tcc_runtime)
-    target_compile_definitions(goose PRIVATE
-        GOOSE_HAVE_LIBTCC=1 GOOSE_TCC_LIB_PATH="${TCC_STAGE}")
-endif()
+# The in-process C backend: TinyCC, vendored under third_party/tinycc and
+# built into every compiler (cmake/libtcc.cmake).
+include(cmake/libtcc.cmake)
+target_link_libraries(goose PRIVATE libtcc)
+add_dependencies(goose tcc_runtime)
+target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${TCC_STAGE}")
 
-# The optional graphics module (stdlib/gfx.goose): SDL3 from the
-# third_party/SDL submodule and the C layer over it, built into the compiler
-# for JIT runs and linked into programs built from the generated C. Without
-# the submodule, or with -DGOOSE_GFX=OFF, the compiler builds and behaves the
-# same, except that it cannot run a gfx program itself.
-option(GOOSE_GFX "Build the SDL3 graphics module when the submodule is present" ON)
-if(GOOSE_GFX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/CMakeLists.txt")
-    include(cmake/gfx.cmake)
-endif()
-if(GOOSE_HAVE_GFX)
-    target_link_libraries(goose PRIVATE goose_gfx)
-    target_compile_definitions(goose PRIVATE
-        GOOSE_HAVE_GFX=1 GOOSE_GFX_LINK_PATH="${CMAKE_BINARY_DIR}/gfx/$<CONFIG>")
-    if(MSVC)
-        # The system DLLs static SDL brings into goose: delay-loaded, so that
-        # a compiler run which never opens a window does not load them.
-        foreach(dll IN ITEMS user32 gdi32 winmm imm32 ole32 oleaut32 version setupapi shell32)
-            target_link_options(goose PRIVATE "/DELAYLOAD:${dll}.dll")
-        endforeach()
-        target_link_libraries(goose PRIVATE delayimp)
-    endif()
-endif()
-
-# Audio uses the same SDL build as gfx, and is available with GOOSE_GFX=OFF
-# or without Linux window-system development headers. Opening it creates no window.
-option(GOOSE_AUDIO "Build the SDL3 PCM audio module when the submodule is present" ON)
-if(GOOSE_AUDIO AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/CMakeLists.txt")
-    include(cmake/audio.cmake)
-endif()
-if(GOOSE_HAVE_AUDIO)
-    target_link_libraries(goose PRIVATE goose_audio)
-    target_compile_definitions(goose PRIVATE
-        GOOSE_HAVE_AUDIO=1 GOOSE_AUDIO_LINK_PATH="${CMAKE_BINARY_DIR}/audio/$<CONFIG>")
-endif()
-
-# The optional physics module (stdlib/physics.goose): Box3D from the
-# third_party/box3d submodule and the C layer over it, built in and linked
-# the way gfx is. Without the submodule, or with -DGOOSE_PHYSICS=OFF, the
-# compiler builds and behaves the same, except that it cannot run a physics
-# program itself.
-option(GOOSE_PHYSICS "Build the Box3D physics module when the submodule is present" ON)
-if(GOOSE_PHYSICS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/box3d/CMakeLists.txt")
-    include(cmake/physics.cmake)
-endif()
-if(GOOSE_HAVE_PHYSICS)
-    target_link_libraries(goose PRIVATE goose_physics)
-    target_compile_definitions(goose PRIVATE
-        GOOSE_HAVE_PHYSICS=1 GOOSE_PHYSICS_LINK_PATH="${CMAKE_BINARY_DIR}/physics/$<CONFIG>")
-endif()
-
-# The optional ui module (stdlib/ui.goose): Nuklear from the third_party/nuklear
-# submodule and the C layer over it, built in and linked the way gfx is; it
-# renders through gfx. Without the submodule, or with -DGOOSE_UI=OFF, the
-# compiler builds and behaves the same, except that it cannot run a ui
-# program itself.
-option(GOOSE_UI "Build the Nuklear ui module when the submodule is present" ON)
-if(GOOSE_UI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nuklear/nuklear.h")
-    include(cmake/ui.cmake)
-endif()
-if(GOOSE_HAVE_UI)
-    target_link_libraries(goose PRIVATE goose_ui)
-    target_compile_definitions(goose PRIVATE
-        GOOSE_HAVE_UI=1 GOOSE_UI_LINK_PATH="${CMAKE_BINARY_DIR}/ui/$<CONFIG>")
+# The blessed packages GOOSE_BUILTIN_LIBS names (src/blessed.txt; `all`, or
+# a list of their names), compiled into the compiler (cmake/package.cmake),
+# so that their programs run with nothing else installed. Empty by default:
+# the compiler builds alone, and a program importing one of them has it
+# fetched and built into GOOSE_HOME on first use.
+set(GOOSE_BUILTIN_LIBS "" CACHE STRING
+    "Blessed packages to compile into the compiler: all, or a list of their names")
+include(cmake/package.cmake)
+goose_builtin_packages("${GOOSE_BUILTIN_LIBS}")
+if(MSVC AND TARGET goose_gfx)
+    # The system DLLs static SDL brings into goose with the gfx package:
+    # delay-loaded, so that a compiler run which never opens a window does
+    # not load them.
+    foreach(dll IN ITEMS user32 gdi32 winmm imm32 ole32 oleaut32 version setupapi shell32)
+        target_link_options(goose PRIVATE "/DELAYLOAD:${dll}.dll")
+    endforeach()
+    target_link_libraries(goose PRIVATE delayimp)
 endif()
 
 if(MSVC)

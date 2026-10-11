@@ -98,36 +98,12 @@
       }
     ],
     "commands": [
-      {
-        "command": "goose.check",
-        "title": "Check Program",
-        "category": "Goose",
-        "enablement": "editorLangId == goose && isWorkspaceTrusted"
-      },
-      {
-        "command": "goose.run",
-        "title": "Run with JIT",
-        "category": "Goose",
-        "icon": "$(play)",
-        "enablement": "editorLangId == goose && isWorkspaceTrusted"
-      },
-      {
-        "command": "goose.generateC",
-        "title": "Generate C",
-        "category": "Goose",
-        "enablement": "editorLangId == goose && isWorkspaceTrusted"
-      },
-      {
-        "command": "goose.restartLanguageServer",
-        "title": "Restart Language Server",
-        "category": "Goose",
-        "enablement": "isWorkspaceTrusted"
-      },
-      {
-        "command": "goose.showOutput",
-        "title": "Show Compiler Output",
-        "category": "Goose"
-      }
+      { "command": "goose.check", "title": "Check Program", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.run", "title": "Run with JIT", "category": "Goose", "icon": "$(play)", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.build", "title": "Build Executable", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.generateC", "title": "Generate C", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.restartLanguageServer", "title": "Restart Language Server", "category": "Goose", "enablement": "isWorkspaceTrusted" },
+      { "command": "goose.showOutput", "title": "Show Compiler Output", "category": "Goose" }
     ],
     "menus": {
       "editor/title": [
@@ -266,9 +242,10 @@
             "enum": [
               "run",
               "check",
+              "build",
               "generateC"
             ],
-            "description": "Compiler operation. Run uses the JIT and is the contributed build task."
+            "description": "Compiler operation. Run uses the JIT and is the contributed build task; build makes an executable beside the source with `goose build`."
           },
           "file": {
             "type": "string",

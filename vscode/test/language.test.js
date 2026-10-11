@@ -76,6 +76,7 @@ test('compiler arguments are separate, check cannot accidentally run or emit C',
     assert.deepEqual(argumentsFor('check', { ...config, module: true }), ['--stdlib', config.stdlib, '--check', '--module', config.file]);
     assert.deepEqual(argumentsFor('run', config), ['--stdlib', config.stdlib, '--jit', config.file, '--', ...config.runArguments]);
     assert.deepEqual(argumentsFor('generateC', config), ['--stdlib', config.stdlib, '-o', 'output.c', config.file]);
+    assert.deepEqual(argumentsFor('build', config), ['build', '--stdlib', config.stdlib, config.file]);
     assert.throws(() => argumentsFor('unknown', config));
     assert.equal(compilerPath('custom-goose', process.cwd()), 'custom-goose');
     assert.equal(compilerPath('${workspaceFolder}/a b/goose', process.cwd()), path.join(process.cwd(), 'a b', 'goose'));

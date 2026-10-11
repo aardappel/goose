@@ -32,13 +32,13 @@
 // themselves inlined the references live inside our own tree, get remapped
 // with everything else, and the restrictions lift.
 //
-// Thresholds per call site of callee K: inline if K is used once anywhere,
-// or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU, which a call site
-// inside a loop raises to LOOPNCU * NCU. A K used once that only that first
-// rule would inline stays out of line where the call is in a cold branch,
-// the else of a guard or the body of an early return or break, and where
-// its body would make a caller with several call sites too big to inline
-// at them (OptBody).
+// Thresholds per call site of callee K: inline if K is used once anywhere
+// and nodecount(K) <= ONCEMAX, or nodecount(K) < NC, or nodecount(K) *
+// uses(K) < NCU, which a call site inside a loop raises to LOOPNCU * NCU.
+// A K used once that only that first rule would inline stays out of line
+// where the call is in a cold branch, the else of a guard or the body of an
+// early return or break, and where its body would make a caller with several
+// call sites too big to inline at them (OptBody).
 // -O0: no inlining; -O1: NC=8, NCU=48; -O2: NC=16, NCU=96.
 // Whatever the size, the C blocks around the call plus those K's body nests
 // must stay within MAXNEST (see Around): C compilers limit how deep blocks
@@ -86,6 +86,10 @@ struct Optimizer {
         int nodecount = 0;
         int nest = 0;
         bool noinline = false;
+        // Goose's inliner cannot paste this body into a caller, but the C
+        // compiler could inline the function: TryInline asks it to
+        // (FnSpec::cinline).
+        bool c_inlinable = false;
         bool nestedcalls = false;
     };
     unordered_map<FnSpec *, InlineInfo> inlineinfo;
@@ -100,6 +104,12 @@ struct Optimizer {
     // inside a hot loop.
     int loopdepth = 0;
     static constexpr int LOOPNCU = 4;
+    // The largest callee the used-once rule inlines. A used-once callee adds
+    // no code where it is inlined, but every walk of its caller pays for the
+    // size again. Without a limit, a program's single-use helpers fold into
+    // main through the chain of calls, and the later passes and the C compiler
+    // then work on one huge function.
+    static constexpr int ONCEMAX = 200;
     // The cold branches around it (IfExpr::Opt): a call there runs at most
     // once per run of the body or the loop it leaves, mostly on an error
     // path, so a callee inlined there only because it has no other caller
@@ -193,7 +203,7 @@ struct Optimizer {
             auto v = WrapStorage(i->val, it);
             r = ast.New<IntLit>(lit->line, v, v == i->val ? i->text : string_view {},
                                 it == IS_U64 && v < 0);
-        } else if (auto i = Is<IntLit>(lit)) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
+        } else if (i) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
         else if (auto f = Is<FltLit>(lit)) r = ast.New<FltLit>(lit->line, f->val, f->text);
         else r = ast.New<BoolLit>(lit->line, ((BoolLit *)lit)->val);
         r->exprtype = usetype ? usetype : lit->exprtype;
@@ -418,7 +428,11 @@ struct Optimizer {
             auto r = OptStmt(st);
             if (!r) continue;
             out.push_back(r);
-            if (Is<Return>(r) || Is<Break>(r) || Is<Continue>(r)) dead = true;
+            // The checker leaves values after program termination unadapted:
+            // they never reach a destination and must not become C assignments.
+            auto call = Is<Call>(r);
+            if (Is<Return>(r) || Is<Break>(r) || Is<Continue>(r) ||
+                (call && (call->builtin == B_ABORT || call->builtin == B_EXIT))) dead = true;
         }
         b->stmts = std::move(out);
         if (b->tail) {
@@ -466,7 +480,8 @@ struct Optimizer {
         info.nestedcalls = false;
         // A simd body inlined into a caller would lose its versions (§7.12).
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->sf->isexport ||
-                    sp->sf->issimd || sp->rets.size() > 1 || sp->relnamedresult;
+                    sp->sf->issimd || sp->relnamedresult;
+        auto multiret = sp->rets.size() > 1;
         function<void(Node *, int)> rec = [&](Node *n, int d) {
             if (!n) return;
             info.nodecount++;
@@ -488,7 +503,8 @@ struct Optimizer {
             RunChildren(n, [&](Node *ch) { rec(ch, d + Around(n, ch)); });
         };
         rec(sp->body, 0);
-        info.noinline = noin;
+        info.noinline = noin || multiret;
+        info.c_inlinable = multiret && !noin;
     }
 
     // Optimizes the body of sp. A callee K used once that only the used-once
@@ -724,17 +740,23 @@ inline Node *Optimizer::TryInline(Call *c) {
     if (!caninline || !c->spec || c->builtin >= 0 || !c->dispatch.empty()) return nullptr;
     auto K = c->spec;
     auto &info = inlineinfo[K];
-    if (!K->live || info.noinline || !K->body) return nullptr;
+    if (!K->live || !K->body) return nullptr;
+    auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
+    // An `inline fn` passes the size rules wherever inlining is on.
+    auto small = (K->sf->isinline && nc > 0) || info.nodecount < nc || info.nodecount * K->uses < ncuhere;
+    if (info.noinline) {
+        // Goose would inline it here but cannot: let the C compiler do it.
+        if (info.c_inlinable && small && !K->outofline) K->cinline = true;
+        return nullptr;
+    }
     // Never into a recursive cycle: the inlined body's locals would become
     // the cycle function's own, upsetting the §7.8 stack-assignment rule.
     if (curspec && (curspec->incycle || curspec->sf->isrec)) return nullptr;
-    auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
-    auto small = info.nodecount < nc || info.nodecount * K->uses < ncuhere;
     if (!small && K->uses == 1 && colddepth > 0) {
         K->outofline = true;
         return nullptr;
     }
-    if (!(K->uses == 1 || small)) return nullptr;
+    if (!((K->uses == 1 && info.nodecount <= ONCEMAX) || small)) return nullptr;
     // The body's blocks would open `depth` deep. Past the limit the call
     // stays, and a chain of single-use functions folds into one body per
     // MAXNEST levels rather than one as deep as the chain.

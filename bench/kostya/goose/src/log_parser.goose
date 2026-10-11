@@ -46,6 +46,8 @@ let AGENTS = ["Mozilla/5.0", "Googlebot/2.1", "curl/7.68.0", "scanner/2.0"];
 let USERS = ["john", "jane", "alex", "sarah", "mike", "anna", "david", "elena"];
 let DOMAINS = ["example.com", "gmail.com", "yahoo.com", "hotmail.com", "company.org", "mail.ru"];
 
+// Line i, appended to the log as Crystal's version appends it to its
+// builder (Rust's returns each line as a String for prepare to append).
 fn generate_log_line(log: u8[>..]&, i: i64) {
     format(log, IPS[i % IPS.len], " - - [", i % 31, "/Oct/2023:", i % 60, ":55:36 +0000] \"",
            METHODS[i % METHODS.len], " ");
@@ -65,17 +67,24 @@ fn generate_log_line(log: u8[>..]&, i: i64) {
            "\" \"", AGENTS[i % AGENTS.len], "\"\n");
 }
 
-fn run(b: Bench&) -> u32 {
-    let lines_count = config_i64(b.name, "lines_count");
-    var log: u8[>..] = [];
-    for i in lines_count { generate_log_line(log, i); }
-    var checksum: u32 = 0;
-    measure(b) {
-        var matches = dictionary<const u8[:], i64> {};
-        for p in PATTERNS { matches.insert(p.name, regex::count(p.regex, log)); }
-        var total = 0;
-        matches.each() { name, count => total += count; };
-        checksum += total as! u32;
-    };
-    return checksum;
+// A growable array can only be a struct's last field, so the log follows
+// checksum_val.
+struct LogParser { lines_count: i64, checksum_val: u32, log: u8[>..] }
+
+fn new_log_parser() -> LogParser {
+    LogParser { lines_count: config_i64("Etc::LogParser", "lines_count"), checksum_val: 0, log: [] }
 }
+
+fn prepare(s: LogParser&) {
+    for i in s.lines_count { generate_log_line(s.log, i); }
+}
+
+fn run(s: LogParser&, iteration_id: i64) {
+    var matches = dictionary<const u8[:], i64> {};
+    for p in PATTERNS { matches.insert(p.name, regex::count(p.regex, s.log)); }
+    var total = 0;
+    matches.each() { name, count => total += count; };
+    s.checksum_val += total as! u32;
+}
+
+fn checksum(s: LogParser&) -> u32 { s.checksum_val }

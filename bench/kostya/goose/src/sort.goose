@@ -8,21 +8,17 @@ import std;
 import bench;
 import helper;
 
-// The reference's SortBenchmark: every run sorts a copy of `data` with S,
-// and adds one element picked at random before the sort and one picked
-// after it to the result.
-fn run<S>(b: Bench&) -> u32 {
-    let size = config_i64(b.name, "size");
-    var data: i32[>..] = [];
-    for i in size { data.push(next_int(1000000)); }
-    var result: u32 = 0;
-    measure(b) {
-        result += data[next_int(size)] as! u32;
-        var t = copy(data);
-        S(t);
-        result += t[next_int(size)] as! u32;
-    };
-    return result;
+// The reference's SortBenchmark, the base of each sort's benchmark: an array
+// of random integers made once.
+struct SortBenchmark { size_val: i64, result_val: u32, data: i32[>..] }
+
+fn new_base() -> SortBenchmark { SortBenchmark { size_val: 0, result_val: 0, data: [] } }
+
+fn prepare(base: SortBenchmark&, class_name: u8[:]) {
+    if base.size_val == 0 {
+        base.size_val = config_i64(class_name, "size");
+        for i in base.size_val { base.data.push(next_int(1000000)); }
+    }
 }
 
 // --- Sort::Quick ----------------------------------------------------------------
@@ -45,7 +41,20 @@ recursive fn quick_sort(arr: i32[:]) {
     if i < arr.len { quick_sort(arr[i..]); }
 }
 
-fn run_quick(b: Bench&) -> u32 { run(b, quick_sort) }
+struct SortQuick { base: SortBenchmark }
+
+fn new_sort_quick() -> SortQuick { SortQuick { base: new_base() } }
+
+fn prepare(s: SortQuick&) { s.base.prepare("Sort::Quick"); }
+
+fn run(s: SortQuick&, iteration_id: i64) {
+    s.base.result_val += s.base.data[next_int(s.base.size_val)] as! u32;
+    var t = copy(s.base.data);
+    quick_sort(t);
+    s.base.result_val += t[next_int(s.base.size_val)] as! u32;
+}
+
+fn checksum(s: SortQuick&) -> u32 { s.base.result_val }
 
 // --- Sort::Merge ----------------------------------------------------------------
 
@@ -85,8 +94,34 @@ fn merge(arr: i32[:], temp: i32[:], left: i64, mid: i64, right: i64) {
     }
 }
 
-fn run_merge(b: Bench&) -> u32 { run(b, merge_sort_inplace) }
+struct SortMerge { base: SortBenchmark }
+
+fn new_sort_merge() -> SortMerge { SortMerge { base: new_base() } }
+
+fn prepare(s: SortMerge&) { s.base.prepare("Sort::Merge"); }
+
+fn run(s: SortMerge&, iteration_id: i64) {
+    s.base.result_val += s.base.data[next_int(s.base.size_val)] as! u32;
+    var t = copy(s.base.data);
+    merge_sort_inplace(t);
+    s.base.result_val += t[next_int(s.base.size_val)] as! u32;
+}
+
+fn checksum(s: SortMerge&) -> u32 { s.base.result_val }
 
 // --- Sort::Self -----------------------------------------------------------------
 
-fn run_self(b: Bench&) -> u32 { run(b, sort) }
+struct SortSelf { base: SortBenchmark }
+
+fn new_sort_self() -> SortSelf { SortSelf { base: new_base() } }
+
+fn prepare(s: SortSelf&) { s.base.prepare("Sort::Self"); }
+
+fn run(s: SortSelf&, iteration_id: i64) {
+    s.base.result_val += s.base.data[next_int(s.base.size_val)] as! u32;
+    var t = copy(s.base.data);
+    t.sort();
+    s.base.result_val += t[next_int(s.base.size_val)] as! u32;
+}
+
+fn checksum(s: SortSelf&) -> u32 { s.base.result_val }

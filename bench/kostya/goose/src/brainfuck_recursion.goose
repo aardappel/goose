@@ -99,11 +99,24 @@ fn run_text(text: const u8[:]) -> i64 {
     return program.run();
 }
 
-fn run(b: Bench&) -> u32 {
-    let text = config_s(b.name, "program");
-    let warmup_text = config_s(b.name, "warmup_program");
-    var result_val: u32 = 0;
-    fn warmup(i: i64) { run_text(warmup_text); }
-    measure_with(b, warmup) { i => result_val += run_text(text) as! u32; };
-    return result_val;
+struct BrainfuckRecursion { text: const u8[:], warmup_text: const u8[:], result_val: u32 }
+
+fn new_brainfuck_recursion() -> BrainfuckRecursion {
+    BrainfuckRecursion {
+        text: config_s("Brainfuck::Recursion", "program"),
+        warmup_text: config_s("Brainfuck::Recursion", "warmup_program"),
+        result_val: 0,
+    }
 }
+
+fn prepare(s: BrainfuckRecursion&) {}
+
+fn warmup(s: BrainfuckRecursion&, iterations: i64) {
+    for i in iterations { run_text(s.warmup_text); }
+}
+
+fn run(s: BrainfuckRecursion&, iteration_id: i64) {
+    s.result_val += run_text(s.text) as! u32;
+}
+
+fn checksum(s: BrainfuckRecursion&) -> u32 { s.result_val }

@@ -57,21 +57,21 @@ differences in data layout and memory management.
 
 ## 2. Running something
 
-Goose compiles the whole program to C, which you then build with whatever
-compiler is around, linking the runtime (which `--emit-runtime` writes, and
-which needs compiling only once):
+Goose compiles the whole program to C and builds that with whatever C
+compiler is around, into an executable beside the source:
 
 ```bash
-goose --emit-runtime goose_runtime.c && cc -c goose_runtime.c
-goose -o hello.c hello.goose && cc hello.c goose_runtime.o -o hello -lm -pthread && ./hello
+goose build hello.goose && ./hello
 ```
 
-With `--standalone` the C file holds the runtime itself, and `cc hello.c -o
-hello -lm -pthread` builds it alone.
+(`goose -o hello.c hello.goose` writes the C for you to build yourself, and
+`goose build --dry-run hello.goose` prints the commands. [packages.md](packages.md)
+has the rest of `goose build`, and how a program uses libraries from other
+repositories.)
 
-A compiler built with the bundled TinyCC backend skips both steps — with no
-`-o` it compiles the program into its own process and runs it there, which is
-what you want while you are reading this:
+The bundled TinyCC backend skips the C compiler: with no verb, or with `goose
+run`, the program is compiled into the compiler's own process and run there,
+which is what you want while you are reading this:
 
 ```bash
 goose hello.goose
@@ -354,8 +354,9 @@ var grow: i64[>..] = [];           // arenas, builders, pools, tree storage
 for i in 5 { grow.push(i * i); }
 
 var stack: i64[>..<] = [];         // the one that pops
-stack.push(1); stack.push(2);
+stack.push(1); stack.push(2); stack.push(3);
 let top = stack.pop();
+stack.pop_n(2);                    // drops the last two at once
 
 var small: u8[..8] = [];           // lives inline anywhere a fixed value can
 small.push('h'); small.push('i');
@@ -1458,9 +1459,9 @@ exactly which checks survived — use it when a kernel is slower than you
 expect.
 
 Two language rules also help the analysis: a grow-only array
-can only shrink at a `pop`/`resize`/`clear` the compiler can see, so a bound
-established before a `push` still holds after it; and `%` being Euclidean
-means a reduction is in range by construction.
+can only shrink at a `pop`/`pop_n`/`resize`/`clear` the compiler can see, so
+a bound established before a `push` still holds after it; and `%` being
+Euclidean means a reduction is in range by construction.
 
 **What the numbers actually say** ([`bench/summary.md`](../bench/summary.md),
 [`bench/results.md`](../bench/results.md)): 3.3x the speed of idiomatic C++,

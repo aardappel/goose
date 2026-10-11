@@ -12,6 +12,7 @@ intent.
 
 import ctypes
 import hashlib
+import json
 import os
 import platform
 import re
@@ -84,27 +85,21 @@ def find_goose(explicit=None):
     sys.exit("no goose binary under build/ -- build it first, or pass --exe")
 
 
-def have_jit(exe):
-    """Whether this compiler was built with the TinyCC backend, answered by
-    running a one-line program through it. That also proves the support
-    library CMake staged alongside it is where the compiler looks for it,
-    which no build-time flag could tell us."""
-    probe = REPO_ROOT / "build" / "jitprobe.goose"
-    probe.parent.mkdir(parents=True, exist_ok=True)
-    write_text(probe, "fn main() { print(7); }\n")
-    code, out, _ = run_capture([exe, "--jit", probe])
-    return code == 0 and out.strip() == "7"
-
-
 # The compiler's own wording for a program the TinyCC backend cannot run yet.
 # The runners report those as skips rather than failures, so the coverage
 # returns by itself once the backend grows the feature.
 JIT_UNSUPPORTED = "JIT mode does not support"
 
+# What the compiler says when a program needs a C compiler (a native part
+# to build) and the machine has none it can find: a skip, like a layer
+# that was not built in.
+NO_TOOLCHAIN = "cannot find a C compiler"
+NO_CMAKE = "cannot find `cmake`"
+
 
 def have_gfx(exe):
-    """Whether this compiler has the gfx layer built in, answered as have_jit
-    answers for TinyCC: by running a one-line program that calls into it."""
+    """Whether this compiler has the gfx layer built in, answered by running
+    a one-line program that calls into it."""
     probe = REPO_ROOT / "build" / "gfxprobe.goose"
     probe.parent.mkdir(parents=True, exist_ok=True)
     write_text(probe, "import gfx;\nfn main() { print(gfx::available()); }\n")
@@ -112,11 +107,26 @@ def have_gfx(exe):
     return code == 0 and out.strip() == "true"
 
 
+def builtin_modules(exe):
+    """The native modules (audio, gfx, physics, ui) whose packages are
+    compiled into this compiler, from `goose toolchain --json`: a program
+    using one of them runs and builds without the package being built first,
+    which is what the runners need to know. Empty when the compiler cannot
+    say."""
+    code, out, _ = run_capture([exe, "toolchain", "--json"])
+    try:
+        return list(json.loads(out).get("builtin", []))
+    except ValueError:
+        return []
+
+
 def native_link(exe, cc, module):
-    """The link inputs a program using a stdlib module with a native layer
-    (gfx, physics, ui) needs with this toolchain, as a list for CC.compile's
-    `libs`: the response file cmake/<module>.cmake wrote. An empty list when
-    the compiler was built without that module."""
+    """The link inputs a program using a blessed package's module (gfx,
+    physics, ui, audio) needs with this toolchain, as a list for CC.compile's
+    `libs`: the response file the compiler's build wrote for the package. An
+    empty list when the package is not compiled in. The runners build such
+    programs with `goose build`, which finds this itself; this is for the
+    windowed gfx tests, which compile a C program of their own."""
     code, out, _ = run_capture([exe, f"--{module}-link", "msvc" if cc.style == "msvc" else "cc"])
     return [f"@{out.strip()}"] if code == 0 and out.strip() else []
 
@@ -137,9 +147,9 @@ def ui_link(exe, cc):
     return native_link(exe, cc, "ui")
 
 
-# The stdlib modules with a native layer, and the pattern of a program's own
-# import of one: the layers it links. The ui module draws through gfx, so a
-# program showing its ui imports both.
+# The blessed packages' modules with a native part, and the pattern of a
+# program's own import of one. The ui module draws through gfx, so a program
+# showing its ui imports both.
 NATIVE_MODULES = ("audio", "gfx", "physics", "ui")
 
 
@@ -148,14 +158,15 @@ def native_imports(text):
     return [m for m in NATIVE_MODULES if re.search(rf"^import {m};", text, re.M)]
 
 
-# What the compiler says when asked to run a gfx, physics or ui program
-# without that layer built in, and what a gfx test prints when there is no
-# GPU device to run on. The runners report these as skips.
-GFX_UNAVAILABLE = "built without SDL3"
+# What the compiler says when asked for the link inputs of a package it was
+# not built with (the runners then skip that module's fixtures, rather than
+# have the compiler build the package), and what a gfx test prints when
+# there is no GPU device to run on.
+GFX_UNAVAILABLE = "built without the package gfx"
 GFX_NO_DEVICE = "gfx: no GPU device"
-PHYSICS_UNAVAILABLE = "built without Box3D"
-UI_UNAVAILABLE = "built without Nuklear"
-AUDIO_UNAVAILABLE = "built without SDL3 audio"
+PHYSICS_UNAVAILABLE = "built without the package physics"
+UI_UNAVAILABLE = "built without the package gfx"
+AUDIO_UNAVAILABLE = "built without the package gfx"
 
 
 def native_unavailable(module, err):

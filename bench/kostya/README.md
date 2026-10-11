@@ -14,11 +14,14 @@ LangArena's own Rust and C++ implementations.
 
 `goose/src/main.goose` is the runner: it reads a configuration (`run.js` or
 `test.js`), runs the benchmarks it lists in order and prints what every other
-language's runner prints. `bench.goose` holds the harness (configuration,
-warm-up and timed loop), `helper.goose` LangArena's random number generator
-and checksums, and each other file one benchmark group. JSON, regex, Base64
-and CSV come from Goose's standard library, as the other languages take them
-from theirs or from a package.
+language's runner prints. `bench.goose` holds the harness: the configuration,
+read with the standard library's `json`, and the run loop of the other
+languages' Benchmark class. Goose has no classes or traits, so each benchmark
+is a struct with `prepare`, `run` and `checksum` functions, which `main.goose`
+hands to the generic `execute`. `helper.goose` holds LangArena's random number
+generator and checksums, and each other file one benchmark group. JSON, regex,
+Base64 and CSV come from Goose's standard library, as the other languages take
+them from theirs or from a package.
 
 LangArena measures how well each compiler handles the same algorithm written
 the same way, so every benchmark follows the reference implementations (Rust

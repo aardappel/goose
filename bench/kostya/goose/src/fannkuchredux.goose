@@ -69,12 +69,17 @@ fn fannkuchredux(n: i32) -> i32, i32 {
     }
 }
 
-fn run(b: Bench&) -> u32 {
-    let n = config_i64(b.name, "n");
-    var result_val: u32 = 0;
-    measure(b) {
-        let checksum, max_flips = fannkuchredux(n as i32);
-        result_val += (checksum as! u32) * 100 + (max_flips as! u32);
-    };
-    return result_val;
+struct Fannkuchredux { n: i64, result_val: u32 }
+
+fn new_fannkuchredux() -> Fannkuchredux {
+    Fannkuchredux { n: config_i64("CLBG::Fannkuchredux", "n"), result_val: 0 }
 }
+
+fn prepare(s: Fannkuchredux&) {}
+
+fn run(s: Fannkuchredux&, iteration_id: i64) {
+    let checksum, max_flips = fannkuchredux(s.n as i32);
+    s.result_val += (checksum as! u32) * 100 + (max_flips as! u32);
+}
+
+fn checksum(s: Fannkuchredux&) -> u32 { s.result_val }

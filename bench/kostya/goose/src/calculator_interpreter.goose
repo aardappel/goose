@@ -69,19 +69,33 @@ fn run(interp: Interpreter&, expressions: (calculator_ast::Node..&)[:]) -> i64 {
 
 // --- Calculator::Interpreter ----------------------------------------------------
 
-fn run(b: Bench&) -> u32 {
-    let n = config_i64(b.name, "operations");
-    // The tree a Calculator::Ast with this many operations builds in its
-    // prepare and first run.
-    let text = calculator_ast::generate_random_program(n);
-    var nodes: calculator_ast::Node..[>..] = [];
-    var parser = calculator_ast::new_parser(text);
-    let ast = calculator_ast::parse(parser, nodes);
-    var result_val: u32 = 0;
-    measure(b) {
-        var interpreter = new_interpreter();
-        let result = interpreter.run(ast);
-        result_val += result as! u32;
-    };
-    return result_val;
+// The tree's top-level expressions are the growable last field. Its nodes lie
+// in a node pool: a struct holds one growable array, so the pool is a local
+// of the code that makes the benchmark, declared before it and handed to
+// prepare.
+struct CalculatorInterpreter { n: i64, result_val: u32, ast: (calculator_ast::Node..&)[>..] }
+
+fn new_calculator_interpreter() -> CalculatorInterpreter {
+    CalculatorInterpreter { n: config_i64("Calculator::Interpreter", "operations"), result_val: 0,
+                            ast: [] }
 }
+
+// The tree a Calculator::Ast with this many operations builds in its prepare
+// and first run. Its run keeps the tree in locals of the run, so the program
+// is parsed here, into `nodes`.
+fn prepare(s: CalculatorInterpreter&, nodes: calculator_ast::Node..[>..]&) {
+    var ast_bench = calculator_ast::new_calculator_ast();
+    ast_bench.n = s.n;
+    calculator_ast::prepare(ast_bench);
+    var parser = calculator_ast::new_parser(ast_bench.text);
+    let expressions = calculator_ast::parse(parser, nodes);
+    s.ast = expressions;
+}
+
+fn run(s: CalculatorInterpreter&, iteration_id: i64) {
+    var interpreter = new_interpreter();
+    let result = interpreter.run(s.ast);
+    s.result_val += result as! u32;
+}
+
+fn checksum(s: CalculatorInterpreter&) -> u32 { s.result_val }

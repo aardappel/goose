@@ -1,0 +1,13 @@
+# The blessed packages (docs/design/packages.md, section 4.5): what a naked `import
+# name;` of these names resolves to when neither a file of the importing
+# package nor a package the root declared has that name. Read by the
+# compiler (embedded at its build) and by cmake/package.cmake, which builds
+# the ones GOOSE_BUILTIN_LIBS names into the compiler.
+#
+# import-name  package  source                ref
+#   A source is a path relative to this tree (while a package lives in it),
+#   or a git repository as a root file would write it, with its ref after @.
+physics        physics  github.com/aardappel/goose_physics  v1
+gfx            gfx      github.com/aardappel/goose_gfx      v1
+audio          gfx      github.com/aardappel/goose_gfx      v1
+ui             gfx      github.com/aardappel/goose_gfx      v1

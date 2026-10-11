@@ -8,17 +8,16 @@ import bench;
 
 // --- Binarytrees::Obj -----------------------------------------------------------
 
-// The tree's nodes live in one global pool, so a link can be a 4-byte offset
-// from the pool's base, null for none. Allocating a node is a push, and
-// discarding the whole tree is a clear.
-struct TreeNode { left: TreeNode&<u32 in nodes>?, right: TreeNode&<u32 in nodes>?, item: i32 }
-var nodes: TreeNode[>..];
+// The tree's nodes live in a pool the run owns, so a link can be a 4-byte
+// offset from the link itself, null for none. Allocating a node is a push,
+// and the whole tree is freed when the run returns.
+struct TreeNode { left: TreeNode&<u32>?, right: TreeNode&<u32>?, item: i32 }
 
-recursive fn new_tree_node(item: i32, depth: i32) -> TreeNode& {
+recursive fn new_tree_node(nodes: TreeNode[>..]&, item: i32, depth: i32) -> TreeNode& {
     let node .= nodes.push(TreeNode { item: item });
     if depth > 0 {
-        node.left .= new_tree_node(item - (1 << (depth - 1)), depth - 1);
-        node.right .= new_tree_node(item + (1 << (depth - 1)), depth - 1);
+        node.left .= new_tree_node(nodes, item - (1 << (depth - 1)), depth - 1);
+        node.right .= new_tree_node(nodes, item + (1 << (depth - 1)), depth - 1);
     }
     return node;
 }
@@ -32,51 +31,61 @@ recursive fn sum(node: TreeNode&) -> u32 {
     return total;
 }
 
-fn run_obj(b: Bench&) -> u32 {
-    let n = config_i64(b.name, "depth");
-    var result: u32 = 0;
-    measure(b) {
-        let root = new_tree_node(0, n as i32);
-        result += root.sum();
-        nodes.clear();
-    };
-    return result;
+struct BinarytreesObj { n: i64, result_val: u32 }
+
+fn new_binarytrees_obj() -> BinarytreesObj {
+    BinarytreesObj { n: config_i64("Binarytrees::Obj", "depth"), result_val: 0 }
 }
+
+fn prepare(s: BinarytreesObj&) {}
+
+fn run(s: BinarytreesObj&, iteration_id: i64) {
+    var nodes: TreeNode[>..] = [];
+    let root .= new_tree_node(nodes, 0, s.n as i32);
+    s.result_val += root.sum();
+}
+
+fn checksum(s: BinarytreesObj&) -> u32 { s.result_val }
 
 // --- Binarytrees::Arena ---------------------------------------------------------
 
 // The same tree in a growable array, linked by indices, -1 for none.
 struct TreeNodeArena { item: i32, left: i32 = -1, right: i32 = -1 }
 
-recursive fn build_tree(arena: TreeNodeArena[>..]&, item: i32, depth: i32) -> i32 {
-    let idx = arena.len as i32;
-    arena.push(TreeNodeArena { item: item });
+// The arena is growable, so it is the last field.
+struct BinarytreesArena { n: i64, result_val: u32, arena: TreeNodeArena[>..] }
+
+fn new_binarytrees_arena() -> BinarytreesArena {
+    BinarytreesArena { n: config_i64("Binarytrees::Arena", "depth"), result_val: 0, arena: [] }
+}
+
+recursive fn build_tree(s: BinarytreesArena&, item: i32, depth: i32) -> i32 {
+    let idx = s.arena.len as i32;
+    s.arena.push(TreeNodeArena { item: item });
     if depth > 0 {
-        let left_idx = arena.build_tree(item - (1 << (depth - 1)), depth - 1);
-        let right_idx = arena.build_tree(item + (1 << (depth - 1)), depth - 1);
-        let node .= arena[idx];
+        let left_idx = s.build_tree(item - (1 << (depth - 1)), depth - 1);
+        let right_idx = s.build_tree(item + (1 << (depth - 1)), depth - 1);
+        let node .= s.arena[idx];
         node.left = left_idx;
         node.right = right_idx;
     }
     return idx;
 }
 
-recursive fn sum(arena: TreeNodeArena[:], idx: i32) -> u32 {
-    let node = arena[idx];
+recursive fn sum(s: BinarytreesArena&, idx: i32) -> u32 {
+    let node = s.arena[idx];
     var total = (node.item as! u32) + 1;
-    if node.left >= 0 { total += arena.sum(node.left); }
-    if node.right >= 0 { total += arena.sum(node.right); }
+    if node.left >= 0 { total += s.sum(node.left); }
+    if node.right >= 0 { total += s.sum(node.right); }
     return total;
 }
 
-fn run_arena(b: Bench&) -> u32 {
-    let n = config_i64(b.name, "depth");
-    var arena: TreeNodeArena[>..] = [];
-    var result: u32 = 0;
-    measure(b) {
-        arena.clear();
-        arena.build_tree(0, n as i32);
-        result += arena.sum(0);
-    };
-    return result;
+fn prepare(s: BinarytreesArena&) {}
+
+fn run(s: BinarytreesArena&, iteration_id: i64) {
+    s.arena = [];
+    s.build_tree(0, s.n as i32);
+    s.result_val += s.sum(0);
 }
+
+fn checksum(s: BinarytreesArena&) -> u32 { s.result_val }

@@ -12,6 +12,8 @@ import compress_data;
 // itself sorts.
 struct BWTResult { original_idx: i32, transformed: u8[>..] }
 
+fn new_bwt_result() -> BWTResult { BWTResult { original_idx: 0, transformed: [] } }
+
 // A rotation's sort key in one doubling round: the rank of its first k
 // characters and the rank of the k after them.
 struct RankPair { first: i32, second: i32 }
@@ -83,7 +85,7 @@ fn bwt_transform(input: u8[:]) -> BWTResult {
     }
 
     // The result is built where it is returned to, its bytes in place.
-    var result = BWTResult { original_idx: 0, transformed: [] };
+    var result = new_bwt_result();
     let transformed: u8[>..]& = result.transformed;
     transformed.resize(n, 0);
     for suffix, i in sa {
@@ -97,16 +99,26 @@ fn bwt_transform(input: u8[:]) -> BWTResult {
     return result;
 }
 
-fn run_encode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    var bwt_result = BWTResult { original_idx: 0, transformed: [] };
-    var result_val: u32 = 0;
-    measure(b) {
-        bwt_result = bwt_transform(test_data);
-        result_val += bwt_result.transformed.len as! u32;
-    };
-    return result_val;
+// The test data is the caller's (see compress_data).
+struct BWTEncode { size_val: i64, result_val: u32, test_data: u8[>..<]&, bwt_result: BWTResult }
+
+fn new_bwt_encode(test_data: u8[>..<]&) -> BWTEncode {
+    BWTEncode {
+        size_val: config_i64("Compress::BWTEncode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        bwt_result: new_bwt_result(),
+    }
 }
+
+fn prepare(s: BWTEncode&) { s.test_data = ::generate_test_data(s.size_val); }
+
+fn run(s: BWTEncode&, iteration_id: i64) {
+    s.bwt_result = bwt_transform(s.test_data);
+    s.result_val += s.bwt_result.transformed.len as! u32;
+}
+
+fn checksum(s: BWTEncode&) -> u32 { s.result_val }
 
 fn bwt_inverse(bwt_result: BWTResult&) -> u8[>..] {
     let bwt = bwt_result.transformed;
@@ -144,16 +156,44 @@ fn bwt_inverse(bwt_result: BWTResult&) -> u8[>..] {
     return result;
 }
 
-fn run_decode(b: Bench&) -> u32 {
-    // BWTEncode's prepare and run(0).
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    let bwt_result = bwt_transform(test_data);
-    var inverted: u8[>..] = [];
-    var result_val: u32 = 0;
-    measure(b) {
-        inverted = bwt_inverse(bwt_result);
-        result_val += inverted.len as! u32;
-    };
-    if inverted == test_data { result_val += 100000; }
-    return result_val;
+// The test data and the transform's result are the caller's (see
+// compress_data).
+struct BWTDecode {
+    size_val: i64,
+    result_val: u32,
+    test_data: u8[>..<]&,
+    bwt_result: BWTResult&,
+    inverted: u8[>..],
+}
+
+fn new_bwt_decode(test_data: u8[>..<]&, bwt_result: BWTResult&) -> BWTDecode {
+    BWTDecode {
+        size_val: config_i64("Compress::BWTDecode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        bwt_result: bwt_result,
+        inverted: [],
+    }
+}
+
+fn prepare(s: BWTDecode&) {
+    var encoder_test_data: u8[>..<] = [];
+    var encoder = new_bwt_encode(encoder_test_data);
+    encoder.size_val = s.size_val;
+    encoder.prepare();
+    encoder.run(0);
+    s.test_data = copy(encoder.test_data);
+    // Goose has no move for a growable array: the encoder's result is copied.
+    s.bwt_result = copy(encoder.bwt_result);
+}
+
+fn run(s: BWTDecode&, iteration_id: i64) {
+    s.inverted = bwt_inverse(s.bwt_result);
+    s.result_val += s.inverted.len as! u32;
+}
+
+fn checksum(s: BWTDecode&) -> u32 {
+    var res = s.result_val;
+    if s.inverted == s.test_data { res += 100000; }
+    return res;
 }

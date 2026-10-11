@@ -678,7 +678,8 @@ struct TypeCheck {
 
     // ------------------------------------------------------------------
     // Constant expression evaluation: array sizes, match arm bounds, literal
-    // fit. Understands literals, arithmetic, and `let` globals.
+    // fit. Understands literals, arithmetic, `let` globals, and the `.len` and
+    // `.cap` of globals their declarations fix.
 
     // A size, fill count or match pattern `at` (a `what`), which takes the
     // named constants its expression names at their initializers' values
@@ -692,6 +693,8 @@ struct TypeCheck {
 
     bool ConstIntValue(Node *n, Val &v, bool &literal, set<VarDecl *> &visiting,
                        ConstUse *use = nullptr);
+    bool ConstExtent(Ident *id, bool cap, int64_t &extent, set<VarDecl *> &visiting,
+                     ConstUse *use);
 
     bool ConstInt(Node *n, int64_t &v, ConstUse *use = nullptr) {
         Val value;
@@ -757,6 +760,8 @@ struct TypeCheck {
         } else if (auto b = Is<Binary>(n)) {
             ConstExprNames(b->left, what, f);
             ConstExprNames(b->right, what, f);
+        } else if (auto d = Is<Dot>(n)) {
+            if (auto obj = Is<Ident>(d->obj)) f(obj, what);
         }
     }
 
@@ -1177,7 +1182,26 @@ struct TypeCheck {
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefMayPointInto(VarDef *v, VarDef *root, bool growonly = false,
                          TypeExpr *bound = nullptr);
-    bool ClassReadMayPointInto(VarDef *cls, VarDef *root, TypeExpr *bound);
+    bool ClassReadMayPointInto(VarDef *cls, VarDef *root, TypeExpr *bound,
+                               bool inplace = false);
+    // A reference to a whole resizable value leads into the array: a
+    // rendering walking in place follows it, and so may the right-hand side
+    // of a whole assignment, which runs while the array is rebuilt (§4.4),
+    // through a variable it takes a reference out of (ExposedLater). The
+    // shrink scans otherwise take one for the path to the array, which a
+    // shrink leaves valid (CanHoldViewInto).
+    bool pathslive = false;
+    struct PathsScope {
+        TypeCheck &tc;
+        bool saved;
+        PathsScope(TypeCheck &t, bool on) : tc(t), saved(t.pathslive) { tc.pathslive = saved || on; }
+        ~PathsScope() { tc.pathslive = saved; }
+    };
+    // The shrink being scanned is a whole assignment's, whose right-hand
+    // side is the rest of its statement (CheckAssignedValue, ExposedLater).
+    bool rebuilding = false;
+    bool ExposedLater(VarDef *v);
+    bool CanHoldViewInto(TypeExpr *t, TypeExpr *arr);
     bool RefMayRetarget(VarDef *v, VarDef *root);
     bool SlotReadable(TypeExpr *t);
     bool HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t, VarDef *root,
@@ -1411,7 +1435,10 @@ struct TypeCheck {
     TypeExpr *DerefType(TypeExpr *t);
     Val CheckIntAny(Node *n);
     bool HasRelRefT(TypeExpr *t, bool inpool = false);
-    void NoRelRefCopy(Node *n, TypeExpr *t);
+    bool BuiltWhereReceived(Node *n, size_t result);
+    void NoRelRefCopy(Node *n, TypeExpr *t, size_t result = 0, const VarDecl *bind = nullptr,
+                      const Val *src = nullptr);
+    void NoRelRefTempRead(Node *base, TypeExpr *t, TypeExpr *member);
     // The single value a return or a body's tail is checking (CheckReturn,
     // CheckSpecBody), which a named result may be (AllowNamedResult).
     Node *retvalnode = nullptr;
@@ -1485,7 +1512,7 @@ struct TypeCheck {
     Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
                        const ReadBack *contents = nullptr, bool slotread = false,
                        bool inplace = false);
-    bool ContentsReadBack(VarDef *h, Roots &out);
+    bool ContentsReadBack(VarDef *h, TypeExpr *of, Roots &out);
     string ReadBackWhy(const Roots &r);
     bool HoldsByValue(TypeExpr *t, TypeExpr *of, vector<TypeExpr *> &open);
     int ElemArrayPlaces(TypeExpr *t, TypeExpr *of);
@@ -1614,6 +1641,9 @@ struct TypeCheck {
     VarDef *RelyOnNonneg(const Val &v, Node *at);
     void RelyOnConstant(ConstUse &use, VarDef *d);
     void RelyOnNamed(const Val &v, Node *at);
+    bool TypeFixesExtent(VarDef *d, bool cap);
+    void RelyOnExtent(ConstUse &use, VarDef *d, bool cap);
+    void CheckVarExtent(VarDef *d, Node *at);
     TypeExpr *StorageType(const Val &v);
     bool BindsRef(const Val &v, TypeExpr *dt);
     bool IsNonFixedLValue(const Val &v);
@@ -2118,7 +2148,14 @@ struct TypeCheck {
                          Node *arg);
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
+    const string *EmbedFile(Call *c, vector<Node *> &args);
     void CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv);
+    void GrowOnlyAssignKnown(Assign *a, const Roots &built, bool whole);
+    // Whether a shrink whose receiver has these roots knows the arrays it
+    // frees: none is static data or a temporary (§5.1).
+    static bool ShrinkRootsKnown(const Roots &roots) {
+        return !roots.Any([](const RootAlt &a) { return !a.root || IsTemp(a.root); });
+    }
     // `what` names the array in the diagnostics; `bound` is its type where vd
     // only bounds it (ShrinkTarget).
     void GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd, const string &what,
@@ -2212,6 +2249,7 @@ struct TypeCheck {
         bool Covered(VarDef *src, VarDef *root, bool exact);
     };
     bool GrowOnlyTail(TypeExpr *t);
+    bool RefsBesideTail(TypeExpr *t);
     bool IsGrowOnlyRootVar(VarDef *r);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
     void RefSlots(TypeExpr *t, vector<pair<TypeExpr *, bool>> &out);
@@ -2424,11 +2462,14 @@ struct TypeCheck {
     // The right-hand side of a whole assignment runs while the array's new
     // contents are built over its old ones (§4.4), so nothing it runs may
     // use the array: name it, or a reference to it, directly or in a
-    // function it calls.
-    void CheckBuiltUses(Node *rhs, Node *lval, const Roots &built, TypeExpr *arr);
-    Alias ReachesBuilt(VarDef *v, VarDef *built, bool exact, TypeExpr *arr, VarDef *&root);
+    // function it calls. The location assigned is `lval`, of type `target`.
+    void CheckBuiltUses(Node *rhs, Node *lval, TypeExpr *target, const Roots &built,
+                        TypeExpr *arr);
+    Alias ReachesBuilt(VarDef *v, VarDef *built, bool exact, Node *lval, TypeExpr *target,
+                       TypeExpr *arr, VarDef *&root);
+    bool MayHoldBuilt(TypeExpr *y, Node *lval, TypeExpr *target);
     template<typename F, typename G> void EachUse(Node *n, F named, G called);
-    bool FieldsApart(Node *use, Node *lval);
+    bool FieldsApart(Node *use, Node *lval, TypeExpr *target);
     bool NamedOutside(FnSpec *spec, vector<VarDef *> &out);
     // Its results for callees whose bodies were all checked, which no
     // later check changes.
@@ -2704,19 +2745,16 @@ struct TypeCheck {
                                      entry->sf->name, ")"));
                 }
                 if (auto c = Is<Call>(n)) {
-                    // The native layers keep one state for the process, and
-                    // SDL's windowing is main-thread only.
+                    // A native layer that keeps one state for the process,
+                    // or SDL's windowing, is main-thread only: its package
+                    // says so in its sidecar (main_thread_only), and the
+                    // error names the module the extern fn was declared in.
                     if (c->spec && c->spec->sf->isextern) {
-                        auto &cname = c->spec->sf->cname;
-                        auto module = cname.rfind("gs_audio_", 0) == 0  ? "audio"
-                                      : cname.rfind("gs_gfx_", 0) == 0  ? "gfx"
-                                      : cname.rfind("gs_phys_", 0) == 0 ? "physics"
-                                      : cname.rfind("gs_ui_", 0) == 0   ? "ui"
-                                                                        : nullptr;
-                        if (module)
-                            Error(n, cat(module, " runs on the main thread only: ",
-                                         c->spec->sf->qname, " is reached from thread_fn ",
-                                         entry->sf->name));
+                        auto fileidx = c->spec->sf->line.fileidx;
+                        if (ast.packages[ast.filepkg[fileidx]].main_thread_only)
+                            Error(n, cat(PathStem(ast.sources[fileidx].first),
+                                         " runs on the main thread only: ", c->spec->sf->qname,
+                                         " is reached from thread_fn ", entry->sf->name));
                     }
                     rec(c->spec);
                     for (auto d : c->dispatch) rec(d);

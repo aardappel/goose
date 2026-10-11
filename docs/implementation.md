@@ -81,6 +81,39 @@ window be made. The link reserves 64 MB for that thread's stack as well on
 Windows and macOS (`CMakeLists.txt`); on Linux it has the stack limit the
 process started with (`ulimit -s`), which nothing in the executable sets.
 
+**Verbs** (`Main` in `main.cpp`). `goose run file.goose [options] [-- args]`
+compiles the program in this process and runs it (`--jit`), `goose build
+file.goose` writes the C to the program's build directory under
+`GOOSE_HOME` and compiles and links it into an executable beside the source
+(`build.h`: the runtime object compiled once per toolchain and
+configuration, the native modules' response files, `-o`, `--debug`,
+`--standalone`, `-v`, `--dry-run`; `-O2` by default), `goose check
+file.goose` typechecks it (`--check`); both build the native part a
+program's sidecar `foo.build` names (`packages.h`: `LoadSidecar`;
+`native.h`: the C compiled once per toolchain, a response file for the
+link, and for a run a shared library whose one export hands the C
+functions to `RunJit` by name), and the native parts of the packages
+whose extern fns the program calls (`NativePackagesUsed`, from codegen's
+`usedexterns`; a package before the ones it requires, under
+`GOOSE_HOME/build/pkg`). A package with a `cmake_target` is built through
+a generated wrapper project (`BuildCMakePart`): the JIT library a shared
+target linked to the package's, and a probe executable whose link line,
+read from CMake's file API reply (`json.h`, `CMakeLinkClosure`), is the
+package's link closure, written as its response file. `goose fetch
+file.goose` fetches
+the packages the root declares and stops (`--parse`; `--update` fetches
+tags and branches again), `goose toolchain` prints the C
+compiler, cmake and git a build would use (`toolchain.h`: `--cc`,
+`GOOSE_CC`, `cc` in `GOOSE_HOME/config`, else discovery; `--json` for
+scripts, which also lists the modules whose packages are compiled in), and
+`goose version` prints the runtime hash. A first argument
+that is no verb is read as the flags below,
+so `goose file.goose` is `goose run file.goose`. The verbs are the
+command line as documented; the flags are the plumbing they are built on
+(`docs/design/packages.md`). Other processes (the C compiler, cmake, git)
+are started through `process.h`, a translation unit of its own over
+`third_party/subprocess/subprocess.h`.
+
 **Driver flags** (`Main` in `main.cpp`):
 
 | Flag | Effect |
@@ -99,9 +132,7 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `--bce-lines` | print elided/kept counts per source line |
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
 | `-o out.c`, `--jit`, `--header`, `-D`, `--include`, `--stdlib`, `--print-stdlib`, `--` | output file, in-process run, a C API header for the exports (which builds the C without a `main`, for a C host), a define written into the generated C, a user header, the stdlib directory, print the stdlib directory that would be used, program arguments |
-| `--gfx-link msvc\|cc` | print the response file of link inputs a program using `gfx` needs (`gfx.h`, `GfxLinkFile`) |
-| `--physics-link msvc\|cc` | the same for `physics` (`physics.h`, `PhysicsLinkFile`) |
-| `--ui-link msvc\|cc` | the same for `ui` (`ui.h`, `UiLinkFile`) |
+| `--<name>-link msvc\|cc` | print the response file of link inputs a program using the blessed package imported as `name` (`gfx`, `audio`, `ui`, `physics`) needs, when the package is compiled into this compiler (`builtin.h`, `BuiltinLinkFile`) |
 | `--multi-test a.goose b.goose ...` | compile each file in turn with the other flags, as a process of its own on it would (an `Ast` and a compile thread each, which is all the state a compile has), each file's output on both streams ending in a line `==== goose --multi-test: exit <code> <file>`; an `-o` names each file's C with `%` for its name. It runs no programs and writes no dump files. The test runner's batches of compiler runs (`docs/testing.md`) |
 | `--compile-shader f [--shader-source msl\|hlsl]` | hidden: what a shader compiles to, without a program around it |
 
@@ -152,10 +183,16 @@ function per construct. Points that matter to later passes:
   guard node, and `--dump` prints the `if`. A guard anywhere but among a
   block's statements is a parse error.
 * Imports are collected per file; `ParseProgram` resolves `import a.b` against
-  the root file's directory then the stdlib directories (`StdlibDirs`), and
-  `import .a.b` against the importing file, loads each file once, and
-  stable-sorts `ast.globals` by a post-order walk of the import graph so an
-  imported file's globals initialize first.
+  the importing file's package root (`Ast::packages`, `Ast::filepkg`: the
+  root file's directory for the program, package 0, a declared package's
+  directory, and a standard library directory for a module found in it),
+  then as a module of a package the root declared, then in the stdlib
+  directories (`StdlibDirs`); `import .a.b` against the importing file; and
+  `import name from "source"` (`Import::source`, `packages.h`) as a
+  declaration in the root file, which adds the package, and a requirement
+  elsewhere, checked against the root's declaration. It loads each file
+  once, and stable-sorts `ast.globals` by a post-order walk of the import
+  graph so an imported file's globals initialize first.
 
 Import traversal visits a file's imports in source order; an edge to a file
 already being visited contributes no second visit. This also determines
@@ -815,6 +852,11 @@ one a slice the argument refers to views, or one in what an inexact
 alternative's root leads to that the argument may point into or that its
 pointee holds, a whole grow-shrink array read back out of a parameter's
 storage among them) is taken to hold anything a grow-shrink array could.
+A reference or slice argument whose pointee neither holds a grow-shrink
+array nor can lie in the elements of one its roots hold or, for an inexact
+one, lead to (`GrowShrinkCanHold`, `BoundReachesGrowShrink`) gets no
+grow-shrink class at all: a `u8[>..]&` read out of a struct whose tail is a
+`u8[>..<]`.
 Where every place an argument with such a root, or with a pointee holding
 one, may point, or for a holder every place its references may, is a slot
 read (§3.10), it points into no grow-shrink array's elements all the same:
@@ -1061,7 +1103,11 @@ a `for` or `match` binder's copy takes too, and `ReadBackRoot` and
 a merge keeps only where every value it joins names it), and neither does
 one out of a reference or slice variable, which holds what its binding
 says, not what a store put there. The stored alternative's own root bounds
-such a value. `RecordStore` also maintains
+such a value. A value read back out of the container and stored back into
+its own storage adds nothing and makes no event; stored into storage the
+container only leads to (`StoreEvent::bound`), which may outlive what it
+points into, it is an event like any other, its source the container (a
+call replays it as well). `RecordStore` also maintains
 the container's `contents`: the union of every root stored into it so far,
 one at a parameter's class marked where every store of it there put views
 that class's storage holds (`AddContents`, §3.10 **Class reads**).
@@ -1196,7 +1242,9 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   parameter's contents start with where its argument points into several
   arrays, `RootArg::heldexact` false), a value read out of the holder where
   it is checked (`ReadBackLVal`) is one of them (`ContentsReadBack`): an
-  exact root stays exact, as it was stored, a marked one is one of the
+  exact root stays exact, as it was stored, but for a variable whose own
+  storage cannot hold the value's pointee type (`CanContain`), which a
+  store of some other view put there; a marked one is one of the
   views, as one read out of the storage is, and a class bound stays a
   bound, the caller's storage, which it filled before the call and which
   can hold nothing of the activation's own. So
@@ -1485,16 +1533,18 @@ the record of its cycle's previous round (§3.11), none in the first.
 
 ### 3.10 The shrink rules, and growth and uses during construction
 
-**Grow-only arrays** (§5.1). `pop`, `resize` and `clear` on a `[>..]`
-(`CheckBuiltin` → `CheckGrowShrink` → `GrowOnlyShrinkAt`,
+**Grow-only arrays** (§5.1). `pop`, `pop_n`, `resize` and `clear` on a
+`[>..]` (`CheckBuiltin` → `CheckGrowShrink` → `GrowOnlyShrinkAt`,
 `typecheck_builtins.h`), and whole assignment of one or of a value holding
-one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
+one (`CheckAssign`, or `PointeeAssign` through a reference, with
+`ResizableArrayIn`), pass in this order:
 
 1. the receiver names the array's variable, or a reference variable or
    parameter whose root is known (the array behind it shrinks), or is a
    struct's tail field on such a path, whose roots, those of the storage
    the struct lies in, are the receiver's own (`Val`'s); not a temporary,
-   and not in a global initializer;
+   and not in a global initializer. An assignment's location is such a
+   receiver on the same terms (`ShrinkRootsKnown`, `GrowOnlyAssignKnown`);
 2. not a `reusable` pool;
 3. no operand evaluated earlier in this statement and still held may refer
    into it (`CheckHeldShrinks` over `HeldOperands`, §3.3), nor, where it is
@@ -1544,7 +1594,21 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    global one a holder refers to, or a global holder a reference or slice
    leads to, which item 5 judges. A slot's references may lead into the
    array at any remove, so both count every type they reach
-   (`ReachedThroughRefs`). The variables are the body's and its lexical
+   (`ReachedThroughRefs`), but for a reference to a whole resizable value,
+   the path to it, which no array's elements hold: a holder whose type has
+   no slot for a view into the array's elements holds none, whatever its
+   record says (`CanHoldViewInto`; a view derived from a stored path lies in
+   such a slot, its store unrecorded where it came out of the same
+   container). A whole assignment's scan counts a path as leading into the
+   array for a variable its right-hand side may take a reference out of,
+   which runs while the array is rebuilt (`ExposedLater`: named there other
+   than to read a field path whose value holds none), and so does an
+   in-place walk's (`pathslive`); for any other variable, used only once
+   the assignment is done, a path is as valid as after a `clear`. The storage that shrinks is a holder like any other: the
+   array's own variable is scanned where the fields before its tail can hold
+   references (`RefsBesideTail`), and a reference to that storage, a
+   reference parameter's class included, by that storage's record rather
+   than as live outright. The variables are the body's and its lexical
    parents', and in a function value's body those of the function running
    it too (`ShrinkScanVars`); every caller's are judged at its call
    instead, the first caller's too (**Calls** below), where the rest of its
@@ -1712,7 +1776,10 @@ parameter names loaded by value, wherever the source is the class exactly
 (`HolderSource`) -- is marked on the store record (`StoreEvent::classread`,
 in `RecordStore`): what the holder got there, the storage holds. A call
 keeps the mark where the class the event names maps onto a class of the
-caller's exactly (`ApplyCalleeStores`). For a grow-only array, the scans
+caller's exactly (`ApplyCalleeStores`), and gives it to a callee's store of
+a value rooted at one of its classes where the argument for that class is
+a view with the mark (`put(b.vars, key(b.keys))` stores what `b`'s storage
+holds, as the same store in the caller would). For a grow-only array, the scans
 judge such an event by the activation's stores into the storage
 (`HolderMayPointInto` on the class, as for a copy of a variable's contents),
 and a slice's slot what came out of there refers to by the class's depth, as
@@ -1827,7 +1894,11 @@ recursive cycle still being checked has the pairs its cycle's previous
 round recorded, which the call maps (§3.11), and none in the first round.
 A class the callee shrank, mapped onto an argument
 whose root only bounds it, may be any array of the shrink's kind in what
-that root leads to (`BoundReach`), as well as the root's own.
+that root leads to (`BoundReach`), as well as the root's own; where the
+class stands for a reference parameter's resizable pointee, it is a value
+of that type there, which becomes the pair's bound, as `ApplyCalleeShrinks`
+takes it. A pair about a parameter's own value whose argument is a slot read
+passes for a grow-shrink array: no reference into one is ever stored.
 
 **Balanced calls** (§5.2). Each summary entry carries a `ShrinkBalance`,
 the worst of the shrinks `NoteShrink` recorded against it: balanced or
@@ -1845,8 +1916,8 @@ marked relied on (`markuse`), which makes a writable reference noted later
 an error: the resize's balance is recorded by then, and a loop checked in
 one pass, or a nested function checked once, can run the write before the
 resize's next run, which nothing judges again. No other shrink in a
-body is balanced: `pop`, `clear`, other resizes, whole assignment, and a
-grow-only array's shrinks (`GrowOnlyShrinkAt` records every shrink
+body is balanced: `pop`, `pop_n`, `clear`, other resizes, whole assignment,
+and a grow-only array's shrinks (`GrowOnlyShrinkAt` records every shrink
 unbalanced). The body's own scans are unchanged, a balanced resize
 included, and so are the pairs `NoteLiveViews` keeps for it. At a call to a
 checked callee, `ApplyCalleeShrinks` first expands every entry into the
@@ -1984,17 +2055,29 @@ shrinks reach the caller's constructions only through the summary.
 **Uses during a whole assignment** (§4.4). The new contents are built over
 the old ones, so once the right-hand side is checked, `CheckBuiltUses`
 walks it for anything that may use the array: an identifier naming the
-array's variable (or the value holding it), or a reference to either
-(`ReachesBuilt`: `CanContain` of the array type, then `MayAliasRoots` as for
-growth, `AL_DEFER` going to `growconflicts`); and for each call, each
+array's variable (or the value holding it), or a reference to storage that
+may be or hold the location assigned (`ReachesBuilt`: `CanContain` of the
+array type for a variable, `MayHoldBuilt` of the pointee for a reference --
+the location's type, a resizable on its tail path, or for a field path
+storage holding its holder by value -- then `MayAliasRoots` as for growth,
+`AL_DEFER` going to `growconflicts`); and for each call, each
 specialization it may run (`spec`, `dispatch`, `fmtspecs`), what that
 callee's body and its callees' name outside their own activations
 (`NamedOutside`, walking the checked bodies with `RunChildren`, so function
 value bodies are included): globals and variables of lexical parents. A
 callee still being checked counts as naming every global and every variable
 in `vars`. A rebind's target (`r .= …`) is not a use, and a field path
-from the lvalue's own variable that parts from the lvalue's path at a flat
-field is not one either (`FieldsApart`): `t.chars = f(t.font)`. Slices and
+from the lvalue's own variable that parts from the lvalue's path at a field
+whose references, at any remove (`ReachedThroughRefs`), reach no storage
+`MayHoldBuilt` accepts is not one either (`FieldsApart`):
+`t.chars = f(t.font)`, `s.path = find(s.start)` for a `start: Cell&`.
+Where the lvalue ends in a reference (`d.r = …`, `PointeeAssign`), the
+location is its pointee, which `MayHoldBuilt` takes to lie in anything that
+can hold its type, and a field that can hold it by value is no field apart.
+Any other field path is a use of the variable, and of what the field holds
+as well: where its references may reach the location, they point where the
+variable's storage bounds, or for a local holder where its record says
+(`VarDef::contents`), against the array's roots. Slices and
 element references are left to the shrink scan, which sees the right-hand
 side as after the shrink. A reference parameter's class may be a global or
 captured array, so using one while building such an array is an error in
@@ -2463,32 +2546,53 @@ is only the whole initializer of a non-optional relative field whose pointee
 is the literal's own type; the `in pool` form additionally needs the literal
 to be under construction inside that pool. `NoRelRefCopy` rejects copying any
 value holding self-relative references (`HasRelRefT` excludes `in pool`
-fields, which copy fine) but what is no copy: a literal built in place, a
-default (`B_DEFAULT`, a `..` field's among them: nulls, an empty limited
-array, `self` where a field's default says so), the result of a call of a
-Goose function (built at the receiver where it is not fixed-size; a
-fixed-size one is what the callee's returns made, which by this rule hold
-no link but `self` and null, a returned literal having no destination root
-to point within), and the body's named result. That last is `return x`, or a
+fields, which copy fine) but what is no copy (`BuiltWhereReceived`): a
+literal built in place, a default (`B_DEFAULT`, a `..` field's among them:
+nulls, an empty limited array, `self` where a field's default says so), the
+by-value result of a call of a Goose function (built at the receiver where
+it is not fixed-size; a fixed-size one is what the callee's returns made,
+which by this rule hold no link but `self` and null, a returned literal
+having no destination root to point within), and the body's named result.
+A call is judged by the callee's declared result (`Call::rettypes`), not by
+the value meeting the destination: a reference result decays to a copy of
+its pointee there. The named result is `return x`, or a
 tail `x`, of a local declared alone at the top of the body
 (`AllowNamedResult`, for the value `retvalnode` says the return checks), of a
 result that is not fixed-size and has x's layout, or is the variable array
 x's resizable elements make, where x's type is not a resizable struct whose
 fields before the tail hold a self-relative reference or a value one in the
 tail may point at (`NamedResultKeepsLinks`), since a frame object's head
-reaches the caller as a copy (C.3). Whether every return gives x only the
+reaches the caller as a copy (C.3); a result type still to be inferred is
+x's. Whether every return gives x only the
 whole body says: `CheckNamedResultUses`, at the end of `CheckSpecBody`, runs
 codegen's structural test (`NamedResultOf`, as `CodeGen::NamedResult`; a
 return it cannot place counts against it) and reports each such return
 otherwise. A body relying on it is marked (`FnSpec::relnamedresult`) and
 never inlined (`Optimizer::Scan`), so its result is built by `DetectNrvo`'s
 named result at every call; codegen fails loudly should a return or an
-inlined body's exit ever copy such a local instead (`NoSelfRelCopy`). The
+inlined body's exit ever copy such a local instead (`NoSelfRelCopy`).
+`NoRelRefCopy` runs wherever a value meets a typed destination
+(`CheckValue`), at an un-annotated declaration, at each decayed reference
+result of a multi-value binding or of a forwarded multi-value return (a
+value result, `from_bytes`' array among them, is built at the receiver), at
+a return inferring the result type (`CheckInferredResult`), and at
+`copy(x)`. A rejected un-annotated declaration of storage or of a reference
+result suggests the `.=` binding it most likely meant. The
 same rule rejects by-value `for` and `match` bindings of such elements and
 payloads, the elements `append` copies from anything but a literal (an
 element that is itself a self-relative reference included), and a `resize`
 fill value, literal or not, which is built once and copied into every slot
 added. Varint-width relative references are construction-only.
+`NoRelRefTempRead` closes the other way out of a root: a value that is not
+storage and is materialized in a temporary (`TempContents`: a popped
+element, a control construct's value, which copies its branch's) may be a
+copy, and unless it is `BuiltWhereReceived`, a field or element holding
+self-relative references may not be read out of it (`Dot::Check`,
+`CheckLValue`), nor may it be sliced (but as the view `==` compares),
+iterated, bound by a `match` reference binder or rendered by
+`print`/`str`/`format` (`CheckPrintable`). The check is made where a path
+leaves the value itself, so a scalar field of a popped element reads as
+usual.
 
 A value is never relative (`FitsAt` refuses one anywhere but an identical
 slot), so neither is a result: `CheckSpecBody` rejects a result type written
@@ -2690,6 +2794,10 @@ get one specialization each (`EnsureThreadSpec`) with flat parameters, and
 `CheckThreadGlobals` walks a thread program's call graph rejecting non-flat
 globals.
 
+`embed_file(path)` reads a file when the program is compiled (`EmbedFile`):
+the path a string literal or a `let`/`const` global holding one, relative to
+the file with the call, the bytes kept in `Ast::shaders` under `"file\n"`
+and the path and emitted as static data the way a shader blob is.
 `embed_shader` is a compile-time graphics extension (`EmbedShader`, `gfx.h`).
 With one argument it reads a file relative to the Goose file containing
 the call (or an absolute path), inferring the GLSL stage from `.vert`,
@@ -2701,7 +2809,7 @@ constant expressions or locals. Compilation failure is a Goose compile
 error. The result is a static, read-only `const u8[:]` shader blob, with no
 runtime reads of the named globals. Its platform blob format and the
 native graphics library interface are separate compatibility surfaces
-(`gfx/gfx_blob.h`, `gfx/gfx_api.h`, `docs/design/gfx.md`), not general Goose
+(`src/gfx_blob.h`, and the gfx package's `gfx_api.h` and `docs/gfx.md`), not general Goose
 value layouts.
 
 A pool's kind travels with its provenance as bits, `RU_SLOTS` for `reusable`
@@ -2866,7 +2974,9 @@ temporary a function value's call's value lands in and the global an
 initializer sets among them.
 The thresholds per call site of callee K: inline if K is used once, or its
 post-optimization node count is below NC, or count times uses is below NCU
-(`-O1`: 8/48, `-O2`: 16/96). A call site inside a loop raises NCU fourfold
+(`-O1`: 8/48, `-O2`: 16/96). An `inline fn` (§7.13 of the spec,
+`SFunction::isinline`) passes them at every call site wherever inlining is
+on. A call site inside a loop raises NCU fourfold
 (`loopdepth`, `LOOPNCU`): it runs once per iteration, so a small function
 wrapping inlined work is worth its copies there rather than staying a call
 in the loop. Neither the raise nor the single-use rule applies in a cold
@@ -2893,7 +3003,11 @@ branch, so the call left there costs less than the call to F it would bring
 back. A callee F calls on every run is inlined into it as before: calling
 it instead of F saves nothing. Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a `simd` function (its callers would run the
-baseline only, §6.13), a function returning more than one value, and
+baseline only, §6.13), a function returning more than one value (where
+that is the only reason, `InlineInfo::c_inlinable`, and the thresholds pass
+at a call site, the function is declared `GS_INLINE` in C instead,
+`FnSpec::cinline`, so the C compiler inlines it: always_inline under gcc
+and clang, `__forceinline` under MSVC), and
 a body that a *separate* live tree still references in a way a copy cannot
 follow -- a remaining call to a specialization with bound function values
 reaches its locals as free variables, and a remaining callee that does
@@ -3219,8 +3333,12 @@ slices). A condition that itself changed tracked state
 comparison ran against pre-kill values; the locals the condition declares
 itself, such as the parameter of a predicate inlined into it, do not count,
 since its comparisons cannot name them. A completed `pop` proves the old
-length was at least one; a `resize` states the new length when the count's
-term survived the fill value's evaluation.
+length was at least one; a completed `pop_n(n)` proves `0 <= n <= old
+length` (`CheckedFacts`), and a constant `n` steps the length down exactly;
+a `resize` states the new length when the count's term survived the fill
+value's evaluation. Neither `pop_n` nor `resize` states anything when its
+count moved the receiver (`recvmoved`), since the receiver was resolved
+before the count ran.
 
 A completed check is a fact as well (`CheckedFacts`): the program only
 continues past `a[i]` with `0 <= i < len` and past `a[lo..hi]` with
@@ -4505,19 +4623,19 @@ are chained for reuse, which keeps node numbers, and so a worker's copy,
 valid. The emitted code keeps the element region's count and top and fills
 the default values itself.
 
-**The graphics layer** behind `stdlib/gfx.goose` is not part of this runtime:
-it is native C in `src/gfx/`, compiled once into a static library over SDL3
-that `goose` links for JIT runs and a program links when built from the
-generated C. The generated C only declares the `gs_gfx_*` functions it calls,
-and `AddGfxSymbols` (`jit.h`) defines them for a JIT run. `docs/design/gfx.md`
-describes it. **The physics layer** behind `stdlib/physics.goose` is built
-the same way over Box3D, in `src/physics/`, its functions `gs_phys_*` and
-their JIT definitions `AddPhysicsSymbols`; `docs/design/physics.md`
-describes it. **The ui layer** behind `stdlib/ui.goose` is built the same
-way over Nuklear, in `src/ui/`, its functions `gs_ui_*` and their JIT
-definitions `AddUiSymbols`; `docs/design/ui.md` describes it. Codegen notes
-which of the three a program calls in `NativeLayers` (`utils.h`), by symbol
-prefix, for the JIT run to register.
+**The native layers** behind `gfx`, `audio`, `ui` and `physics` are not
+part of this runtime: they are packages (`docs/design/packages.md`) in
+repositories of their own, which `src/blessed.txt` names: native C over
+SDL3 and Nuklear in the gfx package, over Box3D in the physics package,
+compiled once into static libraries
+that a program links when built from the generated C, and into the compiler
+itself when it is configured with them, for JIT runs. The generated C only
+declares the `gs_gfx_*`, `gs_audio_*`, `gs_ui_*` and `gs_phys_*` functions
+it calls; a JIT run gets their addresses from the symbol table compiled in
+with the package (`builtin.h`) or from the library the compiler builds for a
+package that is not (`native.h`), by `tcc_add_symbol`. The packages' own
+`docs/gfx.md`, `docs/audio.md`, `docs/ui.md` and `docs/physics.md` describe
+the layers.
 
 **Byte search** (std's `find_any` and `find_pair`, `docs/stdlib.md`):
 `gs_scan_any` and `gs_scan_pair` in `runtime_impl.h`, which std's `extern`
@@ -4642,8 +4760,8 @@ call sites*. In practice:
   of a field or element (`n.count`, only variables and lengths are bases,
   though a narrow type's range still counts), and any value that reaches the
   index through a cast the facts cannot prove in range;
-* an index whose relation to the length crosses a `pop`, `resize`, `clear`,
-  whole assignment, or a call the summary says may resize that array (or a
+* an index whose relation to the length crosses a `pop`, `pop_n`, `resize`,
+  `clear`, whole assignment, or a call the summary says may resize that array (or a
   call with no summary at all: a thread spawn, a call through an opaque
   site);
 * a comparison against a value computed by a call that mutates tracked state
@@ -4678,8 +4796,8 @@ memory the C compiler must reload after every byte store. Two things remove
 the reloads:
 
 * **View hoisting**: in a loop that only reads and writes *elements* of the
-  array behind a reference variable -- no `push`, `pop`, `resize`, `clear`,
-  whole assignment, rebind, or call that can reach it -- the view is read
+  array behind a reference variable -- no `push`, `pop`, `pop_n`, `resize`,
+  `clear`, whole assignment, rebind, or call that can reach it -- the view is read
   once before the loop. This gives a 4x speedup on `blur` under clang. A loop that
   grows the array cannot have it; move growth out of the read loop, or split
   the loop.
@@ -4815,8 +4933,8 @@ cached stack.
 
 ### 9.7 Scratch, shrinking, and lifetimes
 
-* A grow-only array can be `clear`ed, `pop`ped or `resize`d wherever the
-  checker can see that no reference or slice into it is live afterwards
+* A grow-only array can be shrunk (`clear`, `pop`, `pop_n`, `resize`) wherever
+  the checker can see that no reference or slice into it is live afterwards
   (§3.10): use a view for the last time, then shrink; a shrink is a
   statement of its own, not part of a larger expression.
 * Scope exit releases storage by restoring a stack watermark. A scratch

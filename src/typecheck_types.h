@@ -706,32 +706,73 @@ inline bool TypeCheck::HasRelRefT(TypeExpr *t, bool inpool) {
     }
 }
 
-// A copy of a value containing self-relative references would carry
-// offsets measured from the source location; only in-place construction
-// (a literal) is allowed for now. TODO: track the region a relative
-// reference ranges over so whole-region copies can be permitted.
-inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t) {
-    if (!reachable || !t) return;
-    if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
-    if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
-    if (auto d = Is<Dot>(n); d && d->variantconst) return;   // A payload-less variant: a tag.
+// Whether n's value (`result`: which of a multi-value call's results) is
+// built where it is received rather than copied out of storage, so that
+// its self-relative references point within it whatever it lands in.
+inline bool TypeCheck::BuiltWhereReceived(Node *n, size_t result) {
+    if (Is<StructLit>(n) || Is<ArrayLit>(n)) return true;   // Constructed in place.
+    if (auto d = Is<Dot>(n); d && d->variantconst) return true;   // A payload-less variant: a tag.
     // A default value's relative references are nulls, an empty limited
     // array's none, and `self` where a field's default says so: offsets that
     // mean the same wherever the value sits.
-    if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT) return;
+    if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT) return true;
     // A function's result is built where it is received where it is not
     // fixed-size (§4.3, §7.3). A fixed-size one is what its returns made,
     // which by this same rule is a literal, a default, another call's result
     // or a named result, and a returned literal has no root for a relative
     // reference to point within but itself: its links are nulls and `self`.
-    if (auto c = Is<Call>(n); c && c->builtin < 0) {
+    // A reference result is none of these: what it points at is copied, out
+    // of the storage its links point within.
+    if (auto c = Is<Call>(n); c && c->builtin < 0 && result < c->rettypes.size() &&
+                              !IsRefOrSlice(c->rettypes[result])) {
         auto user = [](FnSpec *s) { return s && s->sf && !s->sf->isextern; };
         auto &ds = c->dispatch;
-        if (ds.empty() ? user(c->spec) : all_of(ds.begin(), ds.end(), user)) return;
+        return ds.empty() ? user(c->spec) : all_of(ds.begin(), ds.end(), user);
     }
+    return false;
+}
+
+// A copy of a value containing self-relative references would carry
+// offsets measured from the source location; only in-place construction
+// (a literal) is allowed for now. TODO: track the region a relative
+// reference ranges over so whole-region copies can be permitted.
+// `result`: which of a multi-value call's results n gives. `bind`: the
+// un-annotated declaration n initializes, and `src` the value it gives.
+inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t, size_t result, const VarDecl *bind,
+                                    const Val *src) {
+    if (!reachable || !t) return;
+    if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
+    if (BuiltWhereReceived(n, result)) return;
     if (auto id = Is<Ident>(n); id && n == retvalnode && AllowNamedResult(id, t)) return;
-    Error(n, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
-                 "references, is not supported; construct it in place"));
+    auto msg = cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
+                   "references, is not supported; construct it in place");
+    // A declaration copying storage or what a reference points at most
+    // likely meant to bind it (§3.8).
+    auto c = Is<Call>(n);
+    auto refcall = c && result < c->rettypes.size() && IsPlainRef(c->rettypes[result]);
+    auto path = Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n);
+    if (bind && src && ((path && (src->lvalue || src->pointee)) || refcall)) {
+        string names;
+        for (size_t i = 0; i < bind->names.size(); i++)
+            if (bind->inits.size() == 1 || bind->inits[i] == n)
+                names += cat(names.empty() ? "" : ", ", bind->names[i]);
+        msg += cat(", or bind a reference to it with .=: ", bind->isvar ? "var " : "let ", names,
+                   " .= ", ExprStr(n));
+    }
+    Error(n, msg);
+}
+
+// A part of type `member` read, viewed or rendered out of the temporary a
+// value of type t is materialized in (TempContents), which may hold a copy:
+// a self-relative reference read out of a copy would measure from the copy.
+// A path's own value lies in storage, or in a temporary whose read its own
+// base checked.
+inline void TypeCheck::NoRelRefTempRead(Node *base, TypeExpr *t, TypeExpr *member) {
+    if (!reachable || Is<Ident>(base) || Is<Dot>(base) || Is<Index>(base)) return;
+    if (!HasRelRefT(member) || BuiltWhereReceived(base, 0)) return;
+    Error(base, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
+                    "references, is not supported: its links, read out of this copy, would be "
+                    "measured from the copy; read them where the value is stored"));
 }
 
 // `return x` of a local every return of the function gives is built at the
@@ -744,8 +785,9 @@ inline bool TypeCheck::AllowNamedResult(Ident *id, TypeExpr *t) {
     auto &fr = frames.back();
     auto spec = fr.spec;
     auto vd = id->vdef;
+    // A result type still to be inferred is the type of this single value.
     if (!spec || !fr.sf || fr.isfunval || fr.isdefault || !spec->body || !vd || !vd->type ||
-        spec->rets.size() != 1 || ClassOf(t) == SC_FIXED)
+        (spec->retsknown && spec->rets.size() != 1) || ClassOf(t) == SC_FIXED)
         return false;
     auto top = false;
     for (auto st : spec->body->stmts)
@@ -1161,14 +1203,14 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         auto global = croot->isglobal;
         if (!global && (!c.exact || croot->ownerspec != CurRealFrame().spec)) {
             if (c.exact && inplace && croot->type && !IsTemp(croot) && croot->ownerspec &&
-                OuterLocal(croot) && ContentsReadBack(croot, out))
+                OuterLocal(croot) && ContentsReadBack(croot, of, out))
                 continue;
             out.Add({ croot, false, from, false, classread });
             continue;
         }
         // A holder of the activation's whose stores say where what it holds
         // points: there.
-        if (!global && inplace && ContentsReadBack(croot, out)) continue;
+        if (!global && inplace && ContentsReadBack(croot, of, out)) continue;
         // Only globals outlive globals (§11.1), so a global container's
         // pointee is owned by a global or by static data, whatever local scope
         // is open here. A local container's was reachable from this frame and
@@ -1213,15 +1255,21 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 // else there adds a root to h's contents or takes the mark off one, which
 // the loop feeds back: it checks the read again. A root that only bounds
 // what was stored (a holder copied out of a slot, Bounds) says nothing of
-// which storage that is: false, and the read takes every candidate.
-inline bool TypeCheck::ContentsReadBack(VarDef *h, Roots &out) {
+// which storage that is: false, and the read takes every candidate. A
+// variable's own storage that cannot hold the pointee type `of` owns none of
+// what was stored there for a reference or slice of this type: a view of
+// another type stored beside it.
+inline bool TypeCheck::ContentsReadBack(VarDef *h, TypeExpr *of, Roots &out) {
     if (!h->type || IsRefOrSlice(h->type)) return false;
     Roots r;
     auto known = false;
     for (auto &a : h->contents.alts) {
         if (a.classread) r.Add({ a.root, false, h, false, true });
         else if (!a.root) r.Add({ nullptr, a.exact });
-        else if (a.exact) r.Add({ a.root, true, h });
+        else if (a.exact) {
+            if (!of || !a.root->type || CanContain(LoadType(a.root->type), of))
+                r.Add({ a.root, true, h });
+        }
         else if (IsClassRoot(a.root)) r.Add({ a.root, false, h });
         else return false;
         known = known || a.classread || a.exact || IsClassRoot(a.root);

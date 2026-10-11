@@ -108,9 +108,6 @@ struct CodeGen {
     string exportprotos;
     bool usesthreads = false;
     bool library = false;
-    // Which native layers (stdlib/gfx.goose, physics.goose, ui.goose) the
-    // program calls into.
-    NativeLayers layers;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
     // that never takes a long-distance return still prints the right answer
@@ -1027,7 +1024,7 @@ struct CodeGen {
 
     bool termjump = false;   // The last emitted statement left via goto/return.
 
-    void GenBlockInner(Block *b, Dst d, size_t first = 0);
+    void GenBlockInner(Block *b, Dst d, size_t first = 0, int exitscope = -1);
     size_t GenInlineArgs(Block *b);
     void GenStmt(Node *n);
 
@@ -1058,7 +1055,7 @@ struct CodeGen {
     string DivisorKey(Node *n, const VarDef **root = nullptr, bool *path = nullptr);
     string DivisorValue(Node *n, string &ok);
     const set<const VarDef *> &RefdLocals();
-    vector<string> HoistDivisors(Block *body, Node *cond, const vector<const VarDef *> &binders);
+    vector<string> HoistDivisors(Block *loopbody, Node *cond, const vector<const VarDef *> &binders);
     void GenBreakPath(Node *val);
 
     // Loops run in blocks of iterations (ForLoop::stripk, ForLoop::sumred):
@@ -1261,7 +1258,9 @@ struct CodeGen {
 
     void DetectNrvo(FnSpec *sp);
     // What a specialization's C declaration says besides its signature.
-    static const char *FnAttrs(FnSpec *sp) { return sp->outofline ? "GS_NOINLINE " : ""; }
+    static const char *FnAttrs(FnSpec *sp) {
+        return sp->outofline ? "GS_NOINLINE " : sp->cinline ? "GS_INLINE " : "";
+    }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
     void PlanTopClasses(FnSpec *sp);
@@ -1313,7 +1312,7 @@ struct CodeGen {
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
             bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0)
-        : ast(_ast), library(_library), maxstacks(_maxstacks), norfcheck(_norfcheck) {
+        : ast(_ast), library(_library), norfcheck(_norfcheck), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();

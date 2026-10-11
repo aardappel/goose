@@ -32,6 +32,8 @@ fn new_huffman_codes() -> HuffmanCodes {
 
 struct EncodedResult { bit_count: i32, frequencies: i32[256], data: u8[>..] }
 
+fn new_encoded_result() -> EncodedResult { EncodedResult { bit_count: 0, frequencies: [0; 256], data: [] } }
+
 // The tree for `frequencies`, its nodes pushed into `pool`; null when no byte
 // occurs.
 fn build_huffman_tree(frequencies: i32[:], pool: HuffmanNode[>..]&) -> HuffmanNode? {
@@ -121,29 +123,39 @@ fn huffman_encode(data: u8[:], codes: HuffmanCodes&, frequencies: i32[256]&) -> 
     return encoded;
 }
 
-fn run_encode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    var encoded = EncodedResult { bit_count: 0, frequencies: [0; 256], data: [] };
-    var result_val: u32 = 0;
-    measure(b) {
-        var frequencies: i32[256] = [0; 256];
-        for byte in test_data {
-            frequencies[byte] += 1;
-        }
+// The test data is the caller's (see compress_data).
+struct HuffEncode { size_val: i64, result_val: u32, test_data: u8[>..<]&, encoded: EncodedResult }
 
-        var pool: HuffmanNode[>..] = [];
-        let tree = build_huffman_tree(frequencies, pool);
-
-        var codes = new_huffman_codes();
-        if tree {
-            build_huffman_codes(tree, 0, 0, codes);
-        }
-
-        encoded = huffman_encode(test_data, codes, frequencies);
-        result_val += encoded.data.len as! u32;
-    };
-    return result_val;
+fn new_huff_encode(test_data: u8[>..<]&) -> HuffEncode {
+    HuffEncode {
+        size_val: config_i64("Compress::HuffEncode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        encoded: new_encoded_result(),
+    }
 }
+
+fn prepare(s: HuffEncode&) { s.test_data = ::generate_test_data(s.size_val); }
+
+fn run(s: HuffEncode&, iteration_id: i64) {
+    var frequencies: i32[256] = [0; 256];
+    for byte in s.test_data {
+        frequencies[byte] += 1;
+    }
+
+    var pool: HuffmanNode[>..] = [];
+    let tree = build_huffman_tree(frequencies, pool);
+
+    var codes = new_huffman_codes();
+    if tree {
+        build_huffman_codes(tree, 0, 0, codes);
+    }
+
+    s.encoded = huffman_encode(s.test_data, codes, frequencies);
+    s.result_val += s.encoded.data.len as! u32;
+}
+
+fn checksum(s: HuffEncode&) -> u32 { s.result_val }
 
 fn huffman_decode(encoded: u8[:], root: HuffmanNode&, bit_count: i32) -> u8[>..] {
     var result: u8[>..] = [];
@@ -186,32 +198,48 @@ fn huffman_decode(encoded: u8[:], root: HuffmanNode&, bit_count: i32) -> u8[>..]
     return result;
 }
 
-fn run_decode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
+// The test data and the encoded result are the caller's (see compress_data).
+struct HuffDecode {
+    size_val: i64,
+    result_val: u32,
+    test_data: u8[>..<]&,
+    encoded: EncodedResult&,
+    decoded: u8[>..],
+}
 
-    // HuffEncode's prepare and run(0).
-    var frequencies: i32[256] = [0; 256];
-    for byte in test_data {
-        frequencies[byte] += 1;
+fn new_huff_decode(test_data: u8[>..<]&, encoded: EncodedResult&) -> HuffDecode {
+    HuffDecode {
+        size_val: config_i64("Compress::HuffDecode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        encoded: encoded,
+        decoded: [],
     }
-    var encoder_pool: HuffmanNode[>..] = [];
-    let encoder_tree = build_huffman_tree(frequencies, encoder_pool);
-    var codes = new_huffman_codes();
-    if encoder_tree {
-        build_huffman_codes(encoder_tree, 0, 0, codes);
-    }
-    let encoded = huffman_encode(test_data, codes, frequencies);
+}
 
-    var decoded: u8[>..] = [];
-    var result_val: u32 = 0;
-    measure(b) {
-        var pool: HuffmanNode[>..] = [];
-        let tree = build_huffman_tree(encoded.frequencies, pool);
-        if tree {
-            decoded = huffman_decode(encoded.data, tree, encoded.bit_count);
-            result_val += decoded.len as! u32;
-        }
-    };
-    if decoded == test_data { result_val += 100000; }
-    return result_val;
+fn prepare(s: HuffDecode&) {
+    s.test_data = ::generate_test_data(s.size_val);
+
+    var encoder_test_data: u8[>..<] = [];
+    var encoder = new_huff_encode(encoder_test_data);
+    encoder.size_val = s.size_val;
+    encoder.prepare();
+    encoder.run(0);
+    // Goose has no move for a growable array: the encoder's result is copied.
+    s.encoded = copy(encoder.encoded);
+}
+
+fn run(s: HuffDecode&, iteration_id: i64) {
+    var pool: HuffmanNode[>..] = [];
+    let tree = build_huffman_tree(s.encoded.frequencies, pool);
+    if tree {
+        s.decoded = huffman_decode(s.encoded.data, tree, s.encoded.bit_count);
+        s.result_val += s.decoded.len as! u32;
+    }
+}
+
+fn checksum(s: HuffDecode&) -> u32 {
+    var res = s.result_val;
+    if s.decoded == s.test_data { res += 100000; }
+    return res;
 }

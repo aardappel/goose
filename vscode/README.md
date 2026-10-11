@@ -24,10 +24,12 @@ passes requests to the Goose process and has no npm runtime dependencies.
   on the checked file with no text underlined, and clicking the item opens the
   Goose output with the full compiler output. **Run** next to it runs the file
   with the JIT.
-- **Goose: Check Program**, **Goose: Run with JIT**, **Goose: Generate C**, and
+- **Goose: Check Program**, **Goose: Run with JIT**, **Goose: Build
+  Executable** (`goose build`: an executable beside the source, linked with
+  the packages the program uses), **Goose: Generate C**, and
   **Goose: Show Compiler Output** in the Command Palette. **Goose: Restart Language
   Server** restarts `goose-tools`, for example after rebuilding it. The editor's play
-  button and **▶ Goose** status-bar button run the program in a task terminal,
+  button and **Run** status-bar button run the program in a task terminal,
   with stdin and clickable errors.
 - **Ctrl+Shift+B**, **F5**, and **Ctrl+F5** run with JIT while editing Goose
   (**Cmd+Shift+B** for build on macOS). **Goose: Run with JIT** is also available
@@ -41,8 +43,8 @@ passes requests to the Goose process and has no npm runtime dependencies.
 - Delimiter and unterminated-literal diagnostics that update as you type.
 - Clickable imports, with root-relative, importing-file-relative (`import .foo;`),
   and standard-library resolution matching the compiler.
-- Check, Run and Generate C tasks, plus the `$goose` problem matcher for custom
-  tasks with absolute paths or paths relative to the workspace folder.
+- Check, Run, Build and Generate C tasks, plus the `$goose` problem matcher for
+  custom tasks with absolute paths or paths relative to the workspace folder.
 
 Completion and navigation are lexical and cover top-level declarations in the
 current file and its imports. They do not resolve locals or members, and they
@@ -174,8 +176,8 @@ highlighting, snippets and the outline remain available.
 ## Tasks
 
 JIT Run is the extension's build task. **Ctrl+Shift+B** runs it directly while
-editing a Goose file; Check and Generate C remain explicit commands under
-**Tasks: Run Task** and in the Command Palette. The editor and status-bar play
+editing a Goose file; Check, Build Executable and Generate C remain explicit
+commands under **Tasks: Run Task** and in the Command Palette. The editor and status-bar play
 buttons use the same JIT command. Check-on-save still only checks the program.
 
 The Goose shortcuts take precedence while a Goose editor has focus. To use

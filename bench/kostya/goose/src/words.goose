@@ -14,25 +14,36 @@ import helper;
 // of the map, so the most frequent one is kept in a struct instead.
 struct WordCount { word: const u8[:], count: i32 }
 
-fn run(b: Bench&) -> u32 {
-    let words = config_i64(b.name, "words");
-    let word_len = config_i64(b.name, "word_len");
-    let chars = "abcdefghijklmnopqrstuvwxyz";
-    var text: u8[>..] = [];
-    for i in words {
-        let len = next_int(word_len) + next_int(3) + 3;
-        for j in len { text.push(chars[next_int(chars.len)]); }
-        if i < words - 1 { text.push(' '); }
+// A growable array can only be a struct's last field, so the text follows
+// checksum_val.
+struct Words { words: i64, word_len: i64, checksum_val: u32, text: u8[>..] }
+
+fn new_words() -> Words {
+    Words {
+        words: config_i64("Etc::Words", "words"),
+        word_len: config_i64("Etc::Words", "word_len"),
+        checksum_val: 0,
+        text: [],
     }
-    var checksum: u32 = 0;
-    measure(b) {
-        var frequencies = dictionary<const u8[:], i32> {};
-        each_word(text) { word => frequencies.update(word, 0) { it += 1; }; };
-        var top = WordCount { word: "", count: 0 };
-        frequencies.each() { word, count =>
-            if count > top.count { top = WordCount { word, count }; }
-        };
-        checksum += (top.count as! u32) + checksum_str(top.word) + (frequencies.count as! u32);
-    };
-    return checksum;
 }
+
+fn prepare(s: Words&) {
+    let chars = "abcdefghijklmnopqrstuvwxyz";
+    for i in s.words {
+        let word_len = next_int(s.word_len) + next_int(3) + 3;
+        for j in word_len { s.text.push(chars[next_int(chars.len)]); }
+        if i < s.words - 1 { s.text.push(' '); }
+    }
+}
+
+fn run(s: Words&, iteration_id: i64) {
+    var frequencies = dictionary<const u8[:], i32> {};
+    each_word(s.text) { word => frequencies.update(word, 0) { it += 1; }; };
+    var top = WordCount { word: "", count: 0 };
+    frequencies.each() { word, count =>
+        if count > top.count { top = WordCount { word, count }; }
+    };
+    s.checksum_val += (top.count as! u32) + checksum_str(top.word) + (frequencies.count as! u32);
+}
+
+fn checksum(s: Words&) -> u32 { s.checksum_val }

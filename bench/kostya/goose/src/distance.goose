@@ -11,7 +11,9 @@ import helper;
 // The reference's (String, String) tuple: Goose has no tuple type.
 struct Pair { s1: u8[], s2: u8[] }
 
-// n pairs of strings over "abcdefghij", each 4 to m + 3 bytes long.
+// n pairs of strings over "abcdefghij", each 4 to m + 3 bytes long. The
+// Rust version gives each benchmark a copy of this as a method; C++ and
+// Crystal share one function, as here.
 fn generate_pair_strings(n: i64, m: i64) -> Pair[>..] {
     var pairs: Pair[>..] = [];
     let chars = "abcdefghij";
@@ -28,6 +30,19 @@ fn generate_pair_strings(n: i64, m: i64) -> Pair[>..] {
 }
 
 // --- Distance::Jaro -------------------------------------------------------------
+
+// A growable array can only be a struct's last field, so the pairs follow
+// result_val.
+struct Jaro { count: i64, size: i64, result_val: u32, pairs: Pair[>..] }
+
+fn new_jaro() -> Jaro {
+    Jaro {
+        count: config_i64("Distance::Jaro", "count"),
+        size: config_i64("Distance::Jaro", "size"),
+        result_val: 0,
+        pairs: [],
+    }
+}
 
 fn jaro(s1: u8[:], s2: u8[:]) -> f64 {
     let len1 = s1.len;
@@ -72,29 +87,39 @@ fn jaro(s1: u8[:], s2: u8[:]) -> f64 {
     return (m / len1 + m / len2 + (m - transpositions) / m) / 3.0;
 }
 
-fn run_jaro(b: Bench&) -> u32 {
-    let count = config_i64(b.name, "count");
-    let size = config_i64(b.name, "size");
-    let pairs = generate_pair_strings(count, size);
-    var result: u32 = 0;
-    measure(b) {
-        for p in pairs { result += (jaro(p.s1, p.s2) * 1000.0) as u32; }
-    };
-    return result;
+fn prepare(s: Jaro&) {
+    s.pairs = generate_pair_strings(s.count, s.size);
+    s.result_val = 0;
 }
+
+fn run(s: Jaro&, iteration_id: i64) {
+    for p in s.pairs { s.result_val += (jaro(p.s1, p.s2) * 1000.0) as u32; }
+}
+
+fn checksum(s: Jaro&) -> u32 { s.result_val }
 
 // --- Distance::NGram ------------------------------------------------------------
 
-let N = 4;
+struct NGram { count: i64, size: i64, result_val: u32, n: i64, pairs: Pair[>..] }
 
-fn ngram(s1: u8[:], s2: u8[:]) -> f64 {
+fn new_ngram() -> NGram {
+    NGram {
+        count: config_i64("Distance::NGram", "count"),
+        size: config_i64("Distance::NGram", "size"),
+        result_val: 0,
+        n: 4,
+        pairs: [],
+    }
+}
+
+fn ngram(s: NGram&, s1: u8[:], s2: u8[:]) -> f64 {
     let len1 = s1.len;
     let len2 = s2.len;
-    if len1 < N || len2 < N { return 0.0; }
+    if len1 < s.n || len2 < s.n { return 0.0; }
 
     var grams1 = dictionary<u32, i32> {};
     grams1.reserve(len1);
-    for i in 0..len1 - N + 1 {
+    for i in 0..len1 - s.n + 1 {
         let gram = ((s1[i] as u32) << 24) | ((s1[i + 1] as u32) << 16) | ((s1[i + 2] as u32) << 8) | s1[i + 3];
         grams1.update(gram, 0) { it += 1; };
     }
@@ -102,7 +127,7 @@ fn ngram(s1: u8[:], s2: u8[:]) -> f64 {
     var grams2 = dictionary<u32, i32> {};
     grams2.reserve(len2);
     var intersection = 0;
-    for i in 0..len2 - N + 1 {
+    for i in 0..len2 - s.n + 1 {
         let gram = ((s2[i] as u32) << 24) | ((s2[i + 1] as u32) << 16) | ((s2[i + 2] as u32) << 8) | s2[i + 3];
         let count2: i32& = grams2.get_or_insert(gram, 0);
         count2 += 1;
@@ -114,13 +139,13 @@ fn ngram(s1: u8[:], s2: u8[:]) -> f64 {
     return if total > 0 { intersection as f64 / total } else { 0.0 };
 }
 
-fn run_ngram(b: Bench&) -> u32 {
-    let count = config_i64(b.name, "count");
-    let size = config_i64(b.name, "size");
-    let pairs = generate_pair_strings(count, size);
-    var result: u32 = 0;
-    measure(b) {
-        for p in pairs { result += (ngram(p.s1, p.s2) * 1000.0) as u32; }
-    };
-    return result;
+fn prepare(s: NGram&) {
+    s.pairs = generate_pair_strings(s.count, s.size);
+    s.result_val = 0;
 }
+
+fn run(s: NGram&, iteration_id: i64) {
+    for p in s.pairs { s.result_val += (s.ngram(p.s1, p.s2) * 1000.0) as u32; }
+}
+
+fn checksum(s: NGram&) -> u32 { s.result_val }

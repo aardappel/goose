@@ -44,15 +44,20 @@ fn reset(cell: Cell&) {
     if cell.kind == CellKind.Space { cell.kind = CellKind.Wall; }
 }
 
-// An array cannot hold growable arrays, so the rows are runs of a slice pool
-// the benchmark owns.
+// An array cannot hold growable arrays, so the rows are runs of a slice pool.
+// A struct can't hold a pool (a pool is a variable, which pairs the array
+// with its freelist), and the maze's links into it could not be returned from
+// the constructor if it did, so the pool is a local of the code that makes
+// the benchmark, declared before it and handed to its constructor. The array
+// of rows is sized at construction, which leaves a benchmark's one growable
+// field to its path.
 //
 // The rows follow Crystal's and C++'s array of arrays as closely as Goose
 // allows, for the sake of comparing like with like, but this is not idiomatic
 // Goose. We would keep all cells in one flat array indexed y * width + x, and
 // the searches' bookkeeping in it too, which makes these benchmarks about
 // 1.15-1.3x faster.
-struct Maze { w: i32, h: i32, start: Cell&, finish: Cell&, cells: (Cell[:])[>..] }
+struct Maze { w: i32, h: i32, start: Cell&, finish: Cell&, cells: (Cell[:])[] }
 
 fn new_maze(pool: Cell[>..]&, width: i32, height: i32) -> Maze {
     let w = max(width, 5);
@@ -155,34 +160,42 @@ fn checksum(maze: Maze&) -> u32 {
     return hasher;
 }
 
-// x * y of the middle cell of a path found by Maze::BFS or Maze::AStar.
-fn mid_cell_checksum(path: (Cell&)[:]) -> u32 {
-    if path.len == 0 { return 0; }
-    let cell .= path[path.len / 2];
-    return (cell.x * cell.y) as! u32;
-}
-
 // --- Maze::Generator ------------------------------------------------------------
 
-fn generator(b: Bench&) -> u32 {
-    reusable[] var pool: Cell[>..] = [];
-    var maze = new_maze(pool, config_i64(b.name, "w") as i32, config_i64(b.name, "h") as i32);
-    var result_val: u32 = 0;
-    measure(b) {
-        maze.reset();
-        maze.generate();
-        result_val += maze.middle_cell().kind.value();
-    };
-    return result_val + maze.checksum();
+struct MazeGenerator { maze: Maze, result_val: u32 }
+
+fn new_maze_generator(pool: Cell[>..]&) -> MazeGenerator {
+    let width = config_i64("Maze::Generator", "w") as i32;
+    let height = config_i64("Maze::Generator", "h") as i32;
+    return MazeGenerator { maze: new_maze(pool, width, height), result_val: 0 };
 }
 
+fn prepare(s: MazeGenerator&) {}
+
+fn run(s: MazeGenerator&, iteration_id: i64) {
+    s.maze.reset();
+    s.maze.generate();
+    s.result_val += s.maze.middle_cell().kind.value();
+}
+
+fn checksum(s: MazeGenerator&) -> u32 { s.result_val + s.maze.checksum() }
+
 // --- Maze::BFS ------------------------------------------------------------------
+
+// The path, a growable array, is the last field.
+struct MazeBFS { maze: Maze, result_val: u32, path: (Cell&)[>..] }
+
+fn new_maze_bfs(pool: Cell[>..]&) -> MazeBFS {
+    let width = config_i64("Maze::BFS", "w") as i32;
+    let height = config_i64("Maze::BFS", "h") as i32;
+    return MazeBFS { maze: new_maze(pool, width, height), result_val: 0, path: [] };
+}
 
 // A cell the search reached, and the index in the path array of the one it
 // was reached from (-1 for the start).
 struct PathNode { cell: Cell&, parent: i32 }
 
-fn bfs(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
+fn bfs(s: MazeBFS&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     if start .== target { return [start]; }
 
     // The queue's front is `head`: std has no deque.
@@ -190,7 +203,7 @@ fn bfs(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     var head = 0;
     reusable[] var visited_rows: bool[>..] = [];
     var visited: (bool[:])[>..] = [];
-    for y in maze.h { visited.push(visited_rows.alloc_slice(maze.w)); }
+    for y in s.maze.h { visited.push(visited_rows.alloc_slice(s.maze.w)); }
     var path: PathNode[>..] = [];
 
     visited[start.y][start.x] = true;
@@ -226,17 +239,24 @@ fn bfs(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     return [];
 }
 
-fn bfs_bench(b: Bench&) -> u32 {
-    reusable[] var pool: Cell[>..] = [];
-    var maze = new_maze(pool, config_i64(b.name, "w") as i32, config_i64(b.name, "h") as i32);
-    maze.generate();
-    var path: (Cell&)[>..] = [];
-    var result_val: u32 = 0;
-    measure(b) {
-        path = bfs(maze, maze.get_start(), maze.get_finish());
-        result_val += path.len as! u32;
+fn prepare(s: MazeBFS&) { s.maze.generate(); }
+
+fn run(s: MazeBFS&, iteration_id: i64) {
+    // The new path is not built over the old one while the search reads s:
+    // it is built in a local, and copied.
+    let path = s.bfs(s.maze.get_start(), s.maze.get_finish());
+    s.path = copy(path);
+    s.result_val += s.path.len as! u32;
+}
+
+fn checksum(s: MazeBFS&) -> u32 {
+    let mid_cell_value: u32 = if s.path.len > 0 {
+        let cell .= s.path[s.path.len / 2];
+        (cell.x * cell.y) as! u32
+    } else {
+        0
     };
-    return result_val + mid_cell_checksum(path);
+    return s.result_val + mid_cell_value;
 }
 
 // --- Maze::AStar ----------------------------------------------------------------
@@ -248,13 +268,21 @@ fn before(a: Node, b: Node) -> bool {
     a.f_score < b.f_score || (a.f_score == b.f_score && a.idx < b.idx)
 }
 
-fn heuristic(a: Cell&, b: Cell&) -> i32 { abs(a.x - b.x) + abs(a.y - b.y) }
+struct MazeAStar { maze: Maze, result_val: u32, path: (Cell&)[>..] }
 
-fn astar(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
+fn new_maze_astar(pool: Cell[>..]&) -> MazeAStar {
+    let width = config_i64("Maze::AStar", "w") as i32;
+    let height = config_i64("Maze::AStar", "h") as i32;
+    return MazeAStar { maze: new_maze(pool, width, height), result_val: 0, path: [] };
+}
+
+fn heuristic(s: MazeAStar&, a: Cell&, b: Cell&) -> i32 { abs(a.x - b.x) + abs(a.y - b.y) }
+
+fn astar(s: MazeAStar&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     if start .== target { return [start]; }
 
-    let width = maze.w;
-    let size = width * maze.h;
+    let width = s.maze.w;
+    let size = width * s.maze.h;
 
     fn idx(y: i32, x: i32) -> i32 { y * width + x }
 
@@ -271,7 +299,7 @@ fn astar(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     var open_set: Node[>..<] = [];
 
     g_score[start_idx] = 0;
-    let f_start = heuristic(start, target);
+    let f_start = s.heuristic(start, target);
     open_set.heap_push(Node { f_score: f_start, idx: start_idx }, before);
     best_f[start_idx] = f_start;
 
@@ -284,7 +312,7 @@ fn astar(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
             while cur != -1 {
                 let y = cur / width;
                 let x = cur % width;
-                res.push(maze.get_cell(x, y));
+                res.push(s.maze.get_cell(x, y));
                 cur = came_from[cur];
             }
             res.reverse();
@@ -293,7 +321,7 @@ fn astar(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
 
         let current_y = current_idx / width;
         let current_x = current_idx % width;
-        let current .= maze.get_cell(current_x, current_y);
+        let current .= s.maze.get_cell(current_x, current_y);
         let current_g = g_score[current_idx];
 
         for &neighbor in current.neighbors {
@@ -304,7 +332,7 @@ fn astar(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
             if tentative_g < g_score[neighbor_idx] {
                 came_from[neighbor_idx] = current_idx;
                 g_score[neighbor_idx] = tentative_g;
-                let f_new = tentative_g + heuristic(neighbor, target);
+                let f_new = tentative_g + s.heuristic(neighbor, target);
 
                 if f_new < best_f[neighbor_idx] {
                     best_f[neighbor_idx] = f_new;
@@ -317,15 +345,22 @@ fn astar(maze: Maze&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     return [];
 }
 
-fn astar_bench(b: Bench&) -> u32 {
-    reusable[] var pool: Cell[>..] = [];
-    var maze = new_maze(pool, config_i64(b.name, "w") as i32, config_i64(b.name, "h") as i32);
-    maze.generate();
-    var path: (Cell&)[>..] = [];
-    var result_val: u32 = 0;
-    measure(b) {
-        path = astar(maze, maze.get_start(), maze.get_finish());
-        result_val += path.len as! u32;
+fn prepare(s: MazeAStar&) { s.maze.generate(); }
+
+fn run(s: MazeAStar&, iteration_id: i64) {
+    // The new path is not built over the old one while the search reads s:
+    // it is built in a local, and copied.
+    let path = s.astar(s.maze.get_start(), s.maze.get_finish());
+    s.path = copy(path);
+    s.result_val += s.path.len as! u32;
+}
+
+fn checksum(s: MazeAStar&) -> u32 {
+    let mid_cell_value: u32 = if s.path.len > 0 {
+        let cell .= s.path[s.path.len / 2];
+        (cell.x * cell.y) as! u32
+    } else {
+        0
     };
-    return result_val + mid_cell_checksum(path);
+    return s.result_val + mid_cell_value;
 }

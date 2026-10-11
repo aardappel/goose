@@ -46,21 +46,34 @@ fn eval_ata_times_u(u: f64[:]) -> f64[>..] {
     return eval_at_times_u(temp);
 }
 
-fn run(b: Bench&) -> u32 {
-    let size_val = config_i64(b.name, "size");
-    var u: f64[>..] = [];
-    var v: f64[>..] = [];
-    u.resize(size_val, 1.0);
-    v.resize(size_val, 1.0);
-    measure(b) {
-        v = eval_ata_times_u(u);
-        u = eval_ata_times_u(v);
-    };
+// A struct holds at most one growable array, as its last field: u is that
+// field, and v is a growable array of the code that runs the benchmark,
+// which the struct refers to. v is grow-shrink and u grow-only: run assigns
+// each from the other, and the value assigned to an array may read another
+// array only where its type shows the two are different.
+struct Spectralnorm { size_val: i64, v: f64[>..<]&, u: f64[>..] }
+
+fn new_spectralnorm(v: f64[>..<]&) -> Spectralnorm {
+    let size_val = config_i64("CLBG::Spectralnorm", "size");
+    var s = Spectralnorm { size_val: size_val, v: v, u: [] };
+    s.u.resize(size_val, 1.0);
+    s.v.resize(size_val, 1.0);
+    return s;
+}
+
+fn prepare(s: Spectralnorm&) {}
+
+fn run(s: Spectralnorm&, iteration_id: i64) {
+    s.v = eval_ata_times_u(s.u);
+    s.u = eval_ata_times_u(s.v);
+}
+
+fn checksum(s: Spectralnorm&) -> u32 {
     var vbv = 0.0;
     var vv = 0.0;
-    for i in size_val {
-        let vi = v[i];
-        vbv += u[i] * vi;
+    for i in s.size_val {
+        let vi = s.v[i];
+        vbv += s.u[i] * vi;
         vv += vi * vi;
     }
     let result_value = sqrt(vbv / vv);

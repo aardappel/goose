@@ -1,7 +1,6 @@
-# Builds TinyCC out of the third_party/tinycc submodule, as the compiler's
-# in-process C backend (JIT mode). Included from CMakeLists.txt only when that
-# submodule is checked out; without it the compiler builds exactly as before and
-# JIT mode reports that it was not compiled in.
+# Builds TinyCC out of the sources vendored under third_party/tinycc (its
+# README.md records the upstream commit), as the compiler's in-process C
+# backend (JIT mode), which every compiler has.
 #
 # TinyCC has its own configure/make, which cannot be reached from here on all
 # three platforms, so what it would have produced is produced here instead:
@@ -20,9 +19,8 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND CMAKE_SIZEOF_VOID
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(tcc_arch arm64)
 else()
-    message(STATUS "libtcc: no TinyCC backend for CPU '${CMAKE_SYSTEM_PROCESSOR}'; "
-                   "building without JIT mode")
-    return()
+    message(FATAL_ERROR "libtcc: no TinyCC backend for CPU '${CMAKE_SYSTEM_PROCESSOR}'; "
+                        "the compiler builds on x86-64 and arm64")
 endif()
 
 if(tcc_arch STREQUAL "x86_64")
@@ -60,6 +58,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(tcc_triplet "${tcc_arch}-linux-gnu")
     endif()
     string(APPEND tcc_config "#define CONFIG_TRIPLET \"${tcc_triplet}\"\n")
+endif()
+# macOS has no /usr/include: the C library's headers are only in the SDK, so
+# name its include directory as TinyCC's configure does. (The libraries need no
+# such help: TinyCC finds the SDK's usr/lib itself when it runs.)
+if(APPLE)
+    execute_process(COMMAND xcrun --show-sdk-path
+                    OUTPUT_VARIABLE tcc_sdk OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    if(NOT tcc_sdk)
+        set(tcc_sdk "${CMAKE_OSX_SYSROOT}")
+    endif()
+    if(NOT EXISTS "${tcc_sdk}/usr/include/stdint.h")
+        message(FATAL_ERROR "libtcc: no macOS SDK headers found (xcrun --show-sdk-path); "
+                            "install the Xcode command line tools, which the in-process backend "
+                            "needs")
+    endif()
+    string(APPEND tcc_config
+        "#define CONFIG_TCC_SYSINCLUDEPATHS \"{B}/include:${tcc_sdk}/usr/include\"\n")
 endif()
 # Written only when it changes, so reconfiguring does not rebuild TinyCC.
 file(CONFIGURE OUTPUT "${TCC_BUILD}/config.h" CONTENT "${tcc_config}" @ONLY)
@@ -189,5 +205,4 @@ add_custom_command(OUTPUT "${tcc_libdir}/runmain.o"
 add_custom_target(tcc_runtime ALL
     DEPENDS "${tcc_libdir}/libtcc1.a" "${tcc_libdir}/runmain.o")
 
-set(GOOSE_HAVE_LIBTCC ON)
 message(STATUS "libtcc: TinyCC ${tcc_version} backend for ${tcc_arch}")

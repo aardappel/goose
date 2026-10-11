@@ -2650,9 +2650,18 @@ struct BCE {
         for (auto &[v, ok] : gge0) if (gaddr.count(v)) ok = false;
         for (auto sp : ast.fnspecs) {
             if (!sp->live || !sp->body) continue;
-            auto any = false;
-            for (auto &[v, ok] : gge0) if (ok) any = true;
+            // Every write that can drop a candidate notes the global in the
+            // body's effect summary, so a body whose summary names none of
+            // the live candidates has nothing to check.
+            auto &writes = effects[sp].intvars;
+            auto any = false, here = false;
+            for (auto &[v, ok] : gge0)
+                if (ok) {
+                    any = true;
+                    here = here || writes.count(v);
+                }
             if (!any) return;
+            if (!here) continue;
             SetupSpec(sp);
             for (auto &[v, ok] : gge0)
                 if (ok) {
@@ -2922,15 +2931,16 @@ inline bool Call::BceWalk(BCE &b) {
         walkarg(recv);
         if (!fmtspecs.empty() && builtin != B_FORMAT) b.KillRendering();
     }
-    // A push, append or resize changes the array its receiver named when it
-    // was evaluated, ahead of the other arguments (codegen resolves the
-    // receiver first). Once those arguments move the receiver's place -- a
-    // rebind on its path, a length change -- the place may name another
+    // A push, append, resize or pop_n changes the array its receiver named
+    // when it was evaluated, ahead of the other arguments (codegen resolves
+    // the receiver first). Once those arguments move the receiver's place --
+    // a rebind on its path, a length change -- the place may name another
     // array, so the operation only kills and states no length. The place is
     // named before the arguments are walked, since kills only reach places
     // that exist.
     auto pinrecv = b.mode != BCE::M_KILLS &&
-                   (builtin == B_PUSH || builtin == B_APPEND || builtin == B_RESIZE);
+                   (builtin == B_PUSH || builtin == B_APPEND || builtin == B_RESIZE ||
+                    builtin == B_POP_N);
     auto recvpid = -1, recvgen = 0;
     auto pin = [&](Node *rn) {
         recvpid = b.PlaceOf(rn);
@@ -3002,6 +3012,19 @@ inline bool Call::BceWalk(BCE &b) {
                 b.GrowShrinkKill(rn, -1, -1);
                 if (lt.ok && lt.b.kind != BCE::BK_ZERO)
                     b.AddFactB(BCE::Zero(), lt.b, lt.off - 1);
+                break;
+            }
+            case B_POP_N: {
+                // A completed pop_n proves 0 <= n <= old length, as a pop
+                // proves the array was non-empty; a constant n is the exact
+                // step down. Both terms are of the state the operation ran
+                // in, which a count that moved the receiver no longer is.
+                auto fresh = b.mode != BCE::M_KILLS && rn && !recvmoved;
+                auto lt = fresh ? b.LenTermOf(rn) : BCE::Term {};
+                auto nt = fresh ? b.TermOf(arg0) : BCE::Term {};
+                auto k = nt.ok && nt.b.kind == BCE::BK_ZERO && nt.off >= 0 ? nt.off : -1;
+                b.GrowShrinkKill(rn, -1, k >= 0 ? -k : INT64_MIN);
+                b.CheckedFacts(nt, lt, 0);
                 break;
             }
             case B_CLEAR: {

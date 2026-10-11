@@ -19,14 +19,26 @@ struct Opt { key: u8[varint], num: i32, flag: bool }
 // one block of variable-size records.
 struct Coordinate { x: f64, y: f64, z: f64, name: u8[varint], opts: Opt[varint] }
 
-// The resizable coordinates have to be the last field; they are still
-// serialized first.
-struct JsonData { info: const u8[:], coordinates: Coordinate[>..] }
+// The info is a string of its own rather than a view of the literal: a value
+// holding no references is one the text can be rebuilt from in place.
+struct JsonData { coordinates: Coordinate[], info: u8[] }
+
+// A struct has at most one growable field, its last: here the text, which
+// each run makes afresh. The data never changes once made, so it is a
+// variable-size value ahead of the text, which Goose builds only where it is
+// constructed: by the constructor, as Crystal's Generate makes it, rather
+// than by prepare, as Rust's does.
+//
+// This is not idiomatic Goose, which would keep the text in a local of the
+// run and make the data the growable field: a field behind a variable-size
+// one is found by walking it, here every coordinate, each time the run
+// reaches the text or the info.
+struct JsonGenerate { n: i64, result: u32, data: JsonData, text: u8[>..] }
 
 fn round_to_8(value: f64) -> f64 { round(value * 100000000.0) / 100000000.0 }
 
-fn prepare(n: i64) -> JsonData {
-    var data = JsonData { info: "some info", coordinates: [] };
+fn new_json_generate(n: i64 = config_i64("Json::Generate", "coords")) -> JsonGenerate {
+    var data: Coordinate[>..] = [];
     for i in n {
         let x = round_to_8(next_float(1.0));
         let y = round_to_8(next_float(1.0));
@@ -36,11 +48,18 @@ fn prepare(n: i64) -> JsonData {
         format_fixed(name, next_float(1.0), 7);
         format(name, " ", next_int(10000));
 
-        data.coordinates.push(Coordinate { x: x, y: y, z: z, name: copy(name),
-                                           opts: [Opt { key: "1", num: 1, flag: true }] });
+        data.push(Coordinate { x: x, y: y, z: z, name: copy(name),
+                               opts: [Opt { key: "1", num: 1, flag: true }] });
     }
-    return data;
+    return JsonGenerate {
+        n: n,
+        result: 0,
+        data: JsonData { coordinates: copy(data), info: "some info" },
+        text: [],
+    };
 }
+
+fn get_result(s: JsonGenerate&) -> const u8[:] { s.text }
 
 // What serde's derived Serialize writes, field by field, for each type.
 fn to_json(out: u8[>..]&, c: Coordinate&) {
@@ -88,23 +107,18 @@ fn to_json(out: u8[>..]&, data: JsonData&) {
     out.push('}');
 }
 
-// The text the parsing benchmarks prepare: what one run of a generator of
-// n coordinates writes.
-fn text(n: i64) -> u8[>..] {
-    let data = prepare(n);
+// serde_json::to_string: the text of `data` as a new string.
+fn to_string(data: JsonData&) -> u8[>..] {
     var out: u8[>..] = [];
     to_json(out, data);
     return out;
 }
 
-fn run(b: Bench&) -> u32 {
-    let data = prepare(config_i64(b.name, "coords"));
-    var text: u8[>..] = [];
-    var result: u32 = 0;
-    measure(b) {
-        text.clear();
-        to_json(text, data);
-        if starts_with(text, "{\"coordinates\":") { result++; }
-    };
-    return result;
+fn prepare(s: JsonGenerate&) {}
+
+fn run(s: JsonGenerate&, iteration_id: i64) {
+    s.text = to_string(s.data);
+    if starts_with(s.text, "{\"coordinates\":") { s.result++; }
 }
+
+fn checksum(s: JsonGenerate&) -> u32 { s.result }

@@ -30,7 +30,7 @@
 //
 //     { let p1 = a1; ...; if c[p := t] { f(t...) } else { s1; s3; e }[p := t] }
 //
-// For that c may only compare parameters the body never assigns, and
+// For that c may only compare primitive scalar parameters the body never assigns, and
 // literals: the call site evaluates it before s1 runs, where the callee
 // evaluates it after, so it has to give the same answer then and be unable
 // to abort. s1, s3 and e may not return, jump out or call into the cycle.
@@ -197,12 +197,18 @@ struct BaseCaseInliner {
 
     // A test the call site can evaluate before the body's first statements
     // run and get the callee's answer: comparisons of literals and of
-    // parameters the body never assigns, which cannot abort.
+    // primitive scalar parameters the body never assigns, which cannot abort.
     bool GuardOK(Node *n, FnSpec *sp) {
         if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n) || Is<NullLit>(n)) return true;
         if (auto id = Is<Ident>(n)) {
             auto v = id->vdef;
             if (!v || !v->isparam || v->ownerspec != sp) return false;
+            // Write facts describe the binding. Composite and reference-like
+            // values can still observe storage changed through another binding.
+            switch (v->type->kind) {
+                case TY_INT: case TY_FLT: case TY_BOOL: break;
+                default: return false;
+            }
             auto &f = o.facts[v];
             return f.writes == 0 && f.addrof == 0;
         }

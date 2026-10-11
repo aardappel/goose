@@ -1,6 +1,6 @@
 /* The one translation unit compiling the copied cute_spirv and ckit
    (third_party/cute_spirv), and the compiler's use of them: GLSL in, a gfx
-   shader blob out (src/gfx/gfx_blob.h). See src/shaderc.h. */
+   shader blob out (src/gfx_blob.h). See src/shaderc.h. */
 
 #define CKIT_IMPLEMENTATION
 #include "ckit.h"
@@ -8,7 +8,7 @@
 #include "cute_spirv.h"
 
 #include "shaderc.h"
-#include "gfx/gfx_blob.h"
+#include "gfx_blob.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,7 +193,7 @@ static char *check_bindings(const char *path, int stage, const CSPV_Reflection *
     return err;
 }
 
-/* The blob, per src/gfx/gfx_blob.h. */
+/* The blob, per src/gfx_blob.h. */
 static unsigned char *write_blob(int stage, const CSPV_Result *r, size_t *size) {
     const CSPV_Reflection *rf = &r->reflection;
     gs_gfx_blob_header h;

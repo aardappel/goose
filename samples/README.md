@@ -10,22 +10,17 @@ relative links, and variable-size enums, without heap allocation. Each file
 starts with a comment explaining what it demonstrates. The files are numbered
 in reading order. The later samples assume familiarity with the first six.
 
-Build and run any sample from this directory using a C compiler, with the
-runtime, which `--emit-runtime` writes, compiled once:
+Build any sample into an executable beside it with the C compiler the Goose
+compiler finds on the machine, or run it straight away inside the compiler's
+process:
 
-    goose --emit-runtime goose_runtime.c && cc -c goose_runtime.c
-    goose -o tour.c 01_tour.goose && cc tour.c goose_runtime.o -o tour -lm -pthread && ./tour
-
-    goose --emit-runtime goose_runtime.c && cl /c goose_runtime.c
-    goose -o tour.c 01_tour.goose && cl tour.c goose_runtime.obj && tour
-
-`--standalone` writes a C file that holds the runtime itself and builds on its
-own.
-
-With the TinyCC backend, omit `-o` to compile and run the program inside the
-Goose compiler's process:
-
+    goose build 01_tour.goose && ./01_tour
     goose 01_tour.goose
+
+The C the compiler writes can also be built by hand (`goose -o tour.c
+01_tour.goose`, linked with the runtime `goose --emit-runtime` writes, or
+`--standalone` for a C file that holds the runtime itself); `goose build
+--dry-run` prints those commands.
 
 `run_samples.py` compiles and runs them all and compares their output with
 `expected/`, both ways where the backend is available; `test/run_tests.py`
@@ -101,14 +96,14 @@ calls it, so they are compiled and run as part of the test suite.
 
 | Sample | What it shows |
 |---|---|
-| [27_gfx_cube](27_gfx_cube.goose) | A window and a spinning, lit cube with the `gfx` module: GLSL shaders written in the program as `"""` strings and compiled in by `embed_shader`, vertex and index buffers from `bytes_of`, a uniform block as a packed struct, a depth buffer, the arrow keys; saves its last frame as `gfx_cube.png`. Needs a compiler built with SDL3 (`third_party/SDL`); the test runner draws it off screen. |
-| [28_physics_boxes](28_physics_boxes.goose) | Boxes fall into a walled arena containing two pyramids and a rotating arm. The `physics` module simulates them with Box3D on up to eight worker threads. Each frame retrieves all transforms in one call and writes them into an instance buffer. Each box is drawn as a unit cube with sunlight and shadows. Shaders are `"""` strings in the program; the two vertex shaders share their inputs through one global part. Space triggers an explosion, the mouse controls the view, and Up and Down adjust the rate at which boxes fall. Once the arena contains `--boxes` boxes, the oldest are returned to the top. Needs a compiler built with SDL3 and Box3D (`third_party/box3d`); the test runner draws 120 frames off screen. |
+| [27_gfx_cube](27_gfx_cube.goose) | A window and a spinning, lit cube with the `gfx` module: GLSL shaders written in the program as `"""` strings and compiled in by `embed_shader`, vertex and index buffers from `bytes_of`, a uniform block as a packed struct, a depth buffer, the arrow keys; saves its last frame as `gfx_cube.png`. Needs a compiler built with the gfx package (`GOOSE_BUILTIN_LIBS`); the test runner draws it off screen. |
+| [28_physics_boxes](28_physics_boxes.goose) | Boxes fall into a walled arena containing two pyramids and a rotating arm. The `physics` module simulates them with Box3D on up to eight worker threads. Each frame retrieves all transforms in one call and writes them into an instance buffer. Each box is drawn as a unit cube with sunlight and shadows. Shaders are `"""` strings in the program; the two vertex shaders share their inputs through one global part. Space triggers an explosion, the mouse controls the view, and Up and Down adjust the rate at which boxes fall. Once the arena contains `--boxes` boxes, the oldest are returned to the top. Needs a compiler built with the gfx and physics packages (`GOOSE_BUILTIN_LIBS`); the test runner draws 120 frames off screen. |
 
 ## Windows and widgets
 
 | Sample | What it shows |
 |---|---|
-| [29_ui_todo](29_ui_todo.goose) | A to-do list and a color mixer with the `ui` module: Nuklear's immediate-mode widgets drawn through `gfx`. Each frame lists the windows and widgets and reads back what the user did to them: a text field committed with Enter, buttons, check boxes, options, a menu bar, a tooltip, a progress bar, a color picker and properties; the check marks recolored through Nuklear's color table, text in Roboto from the Nuklear submodule, and the whole ui scaled up and down, its font baked again at each scale. Saves its last frame as `ui_todo.png`. Needs a compiler built with SDL3 and Nuklear (`third_party/nuklear`); the test runner draws 30 frames off screen. |
+| [29_ui_todo](29_ui_todo.goose) | A to-do list and a color mixer with the `ui` module: Nuklear's immediate-mode widgets drawn through `gfx`. Each frame lists the windows and widgets and reads back what the user did to them: a text field committed with Enter, buttons, check boxes, options, a menu bar, a tooltip, a progress bar, a color picker and properties; the check marks recolored through Nuklear's color table, text in Roboto from the Nuklear submodule, and the whole ui scaled up and down, its font baked again at each scale. Saves its last frame as `ui_todo.png`. Needs a compiler built with the gfx package (`GOOSE_BUILTIN_LIBS`); the test runner draws 30 frames off screen. |
 
 ## A small game
 

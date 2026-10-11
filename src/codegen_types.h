@@ -899,13 +899,17 @@ inline void CodeGen::EmitVerifyLink(string &b, TypeExpr *rt, TypeExpr *elem, con
     }
     if (rt->ref->optional) Append(b, "    if (", off, " != 0) {\n");
     else                   Append(b, "    {\n");
-    Append(b, "        int64_t ", v, " = ", q, " + ", off, skip ? cat(" - ", skip) : string(),
-           ";\n");
+    // A variant reference field is already past the element tag, so removing
+    // the tag size leaves a nonnegative base. Bound the untrusted offset
+    // against the image before adding it, so the target cannot overflow.
+    Append(b, "        int64_t ", v, " = ", q, skip ? cat(" - ", skip) : string(), ";\n");
+    Append(b, "        if (", off, " < -", v, " || ", off, " >= n - ", v, ") return -1;\n");
+    Append(b, "        ", v, " += ", off, ";\n");
     if (IsFix(elem))
-        Append(b, "        if (", v, " < 0 || ", v, " >= n || ", v, " % ",
+        Append(b, "        if (", v, " % ",
                std::max<int64_t>(FixedSize(elem), 1), ") return -1;\n");
     else
-        Append(b, "        if (", v, " < 0 || ", v, " >= n || !GS_BM_GET(bm, ", v,
+        Append(b, "        if (!GS_BM_GET(bm, ", v,
                ")) return -1;\n");
     if (variant)
         Append(b, "        if (n - ", v, " < ", skip, " || *(const ", IntCT(ts), " *)(p + ",

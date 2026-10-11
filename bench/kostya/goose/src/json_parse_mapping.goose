@@ -14,6 +14,12 @@ struct CoordinateData { x: f64, y: f64, z: f64 }
 
 struct Coordinates { coordinates: CoordinateData[>..] }
 
+struct JsonParseMapping { n: i64, result_val: u32, text: u8[>..] }
+
+fn new_json_parse_mapping() -> JsonParseMapping {
+    JsonParseMapping { n: config_i64("Json::ParseMapping", "coords"), result_val: 0, text: [] }
+}
+
 // What serde's derived Deserialize reads for each type: the fields it knows,
 // with any other members passed over.
 fn read_coordinate_data(r: json::Reader&) -> CoordinateData {
@@ -36,7 +42,7 @@ fn read_coordinates(r: json::Reader&) -> Coordinates {
     return data;
 }
 
-fn calc(text: u8[:]) -> CoordinateData {
+fn calc(s: JsonParseMapping&, text: u8[:]) -> CoordinateData {
     var r = json::reader(text);
     let data = read_coordinates(r);
     if !json::finish(r) { abort(json::message(r)); }
@@ -55,12 +61,16 @@ fn calc(text: u8[:]) -> CoordinateData {
     return CoordinateData { x: x / len, y: y / len, z: z / len };
 }
 
-fn run(b: Bench&) -> u32 {
-    let text = json_generate::text(config_i64(b.name, "coords"));
-    var result: u32 = 0;
-    measure(b) {
-        let avg = calc(text);
-        result += checksum_f64(avg.x) + checksum_f64(avg.y) + checksum_f64(avg.z);
-    };
-    return result;
+fn prepare(s: JsonParseMapping&) {
+    var generator = json_generate::new_json_generate(s.n);
+    json_generate::prepare(generator);
+    json_generate::run(generator, 0);
+    s.text = str(json_generate::get_result(generator));
 }
+
+fn run(s: JsonParseMapping&, iteration_id: i64) {
+    let avg = s.calc(s.text);
+    s.result_val += checksum_f64(avg.x) + checksum_f64(avg.y) + checksum_f64(avg.z);
+}
+
+fn checksum(s: JsonParseMapping&) -> u32 { s.result_val }

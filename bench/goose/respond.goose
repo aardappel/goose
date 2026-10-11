@@ -16,7 +16,6 @@
 // buffer -- respond_stream.goose is the Goose row of that shape.
 
 import rng;
-import std;
 
 let N = 400000;                          // BENCH_N
 
@@ -103,6 +102,14 @@ fn render(out: u8[>..]&, r: Resp&) {
     out.push('}');
 }
 
+// FNV-1a, the checksum the C++ and Rust rows compute. std's hash is another
+// function, and every row of a benchmark has to print the same checksum.
+fn fnv(s: u8[:]) -> u64 {
+    var h: u64 = 14695981039346656037;
+    for b in s { h = (h ^ b) * 1099511628211; }
+    return h;
+}
+
 // One request: the response object and its rendering are both locals.
 fn handle(seed: u64) -> u64, i64 {
     let r = xs_next(seed);
@@ -110,7 +117,7 @@ fn handle(seed: u64) -> u64, i64 {
     let resp = Resp { id: xs_mod(r >> 4, 1000000), user: name_of(r >> 8), items: make_items(r >> 16, n) };
     var out: u8[>..] = [];
     render(out, resp);
-    return hash(out[..]), out.len;
+    return fnv(out[..]), out.len;
 }
 
 fn main() {

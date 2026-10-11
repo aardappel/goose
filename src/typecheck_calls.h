@@ -1341,8 +1341,16 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         // that only bounds a reference or slice argument stands for what it
         // leads to as well: a grow-shrink array there the argument may point
         // into (GrowShrinkTaint), or one its pointee holds, which the body
-        // reaches through the parameter.
-        auto gsroot = ar.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); });
+        // reaches through the parameter. A reference or slice whose pointee
+        // can neither lie in such an array's elements nor hold one has
+        // nothing to do with it (a `u8[>..]&` beside a `u8[>..<]` tail).
+        auto pointee = isrs ? PointeeOf(pt) : nullptr;
+        auto gsroot = ar.Any([&](const RootAlt &a) {
+            if (!IsGrowShrinkRoot(a.root)) return false;
+            if (!pointee || argvals[i].byteview || ContainsGrowShrink(pointee)) return true;
+            return GrowShrinkCanHold(a.root, pointee) ||
+                   (!a.exact && BoundReachesGrowShrink(a.root, pointee, false));
+        });
         auto gspointee = isrs && ar.Any([&](const RootAlt &a) {
             return !a.exact && ContainsGrowShrink(PointeeOf(pt));
         });
@@ -3263,7 +3271,12 @@ inline void TypeCheck::CheckReturn(Return *r) {
                     for (size_t i = 0; i < vals.size(); i++) {
                         auto rt = tspec->rets[i];
                         RequireCopyable(vals[i], r->vals[0], rt);
-                        if (!KeepsRef(vals[i], rt)) vals[i] = DecayRef(vals[i]);
+                        // A decayed reference result is a copy of its
+                        // pointee (NoRelRefCopy), as a binding's is.
+                        if (!KeepsRef(vals[i], rt)) {
+                            vals[i] = DecayRef(vals[i]);
+                            NoRelRefCopy(r->vals[0], rt, i);
+                        }
                         MustFit(vals[i], r->vals[0], rt);
                     }
                 }

@@ -284,7 +284,7 @@ data...]`, inline, packed (exact layouts in Appendix C).
 
 | Type | Class | Stored metadata | Notes |
 |---|---|---|---|
-| `T[k]` | fixed | none | `k` a compile-time constant expression (literals, named constants, arithmetic) |
+| `T[k]` | fixed | none | `k` a compile-time constant expression (literals, named constants, a global's fixed `.len`/`.cap`, arithmetic) |
 | `T[]` | variable | length (`u32` default) | size chosen at construction |
 | `T[u8]` etc. | variable | length of given unsigned int type | explicit length field type: `u8`–`u64` only |
 | `T[varint]` | variable | varint length | most compact |
@@ -295,7 +295,20 @@ data...]`, inline, packed (exact layouts in Appendix C).
 
 A size or capacity `k` is fixed at compile time, as is the count `n` of a
 fill literal `[v; n]` (§4.2): a name in one is a named constant, a `let` or
-`const` global (§11.1), and resolves as any name does, lexically first. A
+`const` global (§11.1), and resolves as any name does, lexically first. One
+may also take `X.len` of a global `X` whose length its declaration fixes,
+and `X.cap` of one whose capacity it fixes (`const names = ["a", "bc"]; var
+counts: i64[names.len];`): a written type `T[k]` fixes the length and
+`T[..k]` the capacity; with no written type, an array, fill or string
+literal initializer fixes the length, and one naming another such global
+what that global's declaration fixes. Where `X`'s type fixes it too — a
+written one, or the `T[k]` an array or fill literal gives — nothing can
+change it, and `X` may be a `var`. Where it does not, as a string
+literal's `const u8[:]` does not (§3.7), the length is taken as a named
+constant's value is: `X` may not be a `var`, nor be bound to a writable
+reference (§11.1), as a `let` holding a literal's slice never is (§9.5).
+Either is an `i64`, as any `.len` is, which adapts as no literal does
+(§3.1). A
 local of that name — a parameter, a local variable, or one around a nested
 function or block —, a type parameter or a nested function hides the global
 there and is no constant, so a size naming it is an error, as a match
@@ -333,12 +346,12 @@ Element restrictions:
 
 Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
-Shrink operations (`pop`, `resize` downward, `clear`) exist on limited
-arrays anywhere, on `[>..<]` wherever no live variable refers into it
+Shrink operations (`pop`, `pop_n`, `resize` downward, `clear`) exist on
+limited arrays anywhere, on `[>..<]` wherever no live variable refers into it
 (§5.2), and on a grow-only `[>..]` exactly where the compiler can see that
 no reference or slice into it is live (§5.1); they
-abort when they would shrink below empty (`pop` on an empty array, `resize`
-to a negative length).
+abort when they would shrink below empty (`pop` on an empty array, `pop_n`
+of more elements than the array holds, `resize` to a negative length).
 
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on resizable and limited
@@ -346,9 +359,10 @@ arrays — the idiomatic way to link up just-built data),
 `.append(src)` (src an array/slice of the element type, whose elements are
 copied: the references they hold must outlive the array, §9.2, and none may
 be self-relative, §3.9; an array literal there is built instead as a run of
-such elements, §4.2), `.pop()`, `.resize(n, v)` (grow with fill value `v`,
-copied into every slot added, or shrink), `.resize(n)` (shrink only),
-`.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
+such elements, §4.2), `.pop()`, `.pop_n(n)` (drops the last `n` elements
+at once and returns nothing; a negative `n` aborts), `.resize(n, v)` (grow
+with fill value `v`, copied into every slot added, or shrink), `.resize(n)`
+(shrink only), `.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
 limited and resizable arrays of fixed-size elements): the index of the
 element `r` refers to, `(addr − base) / elemsize`. `r` must be rooted at the
 array *exactly* (§9.2), so the division is exact and the result is in range without a runtime check.
@@ -603,7 +617,8 @@ pointee where §4.1 asks for one).
   element), and a reference to a non-fixed value denotes one (`let a =
   c.args;`, with `args: u8[>..]&`, binds what the field refers to, as `.=`
   does). To bind a reference-returning call to a fixed-size value, use `.=`
-  (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`).
+  (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`); a
+  value holding self-relative references cannot be copied at all (§3.9).
   A function whose result type is inferred takes it from a return the same
   way (§7.1). An untyped parameter is an
   anonymous type variable and binds the argument's exact type, reference or
@@ -702,16 +717,31 @@ array/pool* as the location storing it.
   parameter (§8.1, §8.2), an element copy, an `append` of anything but an
   array literal, the value a `format` overload takes by value (§3.7), a
   `resize` fill value, which is copied into every slot it adds even when it
-  is a literal)
+  is a literal, `copy(x)`)
   is a compile error: the copied offsets would still be measured from the
-  source location. Construct such values in place (literals; a field a
+  source location. What a reference names is copied the same way wherever
+  a value destination meets the reference (§3.8, §4.1): `let n = f();`, for
+  an `f` returning `Node&`, copies the node out of the array its links
+  point within, as do a `var`, an annotated declaration, a by-value
+  argument, a return (one whose result type is inferred included), an
+  assignment, a literal's field or element, a pushed element and each
+  reference result of a multi-value binding given it; the error suggests
+  the binding `let n .= f();` (§3.8) where a declaration was likely meant
+  to bind one. Nor may a link be read out of a copy a temporary holds, a
+  popped element or a control construct's value, which copies the value of
+  its branch even where that names storage (§4.1): such a value's fields or
+  elements holding self-relative references are not read, sliced or
+  iterated, a `match` does not bind its payload by reference, and `print`,
+  which renders a reference as its pointee, does not render it, while a
+  scalar field of it reads as usual (`a.pop().v`). Construct such values in
+  place (literals; a field a
   literal's `..` fills takes its type's default, whose links are null and
   whose limited arrays are empty, and is no copy), and bind their
   match payloads, take their variants in case functions and have `format`
   overloads take them by reference: an ADT whose payloads hold them is used
   in variable mode, whose payloads bind by reference where the ADT is not
-  resizable (§3.5). None of these is a copy: a call's result, which is
-  built where it is received where it is not fixed-size (§4.3, §7.3), and
+  resizable (§3.5). None of these is a copy: a call's by-value result, which
+  is built where it is received where it is not fixed-size (§4.3, §7.3), and
   where it is holds no link but `self` and null, a returned literal having
   no other root to point within; a function's named result (§7.3), a local
   every return of the function gives, built at the destination from its
@@ -1094,8 +1124,21 @@ different array: of a reference parameter a caller may bind to the global
 being assigned, say, or through a call into a recursive cycle still being
 checked, which counts as using every global and every variable in scope.
 Where the assignment names the array as a field (`t.chars = …`), the
-right-hand side may still name the holding value's other fields that are
-flat (§1.1): `t.chars = render(t.font)`. A slice or reference into the old
+right-hand side may still name the holding value's other fields that cannot
+lead back to it: flat ones (§1.1), and ones whose references, however many
+it takes, are to storage of no type that can be the assigned location, a
+resizable on the way from it to the array, or hold the value it is a field
+of. `t.chars = render(t.font)` is fine, and so is `s.path = find(s.start)`
+through `s: Walk&` for `struct Walk { start: Cell&, path: Pos[>..] }`, as
+is a reference of such a type bound to a variable first; a field
+`last: Walk&` or `other: Pos[>..]&` may refer to `s` or to `s.path`, and
+naming it is an error. An assignment through a reference field
+(`d.r = …` for `r: u8[>..<]&`) writes the array the field refers to, which
+may lie anywhere an array of its type can, the holding value's other fields
+included: there a field that is, or holds by value, an array of that type
+may be the one assigned (`d.r .= d.own`), and so may what another field
+refers to, so naming either is an error, but for a local whose record shows
+where the reference field may point. A slice or reference into the old
 elements is the shrink rule's to judge (§5.1): the right-hand side runs
 after the shrink the assignment starts with, so one it uses is live there.
 New contents computed from the old are built in a variable of their own and
@@ -1157,10 +1200,10 @@ on the length holds across every `push`.
 
 * `push`/`append` bump the stack.
 * May contain variable-size elements (build strings/ADTs in place, §7.3).
-* Shrinking — `pop`, `resize` downward, `clear` — is legal exactly where the
-  compiler can see that nothing is rooted in the array, under the conditions
-  below. `pop` and `resize` additionally need fixed-size elements, since a
-  sequential array cannot find its last element (§3.3).
+* Shrinking — `pop`, `pop_n`, `resize` downward, `clear` — is legal exactly
+  where the compiler can see that nothing is rooted in the array, under the
+  conditions below. `pop`, `pop_n` and `resize` additionally need fixed-size
+  elements, since a sequential array cannot find its last element (§3.3).
 
 Use grow-only arrays for arenas, pools, string builders, tree storage, and
 scratch buffers that are refilled or popped between phases.
@@ -1187,15 +1230,28 @@ reference or slice variable rooted at the array (a `var` reference the
 same-depth rebinding rule (§9.2) could retarget into it counts, as does one
 not bound yet further down a loop body), and any value that *holds* a
 reference into it — a struct with a reference field, an array of slices, a
-`let` copy of an element of such. Values hold references only where a store
+`let` copy of an element of such, and the struct whose tail the array is,
+through its other fields. Values hold references only where a store
 put them, and every store the checker has seen is on record (§9.2), so this
 half of the test is exact to the store: the error names the holder and the
 line where a reference into the array was stored into it. A value whose type
-cannot hold a reference to anything the array's elements contain by value
-is never a holder, nor is one linked by relative references alone (a node
-pool): those point within their own root. A reference to a slice variable
-or to a holder counts as what it refers to: while the reference is live,
-so is whatever that slice or holder may refer into.
+cannot hold a reference to anything the array's elements contain by value,
+however many references it leads through, is never a holder, nor is one
+linked by relative references alone (a node pool): those point within their
+own root. A reference to a whole array or table is no reference into its
+elements, which a shrink leaves it pointing at: `struct Walk { start: Cell&,
+text: u8[>..]&, path: Pos[>..] }` holds nothing a shrink of `path` frees,
+and `w.path.clear()` through `w: Walk&` may be followed by any use of `w`.
+A view of the elements taken through such a reference is stored, if at all,
+where the holder's type has room for one. The same holds after a whole
+assignment: `s.r = [1, 2]` for `r: u8[>..]&` may be followed by any use of
+`s`. (The right-hand side of a whole assignment is another matter: it runs
+while the array is rebuilt, and may not reach the array at all, §4.4; a
+variable it takes a reference out of counts as holding what that reference
+leads to, but one whose flat fields alone it reads does not.) A reference to a slice variable
+or to a holder, the storage whose tail shrinks among them, counts as what it
+refers to: while the reference is live, so is whatever that slice or holder
+may refer into.
 
 Nor may the shrink free what a `for` loop around it walks (§6.5): each
 reference or slice on the path to its sequence, which the loop loads again
@@ -1234,8 +1290,11 @@ phases, hands out slices of itself freely — "reusable scratch" and
 "structure I can point into" are the same type. The operations
 themselves are the grow-shrink ones: a stack-top move and a length store.
 Assigning the array whole (`a = …`), or a value holding it, replaces its
-elements and is a shrink under the same rule; the right-hand side runs after
-it, so a variable that side names is used after the shrink. `print`, `str`
+elements and is a shrink under the same rule, wherever its location could
+be the receiver of a `clear`: for `s: Stack&`, `s.items = []`,
+`s.items = load(f)` and `s = fresh()` are shrinks of the storage `s`
+names, as `s.items.clear()` is. The right-hand side runs after the shrink,
+so a variable that side names is used after it. `print`, `str`
 and `format` evaluate and render their arguments in order (§3.7), so a
 variable a later argument names is used after a shrink an earlier one makes,
 by a call in it or through a `format` overload rendering it.
@@ -1293,7 +1352,7 @@ again against the pairs the cycle records once the whole cycle is.
 * `pop()` returns the element by value: a reference or slice element as the
   one it is, pointing where it did and as writable as its slot, as reading
   the element would give it (§9.5), since what a temporary holds is not
-  rooted at the temporary (§9.2); `resize`/`clear` allowed, from
+  rooted at the temporary (§9.2); `pop_n`/`resize`/`clear` allowed, from
   anywhere: on a local, through a reference, on a global, on a struct's
   tail. Assigning the array whole is a shrink too.
 * References and slices into it are created like any other (§3.8, §3.10),
@@ -1331,7 +1390,10 @@ again against the pairs the cycle records once the whole cycle is.
   The rule is about references that can point *into* the array:
   one merely rooted at a value that holds one, whose pointee type the
   array's elements cannot contain — a slice key read back out of a
-  dictionary's slots — stores like any other.
+  dictionary's slots — stores like any other, passed to a parameter or
+  not: a `keys: u8[>..]&` read out of a struct with a `u8[>..<]` tail, and
+  a slice a callee makes of the buffer it refers to, are stored as dictionary
+  keys freely.
 * **A shrink is an error while any live variable or value may refer into the
   array** — the test a grow-only shrink applies (§5.1), the values its
   statement still uses, its liveness rule and its call summaries for a shrink
@@ -1373,9 +1435,9 @@ again against the pairs the cycle records once the whole cycle is.
   the same activation initialized to exactly `X.len` of the same path X, or a
   call that is balanced for X. The same path is one variable that cannot be
   rebound (a `var` reference can), then the same fields, none of them a
-  reference. `pop`, `clear`, a resize to anything else, and assigning X or a
-  value holding it whole are not balanced, and neither is a resize to an `m`
-  bound to a writable reference (§4.4): by `&`, `.=`, or a reference parameter,
+  reference. `pop`, `pop_n`, `clear`, a resize to anything else, and assigning
+  X or a value holding it whole are not balanced, and neither is a resize to an
+  `m` bound to a writable reference (§4.4): by `&`, `.=`, or a reference parameter,
   field or binding that is not `const`, in a nested function too, since a write
   through it can lower `m`. Binding `m` to one after a resize back to it is an
   error: that resize has already been judged balanced, while a loop can run the
@@ -2649,6 +2711,29 @@ is code size: the function's body once per version.
 functions with bodies, nested ones and generic ones included (each
 specialization has its versions), and `extern simd fn` is an error.
 
+### 7.13 `inline fn`: inlined whatever its size
+
+```goose
+inline fn project(cam: Camera, p: double3) -> f64, f64, bool { ... }
+```
+
+`inline` asks for the function to be inlined at every call, however big
+it is and however many calls there are. Without it, the implementation
+decides from the function's size and its number of calls, and a function
+called from a hot loop can stay a call because it is called from several
+places.
+
+`inline` has no meaning of its own: a program computes the same with or
+without it. It is a request the implementation may not be able to grant
+at every call. Where Goose cannot inline a function itself (one returning
+several values, §7.3), the C backend asks the C compiler to inline it
+instead. Where inlining is off (`-O0`), every call stays a call.
+
+`inline` is a keyword only directly before `fn`, `recursive` or
+`thread_fn`, so it stays usable as a name. It is an error together with
+`extern` (no body to copy), `export` (its C wrapper calls it), `simd` (a
+caller would run the baseline only), `recursive` and `thread_fn`.
+
 ## 8. ADTs in use
 
 ### 8.1 `match`
@@ -2918,7 +3003,8 @@ Aborts (message + exit; not catchable):
 * a slice pool's `free_slice`/`realloc_slice` with a non-empty slice that is
   not one of its runs, where the checker could not tell (§5.4);
 * limited-array capacity overflow;
-* shrinking below empty (`pop` on an empty array, `resize` to a negative
+* shrinking below empty (`pop` on an empty array, `pop_n` of a negative
+  count or of more elements than the array holds, `resize` to a negative
   length);
 * relative-reference offset overflow at store (only where a root array, or
   a named pool, can span more than the width holds, §3.9);
@@ -3053,7 +3139,10 @@ variable stays its candidate. Then, by where `C`'s own root lies:
    was passed to, or later in a loop around the read -- and where each of
    those was rooted at one variable exactly, at static data, or at the
    storage a parameter's argument holds, the value's roots are theirs
-   instead: a word of `words(buf)` for a local `buf` points into `buf`,
+   instead, but for a variable whose storage cannot hold the value's
+   pointee type, which owns none of what was stored there of that type:
+   an `i64&` read out of a holder that also views a `u8` buffer is not
+   rooted at the buffer. A word of `words(buf)` for a local `buf` points into `buf`,
    exactly, whatever else in scope could hold a `u8`, and a by-value
    parameter holds what its argument did, so a slice of `g.edges` for a
    `g: Graph` parameter is bounded by that argument's root, not by the
@@ -3250,8 +3339,8 @@ What the language gives it, beyond ordinary flow facts (loop headers,
 conditions and their negations, `assert`, match arms):
 
 * **Monotonicity in the type.** A grow-only `[>..]` shrinks only at a `pop`,
-  `resize` or `clear` on the array itself (§5.1), which the analysis sees, so
-  a bound established before a `push` still holds after it. This is a
+  `pop_n`, `resize` or `clear` on the array itself (§5.1), which the analysis
+  sees, so a bound established before a `push` still holds after it. This is a
   guarantee a resizable-array type without the grow-only/grow-shrink split
   cannot offer.
 * **Roots.** Every reference's root is static per specialization (§9.2), so
@@ -3259,8 +3348,8 @@ conditions and their negations, `assert`, match arms):
   reachable only through a global, a capture, or an explicit `&` (§3.8).
 * **Static extents.** `T[k]`'s length and `[..k]`'s capacity are constants.
 * **Total operations.** `%` is Euclidean (§6.2), so a reduction is in range
-  by construction; a completed `pop` proves the array was non-empty, because
-  the empty case aborts.
+  by construction; a completed `pop` proves the array was non-empty, and a
+  completed `pop_n(n)` that `0 <= n <= len`, because the other cases abort.
 
 Known gaps are TODO 0f. Whole-program compilation lets the analysis reach
 across calls: each specialization sees concrete argument roots, a caller's
@@ -3285,11 +3374,27 @@ the caller's own facts about `src` intact.
 ### 11.1 Modules and globals
 
 * One program, compiled whole. `import a.b.c;` includes the file `a/b/c.goose`
-  once, resolved relative to the *main file being compiled*, then in the
-  standard library's directory (`--stdlib <dir>`, else `GOOSE_STDLIB`, else
-  the `stdlib/` of the source tree the compiler was built in); the form
-  `import .a.b;` (leading dot) resolves relative to the *importing file*
-  instead. All declarations are public in v1; a name collision within one
+  once, resolved relative to the root of the *importing file's package*: for
+  the program's own files the directory of the root file being compiled, for
+  a library's modules the library's directory; then, where `a` names a
+  package the root file declared (below), as that package's module
+  `b/c.goose` (`import a;` is its entry `a.goose`); then in the standard
+  library's directory (`--stdlib <dir>`, else `GOOSE_STDLIB`, else the
+  `stdlib/` of the source tree the compiler was built in). A file of the
+  importing package with the name of a declared package is an error. The
+  form `import .a.b;` (leading dot) resolves relative to the *importing
+  file* instead.
+* **Packages** (`docs/design/packages.md`). `import name from "source";`
+  in the *root file* declares the package `name`, a directory holding its
+  entry `name.goose`, and imports that entry; the source is a path relative
+  to the root file (`"./lib"`, `"../lib"`) or a git repository at a ref
+  (`"owner/repo@v1"` on GitHub, `"host/owner/repo@commit"`, or a URL),
+  fetched by the compiler. Only the root file declares packages, so a
+  program's dependencies are flat and in one place. The same form in any
+  other file is a *requirement*: the root must declare a package of that
+  name, from the same source, or compilation fails naming the line to add;
+  a different ref is a warning. One version of a package exists in a
+  program. All declarations are public in v1; a name collision within one
   namespace is an error, except that a global variable and functions may
   share a name (below). Top-level declarations are order-independent.
 * **Namespaces** (docs/design/namespaces.md). `namespace image;`, at most
@@ -3358,7 +3463,8 @@ the caller's own facts about `src` intact.
   (§3.1, §6.3). A
   size, a fill count (`[v; N]`), a match pattern (§8.1) or a use adapting
   an untyped one to another type takes a named constant at its
-  initializer's value, so a `let` it names,
+  initializer's value, and a size takes a `.len` an initializer gives and
+  the type does not fix (§3.3) at that value's length, so a `let` it names,
   directly or through another named constant's initializer, may not also
   be bound to a writable reference anywhere, through which its value could
   change (§4.4): by `&`, `.=`, or a reference parameter, field or binding
@@ -3456,6 +3562,7 @@ The language's own functions:
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
 | `embed_shader(path)` or `embed_shader(stage, source, …) -> const u8[:]` | compile-time GLSL compilation to a static shader blob; graphics extension, detailed in the implementation notes, section 3.14 |
+| `embed_file(path) -> const u8[:]` | the bytes of a file, read when the program is compiled, as a view of static data; `path` is a string literal (or a `let`/`const` global holding one), relative to the file with the call; each distinct file is read once |
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):
@@ -3466,7 +3573,7 @@ And the array members, ordinary functions of their receiver per UFCS
 | `.cap -> i64` | limited arrays | the capacity (§3.3) |
 | `.push(v) -> T&` | limited, grow-only, grow-shrink | one element, constructed in place (§3.3) |
 | `.append(src)` | limited, grow-only, grow-shrink | an array or slice of elements (§3.3) |
-| `.pop() -> T`, `.resize(n, v?)`, `.clear()` | limited, grow-shrink; grow-only where §5.1 allows a shrink | shrinking, and growing with a fill value (§3.3, §5) |
+| `.pop() -> T`, `.pop_n(n)`, `.resize(n, v?)`, `.clear()` | limited, grow-shrink; grow-only where §5.1 allows a shrink | shrinking, and growing with a fill value (§3.3, §5) |
 | `.index_of(r) -> i64` | fixed, limited, grow-only, grow-shrink | the index of the element `r` refers to (§3.3) |
 | `.alloc_index(v) -> i64`, `.alloc_ref(v) -> T&`, `.free(i)` | `reusable` pools | slot reuse (§5.4) |
 | `.alloc_slice(n) -> T[:]`, `.realloc_slice(s, n) -> T[:]`, `.free_slice(s)` | `reusable[]` pools | slice reuse (§5.4) |
@@ -3877,7 +3984,7 @@ unmapped gap after each region turns runaway growth into a safe abort.
 program     := namespace? topdecl*             // imports may precede namespace
 namespace   := "namespace" ident ";"
 topdecl     := import | struct | enum | typealias | fndecl | globaldecl
-import      := "import" "."? ident ("." ident)* ";"
+import      := "import" "."? ident ("." ident)* ";" | "import" ident "from" strlit ";"
 declname    := ident | ident "::" ident | "::" ident   // the namespace, else the file's
 qname       := ident | ident "::" ident | "::" ident   // a declaration reference
 struct      := "struct" declname generics? "{" fieldlist "}"

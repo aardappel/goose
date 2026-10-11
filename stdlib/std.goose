@@ -1078,7 +1078,7 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
     }
 }
 
-// An optionally signed whole-string integer; false on anything else.
+// An optionally signed whole-string integer; false on anything else, including a value outside i64.
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
     var i = 0;
     var neg = false;
@@ -1087,6 +1087,11 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
         i = 1;
     }
     if i >= s.len { return 0, false; }
+    // The magnitude accumulates as a negative number: -2^63 has no positive
+    // counterpart, while every other magnitude has a negative one. `d < base`
+    // is checked first, so `base` is positive in the overflow test; dividing
+    // truncates toward zero, which is the ceiling for these negative bounds.
+    let min = -9223372036854775807 - 1;
     var v = 0;
     while i < s.len {
         let c = s[i] as i64;
@@ -1095,10 +1100,14 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
         else if c >= 'a' && c <= 'z' { d = c - 'a' + 10; }
         else if c >= 'A' && c <= 'Z' { d = c - 'A' + 10; }
         if d < 0 || d >= base { return 0, false; }
-        v = v * base + d;
+        if v < (min + d) / base { return 0, false; }
+        v = v * base - d;
         i += 1;
     }
-    if neg { v = -v; }
+    if !neg {
+        if v == min { return 0, false; }
+        v = -v;
+    }
     return v, true;
 }
 
@@ -1155,13 +1164,15 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         return v, true;
     }
     if digits > 19 {
-        // mant wrapped above: read the same digits again keeping the first
-        // 19, with the exponent counting the integer digits dropped past
-        // them. These loops stop where those did, at i.
+        // mant may have wrapped above: read the digits again keeping the
+        // first 19 significant digits, with the exponent counting integer
+        // digits dropped past them. Leading fractional zeroes only adjust
+        // the exponent. These loops stop where those did, at i.
         mant = 0;
         exp10 = 0;
         var mdigits = 0;
         var j = start;
+        while j < s.len && s[j] == '0' { j += 1; }
         while j < s.len && s[j] - '0' < 10 {
             if mdigits < 19 { mant = mant * 10 + (s[j] - '0'); mdigits += 1; }
             else { exp10 += 1; }
@@ -1169,6 +1180,9 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         }
         if j < s.len && s[j] == '.' {
             j += 1;
+            if mant == 0 {
+                while j < s.len && s[j] == '0' { exp10 -= 1; j += 1; }
+            }
             while j < s.len && s[j] - '0' < 10 {
                 if mdigits < 19 { mant = mant * 10 + (s[j] - '0'); mdigits += 1; exp10 -= 1; }
                 j += 1;

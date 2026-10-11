@@ -7,6 +7,7 @@ lifetime annotations. In this repository's benchmarks, Goose runs faster than
 C++ and Rust while using less memory.
 
 [Tutorial](docs/tutorial.md) · [Specification](docs/goose_spec.md) ·
+[Packages](docs/packages.md) ·
 [Samples](samples/README.md) · [Benchmarks](bench/summary.md) ·
 [Standard library](docs/stdlib.md)
 
@@ -390,94 +391,99 @@ The [summary](bench/summary.md) explains the gains and losses;
 
 ## Build and run
 
-You need CMake 3.20 or later, a C++20 compiler (MSVC, clang or gcc) and Python
-3 for the test and sample runners. Four submodules are optional: TinyCC,
-which the in-process backend is built from, SDL3, which the `gfx` graphics
-module is built from, Box3D, which the `physics` module is built from, and
-Nuklear, which the `ui` module is built from. The compiler builds without
-these submodules, but the corresponding features are unavailable: JIT
-execution, graphics, physics, or windows of widgets.
+You need CMake 3.27 or later, a C++20 compiler (MSVC, clang or gcc) and Python
+3 for the test and sample runners. TinyCC, which the in-process backend is
+built from, is part of the tree. The graphics, audio, ui and physics
+modules are packages in repositories of their own
+([goose_gfx](https://github.com/aardappel/goose_gfx) and
+[goose_physics](https://github.com/aardappel/goose_physics);
+`docs/design/packages.md`): `-DGOOSE_BUILTIN_LIBS=all` fetches them at the
+pinned tags (git, at configure time) and compiles them into the compiler, so
+their programs run with nothing else installed. Without it the compiler
+builds alone, and a program importing one of them has it built into
+`~/.goose` the first time, which needs git, cmake and a C compiler.
 
 ```bash
-git clone --recursive https://github.com/aardappel/goose
+git clone https://github.com/aardappel/goose
 cd goose
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOSE_BUILTIN_LIBS=all
 cmake --build build --config Release
 ```
 
-To leave SDL, Box3D or Nuklear out, clone without `--recursive` and then run
-`git submodule update --init` on the ones wanted, or configure with
-`-DGOOSE_GFX=OFF`, `-DGOOSE_PHYSICS=OFF` or `-DGOOSE_UI=OFF`. On
+`GOOSE_BUILTIN_LIBS` can also name some of the packages (`physics`, or
+`gfx`, which carries `audio` and `ui` too). On
 Linux, SDL needs the X11 or Wayland development packages
 ([`third_party/SDL/docs/README-linux.md`](https://github.com/libsdl-org/SDL/blob/main/docs/README-linux.md));
 without them the build leaves the `gfx` module out and says what to install.
 
 The compiler is `build/goose` (`build/Release/goose.exe` with the Visual Studio
 generator), and it finds the standard library in the source tree it was built
-from. Run a program straight from source, in-process:
+from. Run a program straight from source, in-process (`goose run` says the
+same explicitly, and `goose check` only typechecks):
 
 ```bash
 build/goose samples/01_tour.goose
 ```
 
-Or generate C and build it with whatever compiler is around. Programs that use
-threads need this route, since TinyCC cannot place thread-local storage. The C
-that `-o` writes holds the program and the part of the runtime that inlines
-into it; the rest of the runtime (the OS layer, data stack reservation,
-threads, printing) is one more C file, which `--emit-runtime` writes, to be
-compiled once and linked with every program:
+Or build an executable, which lands beside the source (`-o` puts it
+elsewhere). The compiler finds a C compiler on the machine (`goose toolchain`
+says which: MSVC or clang on Windows, cc, gcc or clang elsewhere; `--cc`
+chooses) and links the generated C with the runtime and whatever native
+modules the program uses, graphics included. Programs that use threads need
+this route, since TinyCC cannot place thread-local storage.
 
 ```bash
-build/goose --emit-runtime goose_runtime.c && cc -O2 -c goose_runtime.c
-build/goose -o tour.c samples/01_tour.goose && cc -O2 tour.c goose_runtime.o -o tour -lm -pthread && ./tour
+build/goose build samples/01_tour.goose && samples/01_tour
+build/goose build samples/27_gfx_cube.goose && samples/27_gfx_cube
 ```
 
-On Windows that is `cl /O2 /c goose_runtime.c` once and `cl /O2 tour.c
-goose_runtime.obj`. Build the runtime with the compiler and flags the programs
-use; it takes no `-D` of its own, and a program from another version of the
-compiler fails to link against it. `--standalone` writes a C file that holds
-the whole runtime instead, and builds on its own (`cc tour.c -o tour -lm
--pthread`). Useful flags: `--check` typechecks without emitting C,
-`-O0`/`-O1`/`-O2` set the inlining level, `--bce-lines` reports the bounds
-checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range and tag
-checks in the generated C, each abort naming its source line (and an overflow
-or a cast the values involved). Every resizable value lives on a data stack
-of 2 GB of reserved address space, committed as it is used: `--stack-reserve
-16G` changes that for a program, `--stacks` reports how many data stacks the
+`--debug` turns on the overflow, range and tag checks in the generated C, each
+abort naming its source line (and an overflow or a cast the values involved),
+and builds the C with debug information; `--dry-run` prints the commands a
+build would run, for a build system of your own; `-v` prints them as they
+run. Intermediates go under `~/.goose` (`GOOSE_HOME`), the runtime object
+compiled once per C compiler. Useful flags of both forms: `-O0`/`-O1`/`-O2`
+set the inlining level (a build defaults to `-O2`, a run to `-O1`),
+`--bce-lines` reports the bounds checks kept per line, and `-DGS_DEBUG=1` is
+what `--debug` defines. Every resizable value lives on a data stack of 2 GB
+of reserved address space, committed as it is used: `--stack-reserve 16G`
+changes that for a program, `--stacks` reports how many data stacks the
 program and each of its workers can take and the cap that puts on
 `hardware_threads()`, and `-DGS_STACK_STATS=1` makes a program report its
 actual use as it ends.
 
+A program with C of its own names it in a sidecar beside the source,
+`foo.build` beside `foo.goose`: `c_sources = ["impl.c"];`, with `c_include`,
+`c_defines`, `c_libs` and `_windows`, `_linux` or `_macos` variants of each
+for one platform's part. Both forms build it: `goose build` links it in,
+and `goose run` builds it into a library the in-process run loads, so an
+`extern fn` reaches it either way. A library does the same with a sidecar
+beside its entry (or names the static library target of its own CMake
+project, `cmake_target = "x";`, which the compiler builds through cmake), and
+a program takes a library with `import name from
+"source";` in its root file: a directory (`"./lib"`), or a git repository
+at a tag or commit (`"owner/repo@v1"` on GitHub, `"host/owner/repo@ref"`),
+fetched into `~/.goose` and built there once per C compiler
+(`docs/design/packages.md`).
+
+Underneath, `goose -o tour.c tour.goose` writes the C, which holds the
+program and the part of the runtime that inlines into it; the rest of the
+runtime (the OS layer, data stack reservation, threads, printing) is one more
+C file, which `goose --emit-runtime goose_runtime.c` writes, to be compiled
+once and linked with every program (`cc -O2 tour.c goose_runtime.o -o tour
+-lm -pthread`; on Windows `cl /O2 tour.c goose_runtime.obj`). Build the
+runtime with the compiler and flags the programs use; it takes no `-D` of its
+own, and a program from another version of the compiler fails to link
+against it. `--standalone` writes a C file that holds the whole runtime
+instead, and builds on its own. A program using `audio`, `gfx`, `physics` or
+`ui` also links that module's layer, which `goose --audio-link msvc|cc`,
+`--gfx-link`, `--physics-link` and `--ui-link` name in a response file (`cc
+cube.c goose_runtime.o -o cube @$(goose --gfx-link cc)`, a ui program's
+before the gfx one it draws through). `goose build --dry-run` prints all of
+this for the program at hand.
+
 A program using `audio` plays procedural mono/stereo PCM through SDL3 without
-opening a graphics window. The optional `GOOSE_AUDIO` build setting is independent
-of `GOOSE_GFX`; generated-C programs link the response file named by
-`goose --audio-link msvc|cc`. See the [audio reference](docs/stdlib.md#audio).
-
-A program using `gfx` also links the graphics layer and SDL, which the compiler
-names in a response file:
-
-```bash
-build/goose samples/27_gfx_cube.goose
-build/goose -o cube.c samples/27_gfx_cube.goose && cc cube.c goose_runtime.o -o cube @$(build/goose --gfx-link cc)
-```
-
-With MSVC that is `cl cube.c goose_runtime.obj @<the path goose --gfx-link msvc
-prints>`. A
-program using `physics` links what `goose --physics-link` names the same way,
-next to the gfx one if it draws too:
-
-```bash
-build/goose samples/28_physics_boxes.goose
-build/goose -o boxes.c samples/28_physics_boxes.goose && cc boxes.c goose_runtime.o -o boxes @$(build/goose --gfx-link cc) @$(build/goose --physics-link cc)
-```
-
-A program using `ui` links what `goose --ui-link` names, with the gfx one,
-since its windows are drawn through gfx:
-
-```bash
-build/goose samples/29_ui_todo.goose
-build/goose -o todo.c samples/29_ui_todo.goose && cc todo.c goose_runtime.o -o todo @$(build/goose --ui-link cc) @$(build/goose --gfx-link cc)
-```
+opening a graphics window. See the [audio reference](docs/stdlib.md#audio).
 
 The test suite and the samples run on Windows, macOS and Linux:
 
@@ -517,11 +523,14 @@ See the [tooling guide](tools/gls/README.md) for usage and the
   boxes raining into a heap and a to-do list in windows of widgets.
 * [Standard library](docs/stdlib.md): fourteen modules, all readable Goose under
   `stdlib/`, including `gfx`, graphics on SDL3's GPU API
-  ([how it is built](docs/design/gfx.md)), `physics`, rigid body physics
-  on Box3D ([how it is built](docs/design/physics.md)), and `ui`, fonts,
+  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md)), `physics`, rigid body physics
+  on Box3D ([how it is built](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md)), and `ui`, fonts,
   [text rendering and game HUDs](docs/stdlib.md#text-rendering-and-game-huds),
   windows and widgets on Nuklear, drawn through gfx
-  ([how it is built](docs/design/ui.md)).
+  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md)).
+* [Building programs and using packages](docs/packages.md): `goose build`,
+  libraries from git repositories or directories, a program's own C, and
+  how to make a package of your own.
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.
 * [Implementation notes](docs/implementation.md): how the compiler works, pass

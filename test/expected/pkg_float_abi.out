@@ -1,0 +1,4 @@
+sphere: true
+mesh: true
+scalars: true
+alignment: true

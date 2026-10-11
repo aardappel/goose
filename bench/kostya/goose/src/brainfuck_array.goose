@@ -94,14 +94,25 @@ fn run_program(source: const u8[:]) -> u32, bool {
     return program.run();
 }
 
-fn run(b: Bench&) -> u32 {
-    let program_text = config_s(b.name, "program");
-    let warmup_text = config_s(b.name, "warmup_program");
-    var result_val: u32 = 0;
-    fn warmup(i: i64) { run_program(warmup_text); }
-    measure_with(b, warmup) { i =>
-        let result, ok = run_program(program_text);
-        if ok { result_val += result; }
-    };
-    return result_val;
+struct BrainfuckArray { program_text: const u8[:], warmup_text: const u8[:], result_val: u32 }
+
+fn new_brainfuck_array() -> BrainfuckArray {
+    BrainfuckArray {
+        program_text: config_s("Brainfuck::Array", "program"),
+        warmup_text: config_s("Brainfuck::Array", "warmup_program"),
+        result_val: 0,
+    }
 }
+
+fn prepare(s: BrainfuckArray&) {}
+
+fn warmup(s: BrainfuckArray&, iterations: i64) {
+    for i in iterations { run_program(s.warmup_text); }
+}
+
+fn run(s: BrainfuckArray&, iteration_id: i64) {
+    let result, ok = run_program(s.program_text);
+    if ok { s.result_val += result; }
+}
+
+fn checksum(s: BrainfuckArray&) -> u32 { s.result_val }

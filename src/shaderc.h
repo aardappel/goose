@@ -1,5 +1,5 @@
 /* The compiler's shader compiler: GLSL in, a gfx shader blob out
-   (src/gfx/gfx_blob.h). Implemented in C by src/shaderc.c over the copied
+   (src/gfx_blob.h). Implemented in C by src/shaderc.c over the copied
    third_party/cute_spirv; always built, with or without SDL, so that a
    program embedding shaders typechecks and emits C the same either way. */
 

@@ -694,7 +694,7 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     cg.EnterDst(si, d);
     // The named result is in front of the value any other return builds.
     if (named) cg.cscopes[si].open0--;
-    cg.GenBlockInner(body, d, first);
+    cg.GenBlockInner(body, d, first, si);
     cg.PopSc();
     cg.ind--;
     cg.L("}");

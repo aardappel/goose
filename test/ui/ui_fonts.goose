@@ -22,9 +22,9 @@ fn num(x: f32) -> u8[>..] {
     return s;
 }
 
-// Nuklear's own copy of ProggyTiny, from the submodule the layer is built from:
-// the suite runs from the repository's top.
-let FONT_FILE = "third_party/nuklear/extra_font/ProggyTiny.ttf";
+// ProggyTiny, one of Nuklear's extra fonts, kept beside this test: the suite
+// runs from the repository's top.
+let FONT_FILE = "test/ui/ProggyTiny.ttf";
 
 fn scaled(what: const u8[:], f: ui::Font) {
     let info = ui::info(f);

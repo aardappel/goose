@@ -7,15 +7,17 @@ data/<name>.args as its arguments, and a sample's C header (<name>.h, see
 call_c) is passed with --include. Timings and machine-dependent facts go to
 stderr, which is not compared.
 
-A sample importing gfx draws off screen here (GOOSE_GFX_HEADLESS), links what
-`goose --gfx-link` names, and is skipped where the compiler has no gfx layer
-or the machine no GPU device. A sample importing audio, physics or ui links what
-`goose --audio-link`, `--physics-link` or `--ui-link` names, and is skipped where the
-compiler has no such layer.
+The baseline profile builds each sample as a user does, with `goose build`,
+which finds the C compiler and the packages' link inputs itself; the sanitize
+profile drives the C compiler here, with the sanitizers' flags. A sample
+importing gfx draws off screen here (GOOSE_GFX_HEADLESS), and a sample
+importing audio, gfx, physics or ui is skipped where the compiler was built
+without that package (`goose toolchain` says), or, for gfx, where the machine
+has no GPU device.
 
-A compiler built with the TinyCC backend also runs every sample a second way,
-in JIT mode -- built and run inside the compiler process, with no C file and no
-external toolchain -- and compares that against the same expected output.
+Every sample also runs a second way, in JIT mode -- built and run inside the
+compiler process, with no C file and no external toolchain -- and is compared
+against the same expected output.
 
 Used by test/run_tests.py; runnable on its own:
   python samples/run_samples.py [--exe path/to/goose] [--bless] [--no-jit] [-j N]
@@ -73,6 +75,7 @@ def main():
         ap.error("the sanitize profile requires Linux and Clang")
 
     tc.setup_console()
+    os.environ["GOOSE_HOME"] = str(tc.REPO_ROOT / "build" / "goose-home")
     # A windowed sample opens no window while it is being tested.
     os.environ["GOOSE_GFX_HEADLESS"] = "1"
     exe = tc.find_goose(args.exe)
@@ -82,17 +85,18 @@ def main():
         tc.use_sanitizer_suppressions()
     # Blessing rewrites the expected outputs from the compiled run, so the
     # JIT comparison against them has nothing to say until that has happened.
-    jit = not args.no_jit and not args.bless and tc.have_jit(exe)
+    jit = not args.no_jit and not args.bless
 
     gendir = tc.REPO_ROOT / "build" / "gen" / args.profile / "samples"
     gendir.mkdir(parents=True, exist_ok=True)
     runtime = tc.GooseRuntime(exe, gendir / "runtime")
     (HERE / "expected").mkdir(exist_ok=True)
 
-    native = {"audio": tc.audio_link(exe, cc) if cc else [],
-              "gfx": tc.gfx_link(exe, cc) if cc else [],
-              "physics": tc.physics_link(exe, cc) if cc else [],
-              "ui": tc.ui_link(exe, cc) if cc else []}
+    # The native modules whose packages the compiler has compiled in: a sample
+    # using another is skipped, so that the suite never has the compiler
+    # fetch and build a package.
+    builtin = tc.builtin_modules(exe)
+    native = {m: m in builtin for m in tc.NATIVE_MODULES}
     gpulock = threading.BoundedSemaphore(args.gpu_jobs) if args.gpu_jobs else None
 
     def gpu(modules):
@@ -112,14 +116,18 @@ def main():
         infile = HERE / "data" / f"{name}.stdin"
         argfile = HERE / "data" / f"{name}.args"
         progargs = argfile.read_text(encoding="utf-8").split() if argfile.exists() else []
-        # The native modules the sample imports, whose layers it links.
+        # The native modules the sample imports.
         modules = tc.native_imports(f.read_text(encoding="utf-8"))
-        libs = [lib for m in modules for lib in native[m]]
         expfile = HERE / "expected" / f"{name}.out"
         gargs = ["-O2"]
         header = HERE / f"{name}.h"
         if header.exists():
             gargs += ["--include", str(header)]
+        # A sample using a native module runs only where its package is
+        # compiled in; the compiler would otherwise build the package.
+        if any(not native[m] for m in modules):
+            nativeskips.append(f.name)
+            return lines, failures, jitskips, nativeskips
         if jit:
             # Same source, same expected output, no C file and no external
             # compiler: the sample built and run inside the compiler process.
@@ -155,9 +163,17 @@ def main():
         if any(not native[m] for m in modules):
             nativeskips.append(f.name)
             return lines, failures, jitskips, nativeskips
-        ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
-                             extra=extra, strict_decls=True, libs=libs, runtime=runtime,
-                             log=gendir / f"{name}.cc.log")
+        if args.profile == "baseline":
+            # Built as a user builds: the compiler finds the C compiler, the
+            # runtime object and the packages' link inputs itself.
+            code, out, err = tc.run_capture([exe, "build", "-O2", "-o", str(efile)] +
+                                            (["--include", str(header)] if header.exists() else []) +
+                                            [str(f)])
+            ok, log = code == 0, out + err
+        else:
+            # The sanitizers' flags go to the C compiler this runner drives.
+            ok, log = cc.compile(cfile, efile, opt=1, extra=extra, strict_decls=True,
+                                 runtime=runtime, log=gendir / f"{name}.cc.log")
         if not ok:
             say("\n".join(log.splitlines()[:8]))
             say(f"FAIL sample-cc {f.name}")

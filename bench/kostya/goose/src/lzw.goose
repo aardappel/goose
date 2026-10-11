@@ -15,6 +15,8 @@ import compress_data;
 
 struct LZWResult { data: u8[>..] }
 
+fn new_lzw_result() -> LZWResult { LZWResult { data: [] } }
+
 // A new string with the bytes of `s`.
 fn new_string(strings: u8[>..]&, s: u8[:]) -> const u8[:] {
     let start = strings.len;
@@ -81,16 +83,26 @@ fn lzw_encode(input: u8[:]) -> LZWResult {
     return result;
 }
 
-fn run_encode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    var encoded = LZWResult { data: [] };
-    var result_val: u32 = 0;
-    measure(b) {
-        encoded = lzw_encode(test_data);
-        result_val += encoded.data.len as! u32;
-    };
-    return result_val;
+// The test data is the caller's (see compress_data).
+struct LZWEncode { size_val: i64, result_val: u32, test_data: u8[>..<]&, encoded: LZWResult }
+
+fn new_lzw_encode(test_data: u8[>..<]&) -> LZWEncode {
+    LZWEncode {
+        size_val: config_i64("Compress::LZWEncode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        encoded: new_lzw_result(),
+    }
 }
+
+fn prepare(s: LZWEncode&) { s.test_data = ::generate_test_data(s.size_val); }
+
+fn run(s: LZWEncode&, iteration_id: i64) {
+    s.encoded = lzw_encode(s.test_data);
+    s.result_val += s.encoded.data.len as! u32;
+}
+
+fn checksum(s: LZWEncode&) -> u32 { s.result_val }
 
 // --- decoding -----------------------------------------------------------------
 
@@ -144,16 +156,45 @@ fn lzw_decode(encoded: LZWResult&) -> u8[>..] {
     return result;
 }
 
-fn run_decode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    // LZWEncode's prepare and run(0).
-    let encoded = lzw_encode(test_data);
-    var decoded: u8[>..] = [];
-    var result_val: u32 = 0;
-    measure(b) {
-        decoded = lzw_decode(encoded);
-        result_val += decoded.len as! u32;
-    };
-    if decoded == test_data { result_val += 100000; }
-    return result_val;
+// The test data and the encoded result are the caller's (see compress_data).
+struct LZWDecode {
+    size_val: i64,
+    result_val: u32,
+    test_data: u8[>..<]&,
+    encoded: LZWResult&,
+    decoded: u8[>..],
+}
+
+fn new_lzw_decode(test_data: u8[>..<]&, encoded: LZWResult&) -> LZWDecode {
+    LZWDecode {
+        size_val: config_i64("Compress::LZWDecode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        encoded: encoded,
+        decoded: [],
+    }
+}
+
+fn prepare(s: LZWDecode&) {
+    s.test_data = ::generate_test_data(s.size_val);
+
+    var encoder_test_data: u8[>..<] = [];
+    var encoder = new_lzw_encode(encoder_test_data);
+    encoder.size_val = s.size_val;
+    encoder.prepare();
+    encoder.run(0);
+
+    // Goose has no move for a growable array: the encoder's result is copied.
+    s.encoded = copy(encoder.encoded);
+}
+
+fn run(s: LZWDecode&, iteration_id: i64) {
+    s.decoded = lzw_decode(s.encoded);
+    s.result_val += s.decoded.len as! u32;
+}
+
+fn checksum(s: LZWDecode&) -> u32 {
+    var res = s.result_val;
+    if s.decoded == s.test_data { res += 100000; }
+    return res;
 }

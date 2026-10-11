@@ -12,8 +12,8 @@ let I32_MAX: i32 = 2147483647;
 
 // --- the graph ------------------------------------------------------------------
 
-// Each adjacency list is a run of the slice pool `edges`, which the
-// benchmark owns, grown by one element per edge.
+// Each adjacency list is a run of the slice pool `edges` (see
+// GraphPathBenchmark), grown by one element per edge.
 //
 // This follows the other implementations' list of growable lists as closely
 // as Goose allows, for the sake of comparing like with like, but it is not
@@ -53,24 +53,43 @@ fn generate_random(graph: Graph&, edges: i32[>..]&) {
     }
 }
 
-// GraphPathBenchmark::prepare: the graph for benchmark `b`'s configuration.
-fn prepare(b: Bench&, edges: i32[>..]&) -> Graph {
-    let vertices = config_i64(b.name, "vertices") as i32;
-    let jumps = config_i64(b.name, "jumps") as i32;
-    let jump_len = config_i64(b.name, "jump_len") as i32;
-    var graph = new_graph(vertices, jumps, jump_len);
-    graph.generate_random(edges);
-    return graph;
+// The reference's GraphPathBenchmark, the base of each search's benchmark:
+// one random graph, made once. The graph ends in a growable array, so it is
+// the last field.
+//
+// The graph's adjacency lists are runs of a slice pool, and a struct can't
+// hold one (a pool is a variable, which pairs the array with its freelist),
+// so the pool is a local of the code that makes the benchmark, declared
+// before it and handed to prepare.
+struct GraphPathBenchmark { result_val: u32, prepared: bool, graph: Graph }
+
+fn new_base() -> GraphPathBenchmark {
+    GraphPathBenchmark { result_val: 0, prepared: false, graph: new_graph(0, 0, 0) }
+}
+
+fn prepare(base: GraphPathBenchmark&, class_name: u8[:], edges: i32[>..]&) {
+    if !base.prepared {
+        let vertices = config_i64(class_name, "vertices") as i32;
+        let jumps = config_i64(class_name, "jumps") as i32;
+        let jump_len = config_i64(class_name, "jump_len") as i32;
+        base.graph = new_graph(vertices, jumps, jump_len);
+        base.graph.generate_random(edges);
+        base.prepared = true;
+    }
 }
 
 // --- Graph::BFS -----------------------------------------------------------------
 
 struct Step { v: i32, dist: i32 }
 
-fn bfs_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
+struct GraphPathBFS { base: GraphPathBenchmark }
+
+fn new_graph_path_bfs() -> GraphPathBFS { GraphPathBFS { base: new_base() } }
+
+fn bfs_shortest_path(s: GraphPathBFS&, start: i32, target: i32) -> i64 {
     if start == target { return 0; }
     var visited: bool[>..] = [];
-    visited.resize(graph.vertices, false);
+    visited.resize(s.base.graph.vertices, false);
     // The queue's front is `head`: std has no deque, and the steps it has
     // handed out stay in place until the search returns.
     var queue: Step[>..] = [];
@@ -80,7 +99,7 @@ fn bfs_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
     while head < queue.len {
         let cur = queue[head];
         head++;
-        for neighbor in graph.adj[cur.v] {
+        for neighbor in s.base.graph.adj[cur.v] {
             if neighbor == target { return cur.dist + 1; }
             if !visited[neighbor] {
                 visited[neighbor] = true;
@@ -91,20 +110,25 @@ fn bfs_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
     return -1;
 }
 
-fn bfs(b: Bench&) -> u32 {
-    reusable[] var edges: i32[>..] = [];
-    let graph = prepare(b, edges);
-    var result_val: u32 = 0;
-    measure(b) { result_val += bfs_shortest_path(graph, 0, graph.vertices - 1) as! u32; };
-    return result_val;
+fn prepare(s: GraphPathBFS&, edges: i32[>..]&) { s.base.prepare("Graph::BFS", edges); }
+
+fn run(s: GraphPathBFS&, iteration_id: i64) {
+    let total_length = s.bfs_shortest_path(0, s.base.graph.vertices - 1);
+    s.base.result_val += total_length as! u32;
 }
+
+fn checksum(s: GraphPathBFS&) -> u32 { s.base.result_val }
 
 // --- Graph::DFS -----------------------------------------------------------------
 
-fn dfs_find_path(graph: Graph&, start: i32, target: i32) -> i64 {
+struct GraphPathDFS { base: GraphPathBenchmark }
+
+fn new_graph_path_dfs() -> GraphPathDFS { GraphPathDFS { base: new_base() } }
+
+fn dfs_find_path(s: GraphPathDFS&, start: i32, target: i32) -> i64 {
     if start == target { return 0; }
     var visited: bool[>..] = [];
-    visited.resize(graph.vertices, false);
+    visited.resize(s.base.graph.vertices, false);
     var stack: Step[>..<] = [];
     var best_path = I32_MAX;
     stack.push(Step { v: start, dist: 0 });
@@ -112,7 +136,7 @@ fn dfs_find_path(graph: Graph&, start: i32, target: i32) -> i64 {
         let cur = stack.pop();
         if visited[cur.v] || cur.dist >= best_path { continue; }
         visited[cur.v] = true;
-        for neighbor in graph.adj[cur.v] {
+        for neighbor in s.base.graph.adj[cur.v] {
             if neighbor == target {
                 if cur.dist + 1 < best_path { best_path = cur.dist + 1; }
             } else if !visited[neighbor] {
@@ -123,13 +147,14 @@ fn dfs_find_path(graph: Graph&, start: i32, target: i32) -> i64 {
     return if best_path == I32_MAX { -1 } else { best_path };
 }
 
-fn dfs(b: Bench&) -> u32 {
-    reusable[] var edges: i32[>..] = [];
-    let graph = prepare(b, edges);
-    var result_val: u32 = 0;
-    measure(b) { result_val += dfs_find_path(graph, 0, graph.vertices - 1) as! u32; };
-    return result_val;
+fn prepare(s: GraphPathDFS&, edges: i32[>..]&) { s.base.prepare("Graph::DFS", edges); }
+
+fn run(s: GraphPathDFS&, iteration_id: i64) {
+    let total_length = s.dfs_find_path(0, s.base.graph.vertices - 1);
+    s.base.result_val += total_length as! u32;
 }
+
+fn checksum(s: GraphPathDFS&) -> u32 { s.base.result_val }
 
 // --- Graph::AStar ---------------------------------------------------------------
 
@@ -140,17 +165,21 @@ fn before(a: Node, b: Node) -> bool {
     a.f_score < b.f_score || (a.f_score == b.f_score && a.vertex < b.vertex)
 }
 
-fn heuristic(v: i32, target: i32) -> i32 { target - v }
+struct GraphPathAStar { base: GraphPathBenchmark }
 
-fn a_star_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
+fn new_graph_path_astar() -> GraphPathAStar { GraphPathAStar { base: new_base() } }
+
+fn heuristic(s: GraphPathAStar&, v: i32, target: i32) -> i32 { target - v }
+
+fn a_star_shortest_path(s: GraphPathAStar&, start: i32, target: i32) -> i64 {
     if start == target { return 0; }
     var g_score: i32[>..] = [];
-    g_score.resize(graph.vertices, I32_MAX);
+    g_score.resize(s.base.graph.vertices, I32_MAX);
     var best_f: i32[>..] = [];
-    best_f.resize(graph.vertices, I32_MAX);
+    best_f.resize(s.base.graph.vertices, I32_MAX);
 
     g_score[start] = 0;
-    let f_start = heuristic(start, target);
+    let f_start = s.heuristic(start, target);
     best_f[start] = f_start;
 
     var open_set: Node[>..<] = [];
@@ -159,11 +188,11 @@ fn a_star_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
     while open_set.len > 0 {
         let current = open_set.heap_pop(before);
         if current.vertex == target { return g_score[current.vertex]; }
-        for neighbor in graph.adj[current.vertex] {
+        for neighbor in s.base.graph.adj[current.vertex] {
             let tentative_g = g_score[current.vertex] + 1;
             if tentative_g < g_score[neighbor] {
                 g_score[neighbor] = tentative_g;
-                let f_new = tentative_g + heuristic(neighbor, target);
+                let f_new = tentative_g + s.heuristic(neighbor, target);
                 if f_new < best_f[neighbor] {
                     best_f[neighbor] = f_new;
                     open_set.heap_push(Node { f_score: f_new, vertex: neighbor }, before);
@@ -174,10 +203,11 @@ fn a_star_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
     return -1;
 }
 
-fn astar(b: Bench&) -> u32 {
-    reusable[] var edges: i32[>..] = [];
-    let graph = prepare(b, edges);
-    var result_val: u32 = 0;
-    measure(b) { result_val += a_star_shortest_path(graph, 0, graph.vertices - 1) as! u32; };
-    return result_val;
+fn prepare(s: GraphPathAStar&, edges: i32[>..]&) { s.base.prepare("Graph::AStar", edges); }
+
+fn run(s: GraphPathAStar&, iteration_id: i64) {
+    let total_length = s.a_star_shortest_path(0, s.base.graph.vertices - 1);
+    s.base.result_val += total_length as! u32;
 }
+
+fn checksum(s: GraphPathAStar&) -> u32 { s.base.result_val }

@@ -1,0 +1,3 @@
+// The native part of cmath2.
+c_sources = ["src/cmath2.c"];
+c_include = ["include"];

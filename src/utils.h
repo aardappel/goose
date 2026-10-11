@@ -90,48 +90,19 @@ inline bool LoadFile(const string &path, string &dest) {
     return read == (size_t)len;
 }
 
+// A path's file name without its directory and extension.
+inline string PathStem(const string &path) {
+    auto base = path.substr(path.find_last_of("/\\") + 1);
+    auto dot = base.find_last_of('.');
+    return dot == string::npos ? base : base.substr(0, dot);
+}
+
 // A Goose source file, without the UTF-8 byte-order mark many Windows
 // editors write at its start (spec §2).
 inline bool LoadSource(const string &path, string &dest) {
     if (!LoadFile(path, dest)) return false;
     if (dest.compare(0, 3, "\xEF\xBB\xBF") == 0) dest.erase(0, 3);
     return true;
-}
-
-// The stdlib modules with a native layer a program calls into, which a JIT
-// run hands it from the compiler's own copies of them.
-struct NativeLayers {
-    bool audio = false;
-    bool gfx = false;
-    bool physics = false;
-    bool ui = false;
-};
-
-// The response file of link inputs a program built from the generated C
-// needs for a stdlib module with a native layer (gfx, physics, ui), which CMake
-// writes: `style` is "msvc" for cl and clang-cl, "cc" for gcc and clang.
-// Looked for in the directory `env` names, for a moved build tree, then in
-// `<module>/` next to the compiler binary, for an installed one, then where
-// CMake wrote it (`built`).
-inline string NativeLinkFile(const string &flag, bool have, const char *missing,
-                             const string &module, const char *env, const char *built,
-                             const string &exedir, const string &style) {
-    if (style != "msvc" && style != "cc")
-        throw CompileError { cat(flag, " takes msvc or cc, not ", style) };
-    if (!have) throw CompileError { missing };
-    auto name = cat("link-", style, ".rsp");
-    vector<string> dirs;
-    if (auto dir = getenv(env)) dirs.push_back(dir);
-    dirs.push_back(cat(exedir, module));
-    if (built) dirs.push_back(built);
-    for (auto &dir : dirs) {
-        auto path = cat(dir, "/", name);
-        if (auto f = fopen(path.c_str(), "rb")) {
-            fclose(f);
-            return path;
-        }
-    }
-    throw CompileError { cat("cannot find ", name, " (set ", env, " to its directory)") };
 }
 
 }  // namespace goose

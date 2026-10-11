@@ -1171,18 +1171,18 @@ inline bool CodeGen::Speculatable(Node *n, bool idxok, bool truth, int &budget) 
         return Speculatable(c->child, idxok, false, budget);
     }
     // An inlined call or a block: scalar bindings and a value.
-    Block *body = nullptr;
-    if (auto ib = Is<InlineBlock>(n)) body = ib->body;
-    else body = Is<Block>(n);
-    if (!body || !body->tail) return false;
-    for (auto st : body->stmts) {
+    Block *block = nullptr;
+    if (auto ib = Is<InlineBlock>(n)) block = ib->body;
+    else block = Is<Block>(n);
+    if (!block || !block->tail) return false;
+    for (auto st : block->stmts) {
         auto vd = Is<VarDecl>(st);
         if (!vd || vd->isglobal || vd->byref || vd->defs.size() != 1 || vd->inits.size() != 1 ||
             !vd->defs[0] || !scalar(vd->defs[0]->type) ||
             !Speculatable(vd->inits[0], idxok, false, budget))
             return false;
     }
-    return Speculatable(body->tail, idxok, truth, budget);
+    return Speculatable(block->tail, idxok, truth, budget);
 }
 
 // Whether the storage n names is there whatever the left operand of && or ||

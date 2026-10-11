@@ -8,12 +8,15 @@ tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
 (`src/runtime/runtime_os.h`), the byte search behind `std`'s `find_any` and
 `find_pair` (`src/runtime/runtime_impl.h`), libm behind `math`, the graphics layer behind
-`gfx` (`src/gfx/`), the physics layer behind `physics` (`src/physics/`) and
-the ui layer behind `ui` (`src/ui/`), and the PCM mixer behind `audio`
-(`src/audio/`), all reached through `extern fn` (spec
-§7.10). The design and its rationale are in `design/stdlib_design.md` (and
-`design/gfx.md` for `gfx`, `design/physics.md` for `physics`, `design/ui.md`
-for `ui`, and `design/audio.md` for `audio`); this is the reference.
+`gfx`, the ui layer behind `ui` and the PCM mixer behind `audio` (the
+[goose_gfx](https://github.com/aardappel/goose_gfx) package) and the physics layer
+behind `physics` (the [goose_physics](https://github.com/aardappel/goose_physics)
+package), repositories of their own, all reached through `extern fn` (spec
+§7.10). The design and its rationale are in `design/stdlib_design.md`, and
+the packages' own [docs/gfx.md](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md),
+[docs/ui.md](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md), [docs/audio.md](https://github.com/aardappel/goose_gfx/blob/main/docs/audio.md) and
+[docs/physics.md](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md);
+this is the reference.
 
 For **text rendering, fonts and game HUDs**, start with
 [`ui`](#text-rendering-and-game-huds), which renders over `gfx`. For external
@@ -281,7 +284,7 @@ let smallest = q.heap_pop();
 fn format_int(out: u8[>..]&, v: i64, base: i64, width: i64, padc: u8)   // base 2..36, right-aligned
 fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, padc: u8)
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, rounded half up; inf/-inf/nan as print writes them
-fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string
+fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
@@ -935,8 +938,8 @@ with the `third_party/SDL` submodule, and a program using it links what `goose
 --gfx-link msvc|cc` prints (a response file: `cl game.c @<it>`, `cc game.c -o
 game @<it>`). A compiler without it still typechecks and generates C for such
 a program; only running it in-process fails. Everything is in namespace `gfx`;
-`samples/27_gfx_cube.goose` is a small complete program, `design/gfx.md` how
-it works.
+`samples/27_gfx_cube.goose` is a small complete program, and the package's
+[docs/gfx.md](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md) says how it works.
 
 **Text rendering is provided by [`ui`](#text-rendering-and-game-huds)**,
 including fonts, positioned text and noninteractive game HUDs. Use
@@ -1250,11 +1253,10 @@ coordinates with (0, 0) at the top left.
 ## audio
 
 Procedural PCM sound effects over SDL3, independent of a window or graphics
-device. `import audio;` uses the `audio::` namespace. Built when SDL is present
-and `GOOSE_AUDIO=ON` (the default), including with `GOOSE_GFX=OFF`. Programs
-built from generated C link the response file named by `goose --audio-link
-msvc|cc`. A compiler without the layer can still typecheck and emit the same C;
-JIT use reports that audio was not built in. See `design/audio.md` for the mixer.
+device. `import audio;` uses the `audio::` namespace. A module of the `gfx`
+package ([goose_gfx](https://github.com/aardappel/goose_gfx)), compiled into the compiler with
+`-DGOOSE_BUILTIN_LIBS=all` and otherwise built on first use; `goose build`
+links it. See the package's [docs/audio.md](https://github.com/aardappel/goose_gfx/blob/main/docs/audio.md) for the mixer.
 
 | Function | Behavior |
 |---|---|
@@ -1326,7 +1328,7 @@ prints (`cl game.c @<it>`, `cc game.c -o game @<it>`; a program using `gfx`
 too adds that one's). A compiler without it still typechecks and generates C
 for such a program; only running it in-process fails. Everything is in
 namespace `physics`; `samples/28_physics_boxes.goose` is a complete program,
-`design/physics.md` how it works.
+and the package's [docs/physics.md](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md) says how it works.
 
 The API is Box3D's under Goose names: `b3Body_GetPosition` is
 `position(body)`, `b3CreateRevoluteJoint` is `create_revolute_joint`, a
@@ -1697,8 +1699,8 @@ submodule, and a program using it links what `goose --ui-link msvc|cc`
 prints, with gfx's if it renders through gfx (`cl app.c @<ui> @<gfx>`). A
 compiler without it still typechecks and generates C for such a program;
 only running it in-process fails. Everything is in namespace `ui`;
-`samples/29_ui_todo.goose` is a complete program, `design/ui.md` how it
-works.
+`samples/29_ui_todo.goose` is a complete program, and the package's
+[docs/ui.md](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md) says how it works.
 
 The API is Nuklear's under Goose names: `nk_button_label` is
 `button_label`. Immediate mode means each frame the program says which

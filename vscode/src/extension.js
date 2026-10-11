@@ -155,7 +155,7 @@ function activate(context) {
     function makeTask(definition, uri, scope, name) {
         if (!vscode.workspace.isTrusted || uri.scheme !== 'file') return undefined;
         const config = settings(vscode, uri, definition, typeof scope === 'object' ? scope : undefined);
-        const titles = { check: 'Check Program', run: 'Run with JIT', generateC: 'Generate C' };
+        const titles = { check: 'Check Program', run: 'Run with JIT', build: 'Build Executable', generateC: 'Generate C' };
         if (!titles[definition.action]) return undefined;
         const task = new vscode.Task({ ...definition, type: 'goose', file: config.file },
             scope || config.workspaceFolder || vscode.TaskScope.Workspace,
@@ -234,7 +234,7 @@ function activate(context) {
             const completed = await queue.schedule(settings(vscode, doc.uri), 0);
             if (completed) output.show(true);
         }),
-        ...['run', 'generateC'].map(action => vscode.commands.registerCommand(`goose.${action}`, async () => {
+        ...['run', 'build', 'generateC'].map(action => vscode.commands.registerCommand(`goose.${action}`, async () => {
             const doc = await savedActiveDocument();
             if (doc) await vscode.tasks.executeTask(makeTask({ type: 'goose', action }, doc.uri));
         })),
@@ -242,14 +242,14 @@ function activate(context) {
             provideTasks() {
                 if (!vscode.workspace.isTrusted) return [];
                 const doc = vscode.window.activeTextEditor?.document;
-                if (doc && isGoose(doc)) return ['run', 'check', 'generateC'].map(action => makeTask({ type: 'goose', action }, doc.uri));
+                if (doc && isGoose(doc)) return ['run', 'check', 'build', 'generateC'].map(action => makeTask({ type: 'goose', action }, doc.uri));
                 // A configured program is runnable even when another editor (or
                 // just the Run view) has focus.
                 return (vscode.workspace.workspaceFolders || []).flatMap(folder => {
                     const entry = vscode.workspace.getConfiguration('goose', folder.uri).get('entryFile', '');
                     if (!entry) return [];
                     const uri = vscode.Uri.file(absolute(entry, folder.uri.fsPath, ''));
-                    return ['run', 'check', 'generateC'].map(action => makeTask({ type: 'goose', action }, uri, folder));
+                    return ['run', 'check', 'build', 'generateC'].map(action => makeTask({ type: 'goose', action }, uri, folder));
                 });
             },
             resolveTask(task) {

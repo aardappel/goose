@@ -69,7 +69,7 @@ async function run() {
     assert.ok(hoverContent.includes('Runs **helper**.'), 'hover preserves documentation Markdown');
     assert.ok(!hoverContent.includes('helper();'), 'hover excludes implementation code');
     const tasks = await vscode.tasks.fetchTasks({ type: 'goose' });
-    for (const action of ['check', 'run', 'generateC']) {
+    for (const action of ['check', 'run', 'build', 'generateC']) {
         const task = tasks.find(item => item.definition.action === action);
         assert.ok(task, action);
         assert.ok(task.execution instanceof vscode.ProcessExecution);

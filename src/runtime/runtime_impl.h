@@ -21,6 +21,7 @@ static const char *gs_errmsgs[] = {
     "invalid slice length",
     "slice not from this pool",
     "non-null relative reference encodes as null",
+    "pop_n count negative or beyond the array's length",
 };
 
 GS_API GS_NORETURN void gs_panic(const char *msg) {
@@ -943,12 +944,10 @@ static int64_t gs_scan_pair_bytes(const uint8_t *p, int64_t np, const gs_byteset
 #include <cpuid.h>
 #endif
 #if defined(__GNUC__) || defined(__clang__)
-#define GS_INLINE __attribute__((always_inline)) inline
 /* clang and gcc compile pshufb only into a function that asks for it. */
 #define GS_SSSE3 __attribute__((target("ssse3")))
 #define gs_ctz32(x) __builtin_ctz(x)
 #else
-#define GS_INLINE __forceinline
 #define GS_SSSE3
 static int gs_ctz32(unsigned x) {
     unsigned long i;

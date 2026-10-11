@@ -44,11 +44,13 @@ function settings(vscode, uri, definition = {}, taskFolder) {
 }
 
 function argumentsFor(action, config) {
-    const args = config.stdlib ? ['--stdlib', config.stdlib] : [];
+    // `goose build` is a verb, which comes first; the rest are flags.
+    const args = action === 'build' ? ['build'] : [];
+    if (config.stdlib) args.push('--stdlib', config.stdlib);
     if (action === 'check') args.push('--check', ...(config.module ? ['--module'] : []));
     else if (action === 'run') args.push('--jit');
     else if (action === 'generateC') args.push('-o', config.output);
-    else throw new Error(`Unknown Goose task action: ${action}`);
+    else if (action !== 'build') throw new Error(`Unknown Goose task action: ${action}`);
     args.push(config.file);
     if (action === 'run' && config.runArguments.length) args.push('--', ...config.runArguments);
     return args;

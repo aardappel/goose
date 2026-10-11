@@ -477,17 +477,17 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
         }
     }
     auto ret = SigRet(sp);
-    vector<string> vnames(SIMD_LEVELS + 1);
+    vector<string> versions(SIMD_LEVELS + 1);
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
-        vnames[lv] = Unique(cat(name, "_simd", lv));
+        versions[lv] = Unique(cat(name, "_simd", lv));
         Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
-               vnames[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
+               versions[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
     }
     Append(code, "static ", ret, " ", name, "(", params, ") {\n",
            "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         if (lv > 1) Append(code, "#if GS_SIMD >= ", lv, "\n");
-        auto call = cat(vnames[lv], "(", args, ")");
+        auto call = cat(versions[lv], "(", args, ")");
         if (ret == "void") Append(code, "    case ", lv, ": ", call, "; return;\n");
         else Append(code, "    case ", lv, ": return ", call, ";\n");
         if (lv > 1) Append(code, "#endif\n");

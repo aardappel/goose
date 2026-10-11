@@ -129,17 +129,24 @@ fn create_bodies() -> Planet[5] {
     ];
 }
 
-fn run(b: Bench&) -> u32 {
-    var bodies = create_bodies();
-    offset_momentum(bodies);
-    let v1 = energy(bodies);
-    measure(b) {
-        let nbodies = bodies.len;
-        let dt = 0.01;
-        for n in 1000 {
-            for i in nbodies { bodies[i].advance(bodies[i + 1..], dt); }
-        }
-    };
-    let v2 = energy(bodies);
-    return (checksum_f64(v1) << 5) & checksum_f64(v2);
+struct Nbody { bodies: Planet[5], v1: f64 }
+
+fn new_nbody() -> Nbody { Nbody { bodies: create_bodies(), v1: 0.0 } }
+
+fn prepare(s: Nbody&) {
+    offset_momentum(s.bodies);
+    s.v1 = energy(s.bodies);
+}
+
+fn run(s: Nbody&, iteration_id: i64) {
+    let nbodies = s.bodies.len;
+    let dt = 0.01;
+    for n in 1000 {
+        for i in nbodies { s.bodies[i].advance(s.bodies[i + 1..], dt); }
+    }
+}
+
+fn checksum(s: Nbody&) -> u32 {
+    let v2 = energy(s.bodies);
+    return (checksum_f64(s.v1) << 5) & checksum_f64(v2);
 }

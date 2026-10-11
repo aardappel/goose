@@ -1,40 +1,15 @@
-// The compiler's side of the optional graphics module (stdlib/gfx.goose):
-// compiling the shaders `embed_shader` embeds, and -- when SDL3 was built in
-// -- handing the gfx layer's C functions to a JIT run.
-//
-// Shader compilation (src/shaderc.c) is always built: a program using gfx
-// typechecks and emits the same C with or without SDL. Only running one in
-// this process needs the layer itself, which is what `have_gfx` says.
+// The compiler's side of graphics: compiling the shaders `embed_shader`
+// embeds into a program, for the gfx package (packages/gfx) or any other
+// graphics library that reads the blob. Shader compilation (src/shaderc.c)
+// is always built: a program using gfx typechecks and emits the same C
+// whether or not the package is compiled in.
 
 #pragma once
 
 #include "shaderc.h"
-#include "gfx/gfx_blob.h"
+#include "gfx_blob.h"
 
 namespace goose {
-
-#ifdef GOOSE_HAVE_GFX
-inline constexpr bool have_gfx = true;
-#else
-inline constexpr bool have_gfx = false;
-#endif
-
-// What running a gfx program in this process says when the layer is not
-// built in. The test runners report it as a skip.
-inline const char *no_gfx_error = "this compiler was built without SDL3; check out "
-                                  "third_party/SDL and reconfigure";
-
-// The response file of link inputs a program built from the generated C
-// needs to use gfx (cmake/gfx.cmake), for --gfx-link.
-inline string GfxLinkFile(const string &exedir, const string &style) {
-    #ifdef GOOSE_GFX_LINK_PATH
-        const char *built = GOOSE_GFX_LINK_PATH;
-    #else
-        const char *built = nullptr;
-    #endif
-    return NativeLinkFile("--gfx-link", have_gfx, no_gfx_error, "gfx", "GOOSE_GFX_LINK", built,
-                          exedir, style);
-}
 
 // The stage embed_shader("frag", source) names, which is also the extension
 // of a shader file for it; -1 for none.
@@ -61,7 +36,7 @@ inline string EmbeddedShaderPath(const string &from, string_view lit) {
     return cat(pos == string::npos ? string() : from.substr(0, pos + 1), lit);
 }
 
-// The blob (src/gfx/gfx_blob.h) for the GLSL `source` of a shader for
+// The blob (src/gfx_blob.h) for the GLSL `source` of a shader for
 // `stage`, which `path` names in messages and `#include` resolves relative
 // to. A shader that does not compile is a CompileError carrying the shader
 // compiler's message: "path:line: error: ..." for one at a line of

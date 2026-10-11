@@ -254,8 +254,10 @@ constant (§2): `format(out, 'x')` appends `120`, and a byte goes in with
 | `stdlib/os.goose` | `std` | files, stdio, arguments, environment, time, sleep, entropy | `extern fn`, runtime C in `src/runtime/runtime_os.h` |
 
 `import std;` is explicit; nothing is auto-imported. The compiler resolves
-`import std;` by looking, in order, in the main file's directory (spec
-§11.1), in `--stdlib <dir>` or `GOOSE_STDLIB` if given, and then by walking
+`import std;` by looking, in order, in the importing file's package root
+(spec §11.1: the main file's directory for the program's own files, the
+library's directory for a library module), in `--stdlib <dir>` or
+`GOOSE_STDLIB` if given, and then by walking
 up from its own executable's directory looking for `stdlib/std.goose` (three
 levels), so `build/Debug/goose.exe`, `build/goose`, `bin/goose.exe` and an
 installed `<prefix>/bin/goose` beside `<prefix>/stdlib` all find it without

@@ -5,14 +5,13 @@ How the TinyCC backend works and its remaining limitations.
 ## What it is
 
 The compiler's normal output is C, written to a file for another compiler to
-build. Where the `third_party/tinycc` submodule was checked out at configure
-time, the compiler also embeds TinyCC, and giving no `-o` compiles that same C
+build. The compiler also embeds TinyCC, and giving no `-o` compiles that same C
 into the compiler's own process and calls its `main` there. No file is written
 and no C toolchain has to be installed.
 
     goose 01_tour.goose            # compiled and run in one process
     goose -o tour.c 01_tour.goose  # the C file, as before
-    goose --jit prog.goose         # ask for it explicitly; fails if not built in
+    goose --jit prog.goose         # the same, asked for explicitly
 
 Both modes use identical generated C for the program. Around it, the JIT run
 compiles the whole runtime in the same unit, as `--standalone` writes it, where
@@ -31,8 +30,10 @@ limit the process started with (`ulimit -s`).
 
 ## How it is built
 
-TinyCC has a configure script and a makefile, neither reachable from CMake on
-all three platforms, so `cmake/libtcc.cmake` produces what they would have:
+TinyCC's sources are vendored under `third_party/tinycc`, whose `README.md`
+records the upstream commit; every compiler is built with them. TinyCC has a
+configure script and a makefile, neither reachable from CMake on all three
+platforms, so `cmake/libtcc.cmake` produces what they would have:
 
 * a `config.h` with the version, the target, and the machine triplet Debian
   family systems need to find the C library;
@@ -48,10 +49,6 @@ Those, TinyCC's runtime headers, and on Windows the `.def` files naming what the
 system DLLs export, are staged into one directory, which is what the compiler
 hands `tcc_set_lib_path()`. `GOOSE_TCCLIB` overrides it; a `tcclib` directory
 beside the compiler binary wins over the build tree it was configured in.
-
-`-DGOOSE_LIBTCC=OFF` builds without the backend even with the submodule present,
-which is also what a checkout without the submodule gets. That compiler writes
-the `.c` file when given no `-o`, as it always did.
 
 ## Testing
 
@@ -128,12 +125,10 @@ build without `windows.h`.
 
 ### macOS
 
-The build follows TinyCC's per-target object lists and CI now checks the
-submodule out on all three platforms, but the macOS path has not been run here.
-Apple silicon is the least exercised of the three: Mach-O output, and a JIT that
-has to ask the kernel for writable-then-executable memory. If it does not build,
-the choice is between fixing the object list and checking the submodule out on
-Linux and Windows only.
+The build follows TinyCC's per-target object lists and CI builds it on all
+three platforms, but the macOS path has not been run here. Apple silicon is
+the least exercised of the three: Mach-O output, and a JIT that has to ask
+the kernel for writable-then-executable memory.
 
 ### Compilation is not cached
 

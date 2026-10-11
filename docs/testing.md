@@ -17,6 +17,15 @@ of work, and the suite takes about as long as it does. `--gpu-jobs N` limits
 how many gfx programs run at once within each runner, should a GPU driver not
 take many headless devices at a time; by default nothing limits them.
 
+The log comes in sections (parse, roundtrip and typecheck; generated C;
+JIT runs; `errors_tc/`; samples; ...), each ending in a line counting its
+checks, `== typecheck errors (...): 1668 ok`. What a section prints besides
+its ok lines shows in place, under the section's title: a failure with what
+led to it, and the skips. `-v` prints a line for every check that passed as
+well. Under GitHub Actions those lines are kept in a collapsed group per
+section, closed before anything else prints. After the log, the FAIL lines
+repeat with the titles of their sections, as GitHub annotations there.
+
 The compiler runs per fixture are as few as the checks allow. One run,
 `goose --roundtrip --check`, parses, checks that the dump parses again to
 the same dump, and typechecks (with `--bce-test` where the fixture has
@@ -73,7 +82,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `run_tests.py` | The Python test runner. |
 | `compiler_roots.cpp` | Root-set join laws, feedback on weakening, order-independent equality and the deliberate comparison projections; compiled and run in both native profiles. |
 | `resource_paths.py` | JIT entry-source resource roots, native executable roots with separate and standalone runtimes, relocation, and unchanged working-directory file access. Called by the main runner. |
-| `api_check.py` | Checks `stdlib/gfx.goose`, `stdlib/physics.goose` and `stdlib/ui.goose` against their C layers' headers; run by `run_tests.py`. |
+| `runtime_cache.py`, `runtime_cache_cc.c` | Concurrent first builds share one completed runtime object; a failed compile cannot poison the cache, retry and reuse work, and dry runs leave the cache untouched. A controlled C compiler exercises both driver flag styles in debug and release configurations. Called by the main runner. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
 run through their entry programs. `goose_in_goose/` is handled separately as one
@@ -123,9 +132,10 @@ mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits and children outliving their parents. It runs in both
 profiles. The normal suite also checks user-visible worker error diagnostics.
 
-The `gfx/` tests exercise the SDL3 graphics module (`docs/design/gfx.md`). They
+The `gfx/` tests exercise the gfx package (https://github.com/aardappel/goose_gfx,
+its `docs/gfx.md`). They
 always parse, typecheck and generate C. When the compiler includes the gfx layer
-(built from the `third_party/SDL` submodule), the tests also link against the
+(configured with the package, `GOOSE_BUILTIN_LIBS`), the tests also link against the
 libraries listed by `goose --gfx-link` and run at -O0 and -O2 and through
 TinyCC. They render headless into textures and read back only pixel-aligned
 results, so their output is the same on every backend and GPU; a machine with no
@@ -134,15 +144,16 @@ does a compiler without the layer. Linux CI runs them on Mesa's lavapipe. The
 runners set `GOOSE_GFX_HEADLESS=1`, so no test or sample opens a window. The
 hidden `--compile-shader` flag is probed on `gfx/probe.frag`.
 
-The `physics/` tests exercise the Box3D physics module
-(`docs/design/physics.md`) in the same way. They always generate C. When the
-compiler includes the physics layer from `third_party/box3d`, they link using
-`goose --physics-link` and run at -O0 and -O2 and through TinyCC. Box3D
+The `physics/` tests exercise the physics package
+(https://github.com/aardappel/goose_physics) in the same way. They always
+generate C. When the compiler was configured with the package
+(`GOOSE_BUILTIN_LIBS`), `goose build` links them and they run at -O0 and
+-O2 and through TinyCC. Box3D
 is deterministic across platforms and worker counts, so they print physics
 results, rounded, and compare them exactly. Between them they call every
 function of the layer.
 
-The `ui/` tests exercise the Nuklear ui module (`docs/design/ui.md`) in the
+The `ui/` tests exercise the ui module of the gfx package (its `docs/ui.md`) in the
 same way, linking `goose --ui-link` and, for the one that renders through
 gfx, `goose --gfx-link` too: a test needs the layers of its own category and
 of every module it imports, and is skipped where one is missing. They drive a
@@ -151,9 +162,8 @@ drawn; `ui_render` draws through headless gfx and reads back pixels only
 where the ui drew solid color. Between them they call every function of the
 layer.
 
-`api_check.py` compares the functions, structs, and constants in
-`stdlib/gfx.goose`, `stdlib/physics.goose` and `stdlib/ui.goose` with their C
-headers. This catches
+Each package's own `test/api_check.py` compares the functions, structs, and
+constants in its modules with their C headers. This catches
 interface mismatches that can compile successfully on both sides. It also
 rejects a struct the layer passes by value that TinyCC would pass differently
 from the C compilers on System V x86-64: one of at most 16 bytes with a
@@ -167,11 +177,9 @@ platform, checks what the program reports about its own readbacks, and decodes
 the screenshots it saves (under `build/gfx-window/`) to check them for detail
 and compare them across runs.
 
-The TinyCC runs need the `third_party/tinycc` submodule at configure time; a
-compiler built without it skips them, and the runners find that out by running
-a one-line program rather than by asking the build. They are also skipped under
-the sanitizers, where the program runs uninstrumented inside an instrumented
-compiler and still holds its runtime allocations when that compiler exits.
+The TinyCC runs are skipped under the sanitizers, where the program runs
+uninstrumented inside an instrumented compiler and still holds its runtime
+allocations when that compiler exits.
 A test the backend cannot run yet is reported as a skip, not a failure: either
 because the compiler refuses the program outright (`JIT mode does not support`)
 or because the test's first line says `no-jit`. Prefer portable assertions to

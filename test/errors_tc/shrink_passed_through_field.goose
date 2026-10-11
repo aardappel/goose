@@ -1,6 +1,7 @@
-// error: cannot call f: it may shrink an array p leads to while s is still used, and s may refer into it
+// error: cannot call f: it may shrink a while s is still used, and s may refer into a
 // A pop through a reference that the parameter's pointee holds frees an
-// array the argument's root only bounds (§5.2, §9.2).
+// array the argument's root only bounds (§5.2, §9.2): the error names the
+// array s views.
 struct P { y: i64[>..<]& }
 fn f(pp: P&, s: i64[:]) {
     pp.y.pop();

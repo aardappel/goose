@@ -246,10 +246,14 @@ inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root, bool growonly, T
 // classread) may point into, or lead to, what a shrink of the grow-only
 // array at root frees, of type `bound` where root only bounds it: where the
 // activation's own stores into that storage say (HolderMayPointInto), the
-// stores its callers made there being theirs to judge (NoteLiveViews).
-inline bool TypeCheck::ClassReadMayPointInto(VarDef *cls, VarDef *root, TypeExpr *bound) {
+// stores its callers made there being theirs to judge (NoteLiveViews). What
+// a rendering walks in place (`inplace`) follows a reference to a whole
+// resizable value into it.
+inline bool TypeCheck::ClassReadMayPointInto(VarDef *cls, VarDef *root, TypeExpr *bound,
+                                             bool inplace) {
     auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
     Line where;
+    PathsScope ps(*this, inplace);
     return HolderMayPointInto(cls, root, arrtype, LiveEventBase(cls), &where);
 }
 
@@ -315,9 +319,15 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
     vector<TypeExpr *> pointees;
     if (growonly) ReachedThroughRefs(sub, pointees);
     else RefPointees(sub, pointees);
+    // Those are all the references the pointee leads to, so a view derived
+    // from one lies in a slot of one of those types too. A reference to a
+    // whole resizable value is the path to it, which no array's elements
+    // hold (§3.3): it is left valid by the shrink, and leads into the array
+    // only through the views derived from it (but where pathslive).
     auto freed = false;
     for (auto pt : pointees)
-        freed = freed || ShrinkMayFree(root, bound, growonly, pt, byteview && IsU8(pt));
+        freed = freed || ((pathslive || ClassOf(pt) != SC_RESIZABLE) &&
+                          ShrinkMayFree(root, bound, growonly, pt, byteview && IsU8(pt)));
     if (!freed) return false;
     if (v && !v->refrootknown) return !UnboundIsBottom() && Depth(v) >= Depth(root);
     for (auto &a : p.alts) {
@@ -329,7 +339,12 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
             if (ClassReadMayPointInto(r, root, bound)) return true;
             continue;
         }
-        if (r == root) return true;
+        auto holder = growonly && (slice || sub->kind != TY_SLICE) && r && !r->isglobal &&
+                      a.exact && (r->type || IsClassRoot(r)) && !slot && !(v && v->isvar);
+        // A reference to the storage that shrinks, the path to the array
+        // included, leads to what the stores into that storage put there,
+        // which its record says as for any other holder.
+        if (r == root && (!holder || slice || bound)) return true;
         if (growonly && (slice || sub->kind != TY_SLICE)) {
             // A global holder, or static data, holds views of globals only,
             // and a shrink of a global judges what every global holds
@@ -340,7 +355,7 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
             // caller's array whose elements a slice views -- of what the
             // activation stored there: what the callers did they judge,
             // from the pair NoteLiveViews keeps (LiveShrink::contents).
-            if (a.exact && (r->type || IsClassRoot(r)) && !slot && !(v && v->isvar)) {
+            if (holder) {
                 auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
                 Line where;
                 if (HolderMayPointInto(r, root, arrtype, LiveEventBase(r), &where)) return true;
@@ -1478,6 +1493,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                                             " ", arm.pat.binder));
                     binder->type = ast.RefTo(vt, m->line);
                     BindProv(binder, sv);
+                    ReadBack held;
+                    if (TempContents(sv, held)) NoRelRefTempRead(m->scrutinee, enumtype, vt);
                 } else {
                     if (HasRelRefT(vt))
                         Error(arm.body, cat("payload of ", found->name, " contains "
@@ -1867,6 +1884,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
                              "loop's binder is for an integer range or count"));
             auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
             elemtype = elem;
+            if (intemp) NoRelRefTempRead(x->iter, t, elem);
             x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
             // Non-fixed elements bind by reference either way (§4.1).
             if (x->byref && ClassOf(elem) != SC_FIXED) {
@@ -2138,6 +2156,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (t->kind == TY_FN)
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
         d->type = t;
+        if (global) CheckVarExtent(d, vd);
         if (v && IsRefOrSlice(t)) {
             BindRefProvenance(d, *v);
             if (t->cq) d->ref.writable = false;
@@ -2195,6 +2214,11 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // as a single binding's does, unless the declaration binds by
             // reference (`.=`); one to a non-fixed value binds it (§4.1).
             auto rv = vd->byref || IsNonFixedRef(rets[i]) ? rets[i] : DecayRef(rets[i]);
+            // A decayed reference result is a copy of its pointee, while a
+            // value result is built where it is received, from_bytes' array
+            // included (NoRelRefCopy).
+            if (IsPlainRef(rets[i].type) && !IsRefOrSlice(rv.type))
+                NoRelRefCopy(vd->inits[0], rv.type, i, vd, &rv);
             CheckBindingRoot(d, rv, vd->inits[0]);
             Finish(d, rv.type, &rv, vd->inits[0]);
         }
@@ -2265,7 +2289,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (v.isnull && !ann)
             Error(vd->inits[i], "null needs an annotated optional type");
         if (!ann) {
-            NoRelRefCopy(vd->inits[i], v.type);
+            NoRelRefCopy(vd->inits[i], v.type, 0, vd, &v);
             CheckBindingRoot(d, v, vd->inits[i]);
         }
         d->assigned = d->maybeassigned = true;
@@ -2351,11 +2375,20 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
 // which anything still pointing into it rejects (§5.1, §5.2) -- and the new
 // ones are built over them, so the assignment is a growth of it as well; the
 // value then runs with that array under construction, which nothing it does
-// may grow (§1.3(4)) or even use (§4.4).
+// may grow (§1.3(4)) or even use (§4.4): a reference to the whole array that
+// it follows through a variable it takes one out of leads into the array
+// being built (rebuilding, ExposedLater).
 inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr,
                                          const Roots &built, Dest dest) {
     if (arr) {
-        ShrinkThrough(a, "assign", ExprStr(a->lval), built, target);
+        {
+            struct Restore {
+                bool &flag, saved;
+                ~Restore() { flag = saved; }
+            } restore { rebuilding, rebuilding };
+            rebuilding = true;
+            ShrinkThrough(a, "assign", ExprStr(a->lval), built, target);
+        }
         NoteGrow(a, built, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
@@ -2363,7 +2396,7 @@ inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *
     auto v = CheckValueAt(a->rhs, target, dest);
     if (arr && !built.None()) {
         CheckGrowsSince(base, built, cat("the value assigned to ", ExprStr(a->lval)));
-        CheckBuiltUses(a->rhs, a->lval, built, arr);
+        CheckBuiltUses(a->rhs, a->lval, target, built, arr);
     }
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
@@ -2456,11 +2489,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     auto arr = ResizableArrayIn(target);
     if (arr && (!lv.var || lv.var->assigned)) {
         if (lv.var) built.Set(lv.var, true); else built = lv;
-        if (arr->arr->akind == A_GROW &&
-            (built.None() || built.Any([](const RootAlt &r) { return !r.root || !r.root->type; })))
-            Error(a, "cannot assign a grow-only array through a reference: a shrink of "
-                     "a grow-only array applies to a local of the function that owns "
-                     "it (§5.1)");
+        if (arr->arr->akind == A_GROW) GrowOnlyAssignKnown(a, built, arr == target);
     } else {
         arr = nullptr;
     }
@@ -2563,12 +2592,9 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
         Error(a, "varint fields are written only at construction (§3.6)");
     AssignableClassCheck(pt, a);
     auto arr = ResizableArrayIn(pt);
-    if (arr && arr->arr->akind == A_GROW)
-        Error(a, cat("cannot assign ", arr == pt ? "a grow-only array" : "a value holding a "
-                     "grow-only array", " through a reference: a shrink of a grow-only "
-                     "array applies to a local of the function that owns it (§5.1)"));
     Roots built;
     if (arr) built = at;
+    if (arr && arr->arr->akind == A_GROW) GrowOnlyAssignKnown(a, built, arr == pt);
     Dest dest(at, false, at.reached);
     dest.slot = pt->kind == TY_SLICE;
     CheckAssignedValue(a, pt, arr, built, dest);

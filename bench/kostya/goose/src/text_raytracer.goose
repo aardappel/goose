@@ -84,49 +84,56 @@ fn diffuse_shading(pi: Vector, obj: Sphere, light: Light) -> Color {
     return light_color + obj_color;
 }
 
-fn run(b: Bench&) -> u32 {
-    let w = config_i64(b.name, "w");
-    let h = config_i64(b.name, "h");
-    var result_val: u32 = 0;
+struct TextRaytracer { w: i32, h: i32, result_val: u32 }
 
-    measure(b) {
-        let fw = w as f64;
-        let fh = h as f64;
-
-        for j in h {
-            for i in w {
-                let fi = i as f64;
-                let fj = j as f64;
-
-                let ray = Ray {
-                    orig: Vector { 0.0, 0.0, 0.0 },
-                    dir: Vector { (fi - fw / 2.0) / fw, (fj - fh / 2.0) / fh, 1.0 }.normalize(),
-                };
-
-                // An optional is a nullable reference rather than a value, so
-                // the hit found, if any, is a Hit and a flag.
-                var hit = Hit { .. };
-                var has_hit = false;
-
-                for obj in SCENE {
-                    let tval, found = intersect_sphere(ray, obj.center, obj.radius);
-                    if found {
-                        hit = Hit { obj: obj, value: tval };
-                        has_hit = true;
-                        break;
-                    }
-                }
-
-                let pixel: u8 = if has_hit {
-                    let idx = shade_pixel(ray, hit.obj, hit.value);
-                    if idx < LUT.len { LUT[idx] } else { ' ' }
-                } else {
-                    ' '
-                };
-
-                result_val += pixel;
-            }
-        }
-    };
-    return result_val;
+fn new_text_raytracer() -> TextRaytracer {
+    TextRaytracer {
+        w: config_i64("Etc::TextRaytracer", "w") as i32,
+        h: config_i64("Etc::TextRaytracer", "h") as i32,
+        result_val: 0,
+    }
 }
+
+fn prepare(s: TextRaytracer&) {}
+
+fn run(s: TextRaytracer&, iteration_id: i64) {
+    let fw = s.w as f64;
+    let fh = s.h as f64;
+
+    for j in s.h {
+        for i in s.w {
+            let fi = i as f64;
+            let fj = j as f64;
+
+            let ray = Ray {
+                orig: Vector { 0.0, 0.0, 0.0 },
+                dir: Vector { (fi - fw / 2.0) / fw, (fj - fh / 2.0) / fh, 1.0 }.normalize(),
+            };
+
+            // An optional is a nullable reference rather than a value, so
+            // the hit found, if any, is a Hit and a flag.
+            var hit = Hit { .. };
+            var has_hit = false;
+
+            for obj in SCENE {
+                let tval, found = intersect_sphere(ray, obj.center, obj.radius);
+                if found {
+                    hit = Hit { obj: obj, value: tval };
+                    has_hit = true;
+                    break;
+                }
+            }
+
+            let pixel: u8 = if has_hit {
+                let idx = shade_pixel(ray, hit.obj, hit.value);
+                if idx < LUT.len { LUT[idx] } else { ' ' }
+            } else {
+                ' '
+            };
+
+            s.result_val += pixel;
+        }
+    }
+}
+
+fn checksum(s: TextRaytracer&) -> u32 { s.result_val }

@@ -11,6 +11,8 @@ import compress_data;
 // The coded bits and the frequencies the decoder needs to rebuild the model.
 struct ArithEncodedResult { frequencies: i32[256], data: u8[>..] }
 
+fn new_arith_encoded_result() -> ArithEncodedResult { ArithEncodedResult { frequencies: [0; 256], data: [] } }
+
 // Cumulative frequencies: symbol s owns [low[s], high[s]) of [0, total).
 struct ArithFreqTable { total: i32, low: i32[256], high: i32[256] }
 
@@ -127,16 +129,26 @@ fn arith_encode(data: u8[:]) -> ArithEncodedResult {
     return encoded;
 }
 
-fn run_encode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    var encoded = ArithEncodedResult { frequencies: [0; 256], data: [] };
-    var result_val: u32 = 0;
-    measure(b) {
-        encoded = arith_encode(test_data);
-        result_val += encoded.data.len as! u32;
-    };
-    return result_val;
+// The test data is the caller's (see compress_data).
+struct ArithEncode { size_val: i64, result_val: u32, test_data: u8[>..<]&, encoded: ArithEncodedResult }
+
+fn new_arith_encode(test_data: u8[>..<]&) -> ArithEncode {
+    ArithEncode {
+        size_val: config_i64("Compress::ArithEncode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        encoded: new_arith_encoded_result(),
+    }
 }
+
+fn prepare(s: ArithEncode&) { s.test_data = ::generate_test_data(s.size_val); }
+
+fn run(s: ArithEncode&, iteration_id: i64) {
+    s.encoded = arith_encode(s.test_data);
+    s.result_val += s.encoded.data.len as! u32;
+}
+
+fn checksum(s: ArithEncode&) -> u32 { s.result_val }
 
 // --- decoding -----------------------------------------------------------------
 
@@ -221,16 +233,45 @@ fn arith_decode(encoded: ArithEncodedResult&) -> u8[>..] {
     return result;
 }
 
-fn run_decode(b: Bench&) -> u32 {
-    let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    // ArithEncode's prepare and run(0), on this benchmark's test data.
-    let encoded = arith_encode(test_data);
-    var decoded: u8[>..] = [];
-    var result_val: u32 = 0;
-    measure(b) {
-        decoded = arith_decode(encoded);
-        result_val += decoded.len as! u32;
-    };
-    if decoded == test_data { result_val += 100000; }
-    return result_val;
+// The test data and the encoded result are the caller's (see compress_data).
+struct ArithDecode {
+    size_val: i64,
+    result_val: u32,
+    test_data: u8[>..<]&,
+    encoded: ArithEncodedResult&,
+    decoded: u8[>..],
+}
+
+fn new_arith_decode(test_data: u8[>..<]&, encoded: ArithEncodedResult&) -> ArithDecode {
+    ArithDecode {
+        size_val: config_i64("Compress::ArithDecode", "size"),
+        result_val: 0,
+        test_data: test_data,
+        encoded: encoded,
+        decoded: [],
+    }
+}
+
+fn prepare(s: ArithDecode&) {
+    s.test_data = ::generate_test_data(s.size_val);
+
+    var encoder_test_data: u8[>..<] = [];
+    var encoder = new_arith_encode(encoder_test_data);
+    encoder.size_val = s.size_val;
+    encoder.prepare();
+    encoder.test_data = copy(s.test_data);
+    encoder.run(0);
+    // Goose has no move for a growable array: the encoder's result is copied.
+    s.encoded = copy(encoder.encoded);
+}
+
+fn run(s: ArithDecode&, iteration_id: i64) {
+    s.decoded = arith_decode(s.encoded);
+    s.result_val += s.decoded.len as! u32;
+}
+
+fn checksum(s: ArithDecode&) -> u32 {
+    var res = s.result_val;
+    if s.decoded == s.test_data { res += 100000; }
+    return res;
 }

@@ -8,14 +8,21 @@ import binary;
 import bench;
 import helper;
 
-// BufferHashBenchmark::prepare: the size bytes both benchmarks hash, drawn
-// from the shared generator.
-fn prepare(b: Bench&) -> u8[>..] {
-    let size_val = config_i64(b.name, "size");
-    var data: u8[>..] = [];
-    data.resize(size_val, 0);
-    for i in data.len { data[i] = next_int(256) as! u8; }
-    return data;
+// The reference's BufferHashBenchmark, the base of both hash benchmarks: the
+// size bytes they hash, drawn from the shared generator once.
+struct BufferHashBenchmark { size_val: i64, result_val: u32, prepared: bool, data: u8[>..] }
+
+fn new_base() -> BufferHashBenchmark {
+    BufferHashBenchmark { size_val: 0, result_val: 0, prepared: false, data: [] }
+}
+
+fn prepare(base: BufferHashBenchmark&, class_name: u8[:]) {
+    if !base.prepared {
+        base.size_val = config_i64(class_name, "size");
+        base.data.resize(base.size_val, 0);
+        for i in base.data.len { base.data[i] = next_int(256) as! u8; }
+        base.prepared = true;
+    }
 }
 
 // --- Hash::SHA256 ---------------------------------------------------------------
@@ -44,16 +51,19 @@ fn simple_sha256_digest(data: u8[:]) -> u8[32] {
     return result;
 }
 
-fn sha256(b: Bench&) -> u32 {
-    let data = prepare(b);
-    var result_val: u32 = 0;
-    measure(b) {
-        let digest = simple_sha256_digest(data);
-        let hash, ok = binary::read_u32le(digest, 0);
-        result_val += hash;
-    };
-    return result_val;
+struct BufferHashSHA256 { base: BufferHashBenchmark }
+
+fn new_buffer_hash_sha256() -> BufferHashSHA256 { BufferHashSHA256 { base: new_base() } }
+
+fn prepare(s: BufferHashSHA256&) { s.base.prepare("Hash::SHA256"); }
+
+fn run(s: BufferHashSHA256&, iteration_id: i64) {
+    let digest = simple_sha256_digest(s.base.data);
+    let hash, ok = binary::read_u32le(digest, 0);
+    s.base.result_val += hash;
 }
+
+fn checksum(s: BufferHashSHA256&) -> u32 { s.base.result_val }
 
 // --- Hash::CRC32 ----------------------------------------------------------------
 
@@ -73,12 +83,15 @@ fn crc32(data: u8[:]) -> u32 {
     return crc ^ 0xFFFFFFFF;
 }
 
-fn crc32(b: Bench&) -> u32 {
-    let data = prepare(b);
-    var result_val: u32 = 0;
-    measure(b) {
-        let hash = crc32(data);
-        result_val += hash;
-    };
-    return result_val;
+struct BufferHashCRC32 { base: BufferHashBenchmark }
+
+fn new_buffer_hash_crc32() -> BufferHashCRC32 { BufferHashCRC32 { base: new_base() } }
+
+fn prepare(s: BufferHashCRC32&) { s.base.prepare("Hash::CRC32"); }
+
+fn run(s: BufferHashCRC32&, iteration_id: i64) {
+    let hash = crc32(s.base.data);
+    s.base.result_val += hash;
 }
+
+fn checksum(s: BufferHashCRC32&) -> u32 { s.base.result_val }
