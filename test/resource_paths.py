@@ -1,4 +1,4 @@
-"""Resource roots under JIT, native deployment and relocation, without chdir."""
+"""Resource roots and Unicode source/output paths under JIT/native, without chdir."""
 from pathlib import Path
 import shutil
 
@@ -7,9 +7,11 @@ import toolchain as tc
 
 def check_resource_paths(exe, cc, base, *, jit, runtime, extra=()):
     base = (Path(base) / "resource-paths").resolve()
-    source_dir = base / "source space \u00e9"
-    native_dir = base / "native"
-    moved_dir = base / "relocated space \u00e9"
+    # Include characters outside both Western and Japanese ANSI code pages.
+    suffix = "space \u00e9 \u65e5\U0001f426"
+    source_dir = base / ("source " + suffix)
+    native_dir = base / ("native " + suffix)
+    moved_dir = base / ("relocated " + suffix)
     cwd = base / "unrelated cwd"
     for directory in (source_dir, native_dir, moved_dir, cwd):
         directory.mkdir(parents=True, exist_ok=True)
@@ -52,7 +54,7 @@ fn main() {
     if cc:
         for standalone in (False, True):
             tag = "standalone" if standalone else "separate"
-            cfile = base / (tag + ".c")
+            cfile = native_dir / (tag + ".c")
             run([exe, "-O2", *(["--standalone"] if standalone else []),
                  "-o", cfile, source])
             binary = native_dir / (tag + tc.EXE_SUFFIX)

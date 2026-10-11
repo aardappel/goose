@@ -1,0 +1,3 @@
+// The non-MSVC Windows build embeds the same process settings as MSVC's
+// manifest linker. Resource 1 is the executable's application manifest.
+1 24 "goose.manifest"

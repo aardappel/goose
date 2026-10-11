@@ -418,7 +418,12 @@ without them the build leaves the `gfx` module out and says what to install.
 
 The compiler is `build/goose` (`build/Release/goose.exe` with the Visual Studio
 generator), and it finds the standard library in the source tree it was built
-from. Run a program straight from source, in-process (`goose run` says the
+from. On Windows 10 version 1903 and later, its embedded manifest selects a
+UTF-8 process code page so compiler paths do not depend on the system locale.
+Earlier Windows versions retain their legacy code page. Generated native
+executables retain their own process settings.
+
+Run a program straight from source, in-process (`goose run` says the
 same explicitly, and `goose check` only typechecks):
 
 ```bash

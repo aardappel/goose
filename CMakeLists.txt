@@ -64,6 +64,18 @@ add_executable(goose
     src/gfx.h
 )
 
+# Keep argv, CRT file access, filesystem paths and Win32's narrow APIs in
+# the same encoding as Goose strings. Windows 10 1903+ applies this before
+# the C runtime constructs argv; setlocale() in main would be too late.
+if(MSVC)
+    target_sources(goose PRIVATE src/goose.manifest)
+elseif(WIN32)
+    enable_language(RC)
+    target_sources(goose PRIVATE src/goose.rc)
+    set_property(SOURCE src/goose.rc APPEND PROPERTY OBJECT_DEPENDS
+                 "${CMAKE_CURRENT_SOURCE_DIR}/src/goose.manifest")
+endif()
+
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
