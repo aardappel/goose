@@ -67,7 +67,8 @@ def vs_llvm_bin():
         "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
     if not vswhere.exists():
         return None
-    r = subprocess.run([str(vswhere), "-latest", "-prerelease", "-property", "installationPath"],
+    r = subprocess.run([str(vswhere), "-latest", "-prerelease", "-products", "*",
+                        "-property", "installationPath"],
                        capture_output=True, text=True)
     root = Path(r.stdout.strip().splitlines()[0])
     p = root / "VC" / "Tools" / "Llvm" / "x64" / "bin"
