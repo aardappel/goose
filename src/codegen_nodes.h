@@ -174,8 +174,15 @@ inline string Binary::CgX(CodeGen &cg) {
             TypeExpr *ot = other->exprtype;
             if (auto id = Is<Ident>(other); id && id->vdef && IsOptional(id->vdef->type)) {
                 auto lv = cg.VarLoc(id->vdef);
-                x = lv.s;
                 ot = id->vdef->type;
+                if (ot->ref->lenstorage >= 0) {
+                    // A relative reference holds an offset, 0 when null; a
+                    // varint one holds its encoding, not an address (§3.9).
+                    string faddr, off;
+                    cg.RelParts(lv, faddr, off);
+                    return cat("(", off, op == T_EQ ? " == 0)" : " != 0)");
+                }
+                x = lv.s;
             } else {
                 x = cg.GenX(other);
             }
