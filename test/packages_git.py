@@ -44,7 +44,7 @@ def check_git_packages(exe, base, *, jit):
 
     def run_git(*args, cwd=work):
         r = subprocess.run([git, "-c", "user.name=goose", "-c", "user.email=goose@example.com",
-                            "-c", "commit.gpgsign=false", *args],
+                            "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args],
                            cwd=cwd, capture_output=True, text=True, errors="replace")
         if r.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} failed:\n{r.stdout}{r.stderr}")
