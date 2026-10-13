@@ -74,14 +74,17 @@ async function run() {
     const helperDoc = await vscode.workspace.openTextDocument(helper);
     await vscode.window.showTextDocument(helperDoc);
     await config.update('checkOnSave', true, vscode.ConfigurationTarget.WorkspaceFolder);
+    await until(() => problems().length === 1, 'enabling checks rechecks the open entry file');
     const replace = async text => {
         const edit = new vscode.WorkspaceEdit();
         edit.replace(helper, new vscode.Range(helperDoc.positionAt(0), helperDoc.positionAt(helperDoc.getText().length)), text);
         assert.ok(await vscode.workspace.applyEdit(edit));
     };
     await replace('fn helper() { var x = 1; x = 2; }\n');
-    await until(() => problems().length === 0, 'edit clears outdated error');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(problems().length, 1, 'an edit keeps the last error until a recheck');
     assert.ok(await helperDoc.save());
+    await until(() => problems().length === 0, 'save replaces the stale error');
     await vscode.commands.executeCommand('goose.check');
     assert.equal(problems().length, 0);
     await replace('fn helper() { let x = 1; x = 2; }\n');

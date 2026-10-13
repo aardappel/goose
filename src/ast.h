@@ -2411,6 +2411,15 @@ struct Ast {
         return it != n->functionmap.end() && it->second.size() == 1 ? it->second[0] : nullptr;
     }
 
+    // Whether the root file declares a main() in any namespace. Only the
+    // root's are registered, and a main anywhere but the global namespace is
+    // never the entry point, so a file declaring one is meant to be a program.
+    bool DeclaresMain() {
+        for (auto &[name, n] : namespaces)
+            if (n.functionmap.count("main")) return true;
+        return false;
+    }
+
     void Dump(string &s) const;  // In dump.h.
 };
 

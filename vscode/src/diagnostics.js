@@ -56,6 +56,8 @@ function runCompiler(config) {
 
 // Own results per checked entry file: clearing one root must not erase another's
 // errors in a shared import. A generation token prevents late checks resurfacing.
+// A result stays until the next check of its entry replaces it, marked stale
+// once its sources change; one that no longer applies is dropped instead.
 class CheckQueue {
     constructor(check, changed) {
         this.check = check;
@@ -64,14 +66,20 @@ class CheckQueue {
         this.results = new Map();
     }
 
+    cancel(key) {
+        const job = this.jobs.get(key);
+        if (!job) return false;
+        clearTimeout(job.timer);
+        job.run?.cancel();
+        job.finish(false);
+        this.jobs.delete(key);
+        return true;
+    }
+
+    // The checks and results in cwd (or everywhere) no longer apply.
     invalidate(cwd) {
         for (const [key, job] of this.jobs) {
-            if (!cwd || job.config.cwd === cwd) {
-                clearTimeout(job.timer);
-                job.run?.cancel();
-                job.finish(false);
-                this.jobs.delete(key);
-            }
+            if (!cwd || job.config.cwd === cwd) this.cancel(key);
         }
         for (const [key, result] of this.results) {
             if (!cwd || result.config.cwd === cwd) this.results.delete(key);
@@ -79,15 +87,31 @@ class CheckQueue {
         this.changed(this.results);
     }
 
+    // Sources in cwd changed: stop its checks, and keep its results, marked
+    // stale, for the next checks to replace.
+    stale(cwd) {
+        let changed = false;
+        for (const [key, job] of this.jobs) {
+            if (job.config.cwd === cwd) changed = this.cancel(key) || changed;
+        }
+        for (const result of this.results.values()) {
+            if (result.config.cwd === cwd && !result.stale) result.stale = changed = true;
+        }
+        if (changed) this.changed(this.results);
+    }
+
+    // Drop the results of entry files that are no longer checked.
+    retain(checked) {
+        let changed = false;
+        for (const key of this.results.keys()) {
+            if (!checked(key)) changed = this.results.delete(key);
+        }
+        if (changed) this.changed(this.results);
+    }
+
     schedule(config, delay = 180) {
         const key = config.file;
-        const old = this.jobs.get(key);
-        if (old) {
-            clearTimeout(old.timer);
-            old.run?.cancel();
-            old.finish(false);
-        }
-        this.results.delete(key);
+        this.cancel(key);
         const scheduled = new Promise(finish => {
             const job = { config, finish };
             this.jobs.set(key, job);

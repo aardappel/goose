@@ -106,6 +106,8 @@ usual lookup, including `GOOSE_STDLIB` and directories near the executable.
 Checks use `goose check` and never run the program or generate C. They check
 saved files, wait while any open Goose file in the same folder has unsaved
 changes, and keep the last result, marked stale, until the next check completes.
+Changing Goose settings or workspace folders, or closing the files that use an
+entry file, clears its results instead.
 Explicit commands save open Goose files in the same folder first. The compiler
 currently stops at the first error and typechecks instantiated functions; the
 extension preserves those limitations. Configuring the entry file is particularly

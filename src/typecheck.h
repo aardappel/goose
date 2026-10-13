@@ -2563,7 +2563,7 @@ struct TypeCheck {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool && !HasGenerics(t->ref->sub)) ValidatePool(t);
         auto mainsf = ast.MainFunction();
-        if (!mainsf && !library && !nomain)
+        if (!mainsf && !library && !(nomain && !ast.DeclaresMain()))
             throw CompileError { "program needs exactly one global fn main()" };
         if (mainsf) {
             if (!mainsf->params.empty() || mainsf->has_rets || !mainsf->generics.empty() ||
