@@ -161,6 +161,12 @@ fn main() {
     said("a factor past 1");
     ui::set_scale(ctx, 0.0);
     said("a scale of 0");
+    ui::set_display_scale(ctx, 0.0);
+    said("a display scale of 0");
+    ui::set_display_scale(ctx, 4.0);
+    ui::set_scale(ctx, 8.0);
+    said("a scale of 8 at a display scale of 4");
+    ui::set_display_scale(ctx, 1.0);
     let unbaked = ui::create_font_atlas();
     ui::add_default_font(unbaked, 13.0);
     ui::bake(unbaked, 100.0);

@@ -79,4 +79,10 @@ the mouse at pixel 110,48 is at 55.0,24.0 in the ui
 button at 14.0,14.0 in the ui, clicked through pixels true; the window at 10,10 100 x 80 drawn from 19.0,19.0 to 220.0,180.0, clipped to 28.0,20.0 164.0 x 140.0
 back to 1 true: 1.0, 13.0 high
 made at 1.5: 1.5, 16.0 high
+display scale 1.0; set to 2 true: 2.0, at a scale of 1.0; its font baked again true, 13.0 high
+the mouse at pixel 110,48 is at 55.0,24.0 in the ui
+button at 14.0,14.0 in the ui, clicked through pixels true; the window at 10,10 100 x 80 drawn from 19.0,19.0 to 220.0,180.0, clipped to 28.0,20.0 164.0 x 140.0
+at 1.5 true: 1.5 at a display scale of 2.0
+the mouse at pixel 165,72 is at 55.0,24.0 in the ui
+button at 14.0,14.0 in the ui, clicked through pixels true; the window at 10,10 100 x 80 drawn from 28.5,28.5 to 330.0,270.0, clipped to 42.0,30.0 246.0 x 210.0
 misuses 0

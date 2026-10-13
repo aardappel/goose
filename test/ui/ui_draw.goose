@@ -73,6 +73,45 @@ fn describe(c: ui::Command, points: const int2[:], text: const u8[:]) -> u8[>..]
     str("command ", k)
 }
 
+// Clicks a button through pixels, `px` to each of the ui's units, and
+// says where the mouse lands in the ui, whether the button saw it, and the
+// pixels its window is drawn and clipped to.
+fn click_through(c: ui::Context, px: f32) {
+    var pressed = false;
+    var button = ui::rect(0, 0, 0, 0);
+    for step in 3 {
+        // Pixels: the button's middle.
+        let x = ((button.x + button.w / 2.0) * px) as! i64;
+        let y = ((button.y + button.h / 2.0) * px) as! i64;
+        ui::input_begin(c);
+        ui::input_motion(c, x, y);
+        ui::input_button(c, ui::BUTTON_LEFT, x, y, step == 1);
+        ui::input_end(c);
+        if step == 1 {
+            let m = ui::input_mouse(c);
+            print("the mouse at pixel ", x, ",", y, " is at ", m.pos.x, ",", m.pos.y,
+                  " in the ui");
+        }
+        if ui::begin(c, "Scaled", ui::rect(10, 10, 100, 80), 0) {
+            ui::layout_row_dynamic(c, 20.0, 1);
+            button = ui::widget_bounds(c);
+            if ui::button_label(c, "Hi") { pressed = true; }
+        }
+        ui::end(c);
+    }
+    ui::convert(c, ui::ConvertConfig { line_aa: false, shape_aa: false });
+    var lo = float2 { 10000.0, 10000.0 };
+    var hi = float2 { -10000.0, -10000.0 };
+    for v in ui::vertices(c) {
+        lo = float2 { min(lo.x, v.pos.x), min(lo.y, v.pos.y) };
+        hi = float2 { max(hi.x, v.pos.x), max(hi.y, v.pos.y) };
+    }
+    let clip = ui::draw_commands(c)[1].clip_rect;
+    print("button at ", button.x, ",", button.y, " in the ui, clicked through pixels ", pressed,
+          "; the window at 10,10 100 x 80 drawn from ", lo.x, ",", lo.y, " to ", hi.x, ",", hi.y,
+          ", clipped to ", clip.x, ",", clip.y, " ", clip.w, " x ", clip.h);
+}
+
 fn main() {
     let red = ui::rgb(255, 0, 0);
     let green = ui::rgb(0, 255, 0);
@@ -225,39 +264,7 @@ fn main() {
           "; its font baked again ",
           ui::atlas_size(ui::context_atlas(big)).y > first_image.y && ui::font(big) == first_font,
           ", ", ui::info(ui::font(big)).height, " high");
-    var pressed = false;
-    var button = ui::rect(0, 0, 0, 0);
-    for step in 3 {
-        // Pixels, twice the ui's units: the button's middle.
-        let px = ((button.x + button.w / 2.0) * 2.0) as! i64;
-        let py = ((button.y + button.h / 2.0) * 2.0) as! i64;
-        ui::input_begin(big);
-        ui::input_motion(big, px, py);
-        ui::input_button(big, ui::BUTTON_LEFT, px, py, step == 1);
-        ui::input_end(big);
-        if step == 1 {
-            let m = ui::input_mouse(big);
-            print("the mouse at pixel ", px, ",", py, " is at ", m.pos.x, ",", m.pos.y,
-                  " in the ui");
-        }
-        if ui::begin(big, "Scaled", ui::rect(10, 10, 100, 80), 0) {
-            ui::layout_row_dynamic(big, 20.0, 1);
-            button = ui::widget_bounds(big);
-            if ui::button_label(big, "Hi") { pressed = true; }
-        }
-        ui::end(big);
-    }
-    ui::convert(big, ui::ConvertConfig { line_aa: false, shape_aa: false });
-    var lo = float2 { 10000.0, 10000.0 };
-    var hi = float2 { -10000.0, -10000.0 };
-    for v in ui::vertices(big) {
-        lo = float2 { min(lo.x, v.pos.x), min(lo.y, v.pos.y) };
-        hi = float2 { max(hi.x, v.pos.x), max(hi.y, v.pos.y) };
-    }
-    let clip = ui::draw_commands(big)[1].clip_rect;
-    print("button at ", button.x, ",", button.y, " in the ui, clicked through pixels ", pressed,
-          "; the window at 10,10 100 x 80 drawn from ", lo.x, ",", lo.y, " to ", hi.x, ",", hi.y,
-          ", clipped to ", clip.x, ",", clip.y, " ", clip.w, " x ", clip.h);
+    click_through(big, 2.0);
     print("back to 1 ", ui::set_scale(big, 1.0), ": ", ui::scale(big), ", ",
           ui::info(ui::font(big)).height, " high");
     ui::destroy(big);
@@ -265,5 +272,18 @@ fn main() {
     print("made at 1.5: ", ui::scale(made_scaled), ", ", ui::info(ui::font(made_scaled)).height,
           " high");
     ui::destroy(made_scaled);
+
+    // --- on a high-density display, or one set to 200%: the scale times the display scale ---
+    let dense = ui::create(13.0);
+    let dense_image = ui::atlas_size(ui::context_atlas(dense));
+    print("display scale ", ui::display_scale(dense), "; set to 2 ", ui::set_display_scale(dense, 2.0),
+          ": ", ui::display_scale(dense), ", at a scale of ", ui::scale(dense),
+          "; its font baked again ", ui::atlas_size(ui::context_atlas(dense)).y > dense_image.y,
+          ", ", ui::info(ui::font(dense)).height, " high");
+    click_through(dense, 2.0);
+    print("at 1.5 ", ui::set_scale(dense, 1.5), ": ", ui::scale(dense), " at a display scale of ",
+          ui::display_scale(dense));
+    click_through(dense, 3.0);
+    ui::destroy(dense);
     print("misuses ", ui::misuse_count());
 }

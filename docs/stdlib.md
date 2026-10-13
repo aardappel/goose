@@ -1069,6 +1069,8 @@ fn check()                  // abort if the program has misused gfx
 fn driver() -> u8[>..]      // "direct3d12", "vulkan" or "metal"
 fn set_title(title: const u8[:])
 fn screen() -> Texture      fn screen_depth() -> Texture      fn screen_size() -> int2
+fn pixel_density() -> f32   // the screen's pixels to each unit of the display's coordinates
+fn display_scale() -> f32   // the pixel density times the system's content scale
 fn time() -> f64            fn delta_time() -> f64            fn frame_count() -> i64
 ```
 
@@ -1080,7 +1082,14 @@ window's size in pixels, with a depth texture: a frame draws into it, and
 `frame()` shows it. A window is as wide and high as `open` says in the
 display's own coordinates, and has every pixel the display has there: on a
 high-density display more than that, which `screen_size()` counts and the
-mouse is reported in.
+mouse is reported in. `pixel_density()` says how many pixels that is to
+each unit of the display's coordinates: 2 on most high-density displays, 1
+elsewhere and headless. Where those coordinates are pixels (Windows, X11)
+the system's content scale is not in them, and `open` makes the window
+that many times bigger, as the system's own windows are: on Windows set to
+150%, a window opened 800 wide is 1200 pixels. `display_scale()` is the
+pixel density times the content scale, 2 on a high-density Mac and 1.5
+there. Both change when the window moves to another display.
 
 ```goose
 guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
@@ -1828,7 +1837,8 @@ fn create_context(font: Font) -> Context      // a font from a baked atlas
 fn destroy(c: Context)        fn is_valid(c: Context) -> bool
 fn context_atlas(c) -> FontAtlas              fn font(c) -> Font      // drawn with now
 fn clear(c)                   // ends a frame; input_begin does it for a frame that drew
-fn set_scale(c, scale: f32) -> bool           fn scale(c) -> f32      // pixels per ui unit
+fn set_scale(c, scale: f32) -> bool           fn scale(c) -> f32      // 1: the display's own size
+fn set_display_scale(c, display: f32) -> bool fn display_scale(c) -> f32   // gfx's, from input_from_gfx
 fn set_delta_time(c, seconds: f32)            fn delta_time(c) -> f32
 fn set_clipboard(c, text: const u8[:])        // what KEY_PASTE pastes
 fn copied(c) -> u8[>..], bool                 // what a text field copied or cut, if any
@@ -1843,10 +1853,14 @@ fn input_text(c, text: const u8[:])           // and input_char, input_glyph, in
 The whole ui can be drawn bigger or smaller with `set_scale`, which the
 program picks as it likes -- from the window's size, the display, a
 setting. Layout stays the same: windows, rows, fonts and the style keep
-their sizes in the ui's own units, and the scale is the pixels to each
-unit, which `convert` and `render` draw with and input positions come in.
-A context made by `create` or `create_from_*` has its font baked again at
-the scale, so its text stays sharp -- Nuklear's built-in font imitates a
+their sizes in the ui's own units, and the scale times the display scale
+is the pixels to each unit, which `convert` and `render` draw with and
+input positions come in. `input_from_gfx` keeps the display scale
+`gfx::display_scale()`, so at a scale of 1 a ui looks as big as the
+system's own text, on a high-density display or one set to 150%; a
+program feeding input of its own sets it with `set_display_scale`. A context made by `create` or
+`create_from_*` has its font baked again at those pixels, so its text
+stays sharp -- Nuklear's built-in font imitates a
 bitmap one and scales well only by whole numbers, a TrueType one by any;
 one made on a font of the program's keeps that atlas's, which `bake(atlas,
 scale)` makes sharp at a scale, again at each new one. It changes between
@@ -2197,6 +2211,5 @@ of input in order: the mouse, editing keys (Delete, Backspace, Enter, Tab,
 Home, End, the arrows, Page Up and Down, Escape), shortcuts with Ctrl or
 Command (A, C, X, V, Z, Y), typed text (it turns gfx's text input on), the
 frame's duration, and the clipboard both ways, pasting the system
-clipboard's text and putting there what a field copied. Both work in the
-screen's pixels, so on a high-density display the ui is as many pixels as
-elsewhere, and smaller, until the program sets a scale.
+clipboard's text and putting there what a field copied, and keeps the
+context's display scale gfx's. Both work in the screen's pixels.
