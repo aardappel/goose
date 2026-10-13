@@ -36,21 +36,18 @@ function settings(vscode, uri, definition = {}, taskFolder) {
         stdlib: config.get('stdlibPath', '') ? absolute(config.get('stdlibPath'), cwd, uri.fsPath) : '',
         timeout: Math.min(300000, Math.max(1000, config.get('checkTimeout', 15000))),
         checkOnSave: config.get('checkOnSave', true),
-        // Without an entry file or task file, the open file may be a module with no fn main().
-        module: !definition.file && !config.get('entryFile', ''),
         runArguments: config.get('runArguments', []),
         output: definition.output ? absolute(definition.output, cwd, file) : file.replace(/(?:\.goose)?$/, '.c')
     };
 }
 
 function argumentsFor(action, config) {
-    // `goose build` is a verb, which comes first; the rest are flags.
-    const args = action === 'build' ? ['build'] : [];
+    // `goose check` and `goose build` are verbs, which come first; the rest are flags.
+    const args = action === 'build' || action === 'check' ? [action] : [];
     if (config.stdlib) args.push('--stdlib', config.stdlib);
-    if (action === 'check') args.push('--check', ...(config.module ? ['--module'] : []));
-    else if (action === 'run') args.push('--jit');
+    if (action === 'run') args.push('--jit');
     else if (action === 'generateC') args.push('-o', config.output);
-    else if (action !== 'build') throw new Error(`Unknown Goose task action: ${action}`);
+    else if (action !== 'build' && action !== 'check') throw new Error(`Unknown Goose task action: ${action}`);
     args.push(config.file);
     if (action === 'run' && config.runArguments.length) args.push('--', ...config.runArguments);
     return args;

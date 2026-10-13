@@ -132,7 +132,7 @@ struct TypeCheck {
     using TypePairCache = flat_map<pair<TypeExpr *, TypeExpr *>, bool>;
     TypePairCache cancontain, reachesthrough;
     bool library = false;   // Built for a C host (--header): fn main() is optional.
-    bool nomain = false;    // --check --module: a file without fn main() is checked on its own.
+    bool nomain = false;    // Checking only: a file without fn main() is checked on its own.
 
     // (Val, the checked value of an expression, lives in ast.h: node Check
     // overrides return it.)

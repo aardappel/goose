@@ -51,9 +51,7 @@ test('real check of a module without fn main() succeeds, and still reports its e
     try {
         const file = path.join(dir, 'helper.goose');
         fs.writeFileSync(file, 'fn helper(x: i64) -> i64 { x + 1 }\n');
-        const entry = { ...config(file), module: false };
-        assert.match((await runCompiler(entry).promise).output, /exactly one global fn main/);
-        const module = { ...entry, module: true };
+        const module = config(file);
         const ok = await runCompiler(module).promise;
         assert.equal(ok.error, null, ok.output);
         fs.writeFileSync(file, 'fn helper(x: i64) -> i64 { x + "s" }\n');

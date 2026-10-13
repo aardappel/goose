@@ -65,7 +65,7 @@ async function run() {
     }
     const configured = tasks.find(task => task.name === 'Fixture check');
     assert.ok(configured, 'configured task is resolved');
-    assert.ok(configured.execution.args.includes('--check'));
+    assert.ok(configured.execution.args.includes('check'));
     assert.equal(configured.group.id, vscode.TaskGroup.Test.id, 'keep explicit task groups');
     const matchers = extension.packageJSON.contributes.problemMatchers;
     const matcher = new RegExp(matchers[0].pattern.regexp);

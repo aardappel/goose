@@ -88,8 +88,7 @@ class CheckQueue {
             old.finish(false);
         }
         this.results.delete(key);
-        this.changed(this.results);
-        return new Promise(finish => {
+        const scheduled = new Promise(finish => {
             const job = { config, finish };
             this.jobs.set(key, job);
             job.timer = setTimeout(async () => {
@@ -111,6 +110,9 @@ class CheckQueue {
                 }
             }, delay);
         });
+        // Report after the job is registered, so a listener can see it is running.
+        this.changed(this.results);
+        return scheduled;
     }
 }
 

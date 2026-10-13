@@ -20,11 +20,23 @@ function activate(context) {
     // or the number of errors. Shown in bottom status bar.
     const checkStatus = vscode.window.createStatusBarItem('goose.check', vscode.StatusBarAlignment.Left, 4);
     checkStatus.name = 'Goose: Check';
-    let checkState = { problem: undefined, errors: 0 };
+    // The last completed check stays shown, marked stale once sources change,
+    // with a spinner while a new check runs. Nothing is known until one completes.
+    let checkState = { problem: undefined, errors: 0, unchecked: true, stale: false, running: false };
     function updateCheckStatus() {
         if (!vscode.workspace.isTrusted || vscode.window.activeTextEditor?.document.languageId !== 'goose') { checkStatus.hide(); return; }
-        const { problem, errors } = checkState;
-        if (problem) {
+        const { problem, errors, unchecked, stale, running } = checkState;
+        if (running) {
+            checkStatus.text = '$(sync~spin) Goose: Checking';
+            checkStatus.tooltip = stale || unchecked ? 'Checking the saved files.' : 'Checking again.';
+            checkStatus.command = 'goose.showOutput';
+            checkStatus.backgroundColor = undefined;
+        } else if (unchecked) {
+            checkStatus.text = '$(circle-outline) Goose';
+            checkStatus.tooltip = 'Not checked yet. Save to check.';
+            checkStatus.command = 'goose.showOutput';
+            checkStatus.backgroundColor = undefined;
+        } else if (problem) {
             checkStatus.text = `$(warning) Goose: ${problem.title}`;
             checkStatus.tooltip = `${problem.message.split('\n').slice(0, 6).join('\n')}\n\nClick to open the Goose output.`;
             checkStatus.command = 'goose.showOutput';
@@ -40,12 +52,22 @@ function activate(context) {
             checkStatus.command = 'goose.showOutput';
             checkStatus.backgroundColor = undefined;
         }
+        if (stale && !running && !unchecked) {
+            checkStatus.text += ' (stale)';
+            checkStatus.tooltip = `Edited since this check; save to check again.\n\n${checkStatus.tooltip}`;
+        }
         checkStatus.show();
     }
 
     async function publish(results) {
         if (disposed) return;
         const generation = ++publication;
+        if (results.size === 0) {
+            // Edited or rechecking: keep the last diagnostics and result, marked stale.
+            checkState = { ...checkState, stale: !checkState.unchecked, running: queue.jobs.size > 0 };
+            updateCheckStatus();
+            return;
+        }
         diagnostics.clear();
         const grouped = new Map();
         const lines = new Map();
@@ -103,7 +125,7 @@ function activate(context) {
         }
         if (!disposed && generation === publication) {
             for (const items of grouped.values()) errors += items.filter(item => item.severity === vscode.DiagnosticSeverity.Error).length;
-            checkState = { problem, errors };
+            checkState = { problem, errors, unchecked: false, stale: false, running: queue.jobs.size > 0 };
             updateCheckStatus();
             diagnostics.set([...grouped].map(([file, items]) => [vscode.Uri.file(file), items]));
         }

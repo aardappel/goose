@@ -617,7 +617,7 @@ int Main(int argc, char **argv) {
     }
     string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
-    auto roundtrip = false, multitest = false, modulecheck = false;
+    auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
     auto forcejit = false, standalone = false;
@@ -652,7 +652,6 @@ int Main(int argc, char **argv) {
             cdefines.push_back(cat("GS_STACK_RESERVE=", size, "ull"));
         }
         else if (arg == "--check") nocgen = true;
-        else if (arg == "--module") modulecheck = true;
         else if (arg == "--no-bce") nobce = true;
         else if (arg == "--bce-test") bcetest = true;
         else if (arg == "--bce-lines") bcelines = true;
@@ -782,7 +781,7 @@ int Main(int argc, char **argv) {
                         "[--cc name|path] [-v] [--dry-run] |\n"
                         "       goose toolchain [--cc name|path] [--json] [--refresh]\n");
         fprintf(stderr, "   or: goose [--dump] [--parse] [--tokens] [--roundtrip] "
-                        "[--dump-file out.goose] [--specs] [--stacks] [--check [--module]] "
+                        "[--dump-file out.goose] [--specs] [--stacks] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--stack-reserve size] "
                         "[--include header.h]... "
@@ -815,10 +814,6 @@ int Main(int argc, char **argv) {
     // A header is for a C host, which supplies its own main and starts the
     // program through goose_init.
     auto library = !headername.empty();
-    if (modulecheck && !nocgen) {
-        fprintf(stderr, "--module only applies to --check\n");
-        return 1;
-    }
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
                       (jit && !nocgen && !parseonly && !dump))) {
@@ -879,7 +874,7 @@ int Main(int argc, char **argv) {
             fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
         }
         if (parseonly) return 0;
-        TypeCheckProgram(ast, library, modulecheck);
+        TypeCheckProgram(ast, library, nocgen);
         Optimizer opt(ast, optlevel);
         if (specs) {
             string s;

@@ -84,8 +84,8 @@ for `goose`, `build/Release/goose`, `build/Debug/goose`, and `build/goose` (with
 `.exe` on Windows), then uses `goose` on PATH. For another location, set
 `goose.compilerPath` to the executable, without shell quotes or arguments.
 
-A file with no `fn main()` is checked as a module, so editing an imported file
-does not report a missing `main`. For a project with imported files, set the
+Checking accepts a file with no `fn main()`, so editing an imported file does
+not report a missing `main`. For a project with imported files, set the
 entry file so that checks and runs use the whole program:
 
 ```json
@@ -103,12 +103,13 @@ when no folder is open. Settings can be configured per folder in a multi-root
 workspace. `goose.stdlibPath` supplies `--stdlib`; leave it empty to use Goose's
 usual lookup, including `GOOSE_STDLIB` and directories near the executable.
 
-Checks use `goose --check` and never run the program or generate C. They check
+Checks use `goose check` and never run the program or generate C. They check
 saved files, wait while any open Goose file in the same folder has unsaved
-changes, and clear stale results when sources change. Explicit commands save
-open Goose files in the same folder first. The compiler currently stops at the
-first error and typechecks instantiated functions; the extension preserves
-those limitations. Configuring the entry file is particularly useful for libraries.
+changes, and keep the last result, marked stale, until the next check completes.
+Explicit commands save open Goose files in the same folder first. The compiler
+currently stops at the first error and typechecks instantiated functions; the
+extension preserves those limitations. Configuring the entry file is particularly
+useful for libraries.
 
 **Run with JIT** uses `--jit` and needs a Goose build with TinyCC enabled.
 **Generate C** writes a `.c` file alongside the entry file, replacing an existing
