@@ -2558,6 +2558,24 @@ instead of reusing one whose captures codegen never declares. `NamedSpec`
 gives the named function around such an environment, which a plain `return`
 inside it targets (`CheckReturn`); that is how HOF-based iteration returns.
 
+**`fields(v) F`** (`CheckFields`, §12) is a rewrite into calls of function
+values, checked where it stands. Once `v` is checked and its type is a
+struct, the call is made the call of a block of no parameters, which
+`CheckFunValCall` checks as any other: its body is `F("name", v.name);` per
+field in declaration order (pads skipped), `&v.name` for `fields(&v)`, and its
+environment binds `F` as the name `fields#F`, which no program can spell, so
+each of those calls is a call of a function value (a block checked inline at
+that field's type, or a named function or overload set resolved by
+`ResolveCall`). Passes after the check see `Call::fvbody` and nothing new:
+the arguments as written stay in `Call::args` with no parameter bound to
+them, which codegen never evaluates (`EmitFvCall`), and a check of the call
+again starts from them. Every one of those calls evaluates `v` again, so `v`
+must be a path each of them finds at the same place: a variable, and fields
+and elements of one at an integer literal or a name that is neither a
+`var` nor a reference. An
+error in one of those calls names its field in the instantiation chain
+(`fieldcalls` by the call as made, `fieldsat` for the ones being checked).
+
 **`return ... from`** (`CheckReturn`, §7.9): the target resolves in the
 returning function's definition context (a nested function in scope, else
 the overload set) and is the innermost frame whose function is in that set;

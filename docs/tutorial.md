@@ -1220,6 +1220,24 @@ fn first_multiple_of_7(lo: i64, hi: i64) -> i64 {
 }
 ```
 
+The builtin `fields` hands a block every field of a struct, with its name.
+The compiler writes it out as one call per field, so the block is checked at
+each field's type, and overloads take the walk further down:
+
+```goose
+struct Pos { x: i64, y: i64 }
+struct Stats { hp: i64, alive: bool, pos: Pos }
+
+fn save(key: u8[>..], x: i64)  { print(key, " = ", x); }
+fn save(key: u8[>..], x: bool) { print(key, " = ", if x { 1 } else { 0 }); }
+fn save(key: u8[>..], s)       { fields(s) { name, f => save(str(key, ".", name), f) } }
+
+save(str("stats"), st);   // stats.hp = 30, stats.alive = 1, stats.pos.x = 4, stats.pos.y = 2
+```
+
+`fields(&st)` passes references to the fields instead, through which the
+block may write them.
+
 Nested functions see the enclosing function's locals, which is how the
 parsers in the samples are written: `parse`'s input, cursor and pools are its
 locals, and the recursive descent functions nested inside it use them as free

@@ -509,6 +509,18 @@ struct TypeCheck {
     }
 
     static constexpr int MAXCHAIN = 20;
+    // fields(v) F (CheckFields): the name F is bound to in the calls it makes,
+    // which no program can spell, and the field each of those calls passes,
+    // as `Struct.field`, by the call as made (Node::Origin). The calls being
+    // checked, with the frame each is checked in, show in the chain.
+    static constexpr string_view FIELDS_FN = "fields#F";
+    unordered_map<const Node *, string> fieldcalls;
+    struct FieldCall {
+        const string *field;
+        Line line;
+        int frame;
+    };
+    vector<FieldCall> fieldsat;
 
     [[noreturn]] void Error(Line l, const string &msg) { ErrorIn(l, msg, InstantiationChain()); }
 
@@ -536,7 +548,11 @@ struct TypeCheck {
         // A long chain shows its innermost and outermost instantiations.
         auto chain = 0, nth = 0;
         for (auto &f : frames) chain += f.sf && !f.isfunval;
+        auto at = (int)fieldsat.size() - 1;
         for (auto i = (int)frames.size() - 1; i > 0; i--) {
+            for (; at >= 0 && fieldsat[at].frame >= i; at--)
+                Append(s, "\n  in the call fields makes for ", *fieldsat[at].field, " at ",
+                       Where(fieldsat[at].line));
             auto &f = frames[i];
             if (f.defaultfn) {
                 Append(s, "\n  in the default of parameter ",
@@ -2171,6 +2187,7 @@ struct TypeCheck {
     // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
+    Val CheckFields(Call *c, vector<Node *> &args);
     void CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
                         const Val *out = nullptr);
     // The types on the path from an argument to the part being checked

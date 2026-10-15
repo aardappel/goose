@@ -9,11 +9,113 @@ namespace goose {
 // ------------------------------------------------------------------
 // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
+// fields(v) F and fields(&v) F (§12): for each field of v's struct, in
+// declaration order, F("name", v.name), or F("name", &v.name). Those calls
+// are the body of a function value of no parameters, made here and run
+// once by this call, in which the name fields#F (no name a program can
+// spell) is bound to F: so they are checked where the call stands as calls
+// written there would be, each at its field's type (§7.6, §7.7), and every
+// pass after this one sees an ordinary call of a function value. The
+// arguments stay as written, which a check of the call again starts from.
+// Each call names v again, so v is a path every call finds at the same
+// place: a variable, its fields, and its elements at an integer literal or
+// a name no call can assign (a `let`, a parameter that is no `var`), which
+// is no reference, whose integer a call could assign.
+inline Val TypeCheck::CheckFields(Call *c, vector<Node *> &args) {
+    if (!c->tyargs.empty()) Error(c, "fields takes no type arguments");
+    if (args.size() + (c->trailing ? 1 : 0) != 2)
+        Error(c, "fields takes a struct value and a function value: fields(v) { name, f => ... } "
+                 "or fields(v, f)");
+    auto addr = Is<Unary>(args[0]);
+    auto byref = addr && addr->op == T_BITAND;
+    auto place = byref ? addr->child : args[0];
+    for (auto n = place;;) {
+        if (Is<Ident>(n)) break;
+        if (auto d = Is<Dot>(n)) {
+            n = d->obj;
+            continue;
+        }
+        auto x = Is<Index>(n);
+        if (!x || (!Is<Ident>(x->idx) && !Is<IntLit>(x->idx)))
+            Error(args[0], cat("fields takes a variable or a field path of one, which each "
+                               "field's call names again; bind ", ExprStr(place),
+                               " to a local first"));
+        if (auto id = Is<Ident>(x->idx)) {
+            auto vd = LookupVar(id->name, id->ns);
+            if (vd && vd->isvar)
+                Error(args[0], cat("the index ", id->name, " of ", ExprStr(place),
+                                   " is a var, which a field's call could change, so that "
+                                   "another field is another element's; bind it to a let "
+                                   "first"));
+            if (vd && vd->type && vd->type->kind == TY_REF)
+                Error(args[0], cat("the index ", id->name, " of ", ExprStr(place),
+                                   " is a reference, whose integer a field's call could "
+                                   "change, so that another field is another element's; copy "
+                                   "it to a let first"));
+        }
+        n = x->obj;
+    }
+    Val pv;
+    {
+        PathScope ps(*this, args[0]);
+        pv = CheckV(args[0], nullptr);
+    }
+    args[0]->exprtype = pv.type;
+    auto t = pv.type;
+    if (IsOptional(t))
+        Error(args[0], "optional value must be narrowed (if/guard/assert) before use");
+    if (t->kind == TY_REF) t = t->ref->sub;
+    if (t->kind != TY_STRUCT)
+        Error(args[0], cat("fields takes a struct, not ", TypeStr(pv.type)));
+    FnValBind fb;
+    if (c->trailing) {
+        fb.fv = c->trailing;
+        fb.env = frames.back().lexspec;
+    } else {
+        auto fv = CheckV(args[1], nullptr);
+        args[1]->exprtype = fv.type;
+        if (fv.type != fntype)
+            Error(args[1], "fields' second argument is a function value: a function name or "
+                           "a block (§7.6)");
+        fb = fv.fnv;
+    }
+    auto body = ast.New<Block>(c->line);
+    for (auto &f : t->struc->st->fields) {
+        if (f.ispad) continue;
+        auto call = ast.New<Call>(c->line, ast.New<Ident>(c->line, FIELDS_FN));
+        fieldcalls[call] = cat(TypeStr(t), ".", f.name);
+        call->args.push_back(ast.New<StrLit>(c->line, string(f.name)));
+        Node *field = ast.New<Dot>(c->line, place->Clone(ast), f.name);
+        if (byref) field = ast.New<Unary>(c->line, T_BITAND, field);
+        call->args.push_back(field);
+        body->stmts.push_back(call);
+    }
+    auto run = ast.New<FunVal>(c->line, body);
+    run->col = c->trailing ? c->trailing->col : 0;
+    auto env = ast.NewFunValEnv();
+    auto named = NamedSpec(frames.back().lexspec);
+    env->sf = named ? named->sf : nullptr;
+    env->lexparent = frames.back().lexspec;
+    env->fnvals.push_back({ FIELDS_FN, fb });
+    FnValBind runfb;
+    runfb.fv = run;
+    runfb.env = env;
+    auto written = c->args;
+    auto trailing = c->trailing;
+    c->args.clear();
+    c->trailing = nullptr;
+    auto v = CheckFunValCall(c, runfb, nullptr);
+    c->args = written;
+    c->trailing = trailing;
+    return v;
+}
+
 // One entry for every builtin (builtins.h), for both spellings — f(a, b)
 // and a.f(b) arrive with a uniform argument list (receiver first). The
 // table drives arity, receiver kind/provenance, and simple signatures;
 // BF_CUSTOM entries get dedicated code below.
 inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv) {
+    if (d.kind == B_FIELDS) return CheckFields(c, args);
     c->builtin = d.kind;
     if (c->trailing) Error(c, cat(d.name, " takes no function value"));
     if (!(d.flags & BF_TYARGS) && !c->tyargs.empty())

@@ -3624,6 +3624,43 @@ The language's own functions:
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
 | `embed_shader(path)` or `embed_shader(stage, source, …) -> const u8[:]` | compile-time GLSL compilation to a static shader blob; graphics extension, detailed in the implementation notes, section 3.14 |
 | `embed_file(path) -> const u8[:]` | the bytes of a file, read when the program is compiled, as a view of static data; `path` is a string literal (or a `let`/`const` global holding one), relative to the file with the call; each distinct file is read once |
+| `fields(v) F`, `fields(&v) F` | calls the function value `F` (§7.6) once per field of the struct `v`, in declaration order, with the field's name and its value, or a reference to it: see below |
+
+`fields` is a rewrite, done once `v`'s type is known: for `struct W { turn:
+i64, hp: i64[4], told: Told }`,
+
+```goose
+fields(w) { name, f => show(name, f) }   // show("turn", w.turn); show("hp", w.hp); show("told", w.told);
+fields(&w) { name, f => reset(f) }       // the same calls with &w.turn, &w.hp, &w.told
+fields(w, show)                          // a named function, or an overload set, as F
+```
+
+Each call is a call of the function value as written there would be: a block
+is checked once per field at that field's type (§7.7), and a named function's
+overloads are resolved per field, so a struct's fields of different types
+take different overloads. The name is a string literal; pad fields (§3.2)
+have none and are skipped. A struct nested in `v`, an array, or any other
+field reaches `F` whole: walking further is the program's, an overload per
+type, as in
+
+```goose
+fn put(path: u8[>..], x: i64) { print(path, " = ", x); }
+fn put(path: u8[>..], s) { fields(s) { name, f => put(str(path, ".", name), f) } }
+```
+
+Every call names `v` again, so `v` must be a path every call finds at the
+same place: a variable, its fields, and its elements at an integer literal
+or at a name no call can assign (a `let`, a parameter that is not `var`, a
+`for` index) that is not a reference; a `var` or a reference index is
+rejected, since a call could change it, or the integer it refers to, and
+take the next field from another element. Each call reads `v` as it is
+then: a block that assigns `v` a new value has the later fields read from
+that one. `fields` has no value, and a plain `return` in a block returns
+from the function it is written in (§7.6). As at any call of a block, a
+field that is not fixed-size is not copied into the block's parameter
+(§4.1): take such fields with `fields(&v)`, or a named function, whose
+parameter takes it by reference. As any builtin, `fields` may be called as
+a member (§7.1): `v.fields() F`.
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):

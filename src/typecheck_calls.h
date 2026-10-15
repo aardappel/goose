@@ -58,6 +58,12 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
                      ", not a function"));
     if (fb) {
         id->vdef = nullptr;
+        if (id->name != FIELDS_FN) return CheckFunValCall(c, *fb, expected);
+        struct FieldScope {
+            vector<FieldCall> &at;
+            FieldScope(vector<FieldCall> &a, FieldCall f) : at(a) { at.push_back(f); }
+            ~FieldScope() { at.pop_back(); }
+        } fs(fieldsat, { &fieldcalls.at(c->Origin()), c->line, (int)frames.size() - 1 });
         return CheckFunValCall(c, *fb, expected);
     }
     FnSpec *env = nullptr;
@@ -3285,7 +3291,11 @@ inline void TypeCheck::CheckReturn(Return *r) {
     auto tspec = frames[tf].spec;
     r->target = frames[tf].sf;
     r->targetspec = tspec;
-    for (auto i = tf + 1; i < (int)frames.size(); i++) AddNeed(frames[i].spec, tspec);
+    // A function value run by its own function, not inside a callee (`fields`,
+    // CheckFields), is a frame of the target's specialization: the target
+    // itself, which needs no enclosing call of itself.
+    for (auto i = tf + 1; i < (int)frames.size(); i++)
+        if (frames[i].spec != tspec) AddNeed(frames[i].spec, tspec);
     // Values.
     vector<Val> vals;
     auto expectone = [&](size_t i) -> TypeExpr * {

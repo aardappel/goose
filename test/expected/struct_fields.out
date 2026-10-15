@@ -1,0 +1,42 @@
+W.turn = 8
+W.asked = 1
+W.hp[0] = 2
+W.hp[1] = 3
+W.hp[2] = 4
+W.hp[3] = 5
+W.told.notice = 6
+W.told.a = 10
+turn: 8
+asked: true
+hp: [2, 3, 4, 5]
+told: Told 6 10
+turn: 8
+asked: true
+hp: [2, 3, 4, 5]
+told: Told 6 10
+notice 60
+a 100
+notice 1
+a 2
+fields of Empty and Padded: 2
+first = 0.5
+second = 1.5
+name: abc
+n: 5
+name abc
+n 5
+n 3
+items [7, 8]
+none
+told
+0 100
+0 notice 0
+0 a 0
+1 notice 0
+1 a 0
+notice 1
+a 20
+notice.notice
+notice.a
+a.notice
+a.a
