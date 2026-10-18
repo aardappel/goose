@@ -31,7 +31,7 @@
       <item>abort</item> <item>exit</item> <item>copy</item> <item>default</item>
       <item>hardware_threads</item> <item>thread_spawn</item>
       <item>thread_spawn_contained</item> <item>thread_wait</item>
-      <item>qput</item> <item>qget</item> <item>qpoll</item>
+      <item>qput</item> <item>qget</item> <item>qpoll</item> <item>qlimit</item>
       <item>to_bytes</item> <item>bytes_of</item> <item>from_bytes</item>
       <item>embed_file</item> <item>embed_shader</item>
       <item>len</item> <item>cap</item> <item>push</item> <item>append</item>

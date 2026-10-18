@@ -156,23 +156,29 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         case B_QPUT: {
             auto t = an[0]->exprtype;
             auto q = QueueFor(t);
+            // Emitted here, not returned as text: a discarded result would
+            // drop the put.
+            auto ok = T();
             if (IsResz(t)) {
                 auto src = GenLoc(an[0]);
                 if (src.t->kind == TY_REF) DerefLoc(src);
                 string stk;
                 auto base = BytesTemp(stk);
                 EmitRzImage(src, t, stk, ln);
-                L("gs_qput(&", q, ", ", base, ", ", Top(stk), " - ", base, ");");
+                L("uint8_t ", ok, " = gs_qput(&", q, ", ", base, ", ", Top(stk), " - ", base, ");");
             } else if (IsBytesT(t)) {
                 auto p = GenPtr(an[0]);
-                L("gs_qput(&", q, ", ", p, ", ", SizeX(t, p), ");");
+                L("uint8_t ", ok, " = gs_qput(&", q, ", ", p, ", ", SizeX(t, p), ");");
             } else {
                 auto tv = T();
                 FixedLocal(t, tv, GenX(an[0]));
-                L("gs_qput(&", q, ", &", tv, ", ", FixedSize(t), ");");
+                L("uint8_t ", ok, " = gs_qput(&", q, ", &", tv, ", ", FixedSize(t), ");");
             }
-            return {};
+            return { ok };
         }
+        case B_QLIMIT:
+            L("gs_qlimit(&", QueueFor(c->qtype), ", ", GenX(an[0]), ", ", LocArgs(ln), ");");
+            return {};
         case B_QGET: case B_QPOLL: {
             auto t = c->rettypes[0];
             auto q = QueueFor(t);

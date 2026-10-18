@@ -200,7 +200,8 @@ generated C does not see the type.
   meaningful. It is exactly where the check of data from outside belongs.
 * **Threads.** Each thread program has its own copy of every global it uses
   (§11.2), and the copies of `a` grow apart after the spawn. `qput`, `qget`,
-  `qpoll` and `thread_spawn` arguments reject types that hold index types.
+  `qpoll`, `qlimit` and `thread_spawn` arguments reject types that hold
+  index types.
 * **C.** An `extern fn` or `export fn` signature holds no index type at any
   depth, since C code is not checked against the array (`ExternValueOk`).
   By-value parameters to C would be harmless; v1 does not tell them apart.

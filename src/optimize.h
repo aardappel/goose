@@ -908,6 +908,7 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->dispatcharg = dispatcharg;
     c->builtin = builtin;
     c->poolcheck = poolcheck;
+    c->qtype = qtype;
     c->shaderblob = shaderblob;
     c->fvtarget = fvtarget;
     c->rettypes = rettypes;

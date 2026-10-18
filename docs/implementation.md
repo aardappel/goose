@@ -4340,9 +4340,13 @@ as `to_bytes(a, out)` appends its image (`AppendBytes`), then frees it
 (`gs_free_msg`).
 Queues are one `gs_queue` per element type, which `main` creates
 (`gs_qinit`) before anything else runs, carrying one contiguous image per
-value; a missed `qpoll` yields the all-zero image (`ZeroSize`). A value
-of no bytes (spec §3.4) crosses a queue or a thread's arguments as none, and
-the receiver zeroes the object C gives it rather than reading past the image.
+value; a missed `qpoll` yields the all-zero image (`ZeroSize`). A queue is a
+linked list of `malloc`'d nodes under a mutex, with a condition variable for
+its receivers, and a count of its messages. `gs_qput` allocates and copies
+before it takes the lock, and checks the queue's limit under the lock; a
+refusal frees the node. A value of no bytes (spec §3.4) crosses a queue or
+a thread's arguments as none, and the receiver zeroes the object C gives it
+rather than reading past the image.
 
 ### 6.9 Generated walkers
 

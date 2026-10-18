@@ -161,6 +161,7 @@ enum {
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
     GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
     GS_E_POPN,         /* pop_n of a negative count or more than the length */
+    GS_E_QBOUND,       /* a queue limit of zero or less */
 };
 
 GS_API GS_NORETURN void gs_panic(const char *msg);
@@ -843,7 +844,8 @@ GS_API void gs_free_msg(uint8_t *msg);
    gs_queue global per type, which main sets up before anything can use it).
    Values are contiguous byte images: gs_qget and gs_qpoll return a malloc'd
    node the caller copies from and frees, gs_qpoll NULL when the queue is
-   empty. */
+   empty. gs_qput returns 0, queueing nothing, when the queue is
+   at its limit. */
 typedef struct gs_qnode {
     struct gs_qnode *next;
     int64_t size;
@@ -854,9 +856,10 @@ typedef struct gs_qstate *gs_queue;
 #define GS_QUEUE_INIT NULL
 
 GS_API void gs_qinit(gs_queue *q);
-GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
+GS_API uint8_t gs_qput(gs_queue *q, const void *data, int64_t size);
 GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
+GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
 
 #ifndef GS_RUNTIME_OBJECT
 

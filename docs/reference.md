@@ -3390,9 +3390,10 @@ in the language.
 | `thread_wait(id) -> bool` | blocks until that worker has ended and its storage is released; `false` if it was contained and aborted |
 | `thread_wait(id, msg) -> bool` | as `thread_wait(id)`, and the first such wait appends a contained worker's abort message to `msg` |
 | `hardware_threads() -> i64` | a sensible worker count, never more than the data stacks allow |
-| `qput(v)` | puts `v` on the queue for its type |
+| `qput(v) -> bool` | puts `v` on the queue for its type; `false`, at once, if the queue is full |
 | `qget<T>() -> T` | takes the next `T`, blocking |
 | `qpoll<T>() -> T, bool` | takes one if there is one; else `T`'s zero value and `false` |
+| `qlimit<T>(n)` | lets the queue for `T` hold at most `n` messages |
 
 Values cross between programs through **typed queues**, one per type, and
 whatever crosses, arguments included, must be **flat**: no references or
@@ -3427,6 +3428,12 @@ fn main() {
     print(total, " digits in total");
 }
 ```
+
+A queue has no limit of messages until `qlimit` gives it one. Past it,
+`qput` returns `false` without waiting, so a server can turn work away
+rather than queue it without end; `qput(v);` as a statement ignores the
+answer. To bound the memory a queue may hold, set its limit to that memory
+divided by the size of a typical message.
 
 A worker's return releases everything it owned, whether or not anyone
 waits for it; queued messages outlive their sender; workers still running
@@ -3628,7 +3635,7 @@ written in Goose under `stdlib/` and documented in [stdlib.md](stdlib.md).
 | `copy(x) -> T` | a fresh copy of the stored value `x` names | [4](#copies-are-visible) |
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it, declared defaults applied | [8](#field-defaults) |
 | `hardware_threads()`, `thread_spawn(worker, args…)`, `thread_spawn_contained(worker, args…)`, `thread_wait(id)`, `thread_wait(id, msg)` | workers | [22](#22-threads) |
-| `qput(v)`, `qget<T>()`, `qpoll<T>()` | the typed queues | [22](#22-threads) |
+| `qput(v)`, `qget<T>()`, `qpoll<T>()`, `qlimit<T>(n)` | the typed queues | [22](#22-threads) |
 | `to_bytes(a)`, `to_bytes(a, out)`, `bytes_of(a)`, `from_bytes<T[>..]>(b)` | serialization | [23](#23-serialization) |
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |
 

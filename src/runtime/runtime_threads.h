@@ -295,10 +295,11 @@ GS_API void gs_free_msg(uint8_t *msg) {
 }
 
 /* ---------------------------------------------------------------------------
-   Typed queues (runtime.h). */
+   Typed queues (runtime.h). A queue holds at most `limit` messages. */
 
 struct gs_qstate {
     gs_qnode *head, *tail;
+    int64_t count, limit;
     gs_mutex mutex;
     gs_cond cond;
 };
@@ -307,12 +308,16 @@ GS_API void gs_qinit(gs_queue *q) {
     struct gs_qstate *s = (struct gs_qstate *)malloc(sizeof(struct gs_qstate));
     if (!s) gs_panic("out of memory creating a queue");
     s->head = s->tail = NULL;
+    s->count = 0;
+    s->limit = INT64_MAX;
     gs_mutex_init(&s->mutex);
     gs_cond_init(&s->cond);
     *q = s;
 }
 
-GS_API void gs_qput(gs_queue *q, const void *data, int64_t size) {
+/* Allocates and copies before it takes the lock, so the lock is held only
+   to check the limit and link the node. */
+GS_API uint8_t gs_qput(gs_queue *q, const void *data, int64_t size) {
     struct gs_qstate *s = *q;
     gs_qnode *n = (gs_qnode *)malloc(sizeof(gs_qnode) + (size_t)size);
     if (!n) gs_panic("out of memory in qput");
@@ -320,19 +325,33 @@ GS_API void gs_qput(gs_queue *q, const void *data, int64_t size) {
     n->size = size;
     memcpy(n + 1, data, (size_t)size);
     gs_mutex_lock(&s->mutex);
+    if (s->count >= s->limit) {
+        gs_mutex_unlock(&s->mutex);
+        free(n);
+        return 0;
+    }
+    s->count++;
     if (s->tail) s->tail->next = n; else s->head = n;
     s->tail = n;
     gs_mutex_unlock(&s->mutex);
     gs_cond_signal(&s->cond);
+    return 1;
+}
+
+/* Unlinks the head, under the lock. */
+static gs_qnode *gs_qtake(struct gs_qstate *s) {
+    gs_qnode *n = s->head;
+    s->head = n->next;
+    if (!s->head) s->tail = NULL;
+    s->count--;
+    return n;
 }
 
 GS_API gs_qnode *gs_qget(gs_queue *q) {
     struct gs_qstate *s = *q;
     gs_mutex_lock(&s->mutex);
     while (!s->head) gs_cond_wait(&s->cond, &s->mutex);
-    gs_qnode *n = s->head;
-    s->head = n->next;
-    if (!s->head) s->tail = NULL;
+    gs_qnode *n = gs_qtake(s);
     gs_mutex_unlock(&s->mutex);
     return n;
 }
@@ -340,13 +359,17 @@ GS_API gs_qnode *gs_qget(gs_queue *q) {
 GS_API gs_qnode *gs_qpoll(gs_queue *q) {
     struct gs_qstate *s = *q;
     gs_mutex_lock(&s->mutex);
-    gs_qnode *n = s->head;
-    if (n) {
-        s->head = n->next;
-        if (!s->head) s->tail = NULL;
-    }
+    gs_qnode *n = s->head ? gs_qtake(s) : NULL;
     gs_mutex_unlock(&s->mutex);
     return n;
+}
+
+GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line) {
+    if (n <= 0) gs_abort(GS_E_QBOUND, file, line);
+    struct gs_qstate *s = *q;
+    gs_mutex_lock(&s->mutex);
+    s->limit = n;
+    gs_mutex_unlock(&s->mutex);
 }
 
 #endif  /* GS_NEED_THREADS */

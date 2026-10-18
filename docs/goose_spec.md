@@ -976,7 +976,7 @@ var edges: NodeId[>..] = [];
 * **What stays out.** `format` and `to_bytes(a, out)` do not write into an
   array of `u8 in x`, which is no byte array. `from_bytes` checks each index
   in an image against its array's length when it verifies the image, which
-  it rejects otherwise. `qput`, `qget`, `qpoll` and `thread_spawn`
+  it rejects otherwise. `qput`, `qget`, `qpoll`, `qlimit` and `thread_spawn`
   arguments take no type holding an index type: each thread program's copy
   of the array grows on its own (§11.2). An `extern fn` or `export fn`
   signature holds none either, since C code is not checked against the
@@ -3823,10 +3823,18 @@ the Linda tuple-space / coordination style.
   `thread_fn`'s parameters have no defaults (§7.1): `thread_spawn` passes
   every argument.
 * **Typed queues**: conceptually one queue per flat element type;
-  `qput(v)`, `qget<T>() -> T` (blocking), `qpoll<T>() -> T, bool`
+  `qput(v) -> bool`, `qget<T>() -> T` (blocking), `qpoll<T>() -> T, bool`
   (non-blocking; bool = got one; on a miss the value is T's zero value —
-  zeroed scalars, empty arrays, variant 0) select the queue by type. Queues
-  live outside stack memory (runtime-internal allocation permitted here).
+  zeroed scalars, empty arrays, variant 0) and `qlimit<T>(n: i64)` select
+  the queue by type. Queues live outside stack memory (runtime-internal
+  allocation permitted here).
+* **Bounded queues**: `qput` never blocks. It returns `true` once the value
+  is queued, and `false` at once, queueing nothing, when the queue holds its
+  limit of messages. A call statement drops the result (§7.1), so `qput(v);`
+  ignores a refusal. A queue has no limit until `qlimit<T>(n)` gives it one
+  of `n` messages; lowering a limit below what the queue holds keeps the
+  messages queued, and puts fail until fewer than `n` remain. A limit of
+  zero or less aborts with a runtime diagnostic.
 
 ### 11.3 Dynamic stacks (future)
 
@@ -3851,7 +3859,8 @@ The language's own functions:
 | `copy(x) -> T` | a fresh copy of the stored value `x` names (§4.1) |
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it (§4.2) |
 | `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_spawn_contained(worker, args…) -> i64`, `thread_wait(id) -> bool`, `thread_wait(id, msg) -> bool` | workers (§11.2) |
-| `qput(v)`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
+| `qput(v) -> bool`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
+| `qlimit<T>(n)` | a queue's limit of messages (§11.2) |
 | `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | an array's image — a varint byte count then its element region — fresh, or appended to a growable `u8` array (§3.9, `design/serialization.md`) |
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |

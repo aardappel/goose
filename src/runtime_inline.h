@@ -173,6 +173,7 @@ enum {
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
     GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
     GS_E_POPN,         /* pop_n of a negative count or more than the length */
+    GS_E_QBOUND,       /* a queue limit of zero or less */
 };
 
 GS_API GS_NORETURN void gs_panic(const char *msg);
@@ -189,9 +190,9 @@ GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line);
 GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line);
-GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
 )GSRT"
-R"GSRT(                                    const char *file, int line);
+R"GSRT(GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
+                                    const char *file, int line);
 GS_API GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
                                     const char *file, int line);
 /* f32: d is an f32's value, and takes that type's text form. */
@@ -349,9 +350,9 @@ static uint64_t gs_bytemask(int64_t k) {
    element), and C leaves all three undefined on a null pointer even for
    zero bytes. A copy of up to 16 bytes loads both overlapping halves before
    it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
-   overlapping, where the library's memcpy would take a call and a dispatch
 )GSRT"
-R"GSRT(   on the length; as the C library's memcpy, it takes runs that do not
+R"GSRT(   overlapping, where the library's memcpy would take a call and a dispatch
+   on the length; as the C library's memcpy, it takes runs that do not
    overlap. */
 static void gs_memcpy(void *dst, const void *src, size_t n) {
     uint8_t *d = (uint8_t *)dst;
@@ -519,9 +520,9 @@ static T gs_shr_##SFX(T a, int64_t n) { \
 /* Unsigned types wrap modulo 2^width by definition (§6.2) in every build:
    plain C unsigned arithmetic, truncated back to the width. */
 #define GS_INTOPS_U(SFX, T, MAX, BITS) \
-static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
 )GSRT"
-R"GSRT(static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
+R"GSRT(static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
+static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
 static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
@@ -708,9 +709,9 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
    magic: x / d is the high half of a 32x32 product, which a C compiler
    vectorizes where it keeps the 64x64 one scalar, and which needs no
    128-bit arithmetic, so only a zero divisor gets GS_DIVU_NONE. */
-static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
 )GSRT"
-R"GSRT(    int k = 31;
+R"GSRT(static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
+    int k = 31;
     uint64_t n;
     uint32_t m, rem;
     if (d == 0) { *more = GS_DIVU_NONE; return 0; }
@@ -859,7 +860,8 @@ GS_API void gs_free_msg(uint8_t *msg);
    gs_queue global per type, which main sets up before anything can use it).
    Values are contiguous byte images: gs_qget and gs_qpoll return a malloc'd
    node the caller copies from and frees, gs_qpoll NULL when the queue is
-   empty. */
+   empty. gs_qput returns 0, queueing nothing, when the queue is
+   at its limit. */
 typedef struct gs_qnode {
     struct gs_qnode *next;
     int64_t size;
@@ -870,9 +872,10 @@ typedef struct gs_qstate *gs_queue;
 #define GS_QUEUE_INIT NULL
 
 GS_API void gs_qinit(gs_queue *q);
-GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
+GS_API uint8_t gs_qput(gs_queue *q, const void *data, int64_t size);
 GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
+GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
 
 #ifndef GS_RUNTIME_OBJECT
 
@@ -885,14 +888,14 @@ static GS_TLS int64_t gs_nstks;
 /* The current program instance's globals (goose_spec.md 11.1), a struct the
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
-   at spawn like the arguments (11.2). No global is shared between program
+)GSRT"
+R"GSRT(   at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 
-)GSRT"
-R"GSRT(static void gs_stack_init(gs_stack *s) {
+static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region();
 }
 
@@ -1089,15 +1092,15 @@ static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) 
 
 /* An image is little-endian by definition (serialization.md 7), which every
    target this compiles for is. The test is a constant to any optimizer; it is
-   here so that a big-endian host fails loudly instead of writing bytes that
+)GSRT"
+R"GSRT(   here so that a big-endian host fails loudly instead of writing bytes that
    only it can read back. */
 static int gs_is_le(void) {
     const uint16_t one = 1;
     return *(const uint8_t *)&one == 1;
 }
 
-)GSRT"
-R"GSRT(/* ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
    return the byte count (at most GS_FMT_MAX); print/str/format are built on
    them. A float takes the shortest form that still round-trips. */
@@ -1153,6 +1156,7 @@ static const char *gs_errmsgs[] = {
     "slice not from this pool",
     "non-null relative reference encodes as null",
     "pop_n count negative or beyond the array's length",
+    "queue limit of zero or less",
 };
 
 /* Ends the process with `code`, its streams flushed: exit() and every
@@ -3010,10 +3014,11 @@ GS_API void gs_free_msg(uint8_t *msg) {
 }
 
 /* ---------------------------------------------------------------------------
-   Typed queues (runtime.h). */
+   Typed queues (runtime.h). A queue holds at most `limit` messages. */
 
 struct gs_qstate {
     gs_qnode *head, *tail;
+    int64_t count, limit;
     gs_mutex mutex;
     gs_cond cond;
 };
@@ -3022,12 +3027,16 @@ GS_API void gs_qinit(gs_queue *q) {
     struct gs_qstate *s = (struct gs_qstate *)malloc(sizeof(struct gs_qstate));
     if (!s) gs_panic("out of memory creating a queue");
     s->head = s->tail = NULL;
+    s->count = 0;
+    s->limit = INT64_MAX;
     gs_mutex_init(&s->mutex);
     gs_cond_init(&s->cond);
     *q = s;
 }
 
-GS_API void gs_qput(gs_queue *q, const void *data, int64_t size) {
+/* Allocates and copies before it takes the lock, so the lock is held only
+   to check the limit and link the node. */
+GS_API uint8_t gs_qput(gs_queue *q, const void *data, int64_t size) {
     struct gs_qstate *s = *q;
     gs_qnode *n = (gs_qnode *)malloc(sizeof(gs_qnode) + (size_t)size);
     if (!n) gs_panic("out of memory in qput");
@@ -3035,19 +3044,33 @@ GS_API void gs_qput(gs_queue *q, const void *data, int64_t size) {
     n->size = size;
     memcpy(n + 1, data, (size_t)size);
     gs_mutex_lock(&s->mutex);
+    if (s->count >= s->limit) {
+        gs_mutex_unlock(&s->mutex);
+        free(n);
+        return 0;
+    }
+    s->count++;
     if (s->tail) s->tail->next = n; else s->head = n;
     s->tail = n;
     gs_mutex_unlock(&s->mutex);
     gs_cond_signal(&s->cond);
+    return 1;
+}
+
+/* Unlinks the head, under the lock. */
+static gs_qnode *gs_qtake(struct gs_qstate *s) {
+    gs_qnode *n = s->head;
+    s->head = n->next;
+    if (!s->head) s->tail = NULL;
+    s->count--;
+    return n;
 }
 
 GS_API gs_qnode *gs_qget(gs_queue *q) {
     struct gs_qstate *s = *q;
     gs_mutex_lock(&s->mutex);
     while (!s->head) gs_cond_wait(&s->cond, &s->mutex);
-    gs_qnode *n = s->head;
-    s->head = n->next;
-    if (!s->head) s->tail = NULL;
+    gs_qnode *n = gs_qtake(s);
     gs_mutex_unlock(&s->mutex);
     return n;
 }
@@ -3055,13 +3078,17 @@ GS_API gs_qnode *gs_qget(gs_queue *q) {
 GS_API gs_qnode *gs_qpoll(gs_queue *q) {
     struct gs_qstate *s = *q;
     gs_mutex_lock(&s->mutex);
-    gs_qnode *n = s->head;
-    if (n) {
-        s->head = n->next;
-        if (!s->head) s->tail = NULL;
-    }
+    gs_qnode *n = s->head ? gs_qtake(s) : NULL;
     gs_mutex_unlock(&s->mutex);
     return n;
+}
+
+GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line) {
+    if (n <= 0) gs_abort(GS_E_QBOUND, file, line);
+    struct gs_qstate *s = *q;
+    gs_mutex_lock(&s->mutex);
+    s->limit = n;
+    gs_mutex_unlock(&s->mutex);
 }
 
 #endif  /* GS_NEED_THREADS */
