@@ -131,7 +131,25 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // Emitted here, not returned as text: a discarded result would
             // drop the wait.
             auto t = T();
-            L("uint8_t ", t, " = gs_thread_wait(", GenX(an[0]), ", ", LocArgs(ln), ");");
+            if (an.size() == 1) {
+                L("uint8_t ", t, " = gs_thread_wait(", GenX(an[0]), ", NULL, NULL, ",
+                  LocArgs(ln), ");");
+                return { t };
+            }
+            // thread_wait(id, msg): the abort's message, which this wait takes
+            // if no wait has, appended to msg.
+            auto id = GenX(an[0]);
+            auto m = T(), n = T();
+            L("uint8_t *", m, ";");
+            L("int64_t ", n, ";");
+            L("uint8_t ", t, " = gs_thread_wait(", id, ", &", m, ", &", n, ", ", LocArgs(ln),
+              ");");
+            L("if (", m, ") {");
+            ind++;
+            AppendBytes(RecvLoc(an[1]), m, n, ln);
+            L("gs_free_msg(", m, ");");
+            ind--;
+            L("}");
             return { t };
         }
         case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: return EmitThreadSpawn(c, an);

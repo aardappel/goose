@@ -847,8 +847,13 @@ GS_API int64_t gs_hardware_threads(void);
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
                                const void *args, int64_t argsize, int contained);
-/* Whether the worker returned rather than aborted, once it has ended. */
-GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line);
+/* Whether the worker returned rather than aborted, once it has ended. Where
+   `msg` is not NULL, the first such wait for a worker that aborted takes its
+   message: `msg` and `len` are set to it, which the caller frees with
+   gs_free_msg, or to NULL and no bytes. */
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+                               const char *file, int line);
+GS_API void gs_free_msg(uint8_t *msg);
 
 /* One queue per flat element type the program uses (the compiler emits a
    gs_queue global per type, which main sets up before anything can use it).
@@ -886,15 +891,15 @@ static GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 
-static void gs_stack_init(gs_stack *s) {
+)GSRT"
+R"GSRT(static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region();
 }
 
 /* The calling thread program's block of n stacks, each with its region:
    main's from gs_rt_init, a worker's from its entry thunk. */
 static void gs_stack_block(int64_t n) {
-)GSRT"
-R"GSRT(    gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
+    gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
     if (!gs_stks) gs_panic("out of memory allocating stack block");
     for (int64_t i = 0; i < n; i++) gs_stack_init(&gs_stks[i]);
     gs_nstks = n;
@@ -1091,11 +1096,11 @@ static int gs_is_le(void) {
     return *(const uint8_t *)&one == 1;
 }
 
-/* ---------------------------------------------------------------------------
+)GSRT"
+R"GSRT(/* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
    return the byte count (at most GS_FMT_MAX); print/str/format are built on
-)GSRT"
-R"GSRT(   them. A float takes the shortest form that still round-trips. */
+   them. A float takes the shortest form that still round-trips. */
 
 #define GS_FMT_MAX 32
 
@@ -1160,6 +1165,7 @@ static const char *gs_errmsgs[] = {
 static GS_NORETURN void gs_end(int code);
 
 #include <setjmp.h>
+#include <stdarg.h>
 /* No abort is raised in a signal handler, so the jump leaves the signal
    state alone. */
 #ifdef _WIN32
@@ -1170,33 +1176,67 @@ static GS_NORETURN void gs_end(int code);
 #define gs_longjmp    _longjmp
 #endif
 
-/* Where an abort in a contained worker returns to (gs_run_contained); NULL
-   on every other thread. */
-static GS_TLS jmp_buf *gs_contain;
-
-/* The end of a failed check or abort(msg) (§9.3): a contained worker's
-   ends that worker, anything else's the process. */
-static GS_NORETURN void gs_fail(void) {
-    if (gs_contain) gs_longjmp(*gs_contain, 1);
-    gs_end(1);
-}
-
 GS_API GS_NORETURN void gs_panic(const char *msg) {
     fprintf(stderr, "goose runtime error: %s\n", msg);
     gs_end(1);
 }
 
+/* Where an abort in a contained worker returns to (gs_run_contained), and
+   the message it leaves there for thread_wait; NULL on every other thread. */
+typedef struct {
+    jmp_buf jump;
+    uint8_t *msg;
+    int64_t len;
+} gs_contained;
+static GS_TLS gs_contained *gs_contain;
+
+/* The end of a failed check or abort(msg) (§9.3), whose message is `len`
+   bytes at `msg` and the location after it. A contained worker's keeps the
+   message, without the "goose runtime error: " every printed one starts
+   with, and ends that worker; anything else's prints it and ends the
+   process. */
+static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, int line) {
+    static const char lead[] = "goose runtime error: ";
+    int64_t pre = sizeof lead - 1;
+    int64_t loc = snprintf(NULL, 0, " (%s:%d)\n", file, line);
+    uint8_t *text = (uint8_t *)malloc((size_t)(pre + len + loc + 1));
+    if (!text) {
+        if (gs_contain) gs_panic("out of memory recording an aborted thread");
+        fputs(lead, stderr);
+        fwrite(msg, 1, (size_t)len, stderr);
+        fprintf(stderr, " (%s:%d)\n", file, line);
+        gs_end(1);
+    }
+    memcpy(text, lead, (size_t)pre);
+    if (len) memcpy(text + pre, msg, (size_t)len);
+    snprintf((char *)text + pre + len, (size_t)loc + 1, " (%s:%d)\n", file, line);
+    if (gs_contain) {
+        memmove(text, text + pre, (size_t)(len + loc - 1));
+        gs_contain->msg = text;
+        gs_contain->len = len + loc - 1;
+        gs_longjmp(gs_contain->jump, 1);
+    }
+    fwrite(text, 1, (size_t)(pre + len + loc), stderr);
+    gs_end(1);
+}
+
+/* gs_fail with the message printf formats. */
+static GS_NORETURN void gs_failf(const char *file, int line, const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    gs_fail(buf, n < 0 ? 0 : n < (int)sizeof buf ? n : (int)sizeof buf - 1, file, line);
+}
+
 GS_API GS_NORETURN void gs_abort(int err, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: %s (%s:%d)\n", gs_errmsgs[err], file, line);
-    gs_fail();
+    gs_fail(gs_errmsgs[err], (int64_t)strlen(gs_errmsgs[err]), file, line);
 }
 
 GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
                                      int line) {
-    fputs("goose runtime error: ", stderr);
-    fwrite(msg, 1, (size_t)len, stderr);
-    fprintf(stderr, " (%s:%d)\n", file, line);
-    gs_fail();
+    gs_fail(msg, len, file, line);
 }
 
 GS_API GS_NORETURN void gs_exit(int64_t code) {
@@ -1204,40 +1244,31 @@ GS_API GS_NORETURN void gs_exit(int64_t code) {
 }
 
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
-            "(%s:%d)\n", (long long)i, (long long)n, file, line);
-    gs_fail();
+    gs_failf(file, line, "index %lld out of bounds (length %lld)", (long long)i, (long long)n);
 }
 
 GS_API GS_NORETURN void gs_divfail(const char *file, int line) {
-    fprintf(stderr, "goose runtime error: division by zero (%s:%d)\n", file, line);
-    gs_fail();
+    gs_failf(file, line, "division by zero");
 }
 
 GS_API GS_NORETURN void gs_divovf(const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow in division (%s:%d)\n", file, line);
-    gs_fail();
+    gs_failf(file, line, "integer overflow in division");
 }
 
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow (debug): %lld %s %lld at %s "
-            "(%s:%d)\n", (long long)a, op, (long long)b, type, file, line);
-    gs_fail();
+    gs_failf(file, line, "integer overflow (debug): %lld %s %lld at %s", (long long)a, op,
+             (long long)b, type);
 }
 
 GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow (debug): -(%lld) at %s (%s:%d)\n",
-            (long long)a, type, file, line);
-    gs_fail();
+    gs_failf(file, line, "integer overflow (debug): -(%lld) at %s", (long long)a, type);
 }
 
 /* The message of a failing `as` check, with the source value as text. */
 static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *type,
                                   const char *file, int line) {
-    fprintf(stderr, "goose runtime error: as conversion %s (debug): %s as %s (%s:%d)\n",
-            why, num, type, file, line);
-    gs_fail();
+    gs_failf(file, line, "as conversion %s (debug): %s as %s", why, num, type);
 }
 
 GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
@@ -1292,7 +1323,8 @@ static int64_t gs_thread_cap = INT64_MAX;
    halved the size are larger than those after. */
 typedef struct {
     uint8_t *base;
-    size_t usable, size;    /* size: with the guard gap */
+)GSRT"
+R"GSRT(    size_t usable, size;    /* size: with the guard gap */
 } gs_region;
 static GS_TLS gs_region *gs_regions;
 static GS_TLS volatile long gs_nregions;
@@ -1327,8 +1359,7 @@ static char *gs_size(char *p, uint64_t bytes) {
 static char *gs_text(char *p, const char *s) {
     while (*s) *p++ = *s++;
     return p;
-)GSRT"
-R"GSRT(}
+}
 
 /* The report of a data stack overrunning its region into the guard gap,
    for one write from the fault handler: whose stacks, past how much, and
@@ -1509,7 +1540,8 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
         }
     }
     if ((uintptr_t)hit - gs_native_lo < gs_native_hi - gs_native_lo) {
-        static const char msg[] = "goose runtime error: native call stack overflow\n";
+)GSRT"
+R"GSRT(        static const char msg[] = "goose runtime error: native call stack overflow\n";
         ssize_t w = write(2, msg, sizeof(msg) - 1);
         (void)w;
         _exit(1);
@@ -1540,8 +1572,7 @@ int pthread_getattr_np(pthread_t, pthread_attr_t *);
 #endif
 
 static size_t gs_sigstack_size(void) {
-)GSRT"
-R"GSRT(    return SIGSTKSZ > GS_SIGSTACK_MIN ? (size_t)SIGSTKSZ : (size_t)GS_SIGSTACK_MIN;
+    return SIGSTKSZ > GS_SIGSTACK_MIN ? (size_t)SIGSTKSZ : (size_t)GS_SIGSTACK_MIN;
 }
 
 /* Run by each thread program's thread as it starts: an alternate stack for
@@ -1716,7 +1747,8 @@ typedef struct {
 
 static int64_t gs_sp_newnode(gs_sppath *p) {
     int64_t i = GS_SPHEAD(p)->chain;
-    if (i) {
+)GSRT"
+R"GSRT(    if (i) {
         GS_SPHEAD(p)->chain = GS_SPLEAF(p, i)->link;
         return i;
     }
@@ -1753,8 +1785,7 @@ static int64_t gs_sp_key(gs_sppath *p, int64_t i, int leaf) {
 static void gs_sp_fix(gs_sppath *p, int64_t from) {
     int64_t l;
     for (l = from - 1; l >= 0; l--) {
-)GSRT"
-R"GSRT(        gs_spinner *in = GS_SPINNER(p, p->node[l]);
+        gs_spinner *in = GS_SPINNER(p, p->node[l]);
         int64_t c = p->node[l + 1], k = p->pos[l];
         int leaf = l + 1 == p->h;
         int64_t key = gs_sp_key(p, c, leaf), max = gs_sp_max(p, c, leaf);
@@ -1951,7 +1982,8 @@ static void gs_sp_take(gs_sppath *p, int64_t k, int64_t cnt) {
    than best: in index order it packs runs toward the start and leaves the
    end free. */
 GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
-                              int64_t cnt) {
+)GSRT"
+R"GSRT(                              int64_t cnt) {
     gs_sppath p;
     int64_t l, i, k, idx;
     gs_spleaf *lf;
@@ -1989,8 +2021,7 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
 }
 
 /* The spans around a run that starts at idx: the path to the leaf holding
-)GSRT"
-R"GSRT(   the last span that starts at or before idx (its position k there, or -1),
+   the last span that starts at or before idx (its position k there, or -1),
    and the span after that one, which follows it in its leaf or starts the
    next leaf (nl and nk, reached by the path np), where there is one. */
 typedef struct {
@@ -2185,7 +2216,8 @@ static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
     }
 }
 
-/* The members among the 16 bytes of x, as 0xff bytes, for a set of kind k
+)GSRT"
+R"GSRT(/* The members among the 16 bytes of x, as 0xff bytes, for a set of kind k
    from 1 to 4, a constant wherever this is inlined. A range holds x where
    x - lo, wrapping, is at most its width. */
 static GS_INLINE __m128i gs_bsm_test(const gs_bsm *m, int k, __m128i x) {
@@ -2208,8 +2240,7 @@ static GS_INLINE __m128i gs_bsm_test(const gs_bsm *m, int k, __m128i x) {
    hi[x & 15] where not (it gives 0 for an index with its top bit set), and
    the bit for x's bits 4 to 6, which the entry has or not. */
 static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
-)GSRT"
-R"GSRT(    __m128i lo = _mm_shuffle_epi8(m->a, x);
+    __m128i lo = _mm_shuffle_epi8(m->a, x);
     __m128i hi = _mm_shuffle_epi8(m->b, _mm_xor_si128(x, _mm_set1_epi8((char)0x80)));
     __m128i bit = _mm_shuffle_epi8(m->c, _mm_and_si128(_mm_srli_epi16(x, 4), _mm_set1_epi8(7)));
     return _mm_cmpeq_epi8(_mm_and_si128(_mm_or_si128(lo, hi), bit), bit);
@@ -2352,7 +2383,8 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
         uint64_t total = per ? budget / per : 0;
         int64_t spare = total > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)total;
         spare -= mainregions;
-        gs_thread_cap = spare > workerregions ? spare / workerregions : 1;
+)GSRT"
+R"GSRT(        gs_thread_cap = spare > workerregions ? spare / workerregions : 1;
     }
     // Unbuffered stdout: output is never lost to an abort or a killed run,
     // and interleaves correctly with stderr diagnostics. Revisit if print
@@ -2378,8 +2410,7 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
    handling and format parsing cost several times the conversion itself:
    the digit count first, then the digits from the right, two per division
    by 100. */
-)GSRT"
-R"GSRT(static const char gs_digit_pairs[201] =
+static const char gs_digit_pairs[201] =
     "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
     "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
     "8081828384858687888990919293949596979899";
@@ -2566,7 +2597,8 @@ static int gs_float_digits(uint64_t f, int e, int bits, int emin, char *dig, int
    significant bits and least exponent emin. The digits are laid out as C's
    %g lays them out at a precision of max(15, digits): in exponent form, with
    at least two exponent digits, below 1e-4 or from that power of ten up. */
-static int64_t gs_fmt_float(uint8_t *dst, int neg, uint64_t frac, int bexp, int bits,
+)GSRT"
+R"GSRT(static int64_t gs_fmt_float(uint8_t *dst, int neg, uint64_t frac, int bexp, int bits,
                             int emin) {
     char dig[20], *p = (char *)dst;
     int k, n, x, i;
@@ -2598,8 +2630,7 @@ static int64_t gs_fmt_float(uint8_t *dst, int neg, uint64_t frac, int bexp, int 
             if (i == x + 1) *p++ = '.';
             *p++ = i < n ? dig[i] : '0';
         }
-)GSRT"
-R"GSRT(        /* A whole number still reads as a float: 1.0, not 1. */
+        /* A whole number still reads as a float: 1.0, not 1. */
         if (n <= x + 1) {
             *p++ = '.';
             *p++ = '0';
@@ -2795,7 +2826,8 @@ typedef pthread_cond_t gs_cond;
    a compiler-generated entry thunk. Only active workers have records. IDs
    increase monotonically, so an issued ID absent from the active list has
    completed; neither repeated waits nor unjoined workers retain resources,
-   but for the id of each contained worker that aborted. Workers still
+   but for the id of each contained worker that aborted, and its message
+   until a wait takes it. Workers still
    running at process exit are killed by teardown (§11.2). */
 
 typedef struct gs_thread {
@@ -2813,31 +2845,37 @@ static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
 static gs_cond gs_threads_done = GS_COND_INIT;
 
-/* The ids of the contained workers that aborted, from which thread_wait
-   answers. Under gs_threads_mutex. */
-static int64_t *gs_aborted;
+/* The contained workers that aborted, from which thread_wait answers: each
+   one's id and the message of its abort (gs_fail), which the first wait that
+   asks for it takes, NULL after. Under gs_threads_mutex. */
+typedef struct {
+    int64_t id;
+    uint8_t *msg;
+    int64_t len;
+} gs_abort_rec;
+static gs_abort_rec *gs_aborted;
 static int64_t gs_naborted, gs_abortedcap;
 
-static void gs_aborted_add(int64_t id) {
+static void gs_aborted_add(int64_t id, uint8_t *msg, int64_t len) {
     if (gs_naborted == gs_abortedcap) {
         int64_t cap = gs_abortedcap ? gs_abortedcap * 2 : 16;
-        int64_t *p = (int64_t *)realloc(gs_aborted, (size_t)cap * sizeof(int64_t));
+        gs_abort_rec *p = (gs_abort_rec *)realloc(gs_aborted, (size_t)cap * sizeof(gs_abort_rec));
         if (!p) gs_panic("out of memory recording an aborted thread");
         gs_aborted = p;
         gs_abortedcap = cap;
     }
-    gs_aborted[gs_naborted++] = id;
+    gs_abort_rec r = { id, msg, len };
+    gs_aborted[gs_naborted++] = r;
 }
 
 /* Runs a contained worker's thread program, to which an abort in it
-   (gs_fail) returns: whether it aborted. */
-static int gs_run_contained(gs_thread *t) {
-    jmp_buf contain;
-    if (gs_setjmp(contain)) {
+   (gs_fail) returns: whether it aborted, its message then in `c`. */
+static int gs_run_contained(gs_thread *t, gs_contained *c) {
+    if (gs_setjmp(c->jump)) {
         gs_contain = NULL;
         return 1;
     }
-    gs_contain = &contain;
+    gs_contain = c;
     t->run(t->entry, t->args);
     gs_contain = NULL;
     return 0;
@@ -2854,7 +2892,8 @@ static void *gs_thread_main(void *p)
     gs_native_stack_init();
     gs_current_thread_id = t->id;
     int aborted = 0;
-    if (t->contained) aborted = gs_run_contained(t);
+    gs_contained contain;
+    if (t->contained) aborted = gs_run_contained(t, &contain);
     else t->run(t->entry, t->args);
     t->release();
     free(t->args);
@@ -2867,7 +2906,7 @@ static void *gs_thread_main(void *p)
     gs_thread **slot = &gs_threads;
     while (*slot != t) slot = &(*slot)->next;
     *slot = t->next;
-    if (aborted) gs_aborted_add(t->id);
+    if (aborted) gs_aborted_add(t->id, contain.msg, contain.len);
     free(t);
     gs_cond_broadcast(&gs_threads_done);
     gs_mutex_unlock(&gs_threads_mutex);
@@ -2884,7 +2923,8 @@ GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
     if (argsize < 0 || (uint64_t)argsize > SIZE_MAX)
         gs_panic("invalid thread argument size");
     gs_thread *t = (gs_thread *)malloc(sizeof(gs_thread));
-    if (!t) gs_panic("out of memory spawning thread");
+)GSRT"
+R"GSRT(    if (!t) gs_panic("out of memory spawning thread");
     t->run = run;
     t->release = release;
     t->entry = entry;
@@ -2896,8 +2936,7 @@ GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
     }
     if (argsize) memcpy(t->args, args, (size_t)argsize);
     gs_mutex_lock(&gs_threads_mutex);
-)GSRT"
-R"GSRT(    if (gs_numthreads == INT64_MAX) gs_panic("thread id space exhausted");
+    if (gs_numthreads == INT64_MAX) gs_panic("thread id space exhausted");
     int64_t id = gs_numthreads++;
     t->id = id;
     t->next = gs_threads;
@@ -2931,7 +2970,8 @@ R"GSRT(    if (gs_numthreads == INT64_MAX) gs_panic("thread id space exhausted")
     return id;
 }
 
-GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line) {
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+                               const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
     int err = id < 0 || id >= gs_numthreads ? GS_E_THREADID
             : id == gs_current_thread_id    ? GS_E_THREADSELF : -1;
@@ -2947,10 +2987,26 @@ GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line) {
         gs_cond_wait(&gs_threads_done, &gs_threads_mutex);
     }
     uint8_t returned = 1;
+    if (msg) {
+        *msg = NULL;
+        *len = 0;
+    }
     for (int64_t i = 0; i < gs_naborted; i++)
-        if (gs_aborted[i] == id) returned = 0;
+        if (gs_aborted[i].id == id) {
+            returned = 0;
+            if (msg && gs_aborted[i].msg) {
+                *msg = gs_aborted[i].msg;
+                *len = gs_aborted[i].len;
+                gs_aborted[i].msg = NULL;
+                gs_aborted[i].len = 0;
+            }
+        }
     gs_mutex_unlock(&gs_threads_mutex);
     return returned;
+}
+
+GS_API void gs_free_msg(uint8_t *msg) {
+    free(msg);
 }
 
 /* ---------------------------------------------------------------------------

@@ -112,7 +112,8 @@ typedef pthread_cond_t gs_cond;
    a compiler-generated entry thunk. Only active workers have records. IDs
    increase monotonically, so an issued ID absent from the active list has
    completed; neither repeated waits nor unjoined workers retain resources,
-   but for the id of each contained worker that aborted. Workers still
+   but for the id of each contained worker that aborted, and its message
+   until a wait takes it. Workers still
    running at process exit are killed by teardown (§11.2). */
 
 typedef struct gs_thread {
@@ -130,31 +131,37 @@ static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
 static gs_cond gs_threads_done = GS_COND_INIT;
 
-/* The ids of the contained workers that aborted, from which thread_wait
-   answers. Under gs_threads_mutex. */
-static int64_t *gs_aborted;
+/* The contained workers that aborted, from which thread_wait answers: each
+   one's id and the message of its abort (gs_fail), which the first wait that
+   asks for it takes, NULL after. Under gs_threads_mutex. */
+typedef struct {
+    int64_t id;
+    uint8_t *msg;
+    int64_t len;
+} gs_abort_rec;
+static gs_abort_rec *gs_aborted;
 static int64_t gs_naborted, gs_abortedcap;
 
-static void gs_aborted_add(int64_t id) {
+static void gs_aborted_add(int64_t id, uint8_t *msg, int64_t len) {
     if (gs_naborted == gs_abortedcap) {
         int64_t cap = gs_abortedcap ? gs_abortedcap * 2 : 16;
-        int64_t *p = (int64_t *)realloc(gs_aborted, (size_t)cap * sizeof(int64_t));
+        gs_abort_rec *p = (gs_abort_rec *)realloc(gs_aborted, (size_t)cap * sizeof(gs_abort_rec));
         if (!p) gs_panic("out of memory recording an aborted thread");
         gs_aborted = p;
         gs_abortedcap = cap;
     }
-    gs_aborted[gs_naborted++] = id;
+    gs_abort_rec r = { id, msg, len };
+    gs_aborted[gs_naborted++] = r;
 }
 
 /* Runs a contained worker's thread program, to which an abort in it
-   (gs_fail) returns: whether it aborted. */
-static int gs_run_contained(gs_thread *t) {
-    jmp_buf contain;
-    if (gs_setjmp(contain)) {
+   (gs_fail) returns: whether it aborted, its message then in `c`. */
+static int gs_run_contained(gs_thread *t, gs_contained *c) {
+    if (gs_setjmp(c->jump)) {
         gs_contain = NULL;
         return 1;
     }
-    gs_contain = &contain;
+    gs_contain = c;
     t->run(t->entry, t->args);
     gs_contain = NULL;
     return 0;
@@ -171,7 +178,8 @@ static void *gs_thread_main(void *p)
     gs_native_stack_init();
     gs_current_thread_id = t->id;
     int aborted = 0;
-    if (t->contained) aborted = gs_run_contained(t);
+    gs_contained contain;
+    if (t->contained) aborted = gs_run_contained(t, &contain);
     else t->run(t->entry, t->args);
     t->release();
     free(t->args);
@@ -184,7 +192,7 @@ static void *gs_thread_main(void *p)
     gs_thread **slot = &gs_threads;
     while (*slot != t) slot = &(*slot)->next;
     *slot = t->next;
-    if (aborted) gs_aborted_add(t->id);
+    if (aborted) gs_aborted_add(t->id, contain.msg, contain.len);
     free(t);
     gs_cond_broadcast(&gs_threads_done);
     gs_mutex_unlock(&gs_threads_mutex);
@@ -247,7 +255,8 @@ GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
     return id;
 }
 
-GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line) {
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+                               const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
     int err = id < 0 || id >= gs_numthreads ? GS_E_THREADID
             : id == gs_current_thread_id    ? GS_E_THREADSELF : -1;
@@ -263,10 +272,26 @@ GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line) {
         gs_cond_wait(&gs_threads_done, &gs_threads_mutex);
     }
     uint8_t returned = 1;
+    if (msg) {
+        *msg = NULL;
+        *len = 0;
+    }
     for (int64_t i = 0; i < gs_naborted; i++)
-        if (gs_aborted[i] == id) returned = 0;
+        if (gs_aborted[i].id == id) {
+            returned = 0;
+            if (msg && gs_aborted[i].msg) {
+                *msg = gs_aborted[i].msg;
+                *len = gs_aborted[i].len;
+                gs_aborted[i].msg = NULL;
+                gs_aborted[i].len = 0;
+            }
+        }
     gs_mutex_unlock(&gs_threads_mutex);
     return returned;
+}
+
+GS_API void gs_free_msg(uint8_t *msg) {
+    free(msg);
 }
 
 /* ---------------------------------------------------------------------------

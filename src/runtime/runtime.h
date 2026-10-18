@@ -831,8 +831,13 @@ GS_API int64_t gs_hardware_threads(void);
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
                                const void *args, int64_t argsize, int contained);
-/* Whether the worker returned rather than aborted, once it has ended. */
-GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line);
+/* Whether the worker returned rather than aborted, once it has ended. Where
+   `msg` is not NULL, the first such wait for a worker that aborted takes its
+   message: `msg` and `len` are set to it, which the caller frees with
+   gs_free_msg, or to NULL and no bytes. */
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+                               const char *file, int line);
+GS_API void gs_free_msg(uint8_t *msg);
 
 /* One queue per flat element type the program uses (the compiler emits a
    gs_queue global per type, which main sets up before anything can use it).

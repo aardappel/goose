@@ -3781,21 +3781,27 @@ the Linda tuple-space / coordination style.
   parallelism and orderly shutdown (send quit messages, then wait). Repeated
   waits on a completed id return immediately; multiple workers may wait for
   the same id. Every wait returns `false` for a contained worker that
-  aborted, and `true` otherwise. A negative or never-issued id, or a worker
-  waiting for itself, aborts with a runtime diagnostic.
+  aborted, and `true` otherwise. `thread_wait(id, msg) -> bool` waits the
+  same way and appends the abort's message to `msg`, a growable `u8` array:
+  what the abort would print after `goose runtime error: `, its location
+  included. The first such wait for the worker takes the message; later
+  waits, and a worker that returned, append nothing. A program that wants
+  the message asks for it once and keeps it. A negative or never-issued id,
+  or a worker waiting for itself, aborts with a runtime diagnostic.
 * `thread_spawn_contained(worker, args…) -> i64` starts a **contained**
-  worker, as `thread_spawn` does otherwise. An abort in it (§9.3) prints its
-  message and ends only that worker, which releases what a return would; the
-  program and other workers run on. Resources it opened through `extern fn`
+  worker, as `thread_spawn` does otherwise. An abort in it (§9.3) ends only
+  that worker, which releases what a return would, and leaves its message
+  for `thread_wait` instead of printing it. The program and other workers
+  run on. Resources it opened through `extern fn`
   stay open. Guard-page hits, native stack exhaustion, `exit(code)`, and the
   runtime's own failures still end the program, as does any abort on main's
   thread. A worker it starts with `thread_spawn` is not contained.
 * A worker's return releases its copied arguments, stack block, every reserved
   and committed data-stack region, and active-worker record, whether or not
   anyone waits for it. The runtime retains no per-completed-worker record or
-  native handle, except the id of each contained worker that aborted, so that
-  waits can answer. Native threads are detached; their final native stack/TLS
-  teardown occurs when the runtime entry wrapper returns, immediately after
+  native handle, except the id of each contained worker that aborted, so
+  that waits can answer, and its message until a wait takes it. Native
+  threads are detached; their final native stack/TLS teardown occurs when the runtime entry wrapper returns, immediately after
   publishing Goose cleanup completion. A child worker owns its storage
   independently and may outlive the worker that spawned it. Queued messages
   belong to their queues and remain available to receivers after the sender
@@ -3844,7 +3850,7 @@ The language's own functions:
 | `abort(msg: u8[:])`, `exit(code: i64)` | end the program; both diverge (§9.3) |
 | `copy(x) -> T` | a fresh copy of the stored value `x` names (§4.1) |
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it (§4.2) |
-| `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_spawn_contained(worker, args…) -> i64`, `thread_wait(id) -> bool` | workers (§11.2) |
+| `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_spawn_contained(worker, args…) -> i64`, `thread_wait(id) -> bool`, `thread_wait(id, msg) -> bool` | workers (§11.2) |
 | `qput(v)`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
 | `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | an array's image — a varint byte count then its element region — fresh, or appended to a growable `u8` array (§3.9, `design/serialization.md`) |
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |

@@ -3569,6 +3569,10 @@ inline bool Call::BceWalk(BCE &b) {
                 // builds a fresh value and grows nothing.
                 if (arg0) b.GrowShrinkKill(arg0, 1);
                 break;
+            case B_THREAD_WAIT:
+                // thread_wait(id, msg) appends the abort's message to msg.
+                if (arg0) b.GrowShrinkKill(arg0, 1);
+                break;
             case B_POP: {
                 // A pop that returns proves its own precondition: popping an
                 // empty array aborts (§9.3), so the length was at least one

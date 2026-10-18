@@ -1,9 +1,0 @@
-goose runtime error: index 6 out of bounds (length 3)
-goose runtime error: assert failed
-goose runtime error: job 3 gives up
-goose runtime error: division by zero
-goose runtime error: limited array capacity exceeded
-goose runtime error: index 6 out of bounds (length 1)
-goose runtime error: thread_wait on an unknown thread id
-goose runtime error: integer overflow (debug): 2000000000 + 2000000000 at i32
-goose runtime error: as conversion out of range (debug): 288 as u8

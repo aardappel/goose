@@ -1,20 +1,23 @@
 job 0 returns
-job 0: true true
-job 1: false false
-job 2: false false
-job 3: false false
-job 4: false false
-job 5: false false
-job 6: false false
-job 7: false false
-job 8: false false
-job 9: false false
+job 0: true true why: 
+job 1: false false why: index 6 out of bounds (length 3)
+job 2: false false why: assert failed
+job 3: false false why: job 3 gives up
+job 4: false false why: division by zero
+job 5: false false why: limited array capacity exceeded
+job 6: false false why: index 6 out of bounds (length 1)
+job 7: false false why: thread_wait on an unknown thread id
+job 8: false false why: integer overflow (debug): 2000000000 + 2000000000 at i32
+job 9: false false why: as conversion out of range (debug): 288 as u8
 job 0 returns
 bystander answers 42, true
 child: false
 parent runs on
 parent: false
-main: false
-waiter: false, true
+main: false assert failed
+waiter: false, true 0
+attempt 0: assert failed
+attempt 1: assert failed
+attempt 2: assert failed
 attempt 3 ran
 succeeded after 3 restarts

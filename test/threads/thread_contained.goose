@@ -1,7 +1,8 @@
 // runtime-define: GS_DEBUG=1
 // thread_spawn_contained (§11.2): each kind of abort ends only its worker, and
-// every thread_wait for it answers false. Other workers, waiters, and a
-// replacement worker run on. A debug build, for the checks only it has.
+// every thread_wait for it answers false; the first that asks takes its
+// message. Other workers, waiters, and a replacement worker run on. A debug build, for the checks only
+// it has.
 
 struct Job { n: i64 }
 struct Done { n: i64 }
@@ -55,16 +56,34 @@ thread_fn flaky(attempt: i64) {
 // Starts the worker again until it returns, as a server's supervisor does.
 fn supervise<W>() -> i64 {
     var attempt = 0;
-    while !thread_wait(thread_spawn_contained(W, attempt)) { attempt++; }
+    var why: u8[>..] = [];
+    while !thread_wait(thread_spawn_contained(W, attempt), why) {
+        print("attempt ", attempt, ": ", why[..located(why)]);
+        why.clear();
+        attempt++;
+    }
     attempt
+}
+
+// Where the " (file:line)" that ends an abort's message starts: the file is
+// this one's path, which differs between runs of the suite.
+fn located(msg: u8[:]) -> i64 {
+    var i = msg.len;
+    while i > 0 && msg[i - 1] != '(' { i--; }
+    if i < 2 { return msg.len; }
+    i - 2
 }
 
 fn main() {
     let other = thread_spawn(bystander);
     for kind in 10 {
         let id = thread_spawn_contained(job, kind);
-        let first = thread_wait(id);
-        print("job ", kind, ": ", first, " ", thread_wait(id));
+        var msg: u8[>..] = "why: ";   // The message appends to what is there.
+        let first = thread_wait(id, msg);
+        var again: u8[..8] = [];
+        let second = thread_wait(id, again);   // The first wait took the message.
+        assert(again.len == 0);
+        print("job ", kind, ": ", first, " ", second, " ", msg[..located(msg)]);
     }
     thread_wait(thread_spawn_contained(job, 0));    // A statement discards the answer.
     qput(Job { n: 41 });
@@ -76,8 +95,10 @@ fn main() {
     let w = thread_spawn(waiter, id);
     qget<Ready>();
     qput(0);
-    print("main: ", thread_wait(id));
-    print("waiter: ", qget<Seen>().ok, ", ", thread_wait(w));
+    var msg: u8[>..] = [];
+    print("main: ", thread_wait(id, msg), " ", msg[..located(msg)]);
+    var none: u8[>..] = [];   // A return appends nothing.
+    print("waiter: ", qget<Seen>().ok, ", ", thread_wait(w, none), " ", none.len);
 
     print("succeeded after ", supervise(flaky), " restarts");
 }

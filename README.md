@@ -342,6 +342,22 @@ with no references at any depth. That is cheap because a flat Goose value is
 contiguous: a job or a result carries real data, pixels included, and crossing
 is a `memcpy`.
 
+A failed check or `abort` in a worker started with `thread_spawn_contained`
+ends only that worker. Its message goes to whoever waits for it, not to
+stderr, so a supervisor can log it and start another:
+
+```goose
+var why: u8[>..] = [];
+while !thread_wait(thread_spawn_contained(serve, attempt), why) {
+    log(why);                                       // "assert failed (serve.goose:12)"
+    why.clear();
+    attempt++;
+}
+```
+
+The first `thread_wait(id, msg)` for a worker takes the message; a caller
+that doesn't ask for it loses it.
+
 ### Plain C in, plain C out
 
 ```goose

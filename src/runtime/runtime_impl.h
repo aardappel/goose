@@ -34,6 +34,7 @@ static const char *gs_errmsgs[] = {
 static GS_NORETURN void gs_end(int code);
 
 #include <setjmp.h>
+#include <stdarg.h>
 /* No abort is raised in a signal handler, so the jump leaves the signal
    state alone. */
 #ifdef _WIN32
@@ -44,33 +45,67 @@ static GS_NORETURN void gs_end(int code);
 #define gs_longjmp    _longjmp
 #endif
 
-/* Where an abort in a contained worker returns to (gs_run_contained); NULL
-   on every other thread. */
-static GS_TLS jmp_buf *gs_contain;
-
-/* The end of a failed check or abort(msg) (§9.3): a contained worker's
-   ends that worker, anything else's the process. */
-static GS_NORETURN void gs_fail(void) {
-    if (gs_contain) gs_longjmp(*gs_contain, 1);
-    gs_end(1);
-}
-
 GS_API GS_NORETURN void gs_panic(const char *msg) {
     fprintf(stderr, "goose runtime error: %s\n", msg);
     gs_end(1);
 }
 
+/* Where an abort in a contained worker returns to (gs_run_contained), and
+   the message it leaves there for thread_wait; NULL on every other thread. */
+typedef struct {
+    jmp_buf jump;
+    uint8_t *msg;
+    int64_t len;
+} gs_contained;
+static GS_TLS gs_contained *gs_contain;
+
+/* The end of a failed check or abort(msg) (§9.3), whose message is `len`
+   bytes at `msg` and the location after it. A contained worker's keeps the
+   message, without the "goose runtime error: " every printed one starts
+   with, and ends that worker; anything else's prints it and ends the
+   process. */
+static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, int line) {
+    static const char lead[] = "goose runtime error: ";
+    int64_t pre = sizeof lead - 1;
+    int64_t loc = snprintf(NULL, 0, " (%s:%d)\n", file, line);
+    uint8_t *text = (uint8_t *)malloc((size_t)(pre + len + loc + 1));
+    if (!text) {
+        if (gs_contain) gs_panic("out of memory recording an aborted thread");
+        fputs(lead, stderr);
+        fwrite(msg, 1, (size_t)len, stderr);
+        fprintf(stderr, " (%s:%d)\n", file, line);
+        gs_end(1);
+    }
+    memcpy(text, lead, (size_t)pre);
+    if (len) memcpy(text + pre, msg, (size_t)len);
+    snprintf((char *)text + pre + len, (size_t)loc + 1, " (%s:%d)\n", file, line);
+    if (gs_contain) {
+        memmove(text, text + pre, (size_t)(len + loc - 1));
+        gs_contain->msg = text;
+        gs_contain->len = len + loc - 1;
+        gs_longjmp(gs_contain->jump, 1);
+    }
+    fwrite(text, 1, (size_t)(pre + len + loc), stderr);
+    gs_end(1);
+}
+
+/* gs_fail with the message printf formats. */
+static GS_NORETURN void gs_failf(const char *file, int line, const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    gs_fail(buf, n < 0 ? 0 : n < (int)sizeof buf ? n : (int)sizeof buf - 1, file, line);
+}
+
 GS_API GS_NORETURN void gs_abort(int err, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: %s (%s:%d)\n", gs_errmsgs[err], file, line);
-    gs_fail();
+    gs_fail(gs_errmsgs[err], (int64_t)strlen(gs_errmsgs[err]), file, line);
 }
 
 GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
                                      int line) {
-    fputs("goose runtime error: ", stderr);
-    fwrite(msg, 1, (size_t)len, stderr);
-    fprintf(stderr, " (%s:%d)\n", file, line);
-    gs_fail();
+    gs_fail(msg, len, file, line);
 }
 
 GS_API GS_NORETURN void gs_exit(int64_t code) {
@@ -78,40 +113,31 @@ GS_API GS_NORETURN void gs_exit(int64_t code) {
 }
 
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
-            "(%s:%d)\n", (long long)i, (long long)n, file, line);
-    gs_fail();
+    gs_failf(file, line, "index %lld out of bounds (length %lld)", (long long)i, (long long)n);
 }
 
 GS_API GS_NORETURN void gs_divfail(const char *file, int line) {
-    fprintf(stderr, "goose runtime error: division by zero (%s:%d)\n", file, line);
-    gs_fail();
+    gs_failf(file, line, "division by zero");
 }
 
 GS_API GS_NORETURN void gs_divovf(const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow in division (%s:%d)\n", file, line);
-    gs_fail();
+    gs_failf(file, line, "integer overflow in division");
 }
 
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow (debug): %lld %s %lld at %s "
-            "(%s:%d)\n", (long long)a, op, (long long)b, type, file, line);
-    gs_fail();
+    gs_failf(file, line, "integer overflow (debug): %lld %s %lld at %s", (long long)a, op,
+             (long long)b, type);
 }
 
 GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow (debug): -(%lld) at %s (%s:%d)\n",
-            (long long)a, type, file, line);
-    gs_fail();
+    gs_failf(file, line, "integer overflow (debug): -(%lld) at %s", (long long)a, type);
 }
 
 /* The message of a failing `as` check, with the source value as text. */
 static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *type,
                                   const char *file, int line) {
-    fprintf(stderr, "goose runtime error: as conversion %s (debug): %s as %s (%s:%d)\n",
-            why, num, type, file, line);
-    gs_fail();
+    gs_failf(file, line, "as conversion %s (debug): %s as %s", why, num, type);
 }
 
 GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,

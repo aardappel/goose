@@ -1,6 +1,7 @@
 /* Direct runtime regression: bounded resource use under repeated worker
    creation, including workers nobody joins, concurrent/repeated waits and
-   contained workers that abort. Small limits make the previous leaking
+   contained workers that abort, whose messages the runtime keeps until a
+   wait takes them. Small limits make the previous leaking
    region registry fail quickly. */
 #include <stdint.h>
 #include <stdio.h>
@@ -137,8 +138,8 @@ static void waiting_worker(uint8_t *args) {
     ++waiters_ready;
     gs_cond_broadcast(&test_cond);
     gs_mutex_unlock(&test_mutex);
-    gs_thread_wait(target, __FILE__, __LINE__);
-    gs_thread_wait(target, __FILE__, __LINE__);
+    gs_thread_wait(target, NULL, NULL, __FILE__, __LINE__);
+    gs_thread_wait(target, NULL, NULL, __FILE__, __LINE__);
 }
 
 /* As a thunk does, a globals instance, then an abort past it: the contained
@@ -154,7 +155,7 @@ static void aborting_worker(uint8_t *args) {
    again once the worker has ended. */
 static void bad_waiting_worker(uint8_t *args) {
     (void)args;
-    gs_thread_wait(-1, __FILE__, __LINE__);
+    gs_thread_wait(-1, NULL, NULL, __FILE__, __LINE__);
 }
 
 /* Observe exit without calling thread_wait: cleanup must not depend on join. */
@@ -193,23 +194,23 @@ int main(void) {
             if (oldest < 0) oldest = ids[i];
         }
         if (round % 2 == 0) {
-            for (int i = 7; i >= 0; --i) gs_thread_wait(ids[i], __FILE__, __LINE__);
+            for (int i = 7; i >= 0; --i) gs_thread_wait(ids[i], NULL, NULL, __FILE__, __LINE__);
         } else {
             wait_quiescent();
         }
         check_baseline(allocations, regions);
-        gs_thread_wait(oldest, __FILE__, __LINE__);
+        gs_thread_wait(oldest, NULL, NULL, __FILE__, __LINE__);
     }
 
     int64_t stamp = 42;
     int64_t parent = gs_thread_spawn(spawning_worker, &stamp, sizeof(stamp), 0);
-    gs_thread_wait(parent, __FILE__, __LINE__);
+    gs_thread_wait(parent, NULL, NULL, __FILE__, __LINE__);
     gs_mutex_lock(&test_mutex);
     int64_t child = descendant_id;
     gate_open = 1;
     gs_cond_broadcast(&test_cond);
     gs_mutex_unlock(&test_mutex);
-    gs_thread_wait(child, __FILE__, __LINE__);
+    gs_thread_wait(child, NULL, NULL, __FILE__, __LINE__);
     check_baseline(allocations, regions);
     gate_open = 0;
 
@@ -221,9 +222,9 @@ int main(void) {
     gate_open = 1;
     gs_cond_broadcast(&test_cond);
     gs_mutex_unlock(&test_mutex);
-    gs_thread_wait(target, __FILE__, __LINE__);
-    gs_thread_wait(waiter_a, __FILE__, __LINE__);
-    gs_thread_wait(waiter_b, __FILE__, __LINE__);
+    gs_thread_wait(target, NULL, NULL, __FILE__, __LINE__);
+    gs_thread_wait(waiter_a, NULL, NULL, __FILE__, __LINE__);
+    gs_thread_wait(waiter_b, NULL, NULL, __FILE__, __LINE__);
     check_baseline(allocations, regions);
 
     for (int round = 0; round < 16; ++round) {
@@ -235,23 +236,34 @@ int main(void) {
         }
         if (round % 2 == 0) wait_quiescent();
         for (int i = 0; i < 8; ++i) {
-            check(gs_thread_wait(ids[i], __FILE__, __LINE__) == (i % 4 == 3),
+            check(gs_thread_wait(ids[i], NULL, NULL, __FILE__, __LINE__) == (i % 4 == 3),
                   "thread_wait tells an aborted contained worker from a returned one");
-            check(gs_thread_wait(ids[i], __FILE__, __LINE__) == (i % 4 == 3),
+            uint8_t *msg;
+            int64_t len;
+            static const char want[] = "assert failed (";
+            check(gs_thread_wait(ids[i], &msg, &len, __FILE__, __LINE__) == (i % 4 == 3),
                   "a repeated wait gives the same answer");
+            check(i % 4 == 3 ? !msg && len == 0
+                             : msg && len > (int64_t)sizeof want &&
+                               !memcmp(msg, want, sizeof want - 1) && msg[len - 1] == ')',
+                  "the first wait to ask takes the abort's message, and a return has none");
+            gs_free_msg(msg);
+            check(gs_thread_wait(ids[i], &msg, &len, __FILE__, __LINE__) == (i % 4 == 3) &&
+                  !msg && len == 0, "a later wait still answers, but gets no message");
         }
         check_baseline(allocations, regions);
     }
+    /* A message no wait takes stays until the process ends. */
     int64_t bad = gs_thread_spawn(bad_waiting_worker, &stamp, sizeof(stamp), 1);
-    check(!gs_thread_wait(bad, __FILE__, __LINE__), "a contained worker aborts in thread_wait");
-    check(gs_thread_wait(target, __FILE__, __LINE__), "a plain worker that returned waits true");
-    check_baseline(allocations, regions);
+    check(!gs_thread_wait(bad, NULL, NULL, __FILE__, __LINE__), "a contained worker aborts in thread_wait");
+    check(gs_thread_wait(target, NULL, NULL, __FILE__, __LINE__), "a plain worker that returned waits true");
+    check_baseline(allocations + 1, regions);
 #ifdef _WIN32
     check(GetProcessHandleCount(GetCurrentProcess(), &handles_after), "read handle count");
     check(handles_after == handles_before, "native thread handles released");
 #endif
     gs_free_thread_stacks();
-    check(counter_add(&live_allocations, 0) == 0, "test releases its main stack block");
+    check(counter_add(&live_allocations, 0) == 1, "test releases its main stack block");
     check(counter_add(&live_regions, 0) == 0, "test releases its main reservation");
     puts("runtime thread cleanup ok");
     return 0;
