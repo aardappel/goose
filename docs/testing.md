@@ -87,7 +87,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
 | `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks. |
 | `storage/` | Relative references, pools and serialization. |
-| `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
+| `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. Imported helpers live in `threads/spawn/`. |
 | `stdlib/` | Standard-library modules. |
 | `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated self-checks of the stage-2 compiler, and compare JIT/native self-compilation. |
 | `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse, shaders from files and from the program; shader and threading rejections (fixtures with `// error:` markers). The programs hold their shaders; the shader files beside them are for the file form of `embed_shader` and `--compile-shader`. `gfx/window/` is the windowed showcase, not part of the suite. |

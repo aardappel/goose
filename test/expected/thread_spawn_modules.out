@@ -1,0 +1,12 @@
+worker 0
+worker 1
+tasks::worker 0
+tasks::square 0
+tasks::square 1
+tasks::square 0
+tasks::square 1
+worker 0
+pool::echo 0
+tasks::square 0
+tasks::square 1
+tasks::square 4

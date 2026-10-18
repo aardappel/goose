@@ -61,7 +61,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // A function parameter bound to a thread_fn's name names it too
             // (§7.6).
             const FnValBind *fvb = nullptr;
-            if (wid && wid->ns.empty() && !(wvd && !wvd->isglobal) &&
+            if (wid && !(wvd && !wvd->isglobal) &&
                 !LookupTypeParam(wid->name, fvb) && fvb && fvb->named) {
                 if (fvb->set) {
                     for (auto sf : *fvb->set) if (sf->isthread) wsf = sf;
