@@ -1159,7 +1159,7 @@ Literal forms usable in any construction context:
   code (a `sum`'s accumulator, a hash table's empty slots). A type that
   contains a non-optional reference without a declared default has no
   default value, and `default<T>()` for it is a compile error. (The zero
-  value a missed `qpoll` yields, §11.2, is the all-zero-bytes value; the two
+  value a missed `qpoll` or `qget<T>(ms)` yields, §11.2, is all zeros; the two
   agree except where a field declares a non-zero default.) A type that is
   not fixed-size has a default value too, which a literal's `..` gives a
   field though `default<T>()` does not: an array other than a fixed one is
@@ -3825,9 +3825,10 @@ the Linda tuple-space / coordination style.
 * **Typed queues**: conceptually one queue per flat element type;
   `qput(v) -> bool`, `qget<T>() -> T` (blocking), `qpoll<T>() -> T, bool`
   (non-blocking; bool = got one; on a miss the value is T's zero value —
-  zeroed scalars, empty arrays, variant 0) and `qlimit<T>(n: i64)` select
-  the queue by type. Queues live outside stack memory (runtime-internal
-  allocation permitted here).
+  zeroed scalars, empty arrays, variant 0), `qget<T>(ms: i64) -> T, bool`
+  (as `qpoll`, after waiting at most `ms` milliseconds; zero or less does
+  not wait) and `qlimit<T>(n: i64)` select the queue by type. Queues live
+  outside stack memory (runtime-internal allocation permitted here).
 * **Bounded queues**: `qput` never blocks. It returns `true` once the value
   is queued, and `false` at once, queueing nothing, when the queue holds its
   limit of messages. A call statement drops the result (§7.1), so `qput(v);`
@@ -3859,7 +3860,7 @@ The language's own functions:
 | `copy(x) -> T` | a fresh copy of the stored value `x` names (§4.1) |
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it (§4.2) |
 | `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_spawn_contained(worker, args…) -> i64`, `thread_wait(id) -> bool`, `thread_wait(id, msg) -> bool` | workers (§11.2) |
-| `qput(v) -> bool`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
+| `qput(v) -> bool`, `qget<T>() -> T`, `qget<T>(ms) -> T, bool`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
 | `qlimit<T>(n)` | a queue's limit of messages (§11.2) |
 | `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | an array's image — a varint byte count then its element region — fresh, or appended to a growable `u8` array (§3.9, `design/serialization.md`) |
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |

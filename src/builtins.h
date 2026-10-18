@@ -73,7 +73,7 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_THREAD_SPAWN_CONTAINED, "thread_spawn_contained", 1, 99, "", "i", 0,       BF_CUSTOM) \
     F(B_THREAD_WAIT,      "thread_wait",      1,  2,   "",   "b", 0,              BF_CUSTOM) \
     F(B_QPUT,             "qput",             1,  1,   "",   "",  0,              BF_CUSTOM) \
-    F(B_QGET,             "qget",             0,  0,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
+    F(B_QGET,             "qget",             0,  1,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_QPOLL,            "qpoll",            0,  0,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_QLIMIT,           "qlimit",           1,  1,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_DEFAULT,          "default",          0,  0,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \

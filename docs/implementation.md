@@ -4344,9 +4344,14 @@ value; a missed `qpoll` yields the all-zero image (`ZeroSize`). A queue is a
 linked list of `malloc`'d nodes under a mutex, with a condition variable for
 its receivers, and a count of its messages. `gs_qput` allocates and copies
 before it takes the lock, and checks the queue's limit under the lock; a
-refusal frees the node. A value of no bytes (spec §3.4) crosses a queue or
-a thread's arguments as none, and the receiver zeroes the object C gives it
-rather than reading past the image.
+refusal frees the node. A timed `qget`
+(`gs_qwait`) waits for a deadline on a monotonic clock, and a miss yields
+the zero image as `qpoll`'s does. POSIX sets the condition variable's clock
+to `CLOCK_MONOTONIC`, macOS waits a relative time
+(`pthread_cond_timedwait_relative_np`), and Windows reads `GetTickCount64`.
+A value of no bytes (spec §3.4) crosses a queue or a thread's arguments as
+none, and the receiver zeroes the object C gives it rather than reading
+past the image.
 
 ### 6.9 Generated walkers
 

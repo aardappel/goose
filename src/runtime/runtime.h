@@ -842,9 +842,9 @@ GS_API void gs_free_msg(uint8_t *msg);
 
 /* One queue per flat element type the program uses (the compiler emits a
    gs_queue global per type, which main sets up before anything can use it).
-   Values are contiguous byte images: gs_qget and gs_qpoll return a malloc'd
-   node the caller copies from and frees, gs_qpoll NULL when the queue is
-   empty. gs_qput returns 0, queueing nothing, when the queue is
+   Values are contiguous byte images: gs_qget, gs_qwait and gs_qpoll return a
+   malloc'd node the caller copies from and frees, gs_qwait and gs_qpoll NULL
+   when nothing came. gs_qput returns 0, queueing nothing, when the queue is
    at its limit. */
 typedef struct gs_qnode {
     struct gs_qnode *next;
@@ -858,6 +858,7 @@ typedef struct gs_qstate *gs_queue;
 GS_API void gs_qinit(gs_queue *q);
 GS_API uint8_t gs_qput(gs_queue *q, const void *data, int64_t size);
 GS_API gs_qnode *gs_qget(gs_queue *q);
+GS_API gs_qnode *gs_qwait(gs_queue *q, int64_t ms);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
 GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
 

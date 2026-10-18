@@ -1,5 +1,13 @@
-// Bounded queues (§11.2): a queue's limit makes qput false at once.
+// Bounded queues (§11.2): a queue's limit makes qput false at once, and
+// qget<T>(ms) waits at most ms milliseconds.
+import os;
+
 struct Job { n: i64 }
+
+thread_fn late(ms: i64) {
+    sleep_ms(ms);
+    qput(Job { n: 7 });
+}
 
 fn main() {
     // A limit counts messages.
@@ -16,6 +24,24 @@ fn main() {
     let p, gotp = qpoll<Job>();
     let e, gote = qpoll<Job>();
     print(p.n, " ", gotp, " ", e.n, " ", gote);             // 8 true 0 false
+
+    // A wait with nothing queued ends after its time. Windows's clock moves
+    // in steps of about 16 ms, so the wait may end that much early.
+    let t0 = clock_ns();
+    let j, got = qget<Job>(50);
+    let waited = (clock_ns() - t0) / 1000000;
+    print(j.n, " ", got, " ", waited >= 25 && waited < 5000);  // 0 false true
+    let z, gotz = qget<Job>(0);
+    print(z.n, " ", gotz);                                  // 0 false
+    // A wait of less than nothing does not wait either.
+    let t1 = clock_ns();
+    let m, gotm = qget<Job>(-5);
+    print(m.n, " ", gotm, " ", (clock_ns() - t1) / 1000000 < 5000);  // 0 false true
+    // A value another thread puts before the time is up.
+    let id = thread_spawn(late, 20);
+    let k, gotk = qget<Job>(60000);
+    print(k.n, " ", gotk);                                  // 7 true
+    thread_wait(id);
 
     // Each type's queue has its own limit.
     qlimit<u8[>..]>(1);

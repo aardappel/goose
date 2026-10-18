@@ -114,15 +114,17 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         }
         case B_QGET: case B_QPOLL: case B_QLIMIT: {
             if (c->tyargs.size() != 1)
-                Error(c, cat(d.name, d.kind == B_QLIMIT ? "<T>(n)" : "<T>()",
+                Error(c, cat(d.name,
+                             d.kind == B_QLIMIT ? "<T>(n)" : args.empty() ? "<T>()" : "<T>(ms)",
                              " needs exactly one explicit type argument"));
             auto t = Subst(c->tyargs[0]);
             ValidateType(t, c->line, VT_LOCAL);
             if (!IsFlat(t))
                 Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(t)));
             if (HoldsIndexT(t)) ThreadIndexError(c, t);
+            // A limit, or a wait's milliseconds.
+            if (!args.empty()) CheckArg(args[0], ast.inttypes[IS_I64]);
             if (d.kind == B_QLIMIT) {
-                CheckArg(args[0], ast.inttypes[IS_I64]);
                 c->qtype = t;
                 return VoidVal();
             }
@@ -132,7 +134,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             first.Set(TempRoot(), false);
             lastcallrets.clear();
             lastcallrets.push_back(first);
-            if (d.kind == B_QPOLL) {
+            if (d.kind == B_QPOLL || !args.empty()) {
                 Val b2;
                 b2.type = ast.booltype;
                 c->rettypes.push_back(ast.booltype);

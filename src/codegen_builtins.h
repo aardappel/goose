@@ -183,8 +183,11 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto t = c->rettypes[0];
             auto q = QueueFor(t);
             auto nn = T();
-            auto poll = c->builtin == B_QPOLL;
-            L("gs_qnode *", nn, poll ? " = gs_qpoll(&" : " = gs_qget(&", q, ");");
+            // qpoll<T>() and qget<T>(ms) say whether a value came.
+            auto poll = c->rettypes.size() > 1;
+            if (c->builtin == B_QPOLL) L("gs_qnode *", nn, " = gs_qpoll(&", q, ");");
+            else if (poll) L("gs_qnode *", nn, " = gs_qwait(&", q, ", ", GenX(an[0]), ");");
+            else L("gs_qnode *", nn, " = gs_qget(&", q, ");");
             string got;
             if (poll) {
                 got = T();

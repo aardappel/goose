@@ -3392,6 +3392,7 @@ in the language.
 | `hardware_threads() -> i64` | a sensible worker count, never more than the data stacks allow |
 | `qput(v) -> bool` | puts `v` on the queue for its type; `false`, at once, if the queue is full |
 | `qget<T>() -> T` | takes the next `T`, blocking |
+| `qget<T>(ms) -> T, bool` | the same, waiting at most `ms` milliseconds; else `T`'s zero value and `false` |
 | `qpoll<T>() -> T, bool` | takes one if there is one; else `T`'s zero value and `false` |
 | `qlimit<T>(n)` | lets the queue for `T` hold at most `n` messages |
 
