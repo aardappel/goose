@@ -11,6 +11,7 @@ intent.
 """
 
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -636,7 +637,18 @@ def run_capture(argv, cwd=None, stdin_path=None):
     argv = [str(a) for a in argv]
     stdin_f = open(stdin_path, "rb") if stdin_path else None
     try:
-        r = subprocess.run(argv, cwd=cwd, stdin=stdin_f, capture_output=True)
+        # Linux will not run a file that a process holds open for writing
+        # (ETXTBSY). A program this process has just copied can still be open
+        # in a child that another runner thread started during the copy, until
+        # that child execs, so the run is retried for a moment.
+        for attempt in range(100):
+            try:
+                r = subprocess.run(argv, cwd=cwd, stdin=stdin_f, capture_output=True)
+                break
+            except OSError as e:
+                if e.errno != errno.ETXTBSY or attempt == 99:
+                    raise
+                time.sleep(0.01)
     finally:
         if stdin_f:
             stdin_f.close()
