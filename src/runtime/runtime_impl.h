@@ -24,13 +24,36 @@ static const char *gs_errmsgs[] = {
     "pop_n count negative or beyond the array's length",
 };
 
-/* Ends the process with `code`, its streams flushed: every runtime error
-   and exit() comes here. The first thread to call it ends the process
-   without the C library's teardown, which two threads running at once
-   crash in on Windows, and which nothing of the program needs; any later
-   caller waits for that. Under TinyCC the program runs inside the
-   compiler, where exit() on the main thread returns to it instead. */
+/* Ends the process with `code`, its streams flushed: exit() and every
+   runtime error but a contained worker's abort come here. The first thread
+   to call it ends the process without the C library's teardown, which two
+   threads running at once crash in on Windows, and which nothing of the
+   program needs; any later caller waits for that. Under TinyCC the program
+   runs inside the compiler, where exit() on the main thread returns to it
+   instead. */
 static GS_NORETURN void gs_end(int code);
+
+#include <setjmp.h>
+/* No abort is raised in a signal handler, so the jump leaves the signal
+   state alone. */
+#ifdef _WIN32
+#define gs_setjmp(b)  setjmp(b)
+#define gs_longjmp    longjmp
+#else
+#define gs_setjmp(b)  _setjmp(b)
+#define gs_longjmp    _longjmp
+#endif
+
+/* Where an abort in a contained worker returns to (gs_run_contained); NULL
+   on every other thread. */
+static GS_TLS jmp_buf *gs_contain;
+
+/* The end of a failed check or abort(msg) (§9.3): a contained worker's
+   ends that worker, anything else's the process. */
+static GS_NORETURN void gs_fail(void) {
+    if (gs_contain) gs_longjmp(*gs_contain, 1);
+    gs_end(1);
+}
 
 GS_API GS_NORETURN void gs_panic(const char *msg) {
     fprintf(stderr, "goose runtime error: %s\n", msg);
@@ -39,7 +62,7 @@ GS_API GS_NORETURN void gs_panic(const char *msg) {
 
 GS_API GS_NORETURN void gs_abort(int err, const char *file, int line) {
     fprintf(stderr, "goose runtime error: %s (%s:%d)\n", gs_errmsgs[err], file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
@@ -47,7 +70,7 @@ GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char
     fputs("goose runtime error: ", stderr);
     fwrite(msg, 1, (size_t)len, stderr);
     fprintf(stderr, " (%s:%d)\n", file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_exit(int64_t code) {
@@ -57,30 +80,30 @@ GS_API GS_NORETURN void gs_exit(int64_t code) {
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
     fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
             "(%s:%d)\n", (long long)i, (long long)n, file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_divfail(const char *file, int line) {
     fprintf(stderr, "goose runtime error: division by zero (%s:%d)\n", file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_divovf(const char *file, int line) {
     fprintf(stderr, "goose runtime error: integer overflow in division (%s:%d)\n", file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line) {
     fprintf(stderr, "goose runtime error: integer overflow (debug): %lld %s %lld at %s "
             "(%s:%d)\n", (long long)a, op, (long long)b, type, file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line) {
     fprintf(stderr, "goose runtime error: integer overflow (debug): -(%lld) at %s (%s:%d)\n",
             (long long)a, type, file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 /* The message of a failing `as` check, with the source value as text. */
@@ -88,7 +111,7 @@ static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *
                                   const char *file, int line) {
     fprintf(stderr, "goose runtime error: as conversion %s (debug): %s as %s (%s:%d)\n",
             why, num, type, file, line);
-    gs_end(1);
+    gs_fail();
 }
 
 GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,

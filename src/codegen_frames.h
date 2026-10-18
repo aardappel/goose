@@ -173,7 +173,9 @@ inline void CodeGen::CollectSpecs() {
                 // Formatting a user type calls its format overload, and print
                 // and thread_spawn assemble their text or packet on a stack.
                 for (auto &fs : c->fmtspecs) add(fs.second);
-                if (c->builtin == B_PRINT || c->builtin == B_THREAD_SPAWN) si.needssp = true;
+                if (c->builtin == B_PRINT || c->builtin == B_THREAD_SPAWN ||
+                    c->builtin == B_THREAD_SPAWN_CONTAINED)
+                    si.needssp = true;
                 // A result is built as the call's own type (str() passed as
                 // a slice or returned as a u8[..16], say) before it is fitted.
                 for (auto rt : c->rettypes) si.needssp |= NeedsStack(rt);

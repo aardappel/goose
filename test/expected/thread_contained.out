@@ -1,0 +1,20 @@
+job 0 returns
+job 0: true true
+job 1: false false
+job 2: false false
+job 3: false false
+job 4: false false
+job 5: false false
+job 6: false false
+job 7: false false
+job 8: false false
+job 9: false false
+job 0 returns
+bystander answers 42, true
+child: false
+parent runs on
+parent: false
+main: false
+waiter: false, true
+attempt 3 ran
+succeeded after 3 restarts

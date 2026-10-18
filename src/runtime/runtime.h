@@ -138,9 +138,10 @@
 #endif
 
 /* ---------------------------------------------------------------------------
-   Aborts (§9.3). Not catchable; message + nonzero exit. Compiler-emitted
-   checks carry an error id plus a file (a static string in the generated
-   code) and line; runtime-internal failures use gs_panic. The int64_t
+   Aborts (§9.3). Not catchable; message + nonzero exit, or in a contained
+   worker message + the end of that worker. Compiler-emitted checks carry an
+   error id plus a file (a static string in the generated code) and line;
+   runtime-internal failures use gs_panic, which always exits. The int64_t
    returns let checks sit inside expressions. */
 
 enum {
@@ -824,11 +825,14 @@ GS_API void gs_release_regions(void);
    Threads and typed queues (§11.2), runtime_threads.h. */
 
 GS_API int64_t gs_hardware_threads(void);
-/* Runs run(entry, args) on a new thread, args a copy of argsize bytes, and
-   returns the worker's id. */
+/* Runs run(entry, args) and then release() on a new thread, args a copy of
+   argsize bytes, and returns the worker's id. In a contained worker an
+   abort ends run early. */
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
-                               void (*entry)(uint8_t *), const void *args, int64_t argsize);
-GS_API void gs_thread_wait(int64_t id, const char *file, int line);
+                               void (*release)(void), void (*entry)(uint8_t *),
+                               const void *args, int64_t argsize, int contained);
+/* Whether the worker returned rather than aborted, once it has ended. */
+GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line);
 
 /* One queue per flat element type the program uses (the compiler emits a
    gs_queue global per type, which main sets up before anything can use it).
@@ -907,18 +911,25 @@ static void gs_free_thread_stacks(void) {
 
 #if GS_NEED_THREADS
 /* A worker's thread program: its entry thunk opens the stack block, whose
-   count the compiler knows, and the runtime releases the regions after
-   this returns. */
+   count the compiler knows, and allocates the globals instance. */
 static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
     entry(args);
     gs_rt_stats();
+}
+
+/* What the thread program holds once it has returned or aborted; the
+   runtime releases the regions after this. */
+static void gs_thread_release(void) {
+    free(gs_gl);
+    gs_gl = NULL;
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
 }
 
-static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
-    return gs_thread_start(gs_thread_run, entry, args, argsize);
+static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize,
+                               int contained) {
+    return gs_thread_start(gs_thread_run, gs_thread_release, entry, args, argsize, contained);
 }
 #endif
 

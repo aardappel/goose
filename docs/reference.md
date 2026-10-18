@@ -3386,7 +3386,8 @@ in the language.
 | Builtin | Meaning |
 |---|---|
 | `thread_spawn(worker, args…) -> i64` | starts a worker; its id, never reused |
-| `thread_wait(id)` | blocks until that worker has returned and its storage is released |
+| `thread_spawn_contained(worker, args…) -> i64` | starts a worker whose aborts end only that worker |
+| `thread_wait(id) -> bool` | blocks until that worker has ended and its storage is released; `false` if it was contained and aborted |
 | `hardware_threads() -> i64` | a sensible worker count, never more than the data stacks allow |
 | `qput(v)` | puts `v` on the queue for its type |
 | `qget<T>() -> T` | takes the next `T`, blocking |
@@ -3433,6 +3434,31 @@ any function a `thread_fn` reaches, unless it is a `let` whose references
 all lead to static data, as a string literal's do. Programs with threads
 need a real C compiler: `goose build`, since the in-process TinyCC
 backend cannot place thread-local storage. Spec §11.2.
+
+### Contained workers
+
+A failed check or `abort(msg)` in a worker started with
+`thread_spawn_contained` prints its message and ends only that worker,
+which releases what a return would. Every `thread_wait` for it returns
+`false`, so a supervisor can start another:
+
+<!-- check-only -->
+```goose
+thread_fn serve(attempt: i64) {
+    assert(attempt >= 2);                        // a bug the first two hit
+    print("attempt ", attempt, " served");
+}
+
+fn main() {
+    var attempt = 0;
+    while !thread_wait(thread_spawn_contained(serve, attempt)) { attempt++; }
+}
+```
+
+Stack overflow, `exit(code)`, and aborts on main's thread still end the
+program, and a worker that a contained one starts with `thread_spawn` is
+not contained. Files and other resources opened through `extern fn` stay
+open. Spec §11.2.
 
 ---
 
@@ -3592,7 +3618,7 @@ written in Goose under `stdlib/` and documented in [stdlib.md](stdlib.md).
 | `abort(msg)`, `exit(code)` | end the program; neither returns | [20](#stopping-the-program) |
 | `copy(x) -> T` | a fresh copy of the stored value `x` names | [4](#copies-are-visible) |
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it, declared defaults applied | [8](#field-defaults) |
-| `hardware_threads()`, `thread_spawn(worker, args…)`, `thread_wait(id)` | workers | [22](#22-threads) |
+| `hardware_threads()`, `thread_spawn(worker, args…)`, `thread_spawn_contained(worker, args…)`, `thread_wait(id)` | workers | [22](#22-threads) |
 | `qput(v)`, `qget<T>()`, `qpoll<T>()` | the typed queues | [22](#22-threads) |
 | `to_bytes(a)`, `to_bytes(a, out)`, `bytes_of(a)`, `from_bytes<T[>..]>(b)` | serialization | [23](#23-serialization) |
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |

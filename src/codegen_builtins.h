@@ -128,10 +128,13 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         }
         case B_THREAD_WAIT: {
             usesthreads = true;
-            L("gs_thread_wait(", GenX(an[0]), ", ", LocArgs(ln), ");");
-            return {};
+            // Emitted here, not returned as text: a discarded result would
+            // drop the wait.
+            auto t = T();
+            L("uint8_t ", t, " = gs_thread_wait(", GenX(an[0]), ", ", LocArgs(ln), ");");
+            return { t };
         }
-        case B_THREAD_SPAWN: return EmitThreadSpawn(c, an);
+        case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: return EmitThreadSpawn(c, an);
         case B_QPUT: {
             auto t = an[0]->exprtype;
             auto q = QueueFor(t);
@@ -928,10 +931,10 @@ inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
     return out;
 }
 
-// thread_spawn(worker, args...): the arguments constructed contiguously,
-// then the worker program's globals as copies of this instance's, each as
-// [int64 size][image] (§11.2); the thunk unpacks them into the worker's
-// fresh instance.
+// thread_spawn(worker, args...) and thread_spawn_contained: the arguments
+// constructed contiguously, then the worker program's globals as copies of
+// this instance's, each as [int64 size][image] (§11.2); the thunk unpacks
+// them into the worker's fresh instance.
 inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
     usesthreads = true;
     auto sp = c->spec;
@@ -997,7 +1000,7 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
     // Emitted here, not returned as text: a discarded result would drop the spawn.
     auto id = T();
     L("int64_t ", id, " = gs_thread_spawn(", thunk, ", ", base, ", ", Top(stk), " - ", base,
-      ");");
+      c->builtin == B_THREAD_SPAWN_CONTAINED ? ", 1);" : ", 0);");
     return { id };
 }
 
@@ -1014,8 +1017,9 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
 
 // The worker's entry: opens the thread program's block of `stacks` data
 // stacks, unpacks the arguments, then gives the thread a fresh instance of
-// the globals filled from the spawn image, runs the body, and frees the
-// instance (its stacks are released with the thread's others).
+// the globals filled from the spawn image, and runs the body. The runtime
+// frees the instance (gs_thread_release), and releases its stacks with the
+// thread's others.
 inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     auto name = thunks[sp];
     auto &ki = sinfo[sp];
@@ -1123,7 +1127,7 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     }
     string argstr;
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
-    Append(b, "    ", ki.cname, "(", argstr, ");\n    free(gs_gl);\n}\n\n");
+    Append(b, "    ", ki.cname, "(", argstr, ");\n}\n\n");
     code += b;
     thunkregions[sp] = regions;
 }

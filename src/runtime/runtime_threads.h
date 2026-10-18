@@ -111,21 +111,54 @@ typedef pthread_cond_t gs_cond;
    values are packed by the caller into one contiguous buffer and unpacked by
    a compiler-generated entry thunk. Only active workers have records. IDs
    increase monotonically, so an issued ID absent from the active list has
-   completed; neither repeated waits nor unjoined workers retain resources.
-   Workers still running at process exit are killed by teardown (§11.2). */
+   completed; neither repeated waits nor unjoined workers retain resources,
+   but for the id of each contained worker that aborted. Workers still
+   running at process exit are killed by teardown (§11.2). */
 
 typedef struct gs_thread {
     struct gs_thread *next;
     int64_t id;
     void (*run)(void (*)(uint8_t *), uint8_t *);
+    void (*release)(void);
     void (*entry)(uint8_t *args);
     uint8_t *args;
+    int contained;
 } gs_thread;
 
 static gs_thread *gs_threads;
 static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
 static gs_cond gs_threads_done = GS_COND_INIT;
+
+/* The ids of the contained workers that aborted, from which thread_wait
+   answers. Under gs_threads_mutex. */
+static int64_t *gs_aborted;
+static int64_t gs_naborted, gs_abortedcap;
+
+static void gs_aborted_add(int64_t id) {
+    if (gs_naborted == gs_abortedcap) {
+        int64_t cap = gs_abortedcap ? gs_abortedcap * 2 : 16;
+        int64_t *p = (int64_t *)realloc(gs_aborted, (size_t)cap * sizeof(int64_t));
+        if (!p) gs_panic("out of memory recording an aborted thread");
+        gs_aborted = p;
+        gs_abortedcap = cap;
+    }
+    gs_aborted[gs_naborted++] = id;
+}
+
+/* Runs a contained worker's thread program, to which an abort in it
+   (gs_fail) returns: whether it aborted. */
+static int gs_run_contained(gs_thread *t) {
+    jmp_buf contain;
+    if (gs_setjmp(contain)) {
+        gs_contain = NULL;
+        return 1;
+    }
+    gs_contain = &contain;
+    t->run(t->entry, t->args);
+    gs_contain = NULL;
+    return 0;
+}
 
 #ifdef _WIN32
 static DWORD WINAPI gs_thread_main(LPVOID p)
@@ -137,7 +170,10 @@ static void *gs_thread_main(void *p)
     gs_regions_begin(gs_workerregions);
     gs_native_stack_init();
     gs_current_thread_id = t->id;
-    t->run(t->entry, t->args);
+    int aborted = 0;
+    if (t->contained) aborted = gs_run_contained(t);
+    else t->run(t->entry, t->args);
+    t->release();
     free(t->args);
     gs_release_regions();
 
@@ -148,6 +184,7 @@ static void *gs_thread_main(void *p)
     gs_thread **slot = &gs_threads;
     while (*slot != t) slot = &(*slot)->next;
     *slot = t->next;
+    if (aborted) gs_aborted_add(t->id);
     free(t);
     gs_cond_broadcast(&gs_threads_done);
     gs_mutex_unlock(&gs_threads_mutex);
@@ -159,13 +196,16 @@ static void *gs_thread_main(void *p)
 }
 
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
-                               void (*entry)(uint8_t *), const void *args, int64_t argsize) {
+                               void (*release)(void), void (*entry)(uint8_t *),
+                               const void *args, int64_t argsize, int contained) {
     if (argsize < 0 || (uint64_t)argsize > SIZE_MAX)
         gs_panic("invalid thread argument size");
     gs_thread *t = (gs_thread *)malloc(sizeof(gs_thread));
     if (!t) gs_panic("out of memory spawning thread");
     t->run = run;
+    t->release = release;
     t->entry = entry;
+    t->contained = contained;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
     if (!t->args) {
         free(t);
@@ -207,17 +247,26 @@ GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
     return id;
 }
 
-GS_API void gs_thread_wait(int64_t id, const char *file, int line) {
+GS_API uint8_t gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
-    if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
-    if (id == gs_current_thread_id) gs_abort(GS_E_THREADSELF, file, line);
+    int err = id < 0 || id >= gs_numthreads ? GS_E_THREADID
+            : id == gs_current_thread_id    ? GS_E_THREADSELF : -1;
+    if (err >= 0) {
+        /* A contained worker's abort returns to gs_thread_main, which locks. */
+        gs_mutex_unlock(&gs_threads_mutex);
+        gs_abort(err, file, line);
+    }
     for (;;) {
         gs_thread *t = gs_threads;
         while (t && t->id != id) t = t->next;
         if (!t) break;
         gs_cond_wait(&gs_threads_done, &gs_threads_mutex);
     }
+    uint8_t returned = 1;
+    for (int64_t i = 0; i < gs_naborted; i++)
+        if (gs_aborted[i] == id) returned = 0;
     gs_mutex_unlock(&gs_threads_mutex);
+    return returned;
 }
 
 /* ---------------------------------------------------------------------------

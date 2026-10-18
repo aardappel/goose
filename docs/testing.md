@@ -87,7 +87,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
 | `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks. |
 | `storage/` | Relative references, pools and serialization. |
-| `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. Imported helpers live in `threads/spawn/`. |
+| `threads/` | Workers, queues, shared globals, contained workers' aborts and the native runtime lifecycle test. Imported helpers live in `threads/spawn/`. |
 | `stdlib/` | Standard-library modules. |
 | `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated self-checks of the stage-2 compiler, and compare JIT/native self-compilation. |
 | `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse, shaders from files and from the program; shader and threading rejections (fixtures with `// error:` markers). The programs hold their shaders; the shader files beside them are for the file form of `embed_shader` and `--compile-shader`. `gfx/window/` is the windowed showcase, not part of the suite. |
@@ -149,8 +149,9 @@ compiles; the benchmarks build that form too.
 
 The direct `test/threads/runtime_threads_lifecycle.c` regression checks allocations,
 mappings and Windows handles across worker churn, including unjoined workers,
-concurrent/repeated waits and children outliving their parents. It runs in both
-profiles. The normal suite also checks user-visible worker error diagnostics.
+concurrent/repeated waits, children outliving their parents and contained
+workers that abort. It runs in both profiles. The normal suite also checks
+user-visible worker error diagnostics.
 
 The `gfx/` tests exercise the gfx package (https://github.com/aardappel/goose_gfx,
 its `docs/gfx.md`). They
@@ -237,7 +238,9 @@ runner also checks the `--stacks` report of `thread_cap.goose` and
 `cycle_scratch_locals.goose` for its shape, not its counts. A fixture
 expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
 every run of it a debug build: `cast_abort_location.goose` and
-`overflow_abort_location.goose` check the location a failing check reports.
+`overflow_abort_location.goose` check the location a failing check reports,
+and `thread_contained.goose` that the debug checks end a contained worker
+alone.
 
 Parser/resolver errors live in `test/errors/`; semantic errors live in
 `test/errors_tc/` and must get past parsing and resolution (`parsed ok`)

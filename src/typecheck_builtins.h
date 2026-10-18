@@ -49,7 +49,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             else CheckIntAny(args[0]);
             reachable = false;
             return VoidVal();
-        case B_THREAD_SPAWN: {
+        case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: {
             auto wid = Is<Ident>(args[0]);
             SFunction *wsf = nullptr;
             // A variable in scope, a type parameter or a nested function of the
@@ -70,15 +70,15 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 }
             }
             if (!wsf && fvb)
-                Error(c, cat("thread_spawn's first argument names a thread_fn: ", wid->name,
+                Error(c, cat(d.name, "'s first argument names a thread_fn: ", wid->name,
                              " is bound to ", fvb->named ? cat(fvb->named->name, ", which is not one")
                                                          : string("a block")));
-            if (!wsf) Error(c, "thread_spawn's first argument names a thread_fn");
+            if (!wsf) Error(c, cat(d.name, "'s first argument names a thread_fn"));
             wid->fnref = wsf;
             wid->exprtype = fntype;
             auto spec = EnsureThreadSpec(wsf, c->line);
             if (args.size() != 1 + spec->argtypes.size())
-                Error(c, cat("thread_spawn(", wsf->name, ", ...) takes ",
+                Error(c, cat(d.name, "(", wsf->name, ", ...) takes ",
                              (int64_t)spec->argtypes.size(), " worker argument(s)"));
             {
                 DestScope ds(*this, Dest {});
