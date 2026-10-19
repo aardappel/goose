@@ -262,6 +262,10 @@ class CC:
         # on, which is why the second compiler exists in the test runner.
         if strict_decls:
             argv.append("-Werror=implicit-function-declaration")
+            # Nor should generated C drop a const it put there; clang names
+            # the warning differently and ignores gcc's name.
+            argv.append("-Werror=incompatible-pointer-types-discards-qualifiers"
+                        if self.name == "clang" else "-Werror=discarded-qualifiers")
         if cpp:
             argv.append("-std=c++20")
         return argv + [f"-D{d}" for d in defines]

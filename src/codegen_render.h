@@ -164,7 +164,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             // Variable-size elements are walked with this as the cursor.
             auto p = T();
             if (v.typedelems) L(CT(elem), " *", p, " = ", v.elems, ";");
-            else L("const uint8_t *", p, " = (const uint8_t *)(", v.elems, ");");
+            else L("uint8_t *", p, " = ", v.elems, ";");
             L("for (int64_t ", i, " = 0; ", i, " < ", cnt, "; ", i, "++) {");
             ind++;
             PushSc(SC_PLAIN);
