@@ -6135,7 +6135,18 @@ when the request asks; rename replaces the leaf of each spelling (a
 `ns::name` keeps its qualifier) and the declaration's name with the new
 name, as a `WorkspaceEdit` keyed by URI, and answers with an error rather
 than an edit for a keyword, a builtin, a name with no declaration, or one
-the compiler synthesized (its declaration does not spell it). Inlay hints
+the compiler synthesized (its declaration does not spell it). The call
+hierarchy stands on the same identity: `textDocument/prepareCallHierarchy`
+answers with the function whose declaration the position's occurrence
+resolves to, as an item whose selection range is its name, which the
+`callHierarchy/incomingCalls` and `outgoingCalls` that follow find it by
+again. Incoming calls are its references that are a call's callee,
+grouped by the innermost function declared around each (`EnclosingFn`,
+by the declarations' extents; a call in a global's initializer is in no
+function and is left out); outgoing calls are the callees in its body
+that resolve to a function of the program, grouped by it, a nested
+function's calls left to the nested function, and a builtin's left out.
+Each group's ranges are the callee's name at each call. Inlay hints
 give the type of each `let` or `var` without one written, after its name,
 where the clones' `VarDef`s agree on it (none where the specializations
 differ, or where an exemplar knows it only as `?`), and the parameter's name before each argument of a call resolved

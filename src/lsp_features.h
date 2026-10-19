@@ -1,10 +1,10 @@
 // Goose compiler — the language server's features (docs/design/
 // language_server.md §6), each a request answered from a root's analysis:
 // hover, go to definition, references and rename, document and workspace
-// symbols, semantic tokens, signature help, inlay hints, folding ranges,
-// selection ranges, completion and code lens. Every one takes the request's
-// params and writes its result, or writes nothing and returns false for a
-// null result.
+// symbols, call hierarchy, semantic tokens, signature help, inlay hints,
+// folding ranges, selection ranges, completion and code lens. Every one
+// takes the request's params and writes its result, or writes nothing and
+// returns false for a null result.
 #pragma once
 
 namespace goose {
@@ -1232,6 +1232,184 @@ inline bool Rename(Workspace &ws, const Json &params, JsonOut &j, string &error)
     }
     j.EndObject();
     j.EndObject();
+    return true;
+}
+
+// --- call hierarchy -----------------------------------------------------------------
+
+// The program's function declarations, nested ones among them, each with
+// its extent in its file.
+struct FnExtent {
+    const FnDecl *fd = nullptr;
+    size_t start = 0, end = 0;
+};
+
+inline vector<FnExtent> FnExtents(const Analysis &an) {
+    vector<FnExtent> fns;
+    function<void(const Node *)> walk = [&](const Node *n) {
+        if (!n) return;
+        if (auto fd = Is<FnDecl>(n)) {
+            auto fileidx = fd->line.fileidx;
+            if (fileidx >= 0 && fileidx < (int)an.files.size()) {
+                auto extent = ExtentOf(an.files[(size_t)fileidx], fd);
+                fns.push_back({ fd, extent.first, extent.second });
+            }
+            walk(fd->sf->body);
+            return;
+        }
+        n->Children([&](Node *ch) { walk(ch); });
+    };
+    for (auto d : an.ast->topdecls) walk(d);
+    return fns;
+}
+
+// The innermost function declared around an offset in a file, if any: the
+// one a call there is made in.
+inline const FnExtent *EnclosingFn(const vector<FnExtent> &fns, int fileidx, size_t offset) {
+    const FnExtent *found = nullptr;
+    for (auto &f : fns)
+        if (f.fd->line.fileidx == fileidx && f.start <= offset && offset < f.end &&
+            (!found || f.start >= found->start))
+            found = &f;
+    return found;
+}
+
+// The declaration of the function whose name is at a place, if any.
+inline const FnExtent *FnAtPlace(const Analysis &an, const vector<FnExtent> &fns, const Place &p) {
+    for (auto &f : fns) {
+        auto at = PlaceOfFn(an, f.fd->sf);
+        if (at.Known() && at.fileidx == p.fileidx && at.start == p.start) return &f;
+    }
+    return nullptr;
+}
+
+// A CallHierarchyItem: the function's declaration as its range, its name as
+// the selection range, which a later request finds it by.
+inline void WriteCallItem(JsonOut &j, const Analysis &an, const FnExtent &f) {
+    auto sf = f.fd->sf;
+    auto &file = an.files[(size_t)f.fd->line.fileidx];
+    auto name = PlaceOfFn(an, sf);
+    j.BeginObject();
+    j.Member("name", sf->name);
+    j.Member("kind", (int64_t)SK_FUNCTION);
+    j.Member("detail", FnHeader(sf));
+    j.Member("uri", file.uri);
+    j.Key("range");
+    WriteRange(j, file.text, f.start, f.end);
+    j.Key("selectionRange");
+    if (name.Known() && name.fileidx == f.fd->line.fileidx) WriteRange(j, file.text, name.start, name.start + name.len);
+    else WriteRange(j, file.text, f.start, f.start);
+    j.EndObject();
+}
+
+// The function an occurrence's name resolves to, where it is a call's callee.
+inline const FnExtent *CalleeAt(const Located &at, const vector<FnExtent> &fns, const Occurrence &occ) {
+    if (!occ.callee || occ.IsDeclaration()) return nullptr;
+    auto p = DefinitionOf(at, occ);
+    return p.Known() ? FnAtPlace(*at.an, fns, p) : nullptr;
+}
+
+// textDocument/prepareCallHierarchy: the function named at the position, its
+// declaration or a use of it.
+inline bool PrepareCallHierarchy(Workspace &ws, const Json &params, JsonOut &j) {
+    Located loc;
+    if (!Locate(ws, params, loc)) return false;
+    auto occ = loc.fi->At(loc.offset);
+    if (!occ) return false;
+    auto target = DefinitionOf(loc, *occ);
+    if (!target.Known()) return false;
+    auto fns = FnExtents(*loc.an);
+    auto f = FnAtPlace(*loc.an, fns, target);
+    if (!f) return false;
+    j.BeginArray();
+    WriteCallItem(j, *loc.an, *f);
+    j.EndArray();
+    return true;
+}
+
+// The function a CallHierarchyItem is, found again by its selection range in
+// the analysis answering for its file now.
+inline const FnExtent *FnOfItem(Workspace &ws, const Json &params, Located &loc, vector<FnExtent> &fns) {
+    auto item = params.Get("item");
+    auto sel = item ? item->Get("selectionRange") : nullptr;
+    auto start = sel ? sel->Get("start") : nullptr;
+    auto uri = JsonStr(item ? item->Get("uri") : nullptr);
+    if (!start || uri.empty()) return nullptr;
+    int fileidx;
+    if (!ws.Locate(PathKey(PathOfUri(uri)), loc.root, loc.an, fileidx)) return nullptr;
+    loc.fi = &loc.an->files[(size_t)fileidx];
+    loc.offset = loc.fi->text.OffsetOfPosition(JsonInt(start->Get("line")), JsonInt(start->Get("character")));
+    fns = FnExtents(*loc.an);
+    auto occ = loc.fi->At(loc.offset);
+    if (!occ) return nullptr;
+    auto target = DefinitionOf(loc, *occ);
+    return target.Known() ? FnAtPlace(*loc.an, fns, target) : nullptr;
+}
+
+// Calls grouped by the function at their other end, in the order first met:
+// each with the ranges of the callee's name in the caller.
+struct CallGroup {
+    const FnExtent *fn = nullptr;
+    const FileIndex *file = nullptr;
+    vector<pair<size_t, size_t>> ranges;
+};
+
+inline void WriteCallGroups(JsonOut &j, const Analysis &an, const vector<CallGroup> &groups, const char *key) {
+    j.BeginArray();
+    for (auto &g : groups) {
+        j.BeginObject();
+        j.Key(key);
+        WriteCallItem(j, an, *g.fn);
+        j.Key("fromRanges");
+        j.BeginArray();
+        for (auto &r : g.ranges) WriteRange(j, g.file->text, r.first, r.second);
+        j.EndArray();
+        j.EndObject();
+    }
+    j.EndArray();
+}
+
+inline void AddCall(vector<CallGroup> &groups, const FnExtent *fn, const FileIndex &file, const Occurrence &occ) {
+    auto it = find_if(groups.begin(), groups.end(), [&](const CallGroup &g) { return g.fn == fn; });
+    if (it == groups.end()) it = groups.insert(groups.end(), CallGroup { fn, &file, {} });
+    it->ranges.push_back({ occ.start, occ.start + occ.len });
+}
+
+// callHierarchy/incomingCalls: the calls of the item's function, by the
+// function each is made in (a call in a global's initializer is in none).
+inline bool IncomingCalls(Workspace &ws, const Json &params, JsonOut &j) {
+    Located loc;
+    vector<FnExtent> fns;
+    auto target = FnOfItem(ws, params, loc, fns);
+    if (!target) return false;
+    auto &an = *loc.an;
+    vector<CallGroup> groups;
+    ReferencesTo(loc.root, an, PlaceOfFn(an, target->fd->sf), [&](const FileIndex &f, const Occurrence &o) {
+        if (!o.callee || o.IsDeclaration()) return;
+        if (auto caller = EnclosingFn(fns, f.fileidx, o.start)) AddCall(groups, caller, f, o);
+    });
+    WriteCallGroups(j, an, groups, "from");
+    return true;
+}
+
+// callHierarchy/outgoingCalls: the functions the item's function calls, its
+// nested functions' calls left to them, by callee; the ranges are in the
+// item's file.
+inline bool OutgoingCalls(Workspace &ws, const Json &params, JsonOut &j) {
+    Located loc;
+    vector<FnExtent> fns;
+    auto target = FnOfItem(ws, params, loc, fns);
+    if (!target) return false;
+    auto &an = *loc.an;
+    auto &file = an.files[(size_t)target->fd->line.fileidx];
+    Located at { loc.root, &an, &file, 0 };
+    vector<CallGroup> groups;
+    for (auto &o : file.occs) {
+        if (o.start < target->start || o.start >= target->end) continue;
+        if (EnclosingFn(fns, file.fileidx, o.start) != target) continue;
+        if (auto callee = CalleeAt(at, fns, o)) AddCall(groups, callee, file, o);
+    }
+    WriteCallGroups(j, an, groups, "to");
     return true;
 }
 

@@ -231,7 +231,7 @@ protocol). Four files:
 | `lsp_rpc.h` | The transport: `Content-Length` framing on stdin/stdout (both in binary mode), a JSON writer beside `json.h`'s reader, request ids, `$/cancelRequest`, the reader thread and the message queue |
 | `lsp_workspace.h` | `Overlay` (open documents: path, text, version), `Root` (an entry file, its latest `Analysis`, its import set), root selection from the configuration and the open documents, `workspace/didChangeWatchedFiles`, scheduling: the debounce, the cancel flag, running an analysis on the compiler stack |
 | `lsp_analysis.h` | `Analysis`: the `Ast`, the diagnostics per file, and the indexes built once after the check: nodes per file sorted by offset, source node to clones, declarations with their positions; the queries `NodeAt`, `DeclOf`, `TypeOf`, `ReferencesTo`, `ScopeAt` |
-| `lsp_features.h` | One handler per request, mapping queries to protocol structures: hover, definition, references, rename, document and workspace symbols, completion, signature help, semantic tokens, inlay hints, folding and selection ranges, code lens |
+| `lsp_features.h` | One handler per request, mapping queries to protocol structures: hover, definition, references, rename, call hierarchy, document and workspace symbols, completion, signature help, semantic tokens, inlay hints, folding and selection ranges, code lens |
 
 **Threads.** One reader thread parses messages into a queue. One worker
 thread owns everything else: it applies notifications to the overlay,
@@ -387,6 +387,7 @@ comments and prints a `guard` as the `if` it became, so it is not one).
 | Hover | the clone at the position: `exprtype`, a `VarDef`'s type, `DumpInstance` of a `Call::spec`, a declaration's signature and doc | A, H |
 | Go to definition | `Ident::vdef` (local or global `VarDef`), `fnref` or `Call::spec->sf`, `Dot::fieldidx` into the `SStruct`, `variantconst`, a `TypeExpr`'s `SStruct`/`SEnum`/`SAlias`, an `Import`'s file | A |
 | References, rename | every clone's `Ident`, `Dot`, `Call`, `TypeName` resolving to the declaration, reduced to source nodes by `Origin()`; rename edits the leaf of each spelling and the declaration | A; across the roots that reach the file |
+| Call hierarchy | the function named at the position, as definition finds it; its incoming calls are the references that are a call's callee, by the function declared around each; its outgoing calls are the callees in its body, its nested functions' left to them, by the function each resolves to | A (ends, to find the function around a call) |
 | Document symbols | the parsed file's declarations, nested functions and fields included, replacing the lexical scan | A (ends, for the ranges) |
 | Workspace symbols | the declaration tables of every root | |
 | Completion of names | the parse tree: the bindings of the blocks enclosing the position (`VarDecl`, parameters, `for` and `match` binders, nested functions), then the namespace's globals, functions, types, the builtins table and the keywords; works in generic bodies, which have no clone | A |

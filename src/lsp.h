@@ -60,6 +60,7 @@ struct Server {
         j.Member("renameProvider", true);
         j.Member("documentSymbolProvider", true);
         j.Member("workspaceSymbolProvider", true);
+        j.Member("callHierarchyProvider", true);
         j.Member("inlayHintProvider", true);
         j.Member("foldingRangeProvider", true);
         j.Member("selectionRangeProvider", true);
@@ -195,6 +196,12 @@ struct Server {
             string error;
             if (Rename(ws, p, edit, error)) Respond(m, [&](JsonOut &j) { j.Raw(edit.s); return true; });
             else RespondError(m, -32803, error);
+        } else if (method == "textDocument/prepareCallHierarchy") {
+            Respond(m, [&](JsonOut &j) { return PrepareCallHierarchy(ws, p, j); });
+        } else if (method == "callHierarchy/incomingCalls") {
+            Respond(m, [&](JsonOut &j) { return IncomingCalls(ws, p, j); });
+        } else if (method == "callHierarchy/outgoingCalls") {
+            Respond(m, [&](JsonOut &j) { return OutgoingCalls(ws, p, j); });
         } else if (method == "textDocument/inlayHint") {
             Respond(m, [&](JsonOut &j) { return InlayHints(ws, p, j); });
         } else if (method == "textDocument/foldingRange") {

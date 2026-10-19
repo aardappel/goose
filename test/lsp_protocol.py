@@ -292,6 +292,25 @@ def check_lsp_protocol(exe, base):
                     ok = want == "not instantiated" and lens["data"] == [] and command["command"] == ""
                 if not ok:
                     fail(f"lens {at} {want}", lens)
+            elif kind in ("incoming", "outgoing"):
+                # `incoming L:C -> NAME@L,L ...` / `outgoing ...`: the calls
+                # of (or made by) the function named at the position, by the
+                # function at their other end with the lines of the calls;
+                # `-` for none, `none` where no function is named there.
+                pos, _, want = rest.split(" ", 2)
+                items = client.request("textDocument/prepareCallHierarchy", {**doc, "position": position(pos)})
+                if want == "none":
+                    if items:
+                        fail(f"call hierarchy {pos} is not none", items)
+                    continue
+                if not items or len(items) != 1:
+                    fail(f"call hierarchy {pos}", items)
+                calls = client.request(f"callHierarchy/{kind}Calls", {"item": items[0]})
+                end = "from" if kind == "incoming" else "to"
+                got = sorted(c[end]["name"] + "@" + ",".join(str(r["start"]["line"] + 1) for r in c["fromRanges"])
+                             for c in calls or [])
+                if got != ([] if want == "-" else sorted(want.split())):
+                    fail(f"{kind} calls {pos} are not {want}", got)
             elif kind == "folding":
                 a, b = (int(x) for x in rest.split("-"))
                 got = client.request("textDocument/foldingRange", doc)

@@ -121,3 +121,10 @@ fn spare(x) { x }
 // lsp: lens 15 "2 instantiations"
 // lsp: lens 29 "Run"
 // lsp: lens 43 "not instantiated"
+// lsp: incoming 15:4 -> main@31,32
+// lsp: incoming 31:15 -> main@31,32
+// lsp: incoming 36:19 -> main@36
+// lsp: incoming 43:4 -> -
+// lsp: outgoing 29:4 -> add@31,32 area@35 twice@36
+// lsp: outgoing 22:4 -> -
+// lsp: incoming 33:11 -> none

@@ -4,7 +4,8 @@ bootstrap, every stdlib module, every positive fixture, and every errors/ and
 errors_tc/ fixture, each opened as a root of its own. For each, the sweep
 waits for the diagnostics, then asks hover, definition, completion and
 signature help at every identifier start and at every position right after a
-`.` (found lexically, outside comments and strings), asks semantic tokens,
+`.` (found lexically, outside comments and strings), and the incoming and
+outgoing calls of a function named there, asks semantic tokens,
 document symbols, folding ranges, inlay hints and code lenses once, sends a
 burst of ten random one-character edits and waits for their diagnostics, puts
 the text back and waits for the diagnostics to be the first ones again, and
@@ -53,6 +54,7 @@ QUICK = [
 
 PER_POSITION = ("textDocument/hover", "textDocument/definition", "textDocument/completion",
                 "textDocument/signatureHelp")
+CALL_HIERARCHY = ("callHierarchy/incomingCalls", "callHierarchy/outgoingCalls")
 PER_FILE = ("textDocument/semanticTokens/full", "textDocument/documentSymbol",
             "textDocument/foldingRange", "textDocument/inlayHint", "textDocument/codeLens")
 
@@ -399,6 +401,9 @@ def sweep_file(item):
             p = {**td, "position": doc.position(off)}
             for method in PER_POSITION:
                 timed(method, p)
+            for item in timed("textDocument/prepareCallHierarchy", p).get("result") or []:
+                for method in CALL_HIERARCHY:
+                    timed(method, {"item": item})
         whole = {"start": {"line": 0, "character": 0}, "end": {"line": len(doc.starts), "character": 0}}
         for method in PER_FILE:
             timed(method, {**td, "range": whole} if method == "textDocument/inlayHint" else td)
