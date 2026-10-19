@@ -372,7 +372,9 @@ of the compiler sees as written), then `main`, then every
 `thread_fn`, and finally eligible functions nothing reached (`CheckUnreached`).
 That last check covers only top-level functions with fully annotated
 parameters, no generics, and no syntactically detected `return from` to an
-outside target. Unused generic and nested bodies are checked only when
+outside target, in the body or in what its calls reach
+(`ReachesForeignFrom`, which follows calls by name and so finds more paths
+than the real ones). Unused generic and nested bodies are checked only when
 instantiated, but for the language server's exemplars (below). The
 standalone check (`CheckStandalone`) roots each reference, slice and holder
 parameter at a class of its own at the globals' depth, as a call from the
