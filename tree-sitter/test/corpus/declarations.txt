@@ -1,0 +1,170 @@
+========================================
+Namespace and imports
+========================================
+
+namespace geo;
+import std;
+import .util.strings;
+import json from "github.com/x/json";
+
+---
+
+(source_file
+  (namespace_declaration
+    (identifier))
+  (import_declaration
+    (import_path
+      (identifier)))
+  (import_declaration
+    (import_path
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (import_path
+      (identifier))
+    (string_literal
+      (string_content))))
+
+========================================
+Generic struct with relative references and padding
+========================================
+
+struct Node<T: Ord> {
+    let key: T,
+    kids: Node<T>&<u16 in pool>[>..<],
+    pad 4,
+}
+
+---
+
+(source_file
+  (struct_declaration
+    (identifier)
+    (type_parameters
+      (type_parameter
+        (identifier)
+        (named_type
+          (identifier))))
+    (field_declaration_list
+      (field_declaration
+        (identifier)
+        (named_type
+          (identifier)))
+      (field_declaration
+        (identifier)
+        (array_type
+          (reference_type
+            (named_type
+              (identifier)
+              (type_arguments
+                (named_type
+                  (identifier))))
+            (primitive_type)
+            (identifier))))
+      (pad_declaration
+        (int_literal)))))
+
+========================================
+Enum with payload variants
+========================================
+
+enum Shape { Dot, Circle { r: f64 }, }
+
+---
+
+(source_file
+  (enum_declaration
+    (identifier)
+    (enum_variant
+      (identifier))
+    (enum_variant
+      (identifier)
+      (field_declaration_list
+        (field_declaration
+          (identifier)
+          (primitive_type))))))
+
+========================================
+Type alias of a function type
+========================================
+
+type Cb = fn(i32, u8[:]) -> (i32, bool);
+
+---
+
+(source_file
+  (type_alias_declaration
+    (identifier)
+    (function_type
+      (primitive_type)
+      (slice_type
+        (primitive_type))
+      (primitive_type)
+      (primitive_type))))
+
+========================================
+Reusable global
+========================================
+
+reusable[] var ::pool: u8[..64] = [..64];
+
+---
+
+(source_file
+  (variable_declaration
+    (scoped_identifier
+      (identifier))
+    (array_type
+      (primitive_type)
+      (int_literal))
+    (array_literal
+      (int_literal))))
+
+========================================
+Function modifiers and extern declaration
+========================================
+
+checkfree export "c_name" inline recursive fn geo::f(var a: i64, b = 0) -> i64, bool;
+
+---
+
+(source_file
+  (function_declaration
+    (function_modifier)
+    (function_modifier
+      (string_literal
+        (string_content)))
+    (function_modifier)
+    (function_modifier)
+    (scoped_identifier
+      (identifier)
+      (identifier))
+    (parameters
+      (parameter
+        (identifier)
+        (primitive_type))
+      (parameter
+        (identifier)
+        (int_literal)))
+    (primitive_type)
+    (primitive_type)))
+
+========================================
+Thread function
+========================================
+
+thread_fn worker(n: const u8[:]?) { }
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (const_type
+          (optional_type
+            (slice_type
+              (primitive_type))))))
+    (block)))

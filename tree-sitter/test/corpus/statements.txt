@@ -1,0 +1,210 @@
+========================================
+Guard
+========================================
+
+fn f() {
+    guard n > 0 else { return; }
+    guard ok;
+    x
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (guard_statement
+        (binary_expression
+          (identifier)
+          (int_literal))
+        (block
+          (expression_statement
+            (return_expression))))
+      (guard_statement
+        (identifier))
+      (identifier))))
+
+========================================
+Assignments and increments
+========================================
+
+fn f() {
+    x.y += 1;
+    a, b = g();
+    i++;
+    r .= p;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (assignment_statement
+        (field_expression
+          (identifier)
+          (identifier))
+        (int_literal))
+      (assignment_statement
+        (identifier)
+        (identifier)
+        (call_expression
+          (identifier)
+          (argument_list)))
+      (increment_statement
+        (identifier))
+      (assignment_statement
+        (identifier)
+        (identifier)))))
+
+========================================
+Const for
+========================================
+
+fn f() {
+    const for<f, t> in fields<Node<i64>> { print(f); }
+    let p = Point { x: 1, const for<v> in [1, 2] { v }, .. };
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (const_for_statement
+        (identifier)
+        (identifier)
+        (const_for_types
+          (named_type
+            (identifier)
+            (type_arguments
+              (primitive_type))))
+        (block
+          (expression_statement
+            (call_expression
+              (identifier)
+              (argument_list
+                (identifier))))))
+      (variable_declaration
+        (identifier)
+        (struct_literal
+          (identifier)
+          (initializer_list
+            (field_initializer
+              (identifier)
+              (int_literal))
+            (const_for_initializer
+              (identifier)
+              (const_for_constants
+                (int_literal)
+                (int_literal))
+              (initializer_list
+                (identifier)))))))))
+
+========================================
+Loops and jumps
+========================================
+
+fn f() {
+    loop { break 3; }
+    while true { continue; }
+    for &x, i in xs { }
+    for i: u32, j in 0..n { }
+    for w: (u32 in nodes) in edges { }
+    return x from outer;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (loop_expression
+        (block
+          (expression_statement
+            (break_expression
+              (int_literal)))))
+      (while_expression
+        (boolean_literal)
+        (block
+          (expression_statement
+            (continue_expression))))
+      (for_expression
+        (identifier)
+        (identifier)
+        (identifier)
+        (block))
+      (for_expression
+        (identifier)
+        (primitive_type)
+        (identifier)
+        (range_expression
+          (int_literal)
+          (identifier))
+        (block))
+      (for_expression
+        (identifier)
+        (parenthesized_type
+          (index_type
+            (primitive_type)
+            (identifier)))
+        (identifier)
+        (block))
+      (expression_statement
+        (return_expression
+          (identifier)
+          (identifier))))))
+
+========================================
+Block-ended statements need no semicolon
+========================================
+
+fn f() {
+    if x { a } else { b }
+    each(xs) { it * 2 }
+    -y;
+    let v = block { 5 };
+    { a + b }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (if_expression
+        (identifier)
+        (block
+          (identifier))
+        (block
+          (identifier)))
+      (call_expression
+        (identifier)
+        (argument_list
+          (identifier))
+        (function_value
+          (binary_expression
+            (identifier)
+            (int_literal))))
+      (expression_statement
+        (unary_expression
+          (identifier)))
+      (variable_declaration
+        (identifier)
+        (block_expression
+          (block
+            (int_literal))))
+      (block
+        (binary_expression
+          (identifier)
+          (identifier))))))

@@ -1,0 +1,301 @@
+========================================
+Scrutinee is not a struct literal or trailing block
+========================================
+
+fn f() {
+    if x { a }
+    if g(x) { a }
+    if s.ok { c; }
+    match s { _ => 0 }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (if_expression
+        (identifier)
+        (block
+          (identifier)))
+      (if_expression
+        (call_expression
+          (identifier)
+          (argument_list
+            (identifier)))
+        (block
+          (identifier)))
+      (if_expression
+        (field_expression
+          (identifier)
+          (identifier))
+        (block
+          (expression_statement
+            (identifier))))
+      (match_expression
+        (identifier)
+        (match_arm
+          (wildcard_pattern)
+          (int_literal))))))
+
+========================================
+Struct and variant literals
+========================================
+
+fn f() {
+    let a = Point { x: 1, y: 2 };
+    let b = Shape.Circle { r: 1.0 };
+    let c = Pair<i64> { 1, 2 };
+    let d = Opt<i64>.Some { 3 };
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (struct_literal
+          (identifier)
+          (initializer_list
+            (field_initializer
+              (identifier)
+              (int_literal))
+            (field_initializer
+              (identifier)
+              (int_literal)))))
+      (variable_declaration
+        (identifier)
+        (struct_literal
+          (identifier)
+          (identifier)
+          (initializer_list
+            (field_initializer
+              (identifier)
+              (float_literal)))))
+      (variable_declaration
+        (identifier)
+        (struct_literal
+          (identifier)
+          (type_arguments
+            (primitive_type))
+          (initializer_list
+            (int_literal)
+            (int_literal))))
+      (variable_declaration
+        (identifier)
+        (struct_literal
+          (identifier)
+          (type_arguments
+            (primitive_type))
+          (identifier)
+          (initializer_list
+            (int_literal)))))))
+
+========================================
+Generic calls against comparisons
+========================================
+
+fn f() {
+    let a = g<i64>(x);
+    let b = a < c;
+    let t: Foo<Bar<i32>> = 0;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (call_expression
+          (identifier)
+          (type_arguments
+            (primitive_type))
+          (argument_list
+            (identifier))))
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (identifier)
+          (identifier)))
+      (variable_declaration
+        (identifier)
+        (named_type
+          (identifier)
+          (type_arguments
+            (named_type
+              (identifier)
+              (type_arguments
+                (primitive_type)))))
+        (int_literal)))))
+
+========================================
+Function values
+========================================
+
+fn f() {
+    let h = map(xs) { x, y => x + y };
+    let k = map(xs) { var x: i64 => x };
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (call_expression
+          (identifier)
+          (argument_list
+            (identifier))
+          (function_value
+            (function_value_parameters
+              (function_value_parameter
+                (identifier))
+              (function_value_parameter
+                (identifier)))
+            (binary_expression
+              (identifier)
+              (identifier)))))
+      (variable_declaration
+        (identifier)
+        (call_expression
+          (identifier)
+          (argument_list
+            (identifier))
+          (function_value
+            (function_value_parameters
+              (function_value_parameter
+                (identifier)
+                (primitive_type)))
+            (identifier)))))))
+
+========================================
+Indexing, slicing, casts
+========================================
+
+fn f() {
+    let k = [0; 10][^1..];
+    let m = a[i] as! u8;
+    let n = s[..^2];
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (slice_expression
+          (array_literal
+            (int_literal)
+            (int_literal))
+          (slice_bound
+            (int_literal))))
+      (variable_declaration
+        (identifier)
+        (cast_expression
+          (index_expression
+            (identifier)
+            (identifier))
+          (primitive_type)))
+      (variable_declaration
+        (identifier)
+        (slice_expression
+          (identifier)
+          (slice_bound
+            (int_literal)))))))
+
+========================================
+Match patterns
+========================================
+
+fn f() {
+    match s {
+        Circle &c => c.r,
+        Square sq => sq.side,
+        1..9, -1, ns::K => 0,
+        _ => { 1 },
+    }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (match_expression
+        (identifier)
+        (match_arm
+          (variant_pattern
+            (identifier)
+            (identifier))
+          (field_expression
+            (identifier)
+            (identifier)))
+        (match_arm
+          (variant_pattern
+            (identifier)
+            (identifier))
+          (field_expression
+            (identifier)
+            (identifier)))
+        (match_arm
+          (pattern_list
+            (range_pattern
+              (int_literal)
+              (int_literal))
+            (negative_pattern
+              (int_literal))
+            (scoped_identifier
+              (identifier)
+              (identifier)))
+          (int_literal))
+        (match_arm
+          (wildcard_pattern)
+          (block
+            (int_literal)))))))
+
+========================================
+Operator precedence
+========================================
+
+fn f() {
+    let a = x & mask != 0 || y .== z;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (binary_expression
+            (binary_expression
+              (identifier)
+              (identifier))
+            (int_literal))
+          (binary_expression
+            (identifier)
+            (identifier)))))))

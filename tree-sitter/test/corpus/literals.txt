@@ -1,0 +1,93 @@
+========================================
+Numbers and characters
+========================================
+
+fn f() {
+    let a = 0x1.8p3 + 1e10 + 2.5e-3 + 0xFF + 42;
+    let b = '\x41' + '\n' + 'a';
+    for i in 1..2 { }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (binary_expression
+            (binary_expression
+              (binary_expression
+                (float_literal)
+                (float_literal))
+              (float_literal))
+            (int_literal))
+          (int_literal)))
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (binary_expression
+            (char_literal)
+            (char_literal))
+          (char_literal)))
+      (for_expression
+        (identifier)
+        (range_expression
+          (int_literal)
+          (int_literal))
+        (block)))))
+
+========================================
+Strings
+========================================
+
+fn f() {
+    let e = "tab\tq\"";
+    let r = """raw "q" \n""";
+    let m = """
+        two
+          lines
+        """;
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (variable_declaration
+        (identifier)
+        (string_literal
+          (string_content)
+          (escape_sequence)
+          (string_content)
+          (escape_sequence)))
+      (variable_declaration
+        (identifier)
+        (raw_string_literal))
+      (variable_declaration
+        (identifier)
+        (raw_string_literal)))))
+
+========================================
+Nested block comments
+========================================
+
+/* outer /* inner */ still */
+// line
+fn f() { }
+
+---
+
+(source_file
+  (block_comment)
+  (line_comment)
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block)))

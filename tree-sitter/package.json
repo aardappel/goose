@@ -1,0 +1,9 @@
+{
+  "name": "tree-sitter-goose",
+  "private": true,
+  "description": "Pins the tree-sitter CLI that build.py generates the Goose parser with",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "tree-sitter-cli": "0.25.8"
+  }
+}
