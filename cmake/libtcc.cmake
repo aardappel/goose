@@ -54,10 +54,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     execute_process(COMMAND ${CMAKE_C_COMPILER} -print-multiarch
                     OUTPUT_VARIABLE tcc_triplet OUTPUT_STRIP_TRAILING_WHITESPACE
                     ERROR_QUIET)
-    if(NOT tcc_triplet)
-        set(tcc_triplet "${tcc_arch}-linux-gnu")
+    if(NOT tcc_triplet AND EXISTS "/usr/lib64/crti.o")
+        # Red Hat-family and SUSE gcc name no triplet, and keep the C library
+        # in /usr/lib64, which TinyCC does not search by default. TinyCC's
+        # configure points it there the same way.
+        string(APPEND tcc_config
+            "#define CONFIG_TCC_LIBPATHS \"{B}:/usr/lib64\"\n"
+            "#define CONFIG_TCC_CRTPREFIX \"/usr/lib64\"\n")
+    else()
+        if(NOT tcc_triplet)
+            set(tcc_triplet "${tcc_arch}-linux-gnu")
+        endif()
+        string(APPEND tcc_config "#define CONFIG_TRIPLET \"${tcc_triplet}\"\n")
     endif()
-    string(APPEND tcc_config "#define CONFIG_TRIPLET \"${tcc_triplet}\"\n")
 endif()
 # macOS has no /usr/include: the C library's headers are only in the SDK, so
 # name its include directory as TinyCC's configure does. (The libraries need no
