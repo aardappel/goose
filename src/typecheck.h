@@ -1682,9 +1682,12 @@ struct TypeCheck {
     void ResolveMemberLValue(LVal &lv, Dot *d);
     // Where a holder value's references point: what was derived for it, else
     // for a reference or slice its own roots, and for a by-value holder what
-    // they bound (a temporary's outlive nothing).
-    static Roots ContentsOf(const Val &v) {
+    // they bound (a temporary's outlive nothing). A value whose own type
+    // holds no references holds nothing, where it stands for one that may:
+    // a variant with no reference fields passed or stored as its enum.
+    Roots ContentsOf(const Val &v) {
         if (v.holderset) return v.contents;
+        if (v.type && !IsRefOrSlice(v.type) && !HoldsPlainRef(v.type)) return Roots {};
         return !v.type || IsRefOrSlice(v.type) ? v.AsRoots() : Bounds(v);
     }
     // Where something that `at`'s roots only bound points: what a holder
