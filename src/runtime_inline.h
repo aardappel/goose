@@ -2141,13 +2141,22 @@ GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t
    positions, every search, tests one byte at a time, a single byte by
    memchr. No load reaches past the range: its last part is tested as the
    range's last whole block, with the positions before it, already tested,
-   shifted out of the result. */
+   shifted out of the result.
 
+   The set is a ByteSet the program wrote, read here as a gs_byteset: may_alias
+   keeps gcc's type-based alias analysis from taking those for two objects,
+   which at -O2 had it drop the program's stores to a set it then searched. */
+
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#define GS_MAY_ALIAS __attribute__((may_alias))
+#else
+#define GS_MAY_ALIAS
+#endif
 #pragma pack(push, 1)
 typedef struct {
     uint8_t members[256];
     uint8_t kind, invert, bytes[3], lo[16], hi[16];
-} gs_byteset;
+} GS_MAY_ALIAS gs_byteset;
 #pragma pack(pop)
 
 static int64_t gs_scan_any_bytes(const uint8_t *p, int64_t n, const gs_byteset *s) {
@@ -2210,7 +2219,8 @@ typedef struct { __m128i a, b, c, flip; } gs_bsm;
 static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
     if (tables) {
         m->a = _mm_loadu_si128((const __m128i *)s->lo);
-        m->b = _mm_loadu_si128((const __m128i *)s->hi);
+)GSRT"
+R"GSRT(        m->b = _mm_loadu_si128((const __m128i *)s->hi);
         m->c = _mm_setr_epi8(1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128);
         m->flip = _mm_setzero_si128();
     } else {
@@ -2221,8 +2231,7 @@ static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
     }
 }
 
-)GSRT"
-R"GSRT(/* The members among the 16 bytes of x, as 0xff bytes, for a set of kind k
+/* The members among the 16 bytes of x, as 0xff bytes, for a set of kind k
    from 1 to 4, a constant wherever this is inlined. A range holds x where
    x - lo, wrapping, is at most its width. */
 static GS_INLINE __m128i gs_bsm_test(const gs_bsm *m, int k, __m128i x) {
@@ -2380,7 +2389,8 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     gs_mainregions = mainregions;
     gs_workerregions = workerregions;
     /* The workers the budget holds beside the main program, each at the
-       most regions one can take: what hardware_threads() reports at most.
+)GSRT"
+R"GSRT(       most regions one can take: what hardware_threads() reports at most.
        At least one, so a program sized by it still runs; the regions the
        platform then refuses are retried smaller (gs_reserve_region). */
     if (workerregions > 0) {
@@ -2388,8 +2398,7 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
         uint64_t total = per ? budget / per : 0;
         int64_t spare = total > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)total;
         spare -= mainregions;
-)GSRT"
-R"GSRT(        gs_thread_cap = spare > workerregions ? spare / workerregions : 1;
+        gs_thread_cap = spare > workerregions ? spare / workerregions : 1;
     }
     // Unbuffered stdout: output is never lost to an abort or a killed run,
     // and interleaves correctly with stderr diagnostics. Revisit if print
@@ -2595,15 +2604,15 @@ static int gs_float_digits(uint64_t f, int e, int bits, int emin, char *dig, int
         dig[n++] = (char)('0' + d + high);
         return n;
     }
-}
+)GSRT"
+R"GSRT(}
 
 /* The text of a finite float from its fields: the sign, the significand
    without its implicit bit and the biased exponent, for a type of `bits`
    significant bits and least exponent emin. The digits are laid out as C's
    %g lays them out at a precision of max(15, digits): in exponent form, with
    at least two exponent digits, below 1e-4 or from that power of ten up. */
-)GSRT"
-R"GSRT(static int64_t gs_fmt_float(uint8_t *dst, int neg, uint64_t frac, int bexp, int bits,
+static int64_t gs_fmt_float(uint8_t *dst, int neg, uint64_t frac, int bexp, int bits,
                             int emin) {
     char dig[20], *p = (char *)dst;
     int k, n, x, i;

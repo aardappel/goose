@@ -1002,13 +1002,22 @@ GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t
    positions, every search, tests one byte at a time, a single byte by
    memchr. No load reaches past the range: its last part is tested as the
    range's last whole block, with the positions before it, already tested,
-   shifted out of the result. */
+   shifted out of the result.
 
+   The set is a ByteSet the program wrote, read here as a gs_byteset: may_alias
+   keeps gcc's type-based alias analysis from taking those for two objects,
+   which at -O2 had it drop the program's stores to a set it then searched. */
+
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#define GS_MAY_ALIAS __attribute__((may_alias))
+#else
+#define GS_MAY_ALIAS
+#endif
 #pragma pack(push, 1)
 typedef struct {
     uint8_t members[256];
     uint8_t kind, invert, bytes[3], lo[16], hi[16];
-} gs_byteset;
+} GS_MAY_ALIAS gs_byteset;
 #pragma pack(pop)
 
 static int64_t gs_scan_any_bytes(const uint8_t *p, int64_t n, const gs_byteset *s) {
