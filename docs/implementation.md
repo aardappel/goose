@@ -6037,7 +6037,14 @@ editor asks for lenses, semantic tokens and inlay hints as a file opens
 or changes, and a request the worker takes before the analysis answering
 it (one that came during another root's analysis, or with others waiting)
 gets a stale answer or none, which the editor would keep until the next
-edit. The analysis an attempt replaces, and a removed root's, is freed on
+edit. Every other request about the documents (and these three where the
+client takes no refresh) runs the analyses due first, the debounce not
+waited out (`Workspace::Settle`, `Server::AsksAboutDocuments`): a hover
+or a definition asked right behind a change is about the text after it,
+whose positions the analysis before it does not know, and one asked right
+behind a `didOpen` would otherwise find no analysis at all. These
+analyses are not cancellable (`Analyze`'s `cancellable`): a change after
+the request is about a text the request does not ask about. The analysis an attempt replaces, and a removed root's, is freed on
 a thread of the workspace's (`Workspace::Reap`): freeing a large program's
 tree takes a tenth of the time its check did, and the requests after an
 analysis, the editor's refreshes first among them, would otherwise wait

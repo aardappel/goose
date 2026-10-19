@@ -198,14 +198,29 @@ struct Workspace {
         return due;
     }
 
-    // Analyzes the dirty root due first, if its time has come.
-    bool AnalyzeDue() {
+    // The dirty root due first, if any.
+    Root *FirstDue() {
         Root *next = nullptr;
         for (auto &r : roots)
             if (r->dirty && (!next || r->due < next->due)) next = r.get();
+        return next;
+    }
+
+    // Analyzes the dirty root due first, if its time has come.
+    bool AnalyzeDue() {
+        auto next = FirstDue();
         if (!next || next->due > chrono::steady_clock::now()) return false;
         Analyze(*next);
         return true;
+    }
+
+    // Analyzes every dirty root now, its debounce not waited out, so that a
+    // request is answered from the documents as they stand when it arrives
+    // rather than from the analysis before their last change, or from none
+    // yet. A change arriving after the request cancels none of these: the
+    // request asks about the text before it.
+    void Settle() {
+        while (auto next = FirstDue()) Analyze(*next, false);
     }
 
     // The text of a file as the editor has it, else null for the disk's.
@@ -218,12 +233,12 @@ struct Workspace {
     // the editor's buffers, fetching nothing. Its diagnostics are
     // published for every file it reached; one that got past resolution
     // replaces the analysis queries read. A cancelled one leaves the root
-    // dirty for the next.
-    void Analyze(Root &r) {
+    // dirty for the next; one not cancellable runs to its end.
+    void Analyze(Root &r, bool cancellable = true) {
         auto an = make_unique<Analysis>();
         an->ast = make_unique<Ast>();
         auto &ast = *an->ast;
-        ast.cancel = &rpc.cancel;
+        ast.cancel = cancellable ? &rpc.cancel : nullptr;
         ast.exemplars = true;
         ast.sink = [&](const Diagnostic &d) { an->diags.push_back(d); };
         SourceProvider sources = [&](const string &path) { return TextOf(path); };

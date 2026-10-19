@@ -2033,7 +2033,7 @@ def main():
             check_lsp_protocol(exe, gendir)
             r.ok("language server: diagnostics, hover, definition, references, rename, symbols, "
                  "semantic tokens, signature help, inlay hints, folding and selection ranges, "
-                 "completion, code lenses, edits and cancellation")
+                 "completion, code lenses, edits and cancellation, requests right behind a change")
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("language server", str(e))
     r.show_task(lsp_protocol)

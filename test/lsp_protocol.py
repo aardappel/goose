@@ -348,11 +348,29 @@ def check_lsp_protocol(exe, base):
     got = client.request("textDocument/hover", {**doc, "position": position("33:11")})
     if not got or "let sum: i64" not in got["contents"]["value"]:
         fail("hover after the edits", got)
-    # A program with errors in two functions, opened as a root of its own:
-    # both are published, and the queries answer from what was checked.
+    # A request right behind the change it asks about is answered from the
+    # analysis that change made due, not from the one before it: a line put
+    # above everything, and the hover asked at once where `sum` now is.
+    client.send("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 6},
+                                           "contentChanges": [{"text": "// a line above\n" + text}]}, request=False)
+    got = client.request("textDocument/hover", {**doc, "position": position("34:11")})
+    if not got or "let sum: i64" not in got["contents"]["value"]:
+        fail("hover right after an edit", got)
+    client.send("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 7},
+                                           "contentChanges": [{"text": text}]}, request=False)
+    client.diagnostics_for(main_uri, lambda d: len(d) == 0)
+    # A program with errors in two functions, opened as a root of its own,
+    # its symbols asked at once: they are its analysis's, not none from
+    # before it. Both errors are published, and the queries answer from
+    # what was checked.
     recovery = fixtures / "recovery.goose"
     rtext = recovery.read_text(encoding="utf-8")
-    queries(recovery, rtext, open_fixture(recovery, rtext))
+    client.send("textDocument/didOpen", {"textDocument": {
+        "uri": uri_of(recovery), "languageId": "goose", "version": 1, "text": rtext}}, request=False)
+    got = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri_of(recovery)}})
+    if not got:
+        fail("symbols right after opening", got)
+    queries(recovery, rtext, client.diagnostics_for(uri_of(recovery)))
     # Declarations with errors inside them, and an import that finds
     # nothing: each published, and the rest of the program checked.
     broken = fixtures / "broken_decls.goose"

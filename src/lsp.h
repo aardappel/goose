@@ -108,6 +108,19 @@ struct Server {
         j.EndObject();
     }
 
+    // Whether a request asks about the documents and waits for the analysis
+    // their changes have made due: all but the lenses, semantic tokens and
+    // inlay hints of a client that takes their refresh, which are answered
+    // from the analysis there is and asked for again once the next is done.
+    bool AsksAboutDocuments(const string &method) {
+        if (method.rfind("textDocument/", 0) != 0 && method != "workspace/symbol") return false;
+        for (auto feature : { "codeLens", "semanticTokens", "inlayHint" })
+            if (method.rfind(cat("textDocument/", feature), 0) == 0)
+                return find(ws.refreshes.begin(), ws.refreshes.end(), cat("workspace/", feature, "/refresh")) ==
+                       ws.refreshes.end();
+        return true;
+    }
+
     // Handles one message; false once the client said to exit.
     bool Handle(const Message &m) {
         auto params = m.Params();
@@ -120,6 +133,7 @@ struct Server {
             RespondError(m, -32800, "the request was cancelled");
             return true;
         }
+        if (!m.id.empty() && AsksAboutDocuments(method)) ws.Settle();
         if (method == "initialize") {
             auto options = p.Get("initializationOptions");
             ws.Configure(options);

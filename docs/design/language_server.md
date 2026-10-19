@@ -241,8 +241,14 @@ the duration. A `didChange` that arrives while an analysis runs sets the
 cancel flag, which the parser and checker poll (§5 F), and the worker
 starts over once the queue is drained. Requests that arrive during an
 analysis wait for it; at a tenth of a second that needs no second reader
-of the `Ast`, so nothing is locked. `$/cancelRequest` drops a request
-still in the queue.
+of the `Ast`, so nothing is locked. A request about the documents that
+arrives while a change to them is still waiting out the debounce, or
+right behind the `didOpen` whose analysis has not run, has that analysis
+run first, not cancelled by changes after it: an answer from the analysis
+before the change would be about another text, or there would be none
+yet. Lenses, semantic tokens and inlay hints are the exception where the
+client takes their refresh, which asks again once the analysis is done.
+`$/cancelRequest` drops a request still in the queue.
 
 **An analysis.** For a root: `ParseProgram` with a source provider that
 serves the overlay before the disk (§5 B), with fetching off (§5 E),
