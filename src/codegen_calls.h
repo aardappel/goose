@@ -560,6 +560,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     auto ei = EIOf(enumtype);
     auto ts = TagSize(ei->en);
     string p, copied, sv, tag;
+    vector<string> snap(ei->en->variants.size());
     auto scrutinee = [&]() {
         if (varmode) {
             if (isref) {
@@ -569,20 +570,36 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             } else {
                 p = GenPtr(sn);
             }
+            tag = cat("*(", IntCT(TagStore(ei->en)), " *)", p);
             // A reference input can also decay to a by-value case parameter.
             // Copy its value now; reference cases retain the original pointer.
-            auto wantsvalue = false;
-            for (auto sp : c->dispatch)
-                wantsvalue |= sp->argtypes[pos]->kind != TY_REF;
-            if (wantsvalue) {
+            // Only a variable-size variant needs the whole value on a data
+            // stack. A fixed-size one is copied on its own and an empty one
+            // not at all, so a call into a recursive cycle, whose by-value
+            // parameters are fixed-size (§7.8), holds no stack across it.
+            auto wholecopy = false;
+            for (size_t vi = 0; vi < snap.size(); vi++)
+                wholecopy |= c->dispatch[vi]->argtypes[pos]->kind != TY_REF &&
+                             IsBytesT(VariantType(enumtype, (int)vi));
+            if (wholecopy) {
                 string stk;
                 copied = BytesTemp(stk);
                 auto sz = T();
                 L("int64_t ", sz, " = ", SizeX(enumtype, p), ";");
                 L("GS_MEMCPY(", Top(stk), ", ", p, ", (size_t)", sz, ");");
                 Bump(stk, sz);
+            } else {
+                for (size_t vi = 0; vi < snap.size(); vi++) {
+                    if (c->dispatch[vi]->argtypes[pos]->kind == TY_REF ||
+                        EmptyLayout(ei->en->variants[vi].fields))
+                        continue;
+                    auto vt = VariantType(enumtype, (int)vi);
+                    snap[vi] = T();
+                    FixedLocal(vt, snap[vi], "{0}");
+                    L("if (", tag, " == ", TagConst(ei, (int)vi), ") ", snap[vi], " = *(", CT(vt),
+                      " *)(", p, " + ", ts, ");");
+                }
             }
-            tag = cat("*(", IntCT(TagStore(ei->en)), " *)", p);
         } else {
             auto value = GenXD(sn, enumtype);
             sv = T();
@@ -676,6 +693,8 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             auto tv = T();
             FixedLocal(vt, tv, "{0}");
             varg = tv;
+        } else if (!snap[vi].empty()) {
+            varg = snap[vi];
         } else if (!payload.empty()) {
             auto tv = T();
             FixedLocal(vt, tv, cat("*(", CT(vt), " *)(", payload, ")"));
