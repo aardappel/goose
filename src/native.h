@@ -70,6 +70,17 @@ inline void ExternNamesIn(const string &path, const string &text, set<string> &n
             cname = lex.sval;
             lex.Next();
         }
+        // An extern block's functions come from its shared library (§7.10),
+        // not from the native part: skipped through its `}`.
+        if (lex.tok == T_LCURLY) {
+            auto depth = 0;
+            do {
+                if (lex.tok == T_LCURLY) depth++;
+                else if (lex.tok == T_RCURLY) depth--;
+                lex.Next();
+            } while (depth > 0 && lex.tok != T_EOF);
+            continue;
+        }
         if (lex.tok != T_FN) continue;
         lex.Next();
         if (lex.tok == T_IDENT) {

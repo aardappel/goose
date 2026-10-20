@@ -441,7 +441,27 @@ struct Parser {
                 ast.topdecls.push_back(Finish(New<AliasDecl>(line, al)));
                 return;
             }
-            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT:
+            case T_EXTERN: {
+                // `extern "lib" {` opens a block of declarations bound from
+                // a shared library (§7.10), which the string alone does not
+                // tell from a declaration's symbol: the parse reads past it
+                // and hands the declaration what it consumed.
+                ExternPrefix pre { CurLine(), lex.doc, "", "" };
+                auto depth = lex.DepthBefore();
+                auto startp = lex.attr.data();
+                lex.Next();
+                if (lex.tok == T_STRLIT) {
+                    pre.cname = lex.sval;
+                    lex.Next();
+                }
+                if (lex.tok == T_LCURLY) {
+                    ParseExternBlock(pre.cname, depth, startp);
+                    return;
+                }
+                ast.topdecls.push_back(ParseFnDecl(false, &pre));
+                return;
+            }
+            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXPORT:
             case T_SIMD: fndecl: {
                 auto fd = ParseFnDecl(false);
                 ast.topdecls.push_back(fd);
@@ -597,22 +617,71 @@ struct Parser {
         ast.topdecls.push_back(Finish(New<EnumDecl>(line, en)));
     }
 
-    FnDecl *ParseFnDecl(bool nested) {
+    // An `extern` a caller consumed before ParseFnDecl, with its string: a
+    // declaration's own (ParseTopDecl), or the library of the extern block
+    // the declaration is a member of (ParseExternBlock), where the member
+    // is written without `extern` and its own string is its symbol.
+    struct ExternPrefix {
+        Line line;
+        string_view doc;    // The documentation above the declaration (Lexer::doc).
+        string cname;       // The symbol, or empty for the Goose name.
+        string dylib;       // The block's library; empty outside a block.
+    };
+
+    // `extern "lib" { ... }` (§7.10): declarations bound from the shared
+    // library `lib` as the program starts. Each member is an extern fn with
+    // the block's library and goes into topdecls as the declaration it is;
+    // the dump prints the block back around the run of them (Ast::Dump).
+    // An error in a member loses that member, and the parse goes on at the
+    // next member a skip of the rest finds (SkipBody), or past the block.
+    void ParseExternBlock(const string &lib, int depth, const char *startp) {
+        if (lib.empty()) Error("an extern block names the library it binds from: extern \"lib\" {");
+        Expect(T_LCURLY, "extern block");
+        auto broken = false;
+        while (lex.DepthBefore() > depth && lex.tok != T_RCURLY && lex.tok != T_EOF) {
+            ExternPrefix pre { CurLine(), lex.doc, "", lib };
+            auto memberp = lex.attr.data();
+            ParseMembers(broken, depth, startp, [&](Ast::DeclMark &kept) {
+                ast.topdecls.push_back(ParseFnDecl(false, &pre));
+                kept = ast.Mark();
+            });
+            // The skip stops before a keyword only a declaration starts
+            // with, which may be the one the lost member failed at (an
+            // `extern` of its own, say): past it, or the error repeats.
+            if (lex.attr.data() == memberp) NextSkipping();
+        }
+        // Unless the skip of a lost member consumed the block's `}`.
+        if (lex.DepthBefore() > depth) Expect(T_RCURLY, "extern block");
+    }
+
+    FnDecl *ParseFnDecl(bool nested, const ExternPrefix *pre = nullptr) {
         auto firsttype = ast.alltypes.size();
-        auto line = CurLine();
+        auto line = pre ? pre->line : CurLine();
         auto startp = lex.attr.data();
         auto sf = new SFunction();
         ast.functions.push_back(sf);
         sf->line = line;
-        sf->doc = lex.doc;
+        sf->doc = pre ? pre->doc : lex.doc;
         sf->isnested = nested;
         sf->outer = curfn;
+        auto inblock = pre && !pre->dylib.empty();
+        if (pre) {
+            sf->isextern = true;
+            sf->cname = pre->cname;
+            sf->dylib = pre->dylib;
+            // A member's symbol comes first: `"SDL_Delay" fn delay(ms: u32);`.
+            if (inblock && lex.tok == T_STRLIT) {
+                sf->cname = lex.sval;
+                lex.Next();
+            }
+        }
         auto checkfree = false;
         if (AtCheckfree()) {
             checkfree = true;
             lex.Next();
         }
         if (lex.tok == T_EXPORT) {
+            if (sf->isextern) Error("export fn cannot be extern");
             sf->isexport = true;
             if (nested) Error("export fn must be declared at top level");
             lex.Next();
@@ -623,6 +692,10 @@ struct Parser {
         }
         if (lex.tok == T_EXTERN) {
             if (sf->isexport) Error("export fn cannot be extern");
+            if (inblock)
+                Error("a declaration in an extern block is written without extern: the block's "
+                      "extern covers it");
+            if (sf->isextern) Error("extern repeated in a function declaration");
             sf->isextern = true;
             if (nested) Error("extern fn must be declared at top level");
             lex.Next();
@@ -720,7 +793,8 @@ struct Parser {
                 Expect(T_LCURLY, "function body");
             }
         };
-        if (nested) header(nullptr);
+        // A block's member leaves its errors to the block (ParseExternBlock).
+        if (nested || inblock) header(nullptr);
         else ParseMembers(sf->brokensig, -1, startp, [&](Ast::DeclMark &kept) { header(&kept); });
         if (!sf->isextern && !sf->brokensig) {
             if (sf->isexport && sf->cname.empty()) sf->cname = string(sf->name);

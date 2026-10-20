@@ -92,6 +92,9 @@ inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
 // in its C type, no calling-convention extras; a fixed result lands in
 // a temporary like any other C value.
 inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
+    if (!sp->sf->dylib.empty())
+        Fail(c->line, cat("calling ", sp->sf->qname, ", bound from the shared library ",
+                          sp->sf->dylib, ", is not supported yet"));
     if (std::find(usedexterns.begin(), usedexterns.end(), sp) == usedexterns.end())
         usedexterns.push_back(sp);
     auto an = CallArgNodes(c, sp->argtypes.size());

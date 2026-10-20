@@ -1461,6 +1461,9 @@ struct SFunction {
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
     bool isexport = false;      // A Goose function exposed through a C ABI wrapper.
     string cname;               // Its C symbol (the Goose name unless spelled out).
+    // The shared library an extern block binds it from by that symbol as
+    // the program starts (§7.10); empty for an extern the link resolves.
+    string dylib;
     bool isnested = false;
     SFunction *outer = nullptr;     // The function a nested one is declared in.
     Block *body = nullptr;

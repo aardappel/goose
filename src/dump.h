@@ -640,7 +640,9 @@ inline void FnDecl::Dump(string &s, int ind) const {
         if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
     }
     if (sf->isextern) {
-        s += "extern ";
+        // A block's member is written without `extern`, inside the block
+        // Ast::Dump prints around the run of them.
+        if (sf->dylib.empty()) s += "extern ";
         if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
     }
     // A nested function takes its enclosing function's checkfree.
@@ -714,11 +716,27 @@ inline void AliasDecl::Dump(string &s, int) const {
 }
 
 inline void Ast::Dump(string &s) const {
+    // The members of an extern block (§7.10) are consecutive declarations
+    // with its library, printed back inside the block; two blocks of one
+    // library in a row print as one, which declares the same.
+    string openlib;
     for (auto d : topdecls) {
+        auto fd = Is<FnDecl>(d);
+        auto lib = fd && !fd->sf->dylib.empty() ? fd->sf->dylib : string();
+        if (!openlib.empty() && lib != openlib) {
+            s += "}\n";
+            openlib.clear();
+        }
+        if (!lib.empty() && openlib.empty()) {
+            Append(s, "extern \"", lib, "\" {\n");
+            openlib = lib;
+        }
+        if (!openlib.empty()) s += "    ";
         d->Dump(s, 0);
         if (Is<VarDecl>(d)) s += ";";  // Globals; other decl kinds self-terminate.
         s += "\n";
     }
+    if (!openlib.empty()) s += "}\n";
 }
 
 }  // namespace goose
