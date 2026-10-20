@@ -358,7 +358,7 @@ module.exports = grammar({
       choice(';', seq('else', field('alternative', $.block))),
     ),
 
-    // Compile-time expansion over fields, types, or constants.
+    // Compile-time expansion over fields, variants, types, or constants.
     const_for_statement: $ => seq($._const_for_head, field('body', $.block)),
 
     _const_for_head: $ => seq(
@@ -372,7 +372,7 @@ module.exports = grammar({
     ),
 
     const_for_types: $ => seq(
-      choice('fields', 'types'),
+      choice('fields', 'variants', 'types'),
       '<',
       commaSep($._type),
       '>',
@@ -593,7 +593,17 @@ module.exports = grammar({
       'match',
       field('value', $._expression),
       '{',
-      commaSep($.match_arm),
+      commaSep($._match_arm),
+      '}',
+    ),
+
+    _match_arm: $ => choice($.match_arm, $.const_for_arms),
+
+    // Arms expanded at specialization time: `const for <N, V> in variants<E> { V v => ..., }`.
+    const_for_arms: $ => seq(
+      $._const_for_head,
+      '{',
+      commaSep($._match_arm),
       '}',
     ),
 

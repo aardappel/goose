@@ -56,7 +56,8 @@ and the reference describe what was built; these say why.
   checks moved to where data enters the program, and functions the
   compiler proves check-free.
 * [`const for`](design/const_for.md): specialization-time expansion over
-  a struct's fields, a list of types or a list of constants.
+  a struct's fields, an enum's variants, a list of types or a list of
+  constants.
 * [Relative references](design/relative_references.md): self-relative
   against pool-relative links, measured.
 * [Serialization](design/serialization.md): the verified loader for

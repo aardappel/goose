@@ -73,6 +73,7 @@
   "namespace"
   "block"
   "fields"
+  "variants"
   "types"
   "in"
   "upto"

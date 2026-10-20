@@ -1144,20 +1144,28 @@ struct Parser {
         lex.Next();
         auto m = New<MatchExpr>(line, ParseScrutinee());
         Expect(T_LCURLY, "match expression");
-        {
-            auto sub = Sub(no_struct_lit);
-            while (lex.tok != T_RCURLY) {
-                MatchArm arm;
-                arm.pat = ParsePattern();
-                Expect(T_FATARROW, "match arm");
-                arm.body = ParseExpr();
-                m->arms.push_back(arm);
-                if (!IsNext(T_COMMA)) break;
-            }
-        }
+        ParseArms(m->arms);
         Expect(T_RCURLY, "match expression");
         if (m->arms.empty()) Error("match must have at least one arm");
         return Finish(m);
+    }
+
+    // A match's arms up to its `}`: `pattern => expr`, or a `const for` whose
+    // fragments are arms, separated by commas, a last comma optional.
+    void ParseArms(vector<MatchArm> &arms) {
+        auto sub = Sub(no_struct_lit);
+        while (lex.tok != T_RCURLY) {
+            MatchArm arm;
+            if (lex.tok == T_CONST && lex.PeekTok() == T_FOR) {
+                arm.expansion = ParseConstFor(false, true);
+            } else {
+                arm.pat = ParsePattern();
+                Expect(T_FATARROW, "match arm");
+                arm.body = ParseExpr();
+            }
+            arms.push_back(arm);
+            if (!IsNext(T_COMMA)) break;
+        }
     }
 
     Pattern ParsePattern() {
@@ -1519,7 +1527,7 @@ struct Parser {
         return Finish(a);
     }
 
-    ConstFor *ParseConstFor(bool initializers) {
+    ConstFor *ParseConstFor(bool initializers, bool arms = false) {
         auto cf = New<ConstFor>(CurLine());
         Expect(T_CONST, "const for");
         Expect(T_FOR, "const for");
@@ -1543,9 +1551,9 @@ struct Parser {
             Expect(T_RBRACKET, "const for constant list");
         } else {
             auto query = ExpectIdent("const for source");
-            if (query != "fields" && query != "types")
-                Error("const for source must be fields<T>, types<...>, or [constants]");
-            cf->source = query == "fields" ? ES_FIELDS : ES_TYPES;
+            if (query != "fields" && query != "types" && query != "variants")
+                Error("const for source must be fields<T>, variants<E>, types<...>, or [constants]");
+            cf->source = query == "fields" ? ES_FIELDS : query == "variants" ? ES_VARIANTS : ES_TYPES;
             Expect(T_LT, "const for source");
             while (lex.tok != T_GT && lex.tok != T_SHR) {
                 cf->types.push_back(ParseType());
@@ -1554,13 +1562,20 @@ struct Parser {
             ExpectClosingAngle("const for source");
             if (cf->source == ES_FIELDS && cf->types.size() != 1)
                 Error("fields requires exactly one type");
+            if (cf->source == ES_VARIANTS && cf->types.size() != 1)
+                Error("variants requires exactly one type");
         }
-        auto arity = cf->source == ES_FIELDS ? 2u : 1u;
+        auto arity = cf->source == ES_FIELDS || cf->source == ES_VARIANTS ? 2u : 1u;
         if (cf->names.size() != arity)
             Error(cat("const for source requires exactly ", arity, " binding(s)"));
         if (initializers) {
             bool defaults = false;
             ParseInitList(cf->inits, defaults, true);
+        } else if (arms) {
+            cf->armfragments = true;
+            Expect(T_LCURLY, "const for arms");
+            ParseArms(cf->arms);
+            Expect(T_RCURLY, "const for arms");
         } else {
             cf->body = ParseBlockExpr("const for body");
         }

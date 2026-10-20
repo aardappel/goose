@@ -77,7 +77,7 @@ them.
 [Appendix A](#appendix-a-keywords-and-operators). A few words are keywords
 only in one position and names everywhere else: `from` after a `return`
 value, `upto` after an unsigned type in a type, `inline` and `checkfree`
-before `fn`, and `fields` and `types` in a `const for` header. `in` is a
+before `fn`, and `fields`, `variants` and `types` in a `const for` header. `in` is a
 keyword throughout.
 
 **Integer literals** are decimal (`42`) or hexadecimal (`0xFF`). The whole
@@ -2586,7 +2586,8 @@ fn main() {
 ### `const for`: expansion at specialization time
 
 `const for` specializes a fragment once per entry of a compile-time
-sequence: the fields of a struct, a list of types, or a list of constants.
+sequence: the fields of a struct, the variants of an enum, a list of
+types, or a list of constants.
 It is the language's reflection, with no runtime iterator and no
 metadata: each copy of the body is ordinary code.
 
@@ -2630,7 +2631,45 @@ usable as `v.A` or as the label `A:` in a literal of that struct type;
 constants, and the integer expressions an array size allows). A statement
 fragment is a scope of its own per entry, and a constructor fragment
 contributes initializers. `break` and `continue` cannot cross an
-expansion. Spec §6.5, `docs/design/const_for.md`.
+expansion.
+
+`variants<E>` binds each variant's name and the variant `V`, written where
+a variant's name is: `V` as a type (and `fields<V>` for its payload), `V {
+… }` to build one, `V c` or `V &c` as a `match` arm, and `V` as a value when
+it has no payload. A `match` fragment contributes arms, checked as written
+ones: every variant once, `_` last.
+
+```goose
+enum Shape { Circle { r: i64 }, Rect { w: i64, h: i64 }, Dot }
+
+fn show<T>(value: T) {
+    match value {
+        const for <N, V> in variants<T> {
+            V v => {
+                print(N);
+                const for <F, A> in fields<V> { print("  ", F, " = ", v.A); }
+            },
+        }
+    }
+}
+
+fn main() {
+    let s: Shape = Shape.Rect { w: 3, h: 4 };
+    show(s);
+    const for <N, V> in variants<Shape> { print(N); }
+}
+```
+
+```
+Rect
+  w = 3
+  h = 4
+Circle
+Rect
+Dot
+```
+
+Spec §6.5, `docs/design/const_for.md`.
 
 ### Functions that never return
 

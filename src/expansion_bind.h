@@ -54,6 +54,16 @@ struct ExpansionBinder {
             Walk(fi.val);
         }
     }
+    // A pattern's names bind as uses do: a variants<E> binding names its
+    // variant there (cloning substitutes the variant's name).
+    void Arms(vector<MatchArm> &arms) {
+        for (auto &a : arms) {
+            if (a.expansion) { Walk(a.expansion); continue; }
+            for (auto &p : a.pat.items) { Walk(p.lo); Walk(p.hi); }
+            Scope scope(*this);
+            Hide(a.pat.binder); Walk(a.body);
+        }
+    }
     void Function(SFunction *sf) {
         Scope scope(*this);
         Hide(sf->name);
@@ -78,6 +88,7 @@ struct ExpansionBinder {
             }
             Walk(cf->body);
             Inits(cf->inits);
+            Arms(cf->arms);
             return;
         }
         if (auto b = Is<Block>(n)) {
@@ -107,11 +118,7 @@ struct ExpansionBinder {
         }
         if (auto m = Is<MatchExpr>(n)) {
             Walk(m->scrutinee);
-            for (auto &a : m->arms) {
-                for (auto &p : a.pat.items) { Walk(p.lo); Walk(p.hi); }
-                Scope scope(*this);
-                Hide(a.pat.binder); Walk(a.body);
-            }
+            Arms(m->arms);
             return;
         }
         if (auto id = Is<Ident>(n)) n->expansionbinding = Find(id->name).id;

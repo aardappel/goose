@@ -296,6 +296,8 @@ inline void StructLit::Dump(string &s, int ind) const {
     s += inits.empty() && !defaultall ? "}" : " }";
 }
 
+inline void DumpArms(string &s, const vector<MatchArm> &arms, int ind);
+
 inline void ConstFor::Dump(string &s, int ind) const {
     s += "const for <";
     for (size_t i = 0; i < names.size(); i++) {
@@ -311,7 +313,7 @@ inline void ConstFor::Dump(string &s, int ind) const {
         }
         s += "]";
     } else {
-        s += source == ES_FIELDS ? "fields<" : "types<";
+        s += source == ES_FIELDS ? "fields<" : source == ES_VARIANTS ? "variants<" : "types<";
         for (size_t i = 0; i < types.size(); i++) {
             if (i) s += ", ";
             types[i]->Dump(s);
@@ -320,7 +322,11 @@ inline void ConstFor::Dump(string &s, int ind) const {
     }
     s += " ";
     if (body) body->Dump(s, ind);
-    else {
+    else if (armfragments) {
+        s += "{";
+        DumpArms(s, arms, ind);
+        s += "}";
+    } else {
         s += "{";
         for (auto &fi : inits) {
             NL(s, ind + 1);
@@ -437,12 +443,16 @@ inline void IfExpr::Dump(string &s, int ind) const {
     }
 }
 
-inline void MatchExpr::Dump(string &s, int ind) const {
-    s += "match ";
-    DumpOperand(s, scrutinee, ind);
-    s += " {";
+// A match's arms, each on a line of its own at ind + 1, then the closing
+// brace's line at ind: `pattern => expr,`, or a `const for` of arms.
+inline void DumpArms(string &s, const vector<MatchArm> &arms, int ind) {
     for (auto &arm : arms) {
         NL(s, ind + 1);
+        if (arm.expansion) {
+            arm.expansion->Dump(s, ind + 1);
+            s += ",";
+            continue;
+        }
         if (arm.pat.kind == P_WILDCARD) s += "_";
         for (auto &pi : arm.pat.items) {
             if (&pi != &arm.pat.items[0]) s += ", ";
@@ -476,6 +486,13 @@ inline void MatchExpr::Dump(string &s, int ind) const {
         s += ",";
     }
     NL(s, ind);
+}
+
+inline void MatchExpr::Dump(string &s, int ind) const {
+    s += "match ";
+    DumpOperand(s, scrutinee, ind);
+    s += " {";
+    DumpArms(s, arms, ind);
     s += "}";
 }
 

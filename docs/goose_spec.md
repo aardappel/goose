@@ -2099,10 +2099,11 @@ refs[i]; for x in r`), leaves the array free.
 
 **Specialization-time expansion.** `const for` specializes a fragment once
 per entry of a compiler-known sequence. Its v1 sources are `fields<T>` with
-two bindings (field name string and field accessor), `types<T1, T2, ...>`
-with one type binding, and `[c1, c2, ...]` with one constant binding. `fields`
-and `types` are contextual identifiers in this header, not keywords or
-ordinary function calls. Bindings use required angle brackets:
+two bindings (field name string and field accessor), `variants<E>` with two
+bindings (variant name string and variant), `types<T1, T2, ...>` with one
+type binding, and `[c1, c2, ...]` with one constant binding. `fields`,
+`variants` and `types` are contextual identifiers in this header, not
+keywords or ordinary function calls. Bindings use required angle brackets:
 
 ```goose
 fn visit_fields<T, F>(value: T&) {
@@ -2111,12 +2112,22 @@ fn visit_fields<T, F>(value: T&) {
 fn transform_fields<T, F>(value: T&) -> T {
     T { const for <N, A> in fields<T> { A: F(N, value.A), } }
 }
+fn each_case<T, F>(value: T) {
+    match value { const for <N, V> in variants<T> { V c => F(N, c), } }
+}
 ```
 
-`fields<T>` visits direct, non-padding fields of a concrete struct in
-declaration order. Its accessor identifies the field of that particular
+`fields<T>` visits direct, non-padding fields of a concrete struct or
+variant type (a variant's payload) in declaration order. Its accessor identifies the field of that particular
 struct instantiation; another struct with the same field name does not
-match. It can appear in a member access or initializer label. Bindings
+match; a variant's accessor reaches a value of that variant type only,
+not the ADT before it is matched. It can appear in a member access or
+initializer label. `variants<E>` visits every variant of a concrete ADT in
+declaration order, with or without payload; its variant binding is written
+where a variant's name is: a type, a constructor, a `match` pattern with or
+without a binder, and, for a variant without payload only, a value. It is
+not stored, passed or turned into a number, and its name string is no
+persistence identifier. Bindings
 follow lexical scope and shadowing, including in nested functions. Types
 and constants may be heterogeneous; all three sources may be empty.
 Constants are scalar or string literals, named global constants, and the
@@ -2125,7 +2136,11 @@ expansion bindings. There is no arbitrary compile-time execution.
 
 A statement fragment is a separate scope for each entry. A constructor
 fragment contributes comma-separated initializer entries, flattened before
-ordinary default, completeness, ordering and destination checks. An
+ordinary default, completeness, ordering and destination checks. A `match`
+fragment contributes arms, flattened before the checks of §8.1: every
+variant once, `_` last, and the reference-binder and lifetime rules for each
+generated arm. A generated arm may bind a variant without payload, to an
+empty value of its variant type. An
 expansion produces no runtime iterator or reflection metadata. Its body
 contains ordinary runtime code, with the usual reference, lifetime and
 construction rules. Returns retain their lexical targets; a `break` or
@@ -3051,6 +3066,8 @@ match dir { North, South => "vertical", East, West => "horizontal" }
   by reference only (§3.9), which is why an ADT with such payloads is used
   in variable mode, and a resizable ADT holds them only in its resizable
   payloads (§3.5).
+* An arm list may hold `const for` expansions (§6.5) beside written arms;
+  their arms are flattened first, and every rule above applies to the result.
 * `T?` narrows via `if r { … }` / `guard` / `assert(r)` (flow typing, §3.8).
 
 ### 8.2 Case functions (match as an overload set)

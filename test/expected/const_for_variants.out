@@ -1,0 +1,21 @@
+11 true
+12 false
+true
+Circle
+  r = 2
+Rect
+  w = 3
+  h = 4
+Dot
+Rect (by reference)
+  w = 5
+  h = 6
+Rect area 12
+Circle
+  r = 7
+Rect
+  w = 7
+  h = 7
+Dot
+true false
+none power three power other

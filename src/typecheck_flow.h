@@ -1400,6 +1400,10 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
 }
 
 inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue) {
+    // Arms a `const for` generates join the list first, so that every check
+    // below is the one a written match gets (const_for.md §5).
+    ExpandArms(m->arms);
+    if (m->arms.empty()) Error(m, "match has no arms: its const for generated none");
     auto onpath = argpath == m;
     auto onjoin = joinpath == m;
     Val sv;
@@ -1472,6 +1476,9 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 auto id = Is<Ident>(pi.lo);
                 if (!id || pi.hi || id->name.find("::") != string_view::npos)
                     Error(arm.body, "ADT match arms are variant names (or _)");
+                if (pi.variantowner && pi.variantowner->enu->en != en)
+                    Error(arm.body, cat("const for variant ", id->name, " belongs to ",
+                                        TypeStr(pi.variantowner), ", not ", en->name));
                 auto found = en->FindVariant(id->name);
                 if (!found && en->broken) throw Abandoned {};
                 if (!found)
@@ -1491,7 +1498,10 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             auto found = arm.variants[0];
             VarDef *binder = nullptr;
             if (!arm.pat.binder.empty()) {
-                if (!found->has_payload)
+                // An arm a const for generated binds a payload-less variant
+                // too, to an empty value of its variant type: generic code
+                // writes one arm for every variant (const_for.md §10).
+                if (!found->has_payload && !arm.generated)
                     Error(arm.body, cat("variant ", found->name, " has no payload to bind"));
                 auto vt = ast.VariantTypeOf(enumtype, found, m->line);
                 // Packed resizable ADTs have one owning header, but no

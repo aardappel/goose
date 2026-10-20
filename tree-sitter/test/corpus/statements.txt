@@ -108,6 +108,38 @@ fn f() {
                 (identifier)))))))))
 
 ========================================
+Const for over variants
+========================================
+
+fn f() {
+    match s { const for<n, v> in variants<Shape> { v c => n, }, _ => 0 }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (match_expression
+        (identifier)
+        (const_for_arms
+          (identifier)
+          (identifier)
+          (const_for_types
+            (named_type
+              (identifier)))
+          (match_arm
+            (variant_pattern
+              (identifier)
+              (identifier))
+            (identifier)))
+        (match_arm
+          (wildcard_pattern)
+          (int_literal))))))
+
+========================================
 Loops and jumps
 ========================================
 

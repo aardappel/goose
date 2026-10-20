@@ -15,7 +15,7 @@
       <item>while</item> <item>for</item> <item>in</item> <item>upto</item> <item>loop</item>
       <item>block</item> <item>guard</item> <item>match</item> <item>return</item>
       <item>break</item> <item>continue</item> <item>as</item> <item>from</item>
-      <item>fields</item> <item>types</item>
+      <item>fields</item> <item>variants</item> <item>types</item>
     </list>
     <list name="types">
       <item>bool</item> <item>varint</item>

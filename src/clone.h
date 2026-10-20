@@ -15,6 +15,9 @@ struct ExpansionArg {
     TypeExpr *type = nullptr;
     TypeExpr *owner = nullptr;
     string_view field;
+    // A variants<E> binding: the variant's name, which a match pattern takes
+    // (the type is its variant type; the value, a payload-less one's).
+    string_view variant;
 };
 
 struct ExpansionClone {
@@ -45,8 +48,11 @@ inline Node *Node::Clone(Ast &ast) const {
                     // until ordinary checking actually reaches it.
                     auto c = ast.New<Ident>(line, id->name, id->ns);
                     c->end = end;
-                    c->expansionerror = ast.Intern(cat("const for binding ", id->name,
-                                                      " is not a value (or a callable function)"));
+                    c->expansionerror = ast.Intern(
+                        arg->variant.empty()
+                            ? cat("const for binding ", id->name, " is not a value (or a callable function)")
+                            : cat("const for binding ", id->name, " is the variant ", arg->variant,
+                                  ", which has a payload: construct it with ", id->name, " { ... }"));
                     c->expansiontrace = ctx->trace;
                     c->origin = Origin();
                     return c;
@@ -186,17 +192,37 @@ inline Node *IfExpr::Clone1(Ast &ast) const {
                            CloneOrNull(ast, elseb));
 }
 
+// An arm as written: a variants<E> binding in its pattern becomes the
+// variant's name, which the match resolves as any other (§8.1).
+inline MatchArm CloneArm(Ast &ast, const MatchArm &arm) {
+    MatchArm a;
+    a.pat = arm.pat;
+    a.generated = arm.generated;
+    a.expansion = CloneOrNull(ast, arm.expansion);
+    for (auto &pi : a.pat.items) {
+        auto ctx = ast.expansionclone;
+        auto arg = ctx ? ctx->Find(pi.lo->expansionbinding) : nullptr;
+        if (arg && !arg->variant.empty() && Is<Ident>(pi.lo)) {
+            auto id = ast.New<Ident>(pi.lo->line, arg->variant);
+            id->end = pi.lo->end;
+            id->origin = pi.lo->Origin();
+            id->expansiontrace = ctx->trace;
+            pi.lo = id;
+            pi.variantowner = arg->type->var->adt;
+        } else {
+            pi.lo = pi.lo->Clone(ast);
+        }
+        pi.hi = CloneOrNull(ast, pi.hi);
+    }
+    a.body = CloneOrNull(ast, arm.body);
+    return a;
+}
+
 inline Node *MatchExpr::Clone1(Ast &ast) const {
     auto m = ast.New<MatchExpr>(line, scrutinee->Clone(ast));
     m->arms.reserve(arms.size());
     for (auto &arm : arms) {
-        MatchArm a;
-        a.pat = arm.pat;
-        for (auto &pi : a.pat.items) {
-            pi.lo = pi.lo->Clone(ast);
-            pi.hi = CloneOrNull(ast, pi.hi);
-        }
-        a.body = arm.body->Clone(ast);
+        auto a = CloneArm(ast, arm);
         m->arms.push_back(a);
     }
     return m;
@@ -304,6 +330,8 @@ inline Node *ConstFor::Clone1(Ast &ast) const {
     CloneNodes(ast, constants, cf->constants);
     cf->body = CloneOrNull(ast, body);
     for (auto &fi : inits) cf->inits.push_back(ast.CloneFieldInit(fi));
+    cf->armfragments = armfragments;
+    for (auto &arm : arms) cf->arms.push_back(CloneArm(ast, arm));
     return cf;
 }
 
@@ -391,6 +419,14 @@ inline void ConstFor::Children(const function<void(Node *)> &f) const {
     for (auto c : constants) f(c);
     CH(body);
     for (auto &fi : inits) f(fi.val);
+    for (auto &arm : arms) {
+        CH(arm.expansion);
+        for (auto &pi : arm.pat.items) {
+            f(pi.lo);
+            CH(pi.hi);
+        }
+        CH(arm.body);
+    }
 }
 
 inline void IntLit::Children(const function<void(Node *)> &) const {}
@@ -464,11 +500,12 @@ inline void IfExpr::Children(const function<void(Node *)> &f) const {
 inline void MatchExpr::Children(const function<void(Node *)> &f) const {
     f(scrutinee);
     for (auto &arm : arms) {
+        CH(arm.expansion);
         for (auto &pi : arm.pat.items) {
             f(pi.lo);
             CH(pi.hi);
         }
-        f(arm.body);
+        CH(arm.body);
     }
 }
 

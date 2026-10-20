@@ -1,3 +1,3 @@
-// error: fields requires a concrete struct type
+// error: fields requires a concrete struct or variant type
 enum E { V { x: i64 } }
-fn main() { const for <N, A> in fields<E.V> {} }
+fn main() { const for <N, A> in fields<E> {} }

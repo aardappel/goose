@@ -343,6 +343,7 @@ struct TypeCheck {
     void ExpandConstFor(ConstFor *cf, const function<void(ExpansionClone &)> &emit);
     Block *ExpandStatements(ConstFor *cf);
     void ExpandInitializers(vector<FieldInit> &inits);
+    void ExpandArms(vector<MatchArm> &arms);
     bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
     bool EscapingContinue(Node *n);
     bool UsedAfter(VarDef *v);

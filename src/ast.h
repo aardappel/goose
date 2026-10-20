@@ -409,6 +409,9 @@ enum PatKind { P_WILDCARD, P_LIST };
 struct PatItem {
     Node *lo = nullptr;
     Node *hi = nullptr;
+    // A variants<E> binding's variant: E, which the match must be over (a
+    // variant of another ADT with the same name is not this one).
+    TypeExpr *variantowner = nullptr;
 };
 
 struct Pattern {
@@ -426,6 +429,11 @@ struct ArmRange {
 struct MatchArm {
     Pattern pat;
     Node *body = nullptr;
+    // A `const for` in the arm list: its arms are fragments, flattened into
+    // the list before the match is checked (TypeCheck::ExpandArms). Such an
+    // arm has no pattern or body of its own.
+    Node *expansion = nullptr;
+    bool generated = false;         // Made by a `const for` of arms.
     // Filled by typecheck, for arms but _:
     vector<SVariant *> variants;    // ADT arms: one per listed variant.
     VarDef *binder = nullptr;       // A lone variant's payload binding, if any.
@@ -1317,7 +1325,7 @@ NODE(ForLoop)
         : Node(l, NKind), byref(_byref), var(_var), idxvar(_idxvar), iter(_iter), body(_body) {}
 NODE_END
 
-enum ExpansionSource { ES_FIELDS, ES_TYPES, ES_CONSTANTS };
+enum ExpansionSource { ES_FIELDS, ES_TYPES, ES_CONSTANTS, ES_VARIANTS };
 
 NODE(ConstFor)
     ExpansionSource source = ES_FIELDS;
@@ -1325,8 +1333,10 @@ NODE(ConstFor)
     vector<int> bindings;           // Assigned by BindExpansionNames, stable across clones.
     vector<TypeExpr *> types;
     vector<Node *> constants;
-    Block *body = nullptr;          // Statement fragments, or null for initializer fragments.
+    Block *body = nullptr;          // Statement fragments, or null for initializer or arm fragments.
     vector<FieldInit> inits;
+    bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
+    vector<MatchArm> arms;
     ConstFor(Line l) : Node(l, NKind) {}
 NODE_END
 
