@@ -63,7 +63,14 @@ struct Builder {
             return {};
         #else
             if (tc.style == "msvc") return {};
-            return { "-lm", "-pthread" };
+            vector<string> libs = { "-lm", "-pthread" };
+            #ifdef __linux__
+                // dlopen, for the runtime's dynamic externs: in libdl before
+                // glibc 2.34, and in libc since, where the archive left
+                // behind is empty.
+                libs.push_back("-ldl");
+            #endif
+            return libs;
         #endif
     }
 

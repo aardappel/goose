@@ -823,6 +823,30 @@ GS_API void gs_stack_stats(int64_t stacks);
 GS_API void gs_release_regions(void);
 
 /* ---------------------------------------------------------------------------
+   Dynamic externs (§7.10): the shared libraries the program's extern blocks
+   name, and the functions it calls through them, bound by name as the
+   program starts (docs/design/dynamic_externs.md). */
+
+/* A library: the name its block gives and, where the sidecar spells it for
+   a platform, that spelling; NULL where the platform derives its own
+   (name.dll, libname.dylib, libname.so). */
+typedef struct gs_dllib {
+    const char *name, *onwindows, *onmacos, *onlinux;
+} gs_dllib;
+/* One function: its library's index in the table, the symbol the library
+   is asked for, and the pointer the generated code calls through. */
+typedef struct gs_dlbind {
+    int32_t lib;
+    const char *sym;
+    void **slot;
+} gs_dlbind;
+/* Opens each library once and fills every slot, on the main thread before
+   the globals are initialized. A library that does not load, or a symbol it
+   does not have, is a runtime error naming both. */
+GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
+                       int64_t nbinds);
+
+/* ---------------------------------------------------------------------------
    Threads and typed queues (§11.2), runtime_threads.h. */
 
 GS_API int64_t gs_hardware_threads(void);
