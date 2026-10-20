@@ -85,6 +85,9 @@ and the reference describe what was built; these say why.
   fixed partitions against relocating stacks; a proposal.
 * [Prior art](design/prior_art.md): the languages, libraries and papers
   nearest Goose's memory model, ranked, and what has no precedent.
+* [Dynamic externs](design/dynamic_externs.md): `extern "lib" { ... }`,
+  an extern fn bound from a shared library by name at program start; a
+  proposal.
 
 ## Getting the compiler
 
