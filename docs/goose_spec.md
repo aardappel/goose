@@ -2898,6 +2898,71 @@ builder. The compiler assumes an extern may write through its arguments
 but does not mutate unrelated Goose globals; C code is responsible for
 honoring those obligations.
 
+**Binding from a shared library.** An `extern` block names a shared
+library and declares the functions bound from it by name when the program
+starts, with no C of the program's own and no linking:
+
+```goose
+extern "SDL2" {
+    fn SDL_Init(flags: u32) -> i32;
+    fn SDL_Quit();
+    fn SDL_GetTicks64() -> u64;
+    "SDL_Delay" fn delay(ms: u32);
+}
+```
+
+A member is an `extern fn` in every respect above: fully typed, not
+generic, no body, the same shapes crossing, a leading string its C symbol
+and its Goose leaf name otherwise, a `declname` so a namespaced member is
+written as it would be outside the block. A member is written without
+`extern`, since the block's covers it; `export`, `thread_fn` and the
+qualifiers an `extern fn` cannot carry are errors inside the block with the
+same messages. A block is top-level only, may not nest, and may be empty.
+Two declarations may bind one symbol under different Goose signatures,
+each through a pointer of its own. A member no call reaches is never
+looked for, and a library none of whose members is called is never opened.
+
+The string is a bare name or a file name, spelled for the platform the
+program runs on:
+
+| string | Windows | macOS | Linux |
+|---|---|---|---|
+| `"SDL2"` (no separator, no dot) | `SDL2.dll` | `libSDL2.dylib` | `libSDL2.so` |
+| `"libfoo.so.3"`, `"foo.dll"` (a dot) | as written | as written | as written |
+| `"bin/steam_api64"`, `"./x.so"` (a separator) | relative to the program's resource directory (`resource_dir()`, docs/stdlib.md) unless absolute; the bare-name rule applies to the last component |
+
+A bare spelling goes to the platform's loader as a bare name, searched as
+the loader searches: the DLL search order, `DYLD_LIBRARY_PATH` and the
+usual places, `LD_LIBRARY_PATH`, the rpath and the cache. A dotted file
+name is taken literally and is therefore one platform's; it belongs in the
+sidecar rather than the source unless the program has one platform. The
+sidecar's `dylibs` list, with the `_windows`, `_linux` and `_macos`
+suffixes every list takes, maps a name a block uses to the spelling to
+open, `name=spelling`: a package's sidecar maps its own names as defaults,
+the program's maps a name for every package it uses, and for a platform
+the program's entry says anything about, the program's wins. A name no
+block declares is an error at the sidecar (docs/packages.md).
+
+The libraries are opened and the symbols resolved when the program starts,
+after the runtime and before the globals' initializers run, on the main
+thread; the pointers are written once and read thereafter. A library that
+cannot be opened, or a symbol it lacks, is a runtime error naming the
+spelling tried, and the program does not start:
+
+```
+cannot load SDL2 (libSDL2.so): libSDL2.so: cannot open shared object file: No such file or directory
+SDL2 (libSDL2.so) has no symbol SDL_Foo
+```
+
+A library is never closed. A `main_thread_only` package (docs/packages.md)
+applies to its block's members as to its other externs. A variadic C
+function cannot be bound: the declaration has no way to say so, and
+calling one through a fixed-arity pointer is undefined. The generated C is
+the same on every platform, the runtime choosing the spelling, and a
+program whose only C is such libraries runs under the in-process backend
+with no C toolchain installed. Conventions for declaring a real library's
+functions under these shapes are in docs/reference.md §24.
+
 ### 7.11 Exporting Goose functions to C
 
 ```goose
@@ -4206,8 +4271,9 @@ the end, each with where its resolution lives.
    liveness test of §5.1, plus per-specialization shrink summaries for
    the shrinks it cannot see directly (through a reference, or of a global).
 11. **FFI** — DONE, see §§7.10–7.11: `extern fn` binds a Goose signature to a C
-    function, and `export fn` exposes a Goose function through a C-callable
-    wrapper. The flat fixed-size types by value, references and slices to
+    function, an `extern "lib" { ... }` block binds its members from a shared
+    library by name when the program starts, and `export fn` exposes a Goose
+    function through a C-callable wrapper. The flat fixed-size types by value, references and slices to
     them, and `u8[>..]&` builders cross where supported; other shapes are
     rejected at the declaration.
 12. **Open syntax details** — DONE: both trailing-block parameter forms
@@ -4362,7 +4428,7 @@ unmapped gap after each region turns runaway growth into a safe abort.
 ```
 program     := namespace? topdecl*             // imports may precede namespace
 namespace   := "namespace" ident ";"
-topdecl     := import | struct | enum | typealias | fndecl | globaldecl
+topdecl     := import | struct | enum | typealias | fndecl | externblock | globaldecl
 import      := "import" "."? ident ("." ident)* ";" | "import" ident "from" strlit ";"
 declname    := ident | ident "::" ident | "::" ident   // the namespace, else the file's
 qname       := ident | ident "::" ident | "::" ident   // a declaration reference
@@ -4379,6 +4445,8 @@ fndecl      := "checkfree"? ("export" strlit? | "extern" strlit?)? "checkfree"? 
                declname generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
                                                  // checkfree at most once (§7.14)
                                                  // nested: ident only
+externblock := "extern" strlit "{" externmember* "}"   // §7.10: the library, then its functions
+externmember := strlit? "fn" declname "(" params? ")" ("->" rettypes)? ";"
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type ("=" expr)?)?
                                                  // untyped => generic; defaults

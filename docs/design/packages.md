@@ -309,6 +309,7 @@ comments, `key = value;`, strings, `true`/`false`, integers and
 | `c_libs` | both | system libraries, by name (`m`, `user32`); spelled per style by the compiler |
 | `cmake_target` | both | the package root holds a CMake project, and this is the static library target to build and link (§5.2) |
 | `cmake_options` | both | `NAME=VALUE` cache entries for its configure |
+| `dylibs` | both | `name=spelling` entries: the spelling to open for a shared library an `extern "name" { ... }` block binds from (spec §7.10); a package's map its own names as defaults, the program's map a name for any package and win per platform; a name no block declares is an error |
 | `main_thread_only` | both | its functions may not be reached from a `thread_fn` (§5.4) |
 | `exclude` | both | directories, relative to the package root, whose `.goose` files are not the package's own: the JIT library's symbol table (§5.3) looks for extern fns in neither these nor a directory below the root that holds a sidecar of its own |
 | `output` | program | the executable's name, relative to the root's directory |

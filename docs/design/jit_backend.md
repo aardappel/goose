@@ -23,6 +23,11 @@ and no C toolchain has to be installed.
     goose -o tour.c 01_tour.goose  # the C file, as before
     goose --jit prog.goose         # the same, asked for explicitly
 
+A program whose C is a shared library bound by name, an `extern "SDL2" {
+... }` block (spec §7.10), needs no toolchain either: the runtime opens the
+library when the program starts, under this backend as in a built program.
+Only a package or program with C of its own to compile needs one.
+
 Both modes use identical generated C for the program. Around it, the JIT run
 compiles the whole runtime in the same unit, as `--standalone` writes it, where
 the file `-o` writes by default declares most of the runtime extern for the
@@ -63,6 +68,12 @@ macOS keeps the C library's headers only in an SDK: the one xcode-select made
 active (found as TinyCC finds the SDK's libraries) comes before the one the
 compiler was configured with, so a compiler built elsewhere finds this
 machine's.
+
+The runtime's `dlopen` is in libc on glibc 2.34 and later and in `libdl`
+before, so on Linux `RunJit` adds the library `dl` as a built program's
+link line does, and ignores its absence: a system without the archive is
+one whose libc has the function. TinyCC does the same for its own bounds
+checker.
 
 ## Testing
 

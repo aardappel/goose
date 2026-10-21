@@ -3687,6 +3687,81 @@ goes in a sidecar `foo.build` beside `foo.goose` (`c_sources = ["impl.c"];`)
 or arrives with `--include header.h`; the `math` and `os` modules are
 built on this interface. Spec §7.10, [packages.md](packages.md#3-a-program-with-c-of-its-own).
 
+### `extern "lib" { … }`: a shared library, bound by name
+
+An `extern` block names a shared library and declares functions bound
+from it when the program starts, with no C to compile or link: the
+program opens the library and looks the symbols up, and a library or
+symbol that is missing is a runtime error naming the spelling it tried.
+A member is an `extern fn` written without the word; its string, if any,
+is its C symbol.
+
+```goose
+extern "SDL2" {
+    fn SDL_Init(flags: u32) -> i32;
+    fn SDL_Quit();
+    fn SDL_GetTicks64() -> u64;
+    "SDL_Delay" fn delay(ms: u32);
+}
+```
+
+`"SDL2"` opens `SDL2.dll`, `libSDL2.dylib` or `libSDL2.so` by the
+loader's search; `"bin/steam_api64"` opens that file, spelled the same
+way, under the program's resource directory (`resource_dir()`), which is
+how a program ships a library beside itself; a dotted name such as
+`"libSDL2-2.0.so.0"` is taken as written. A spelling that differs per
+platform, or per installation, goes in the sidecar rather than the source:
+
+<!-- fragment -->
+```goose
+// myprog.build
+dylibs_linux = ["SDL2=libSDL2-2.0.so.0"];     // the soname every distro installs
+dylibs_windows = ["SDL2=bin/SDL2.dll"];       // shipped with the program
+```
+
+A package's sidecar maps its own names as defaults and the program's
+sidecar wins, platform by platform, for the names it mentions.
+
+With no adapter between, a member is the library's real prototype under
+Goose's shapes. What that means in practice:
+
+* **Scalars** are their C types: `i32` is `int`, `u32` `unsigned`, `i64`
+  `int64_t`, `f32` `float`, `f64` `double`, `bool` one byte, `size_t`
+  `u64`. C's `long` is `i64` on Linux and macOS and `i32` on Windows, so a
+  function with a `long` needs a per-platform declaration or an adapter.
+* **Opaque handles**, the `SDL_Window *` a library returns and takes back,
+  are `u64`: a token Goose passes along and cannot look through.
+* **A pointer to something Goose owns** is `T&` for a flat fixed `T`:
+  `fn SDL_GetWindowSize(w: u64, x: i32&, y: i32&)`. Where C wants
+  `(ptr, count)`, pass `xs[0]` and `xs.len` as two arguments; where it
+  wants a NUL-terminated string, append the `\0` and pass the first byte
+  by reference:
+
+  ```goose
+  extern "SDL2" {
+      fn SDL_CreateWindow(title: const u8&, x: i32, y: i32, w: i32, h: i32, flags: u32) -> u64;
+  }
+  let title = "Goose\0";
+  let win = SDL_CreateWindow(title[0], 100, 100, 640, 480, 0);
+  ```
+
+* **Structs** cross in Goose's packed layout, which is C's only when the
+  fields already sit where C would place them. `SDL_Rect { int x, y, w,
+  h }` matches `struct Rect { x: i32, y: i32, w: i32, h: i32 }`; a `u8`
+  before an `i32` needs `pad 3` written where C pads, and a struct whose
+  size C rounds up, `{ a: i32, b: u8 }`, needs `pad 3` at the end to be
+  passed by value or kept in an array C indexes.
+* **Still an adapter's job**: reading memory the library owns (a `const
+  char *` it returns, an array it keeps), callbacks (a function pointer
+  the library wants), and variadic functions, which cannot be bound at
+  all. Each is a few lines of C in a native part.
+
+Only a member a call reaches is bound, and a library none of whose
+members is called is never opened, so a block may declare an interface
+wider than any one program uses. A program whose only C is such libraries
+runs under the in-process backend with no C toolchain installed. Spec
+§7.10, [packages.md](packages.md#the-native-part).
+
 ### `export fn`
 
 `export fn` makes a Goose function callable from C: the compiler emits a

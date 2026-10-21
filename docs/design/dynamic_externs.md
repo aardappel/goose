@@ -294,7 +294,7 @@ Most of a library's API fits; what does not is listed last.
 * **A pointer to something Goose owns**, `T&` for a flat fixed `T`, is
   that pointer: `fn SDL_GetWindowSize(w: u64, x: i32&, y: i32&)`. A
   slice `T[:]` is the `{ data, len }` pair by value, which no C library
-  takes; where C wants `(ptr, count)` the declaration takes `&xs[0]` and
+  takes; where C wants `(ptr, count)` the declaration takes `xs[0]` and
   `xs.len` as two parameters, and where it wants a NUL-terminated string
   the Goose side appends a `\0` and passes the first byte by reference:
 
@@ -303,7 +303,7 @@ Most of a library's API fits; what does not is listed last.
       fn SDL_CreateWindow(title: const u8&, x: i32, y: i32, w: i32, h: i32, flags: u32) -> u64;
   }
   let title = "Goose\0";
-  let win = SDL_CreateWindow(&title[0], 100, 100, 640, 480, 0);
+  let win = SDL_CreateWindow(title[0], 100, 100, 640, 480, 0);
   ```
 
   This is honest about what crosses but clumsy; a `stdlib` `ffi` module

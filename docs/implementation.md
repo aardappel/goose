@@ -112,8 +112,9 @@ program's sidecar `foo.build` names (`packages.h`: `LoadSidecar`;
 link, and for a run a shared library whose one export hands the C
 functions to `RunJit` by name), and the native parts of the packages
 whose extern fns the program calls (`NativePackagesUsed`, from codegen's
-`usedexterns`; a package before the ones it requires, under
-`GOOSE_HOME/build/pkg`). A package with a `cmake_target` is built through
+`usedexterns`, skipping an extern bound from a shared library at run time,
+which comes from no package's C; a package before the ones it requires,
+under `GOOSE_HOME/build/pkg`). A package with a `cmake_target` is built through
 a generated wrapper project (`BuildCMakePart`): the JIT library a shared
 target linked to the package's, and a probe executable whose link line,
 read from CMake's file API reply (`json.h`, `CMakeLinkClosure`), is the
@@ -4636,7 +4637,16 @@ value as its own type in a temporary, which is sliced whole or copied as the
 type the destination names, the call's where it names none; the call's value
 is a copy (spec §4.1), so such a slice never points into a variable the body
 names. An `extern fn` is a direct C call with prototypes emitted for
-called symbols the runtime does not define. Codegen emits the types of every
+called symbols the runtime does not define. A member of an `extern "lib"
+{ ... }` block (`SFunction::dylib`, spec §7.10) is a call through a static
+function pointer `gs_dl<N>_<symbol>`, N its place among the used externs,
+declared in the prototypes' place; after the prototypes come `gs_dllibs[]`,
+the libraries the used members bind from in the order of their first
+declaration, each with the sidecars' three platform spellings (`DlSpelling`:
+the program's over the package's, per platform, 0 where the runtime derives
+one), and `gs_dlbinds[]`, a row per used member; `gs_program_init` hands
+both to `gs_dl_bind` right after `gs_rt_init`, before the queues and
+globals. Nothing is emitted for a program with no such member. Codegen emits the types of every
 checked extern signature, including unused ones and the complete pointee
 types of plain references, before user headers. A reusable `--include`
 adapter can therefore use its interface's types independently of which

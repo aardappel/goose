@@ -646,7 +646,10 @@ executable's directory, discovered at runtime rather than recorded at
 compilation. In a conventional macOS `.app` bundle it is `Contents/Resources/`.
 Deploy the data relative to that root; moving the executable and its data
 together preserves resource lookup. An AOT program does not depend on its
-original source tree or on the launcher's working directory.
+original source tree or on the launcher's working directory. A shared
+library an `extern "..." { }` block names with a separator in its spelling,
+`"bin/steam_api64"`, is opened relative to the same root (spec §7.10), so
+a library shipped beside the program is found the same way its data is.
 
 The string-returning form aborts if the directory cannot be discovered;
 the builder overload returns false and appends nothing. Native discovery

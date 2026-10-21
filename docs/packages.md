@@ -116,6 +116,7 @@ c_include = ["vendor"];
 c_defines = ["IMPL_FAST=1"];
 c_libs = ["m"];                                // system libraries, by name
 c_libs_windows = ["user32"];                   // one platform's part
+dylibs_linux = ["SDL2=libSDL2-2.0.so.0"];      // what an extern "SDL2" block opens here
 output = "foo";                                // the executable's name, if not the file's
 ```
 
@@ -161,6 +162,19 @@ tests are root files, so there the line is honored and the examples run on
 their own.
 
 ### The native part
+
+A package over a library that is installed on the machine, or shipped
+beside the program, may need no C of its own: an `extern "name" { ... }`
+block declares the functions bound from that shared library by name when
+the program starts (spec §7.10), and the sidecar's `dylibs` list, with
+the platform suffixes, maps a name a block uses to the spelling to open
+where the derived one is wrong, `dylibs_linux = ["SDL2=libSDL2-2.0.so.0"];`.
+A package maps its own names as defaults; the program's sidecar maps a
+name for any package it uses and wins, platform by platform, for the
+names it mentions; a name no block declares is an error. A program
+calling only such functions builds and links nothing, and runs under
+`goose run` with no C toolchain installed. The rest of this section is
+about C the package compiles itself.
 
 The sidecar names the C, one of two ways. Plain sources, which the compiler
 compiles with the includes, defines, flags and libraries given:
