@@ -2085,6 +2085,19 @@ def main():
     if cc:
         r.show_task(native_toolchain)
 
+    def cmake_response_files():
+        from native_toolchain import check_cmake_response_files
+        try:
+            skipped = check_cmake_response_files(exe, gendir)
+            if skipped:
+                r.say(f"skip CMake response files ({skipped})")
+            else:
+                r.ok("CMake response files: cc-style archive paths with and without spaces")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("CMake response files", str(e))
+    if cc:
+        r.show_task(cmake_response_files)
+
     def native_rebuild():
         from native_rebuild import check_native_rebuild
         try:

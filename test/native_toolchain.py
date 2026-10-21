@@ -76,3 +76,31 @@ def check_native_toolchain(exe, base, *, jit):
                     f"goose run used toolchains {sorted(packages - want)} for the package, "
                     f"where goose toolchain reports {sorted(want)}")
     return None
+
+
+def check_cmake_response_files(exe, base):
+    """Build and run a CMake interface package through a cc-style response
+    file. MinGW needs a separate check from the default Windows toolchain,
+    which can be MSVC and does not consume backslashes in the same way."""
+    cc = shutil.which("gcc" if tc.IS_WINDOWS else "cc")
+    if not cc:
+        return "no gcc on PATH" if tc.IS_WINDOWS else "no cc on PATH"
+    if not shutil.which("cmake"):
+        return "no cmake on PATH"
+    base = Path(base).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cmake-response-", dir=base) as tmp:
+        root = Path(tmp)
+        shutil.copytree(HERE / "packages" / "pkgs" / "cmk", root / "pkgs" / "cmk")
+        source = shutil.copy2(HERE / "packages" / "pkg_cmake_lib.goose", root)
+        app = root / ("app" + tc.EXE_SUFFIX)
+        for name in ("home", "home with spaces"):
+            env = dict(os.environ, GOOSE_HOME=str(root / name))
+            for argv, want in (([exe, "build", "--cc", cc, "-o", app, source], None),
+                               ([app], ["12", "-15"])):
+                result = subprocess.run([str(a) for a in argv], cwd=root, env=env,
+                                        capture_output=True, text=True, errors="replace", timeout=600)
+                if result.returncode or (want is not None and result.stdout.split() != want):
+                    raise RuntimeError(f"CMake response file ({name}): exit {result.returncode}\n"
+                                       f"{result.stdout}{result.stderr}")
+    return None

@@ -103,6 +103,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `resource_paths.py` | Unicode source and C output paths, JIT entry-source resource roots, native executable roots with separate and standalone runtimes, relocation, and unchanged working-directory file access. Called by the main runner. |
 | `extern_types.py` | One imported extern interface and C adapter with unused and partially used functions: slice, reference-pointee and return types are available to the header at O0/O2 through native C and TinyCC, with no implementation needed for an unused extern. Called by the main runner. |
 | `runtime_cache.py`, `runtime_cache_cc.c` | Concurrent first builds share one completed runtime object; a failed compile cannot poison the cache, retry and reuse work, and dry runs leave the cache untouched. A controlled C compiler exercises both driver flag styles in debug and release configurations. Called by the main runner. |
+| `native_toolchain.py` | A CMake interface package, runtime and program use one toolchain. Cache paths with and without spaces also exercise response-file arguments, using MinGW GCC on Windows when available. Called by the main runner. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
 run through their entry programs. `goose_in_goose/` is handled separately as one
