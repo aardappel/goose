@@ -119,23 +119,47 @@ struct CodeGen {
         assert(it != usedexterns.end() && !sp->sf->dylib.empty());
         return cat("gs_dl", it - usedexterns.begin(), "_", sp->sf->cname);
     }
-    // The libraries the used externs bind from, in the order their first
-    // declaration comes in the program (file order, then source order).
-    vector<string> DlLibs() {
-        vector<pair<Line, string>> firsts;
+    // The library a dynamic extern binds from, with the spelling each
+    // platform opens: the sidecars' (§7.10), the program's over the
+    // package's for a platform either says anything about, and empty where
+    // neither does, which leaves the runtime its derived spelling.
+    DylibSpelling DlSpelling(FnSpec *sp) {
+        DylibSpelling r { sp->sf->dylib };
+        auto pkg = ast.filepkg[sp->sf->line.fileidx];
+        for (auto p : { pkg, 0 }) {
+            for (auto &d : ast.packages[p].dylibs) {
+                if (d.name != r.name) continue;
+                for (auto plat : { "_windows", "_macos", "_linux" }) {
+                    auto &s = d.On(plat).empty() ? d.any : d.On(plat);
+                    if (!s.empty()) r.On(plat) = s;
+                }
+            }
+        }
+        return r;
+    }
+    static bool SameDylib(const DylibSpelling &a, const DylibSpelling &b) {
+        return a.name == b.name && a.onwindows == b.onwindows &&
+               a.onmacos == b.onmacos && a.onlinux == b.onlinux;
+    }
+    // The libraries the used externs bind from, each spelling once, in the
+    // order their first declaration comes in the program (file order, then
+    // source order).
+    vector<DylibSpelling> DlLibs() {
+        vector<pair<Line, DylibSpelling>> firsts;
         for (auto sp : usedexterns) {
             if (sp->sf->dylib.empty()) continue;
             auto l = sp->sf->line;
+            auto d = DlSpelling(sp);
             auto it = std::find_if(firsts.begin(), firsts.end(),
-                                   [&](auto &f) { return f.second == sp->sf->dylib; });
-            if (it == firsts.end()) firsts.emplace_back(l, sp->sf->dylib);
+                                   [&](auto &f) { return SameDylib(f.second, d); });
+            if (it == firsts.end()) firsts.emplace_back(l, d);
             else if (pair(l.fileidx, l.line) < pair(it->first.fileidx, it->first.line))
                 it->first = l;
         }
-        std::sort(firsts.begin(), firsts.end(), [](auto &a, auto &b) {
+        std::stable_sort(firsts.begin(), firsts.end(), [](auto &a, auto &b) {
             return pair(a.first.fileidx, a.first.line) < pair(b.first.fileidx, b.first.line);
         });
-        vector<string> libs;
+        vector<DylibSpelling> libs;
         for (auto &f : firsts) libs.push_back(f.second);
         return libs;
     }
@@ -1474,14 +1498,19 @@ struct CodeGen {
         // bound, so a declared library no call reaches is never opened.
         auto dllibs = DlLibs();
         if (!dllibs.empty()) {
+            auto spelling = [&](const string &s) { return s.empty() ? string("0") : CStr(s); };
             externs += "static const gs_dllib gs_dllibs[] = {\n";
-            for (auto &lib : dllibs) Append(externs, "    { ", CStr(lib), ", 0, 0, 0 },\n");
+            for (auto &lib : dllibs)
+                Append(externs, "    { ", CStr(lib.name), ", ", spelling(lib.onwindows), ", ",
+                       spelling(lib.onmacos), ", ", spelling(lib.onlinux), " },\n");
             externs += "};\nstatic const gs_dlbind gs_dlbinds[] = {\n";
             size_t n = 0;
             for (auto sp : usedexterns) {
                 if (sp->sf->dylib.empty()) continue;
                 assert(++n <= dlbinds && "an extern bound after gs_program_init was emitted");
-                auto lib = std::find(dllibs.begin(), dllibs.end(), sp->sf->dylib) - dllibs.begin();
+                auto d = DlSpelling(sp);
+                auto lib = std::find_if(dllibs.begin(), dllibs.end(),
+                                        [&](auto &l) { return SameDylib(l, d); }) - dllibs.begin();
                 Append(externs, "    { ", lib, ", ", CStr(sp->sf->cname), ", (void **)&",
                        DlSlot(sp), " },\n");
             }

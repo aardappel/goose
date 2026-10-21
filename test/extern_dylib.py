@@ -5,7 +5,9 @@ or on the loader's search path, and called through every parameter shape
 an extern takes, under the JIT and in a built program alike. A library or
 a symbol that is missing is a runtime error naming it, unless nothing
 calls the declaration; a package whose extern is dynamic needs no native
-part, and one with both kinds still links its own."""
+part, and one with both kinds still links its own. The sidecar's dylibs
+lists map a name to the spelling each platform opens, the program's over a
+package's, and refuse a malformed entry or a name no block declares."""
 import os
 import shutil
 import subprocess
@@ -138,11 +140,11 @@ def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
             binary, _ = build(source, level)
             yield (f"built -O{level}", *run([binary], env=env))
 
-    def expect_output(source, env=None):
+    def expect_output(source, env=None, lines=EXPECTED):
         for how, code, out, err in both(source, env):
-            if code != 0 or out.split("\n")[:-1] != EXPECTED:
+            if code != 0 or out.split("\n")[:-1] != lines:
                 raise RuntimeError(f"{source.name} ({how}) exit {code}:\n{out}{err}\n"
-                                   f"expected {EXPECTED}")
+                                   f"expected {lines}")
 
     def expect_failure(source, *texts):
         for how, code, out, err in both(source):
@@ -190,6 +192,68 @@ def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
     for how, code, out, err in both(unused):
         if code != 0 or out.strip() != "unused ok":
             raise RuntimeError(f"unused.goose ({how}) exit {code}:\n{out}{err}")
+    # The sidecar's dylibs maps a name a block uses to the spelling to open,
+    # on every platform or on one, where a dotted spelling is literal; the
+    # program's sidecar maps a name for every package it uses, a package's
+    # maps its own as defaults, and the program's entry wins for a platform
+    # it says anything about.
+    platform = "_windows" if tc.IS_WINDOWS else "_macos" if tc.IS_MACOS else "_linux"
+    other = "_linux" if tc.IS_WINDOWS else "_windows"
+    over = base / "over.goose"
+    tc.write_text(over, BLOCK % "mapped" + MAIN)
+    tc.write_text(base / "over.build", 'dylibs = ["mapped=lib/dltest"];\n')
+    expect_output(over)
+    _, c = build(over, 1)
+    if '{ "mapped", "lib/dltest", "lib/dltest", "lib/dltest" }' not in c:
+        raise RuntimeError(f"the generated C lacks the sidecar's spelling:\n{c}")
+    literal = base / "literal.goose"
+    tc.write_text(literal, BLOCK % "mapped" + MAIN)
+    tc.write_text(base / "literal.build",
+                  f'dylibs{platform} = ["mapped=lib/{lib.name}"];\n'
+                  f'dylibs{other} = ["mapped=lib/nosuch"];\n')
+    expect_output(literal)
+    pkg = base / "pkgs" / "mapped"
+    pkg.mkdir(parents=True, exist_ok=True)
+    tc.write_text(pkg / "mapped.goose", 'namespace mapped;\n'
+                  'extern "mappedlib" { "dlt_add" fn add(a: i32, b: i32) -> i32; }\n')
+    tc.write_text(pkg / "mapped.build", 'dylibs = ["mappedlib=lib/dltest"];\n')
+    use = 'import mapped from "./pkgs/mapped";\nfn main() { print(mapped::add(2, 3)); }\n'
+    default = base / "pkgdefault.goose"
+    tc.write_text(default, use)
+    expect_output(default, lines=["5"])
+    merged = base / "pkgmerged.goose"
+    tc.write_text(merged, use)
+    tc.write_text(base / "pkgmerged.build", f'dylibs{other} = ["mappedlib=lib/nosuch"];\n')
+    expect_output(merged, lines=["5"])
+    overridden = base / "pkgover.goose"
+    tc.write_text(overridden, use)
+    tc.write_text(base / "pkgover.build", f'dylibs{platform} = ["mappedlib=lib/nosuch"];\n')
+    expect_failure(overridden, "cannot load mappedlib (", f"lib/{LIB_PREFIX}nosuch{LIB_SUFFIX}")
+    # An entry that is not name=spelling, a name mapped twice, and a name no
+    # block declares, the program's over every package and a package's over
+    # its own, are errors at the sidecar.
+    typo = base / "pkgs" / "typo"
+    typo.mkdir(parents=True, exist_ok=True)
+    tc.write_text(typo / "typo.goose", 'namespace typo;\nfn nothing() {}\n')
+    tc.write_text(typo / "typo.build", 'dylibs = ["gone=lib/dltest"];\n')
+    bad = {
+        "nosep": ('dylibs = ["mapped"];\n', BLOCK % "mapped" + MAIN,
+                  'nosep.build: dylibs entry "mapped" is written name=spelling'),
+        "twice": (f'dylibs{platform} = ["mapped=a", "mapped=b"];\n', BLOCK % "mapped" + MAIN,
+                  f"twice.build: dylibs{platform} maps mapped twice"),
+        "unnamed": ('dylibs = ["mapped=lib/dltest", "other=lib/dltest"];\n', BLOCK % "mapped" + MAIN,
+                    "unnamed.build: dylibs maps other, which no extern block in the program names"),
+        "pkgtypo": ("", 'import typo from "./pkgs/typo";\nfn main() { typo::nothing(); }\n',
+                    "typo.build: dylibs maps gone, which no extern block of the package names"),
+    }
+    for name, (sidecar, source, message) in bad.items():
+        tc.write_text(base / f"{name}.goose", source)
+        if sidecar:
+            tc.write_text(base / f"{name}.build", sidecar)
+        code, out, err = run([exe, "check", base / f"{name}.goose"])
+        if code == 0 or message not in err:
+            raise RuntimeError(f"{name}.goose: expected the error {message!r}, got exit {code}:"
+                               f"\n{out}{err}")
     # A package with a native part may declare both kinds: a program calling
     # its static extern builds and loads the part, one calling only its
     # dynamic extern does not need it, with no toolchain at all.

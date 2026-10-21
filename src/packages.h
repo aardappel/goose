@@ -131,7 +131,7 @@ inline void LoadSidecar(Package &pkg, bool isprogram) {
     auto bf = LoadBuildFile(pkg.sidecar, pkg.hassidecar);
     if (!pkg.hassidecar) return;
     const char *lists[] = { "c_sources", "c_include", "c_defines", "c_flags_cc", "c_flags_msvc",
-                            "c_libs" };
+                            "c_libs", "dylibs" };
     vector<string> known = { "cmake_target", "cmake_options", "main_thread_only", "exclude" };
     for (auto key : lists)
         for (auto suffix : { "", "_windows", "_linux", "_macos" }) known.push_back(cat(key, suffix));
@@ -163,6 +163,27 @@ inline void LoadSidecar(Package &pkg, bool isprogram) {
     pkg.main_thread_only = bf.Bool("main_thread_only");
     for (auto &e : bf.Strings("exclude")) pkg.exclude.push_back(PackageDir(cat(pkg.root, e)));
     if (isprogram) pkg.output = bf.Str("output");
+    // dylibs maps a name the source's extern blocks use to the spelling
+    // to open on every platform, and the suffixed lists on one; the
+    // generated C carries all of them, the runtime picking its own. A name
+    // no block declares is refused once every block is known (ParseProgram).
+    for (auto suffix : { "", "_windows", "_linux", "_macos" }) {
+        auto key = cat("dylibs", suffix);
+        for (auto &e : bf.Strings(key)) {
+            auto eq = e.find('=');
+            if (eq == string::npos || eq == 0 || eq + 1 == e.size())
+                throw CompileError { cat(pkg.sidecar, ": ", key, " entry \"", e,
+                                         "\" is written name=spelling") };
+            auto name = e.substr(0, eq), spelling = e.substr(eq + 1);
+            auto it = std::find_if(pkg.dylibs.begin(), pkg.dylibs.end(),
+                                   [&](auto &d) { return d.name == name; });
+            if (it == pkg.dylibs.end()) it = pkg.dylibs.insert(it, DylibSpelling { name });
+            auto &slot = *suffix ? it->On(suffix) : it->any;
+            if (!slot.empty())
+                throw CompileError { cat(pkg.sidecar, ": ", key, " maps ", name, " twice") };
+            slot = spelling;
+        }
+    }
     if (!pkg.csources.empty() && !pkg.cmake_target.empty())
         throw CompileError { cat(pkg.sidecar, ": a package has either c_sources or a cmake_target") };
 }

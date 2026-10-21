@@ -2333,6 +2333,21 @@ inline string_view GlobalLeaf(string_view name) {
 // which a file's `import a.b;` resolves `a/b.goose`. Package 0 is the
 // program, rooted at its root file's directory; a standard library
 // directory is one too, once a module in it is reached.
+// A sidecar's dylibs entry (§7.10): the spelling to open the shared
+// library a block names `name` by, on every platform (`any`) or on one;
+// empty where the entry says nothing and the derived spelling applies.
+struct DylibSpelling {
+    string name, any, onwindows, onmacos, onlinux;
+    const string &On(const char *platform) const {
+        return string_view(platform) == "_windows" ? onwindows
+             : string_view(platform) == "_macos"   ? onmacos
+                                                   : onlinux;
+    }
+    string &On(const char *platform) {
+        return const_cast<string &>(std::as_const(*this).On(platform));
+    }
+};
+
 struct Package {
     string name;
     string root;          // With its trailing separator, or "" for the working directory.
@@ -2352,6 +2367,7 @@ struct Package {
     // slashes, trailing /.
     vector<string> exclude;
     bool main_thread_only = false;
+    vector<DylibSpelling> dylibs;           // The sidecar's, by name, each once.
     string output;                          // A program's executable, relative to its root.
     vector<int> required;                   // The packages its files require (§4.3), by index.
 

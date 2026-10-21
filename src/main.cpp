@@ -448,6 +448,22 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                      [&](VarDecl *a, VarDecl *b) {
                          return rank[a->line.fileidx] < rank[b->line.fileidx];
                      });
+    // A sidecar's dylibs entry names a library some extern block declares
+    // (§7.10): the program's, one in any package it uses; a package's, one
+    // of its own. Every block is known now, so a typo is caught here.
+    for (size_t p = 0; p < ast.packages.size(); p++) {
+        auto &pkg = ast.packages[p];
+        for (auto &d : pkg.dylibs) {
+            auto declared = false;
+            for (auto sf : ast.functions)
+                if (sf->dylib == d.name && (p == 0 || ast.filepkg[sf->line.fileidx] == (int)p))
+                    declared = true;
+            if (!declared)
+                throw CompileError { cat(pkg.sidecar, ": dylibs maps ", d.name, ", which no "
+                                         "extern block ", p == 0 ? "in the program" : "of the package",
+                                         " names") };
+        }
+    }
 }
 
 // Parses a program's dump as a program of its own and requires that dumping
