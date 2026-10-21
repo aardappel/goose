@@ -3727,8 +3727,9 @@ Goose's shapes. What that means in practice:
 
 * **Scalars** are their C types: `i32` is `int`, `u32` `unsigned`, `i64`
   `int64_t`, `f32` `float`, `f64` `double`, `bool` one byte, `size_t`
-  `u64`. C's `long` is `i64` on Linux and macOS and `i32` on Windows, so a
-  function with a `long` needs a per-platform declaration or an adapter.
+  `u64`. A C `enum`, `SDL_bool` included, is an `int`, so `i32`, not
+  `bool`. C's `long` is `i64` on Linux and macOS and `i32` on Windows, so
+  a function with a `long` needs a per-platform declaration or an adapter.
 * **Opaque handles**, the `SDL_Window *` a library returns and takes back,
   are `u64`: a token Goose passes along and cannot look through.
 * **A pointer to something Goose owns** is `T&` for a flat fixed `T`:
@@ -3750,7 +3751,10 @@ Goose's shapes. What that means in practice:
   h }` matches `struct Rect { x: i32, y: i32, w: i32, h: i32 }`; a `u8`
   before an `i32` needs `pad 3` written where C pads, and a struct whose
   size C rounds up, `{ a: i32, b: u8 }`, needs `pad 3` at the end to be
-  passed by value or kept in an array C indexes.
+  passed by value or kept in an array C indexes. A struct passed by
+  reference, `const Rect&`, wants a variable: a literal is no reference
+  target, so `let r = Rect { 0, 0, 10, 10 }; SDL_HasIntersection(r, s)`
+  rather than the literal in the call.
 * **Memory the library owns**, a `const char *` it returns or an array it
   keeps, comes back as a `u64` too, and `ffi::cstr(p)` and
   `ffi::bytes(p, n)` ([stdlib.md](stdlib.md#ffi)) copy what is there into
