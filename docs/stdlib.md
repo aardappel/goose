@@ -9,6 +9,7 @@
 - [vec](#vec)
 - [math](#math)
 - [os](#os)
+- [ffi](#ffi)
 - [binary](#binary)
 - [base64](#base64)
 - [csv](#csv)
@@ -21,15 +22,15 @@
 
 </details>
 
-The standard library has fifteen modules under `stdlib/`: `std`,
-`dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`,
-`audio`, `gfx`, `physics`, `ui`, and `exception`. Import each module by name,
+The standard library has sixteen modules under `stdlib/`: `std`,
+`dictionary`, `vec`, `math`, `os`, `ffi`, `binary`, `base64`, `csv`, `json`,
+`regex`, `audio`, `gfx`, `physics`, `ui`, and `exception`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
 (`src/runtime/runtime_os.h`), the byte search behind `std`'s `find_any` and
 `find_pair` (`src/runtime/runtime_impl.h`), `std`'s `popcount`, `clz` and
-`ctz` (`src/runtime/runtime_ext.h`), libm behind `math`, the graphics layer behind
+`ctz` and `ffi`'s two copies (`src/runtime/runtime_ext.h`), libm behind `math`, the graphics layer behind
 `gfx`, the ui layer behind `ui` and the PCM mixer behind `audio` (the
 [goose_gfx](https://github.com/aardappel/goose_gfx) package) and the physics layer
 behind `physics` (the [goose_physics](https://github.com/aardappel/goose_physics)
@@ -92,8 +93,8 @@ The library uses these conventions:
   but its temporary array cannot hold copies of self-relative ones (spec
   §3.9).
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
-  `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`,
-  `ui` and `exception` use their own namespaces. A local named `fill` or `count`
+  `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
+  `physics`, `ui` and `exception` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call; a
   global variable of such a name does not, since a call names the functions
   past it (spec §11.1).
@@ -660,6 +661,33 @@ continue to use ordinary file operations and their chosen locations.
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
 diverge. Subprocesses and networking are not in v1; they arrive as
 `extern fn`s when a program needs them.
+
+## ffi
+
+```goose
+fn cstr(p: u64, out: u8[>..]&) -> bool       // the C string at p, its NUL left out; false for null
+fn cstr(p: u64) -> u8[>..]                   // the same, fresh; empty for null
+fn bytes(p: u64, n: i64, out: u8[>..]&) -> bool   // the n bytes at p; false for null
+fn bytes(p: u64, n: i64) -> u8[>..]
+```
+
+Reading memory a C library owns. A function bound from a shared library
+(spec §7.10, [reference.md §24](reference.md#24-calling-c-and-being-called-from-c))
+hands a `const char *` or an array it keeps back as a `u64`, which Goose
+cannot look through; these copy what is there into Goose storage, so
+nothing foreign is ever a Goose value without a copy. They trust the
+pointer and the length as every extern call trusts C: a wrong one is C's
+kind of error, not caught. A null pointer appends nothing and is the
+`false` result.
+
+```goose
+import ffi;
+extern "SDL2" {
+    fn SDL_Init(flags: u32) -> i32;
+    fn SDL_GetError() -> u64;
+}
+if SDL_Init(0x20) < 0 { abort(str("SDL: ", ffi::cstr(SDL_GetError()))); }
+```
 
 ## binary
 

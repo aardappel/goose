@@ -3751,10 +3751,13 @@ Goose's shapes. What that means in practice:
   before an `i32` needs `pad 3` written where C pads, and a struct whose
   size C rounds up, `{ a: i32, b: u8 }`, needs `pad 3` at the end to be
   passed by value or kept in an array C indexes.
-* **Still an adapter's job**: reading memory the library owns (a `const
-  char *` it returns, an array it keeps), callbacks (a function pointer
-  the library wants), and variadic functions, which cannot be bound at
-  all. Each is a few lines of C in a native part.
+* **Memory the library owns**, a `const char *` it returns or an array it
+  keeps, comes back as a `u64` too, and `ffi::cstr(p)` and
+  `ffi::bytes(p, n)` ([stdlib.md](stdlib.md#ffi)) copy what is there into
+  Goose storage: `print(ffi::cstr(SDL_GetError()))`.
+* **Still an adapter's job**: callbacks (a function pointer the library
+  wants) and variadic functions, which cannot be bound at all. Each is a
+  few lines of C in a native part.
 
 Only a member a call reaches is bound, and a library none of whose
 members is called is never opened, so a block may declare an interface

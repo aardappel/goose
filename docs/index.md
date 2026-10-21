@@ -17,8 +17,8 @@ library, the tools and the compiler.
 
 ## Library and tools
 
-* [Standard library](stdlib.md): the fifteen modules, `std`, `dictionary`,
-  `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`,
+* [Standard library](stdlib.md): the sixteen modules, `std`, `dictionary`,
+  `vec`, `math`, `os`, `ffi`, `binary`, `base64`, `csv`, `json`, `regex`,
   `exception`, and `gfx`, `audio`, `physics` and `ui` for graphics, sound,
   rigid bodies and widgets. All readable Goose under `stdlib/`.
 * [Building programs and using packages](packages.md): `goose build`,

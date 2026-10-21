@@ -50,11 +50,15 @@ DLT void dlt_greet(gs_rref out, sl_u8 name) {
 DLT uint64_t dlt_new(int32_t v) { int32_t *p = malloc(sizeof *p); *p = v; return (uint64_t)(uintptr_t)p; }
 DLT int32_t dlt_get(uint64_t h) { return *(int32_t *)(uintptr_t)h; }
 DLT void dlt_free(uint64_t h) { free((void *)(uintptr_t)h); }
+/* Memory the library owns, read through ffi (stdlib/ffi.goose). */
+DLT uint64_t dlt_name(void) { return (uint64_t)(uintptr_t)"dltest"; }
+DLT uint64_t dlt_null(void) { return 0; }
 '''
 
 # The block, with the library's spelling to fill in; the last member has
 # no implementation, which an unused extern never needs.
 BLOCK = '''
+import ffi;
 struct Point { x: i32, y: i32 }
 extern "%s" {
     "dlt_add" fn add(a: i32, b: i32) -> i32;
@@ -66,6 +70,8 @@ extern "%s" {
     "dlt_new" fn new_counter(v: i32) -> u64;
     "dlt_get" fn get(h: u64) -> i32;
     "dlt_free" fn free_counter(h: u64);
+    "dlt_name" fn name() -> u64;
+    "dlt_null" fn null_ptr() -> u64;
     "dlt_unused" fn unused();
 }
 '''
@@ -87,10 +93,16 @@ fn main() {
     let h = new_counter(7);
     print(get(h));
     free_counter(h);
+    print(ffi::cstr(name()));
+    var head: u8[>..] = [];
+    print(ffi::bytes(name(), 2, head), " ", head);
+    var none: u8[>..] = [];
+    print(ffi::cstr(null_ptr(), none), " ", none.len, " ", ffi::bytes(null_ptr(), 3).len);
 }
 '''
 
-EXPECTED = ["42", "3.0", "2 1", "11 21", "10", "hello, goose", "7"]
+EXPECTED = ["42", "3.0", "2 1", "11 21", "10", "hello, goose", "7", "dltest", "true dl",
+            "false 0 0"]
 
 
 def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
@@ -163,8 +175,8 @@ def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
     _, c2 = build(relative, 1)
     if c1 != c2:
         raise RuntimeError("the generated C differs between two compiles")
-    if "gs_dl_bind(gs_dllibs, 1, gs_dlbinds, 9);" not in c1 or "dlt_unused" in c1:
-        raise RuntimeError(f"the generated C binds other than the 9 called members:\n{c1}")
+    if "gs_dl_bind(gs_dllibs, 1, gs_dlbinds, 11);" not in c1 or "dlt_unused" in c1:
+        raise RuntimeError(f"the generated C binds other than the 11 called members:\n{c1}")
     # A bare name is the loader's to find, by its platform spelling.
     bare = base / "bare.goose"
     tc.write_text(bare, BLOCK % "dltest" + MAIN)

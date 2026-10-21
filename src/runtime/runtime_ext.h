@@ -26,6 +26,22 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
     b.hdr->len += n;
 }
 
+/* ffi's cstr and bytes (stdlib/ffi.goose): the bytes at a pointer a C
+   library handed back as a u64, copied into a builder, so nothing foreign
+   is a Goose value without a copy. The pointer is trusted as every extern
+   call trusts C; a null one appends nothing and is the false result. */
+static uint8_t gs_ffi_cstr(uint64_t p, gs_rref out) {
+    const char *s = (const char *)(uintptr_t)p;
+    if (!s) return 0;
+    gs_bld_append(out, s, (int64_t)strlen(s));
+    return 1;
+}
+static uint8_t gs_ffi_bytes(uint64_t p, int64_t n, gs_rref out) {
+    if (!p) return 0;
+    gs_bld_append(out, (const void *)(uintptr_t)p, n);
+    return 1;
+}
+
 /* math's sqrt (stdlib/math.goose). Goose has no errno, and C's sqrt has to
    set it for a negative argument: clang and gcc then guard the square root
    instruction with a test and a library call at every use, and will not
