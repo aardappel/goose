@@ -885,6 +885,16 @@ inline void CodeGen::EmitProgramInit() {
                  "    if (gs_program_initialized) return;\n"
                  "    gs_rt_init(argc, argv, ", mainstacks, ", ", mainstacks + globalregions,
            ", ", workerregions, ");\n");
+    // The shared libraries' functions, before a global's initializer could
+    // call one: on the main thread, before any worker exists, so the
+    // pointers are written once here and read thereafter without
+    // synchronization. A failure to open a library or find a symbol is a
+    // runtime error naming it (design/dynamic_externs.md §4).
+    auto dllibs = DlLibs();
+    for (auto sp : usedexterns) dlbinds += !sp->sf->dylib.empty();
+    if (!dllibs.empty())
+        Append(code, "    gs_dl_bind(gs_dllibs, ", dllibs.size(), ", gs_dlbinds, ", dlbinds,
+               ");\n");
     // The queues, before anything that could use one runs.
     vector<string> qnames;
     for (auto &[m, q] : queues) qnames.push_back(q);

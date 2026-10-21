@@ -88,15 +88,14 @@ inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
     }
 }
 
-// A call to an extern fn (§7.10): the C function directly, each argument
-// in its C type, no calling-convention extras; a fixed result lands in
-// a temporary like any other C value.
+// A call to an extern fn (§7.10): the C function directly, or through the
+// pointer the runtime bound from its shared library, each argument in its
+// C type, no calling-convention extras; a fixed result lands in a
+// temporary like any other C value.
 inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
-    if (!sp->sf->dylib.empty())
-        Fail(c->line, cat("calling ", sp->sf->qname, ", bound from the shared library ",
-                          sp->sf->dylib, ", is not supported yet"));
     if (std::find(usedexterns.begin(), usedexterns.end(), sp) == usedexterns.end())
         usedexterns.push_back(sp);
+    auto callee = sp->sf->dylib.empty() ? sp->sf->cname : DlSlot(sp);
     auto an = CallArgNodes(c, sp->argtypes.size());
     string argstr;
     // A builder argument (`u8[>..]&`, or a value holding one) is appended
@@ -114,20 +113,25 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     if (grows) MarkFlush();
     vector<string> rets;
     if (sp->rets.empty()) {
-        L(sp->sf->cname, "(", argstr, ");");
+        L(callee, "(", argstr, ");");
     } else {
         auto r0 = T();
-        L(CT(sp->rets[0]), " ", r0, " = ", sp->sf->cname, "(", argstr, ");");
+        L(CT(sp->rets[0]), " ", r0, " = ", callee, "(", argstr, ");");
         rets.push_back(r0);
     }
     if (grows) MarkReload();
     return rets;
 }
 
-// The C prototype of an extern fn, from its Goose declaration (§7.10).
+// The C prototype of an extern fn, from its Goose declaration (§7.10); for
+// one bound from a shared library, the declaration of the pointer it is
+// called through, which gs_dl_bind fills.
 inline string CodeGen::ExternProto(FnSpec *sp) {
-    string s = sp->rets.empty() ? string("void") : CT(sp->rets[0]);
-    Append(s, " ", sp->sf->cname, "(");
+    auto dynamic = !sp->sf->dylib.empty();
+    string s = dynamic ? "static " : "";
+    s += sp->rets.empty() ? string("void") : CT(sp->rets[0]);
+    if (dynamic) Append(s, " (*", DlSlot(sp), ")(");
+    else Append(s, " ", sp->sf->cname, "(");
     for (size_t i = 0; i < sp->argtypes.size(); i++) {
         if (i) s += ", ";
         s += CT(sp->argtypes[i]);

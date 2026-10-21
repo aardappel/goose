@@ -1912,6 +1912,18 @@ def main():
         r.section("extern types")
         r.show_task(extern_types)
 
+    def extern_dylib():
+        from extern_dylib import check_extern_dylib
+        try:
+            check_extern_dylib(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
+            r.ok("extern dylib: a block's members bound from a shared library by name, "
+                 "missing library and symbol, unused members, a package with both kinds")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("extern dylib", str(e))
+    if cc:
+        r.section("extern dylib")
+        r.show_task(extern_dylib)
+
     def resource_paths():
         from resource_paths import check_resource_paths
         try:

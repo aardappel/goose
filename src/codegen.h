@@ -110,6 +110,38 @@ struct CodeGen {
     // emitted: the prototypes follow it, and a set of pointers would put
     // them in heap-address order, which differs from run to run.
     vector<FnSpec *> usedexterns;
+    // A used extern bound from a shared library (§7.10, the block form) is
+    // called through a pointer the runtime fills at start: named by the
+    // spec's place among the used externs and its symbol, which is stable
+    // across runs and distinct per declaration.
+    string DlSlot(FnSpec *sp) {
+        auto it = std::find(usedexterns.begin(), usedexterns.end(), sp);
+        assert(it != usedexterns.end() && !sp->sf->dylib.empty());
+        return cat("gs_dl", it - usedexterns.begin(), "_", sp->sf->cname);
+    }
+    // The libraries the used externs bind from, in the order their first
+    // declaration comes in the program (file order, then source order).
+    vector<string> DlLibs() {
+        vector<pair<Line, string>> firsts;
+        for (auto sp : usedexterns) {
+            if (sp->sf->dylib.empty()) continue;
+            auto l = sp->sf->line;
+            auto it = std::find_if(firsts.begin(), firsts.end(),
+                                   [&](auto &f) { return f.second == sp->sf->dylib; });
+            if (it == firsts.end()) firsts.emplace_back(l, sp->sf->dylib);
+            else if (pair(l.fileidx, l.line) < pair(it->first.fileidx, it->first.line))
+                it->first = l;
+        }
+        std::sort(firsts.begin(), firsts.end(), [](auto &a, auto &b) {
+            return pair(a.first.fileidx, a.first.line) < pair(b.first.fileidx, b.first.line);
+        });
+        vector<string> libs;
+        for (auto &f : firsts) libs.push_back(f.second);
+        return libs;
+    }
+    // What gs_program_init's bind call counted, which the tables that
+    // Finish writes must agree with: every function is emitted by then.
+    size_t dlbinds = 0;
     string code;        // Function bodies, size/eq helpers, thunks, main.
     string exportprotos;
     bool usesthreads = false;
@@ -1431,8 +1463,29 @@ struct CodeGen {
             CT(ast.SliceOf(ast.inttypes[IS_U8], Line {}));
         }
         for (auto sp : usedexterns) {
-            if (runtime_ext_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos) continue;
+            if (sp->sf->dylib.empty() &&
+                runtime_ext_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos)
+                continue;
             externs += ExternProto(sp);
+        }
+        // The shared libraries the dynamic externs bind from and the
+        // pointers each symbol fills, which gs_program_init hands to
+        // gs_dl_bind (design/dynamic_externs.md §5). Only a used extern is
+        // bound, so a declared library no call reaches is never opened.
+        auto dllibs = DlLibs();
+        if (!dllibs.empty()) {
+            externs += "static const gs_dllib gs_dllibs[] = {\n";
+            for (auto &lib : dllibs) Append(externs, "    { ", CStr(lib), ", 0, 0, 0 },\n");
+            externs += "};\nstatic const gs_dlbind gs_dlbinds[] = {\n";
+            size_t n = 0;
+            for (auto sp : usedexterns) {
+                if (sp->sf->dylib.empty()) continue;
+                assert(++n <= dlbinds && "an extern bound after gs_program_init was emitted");
+                auto lib = std::find(dllibs.begin(), dllibs.end(), sp->sf->dylib) - dllibs.begin();
+                Append(externs, "    { ", lib, ", ", CStr(sp->sf->cname), ", (void **)&",
+                       DlSlot(sp), " },\n");
+            }
+            externs += "};\n";
         }
         string includes;
         for (auto inc : headers) {

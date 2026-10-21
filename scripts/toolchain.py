@@ -344,6 +344,23 @@ class CC:
                    "}\n")
         return self.compile(units + [dispatch], out, **kwargs)
 
+    def compile_shared(self, sources, out, *, opt=None, defines=(), includes=(), extra=()):
+        """Compile `sources` into the shared library `out` (a .so, .dylib or
+        .dll by its name), with `includes` on the include path: what a
+        program's dynamic externs bind from. Returns (ok, combined output)."""
+        if isinstance(sources, (str, Path)):
+            sources = [sources]
+        out = Path(out)
+        argv = [self.cc] + self._flags(opt, defines, False, "default", True) + list(extra)
+        if self.style == "msvc":
+            argv += [f"/I{i}" for i in includes]
+            argv += ["/LD", *map(str, sources), f"/Fe:{out}", f"/Fo:{out.parent}{os.sep}"]
+        else:
+            argv += [f"-I{i}" for i in includes]
+            argv += ["-shared", "-fPIC", *map(str, sources), "-o", str(out)]
+        r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
+        return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
     def compile_object(self, source, out, *, opt=None, defines=(), extra=()):
         """Compile the C file `source` into the object file `out`, without
         linking. Returns (ok, combined output)."""

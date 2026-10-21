@@ -15,6 +15,8 @@ inline vector<int> NativePackagesUsed(const Ast &ast, const vector<FnSpec *> &us
     set<int> needed;
     if (ast.packages[0].HasNative()) needed.insert(0);
     for (auto sp : used) {
+        // One bound from a shared library at run time comes from no package's C.
+        if (!sp->sf->dylib.empty()) continue;
         auto pkg = ast.filepkg[sp->sf->line.fileidx];
         if (ast.packages[pkg].HasNative()) needed.insert(pkg);
     }
