@@ -124,11 +124,14 @@ static int gs_os_kind(const gs_os_char *p) {
 #endif
 }
 
+/* Appends the whole file; on a failure, nothing. */
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
     FILE *f = gs_os_fopen(p, "rb");
     if (!f) return 0;
+    int64_t len = out.hdr->len;
+    uint8_t *top = out.stk->top;
     uint8_t buf[65536];
     for (;;) {
         size_t n = fread(buf, 1, sizeof buf, f);
@@ -137,7 +140,12 @@ GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
     }
     int bad = ferror(f);
     fclose(f);
-    return bad ? 0 : 1;
+    if (bad) {
+        out.hdr->len = len;
+        out.stk->top = top;
+        return 0;
+    }
+    return 1;
 }
 
 /* write_file and append_file. */
@@ -232,6 +240,10 @@ GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
             if (errno == EEXIST) continue;
             return 0;
         }
+        /* The permissions of the file it replaces, which write_file leaves
+           as they are, rather than the umask's. */
+        struct stat st;
+        if (stat(p, &st) == 0) ok = fchmod(fd, st.st_mode & 0777) == 0;
         while (ok && left > 0) {
             ssize_t w = write(fd, d, left > (1 << 30) ? (size_t)1 << 30 : (size_t)left);
             if (w < 0 && errno == EINTR) continue;
@@ -397,16 +409,18 @@ GS_API void gs_os_write_stderr(sl_u8 s) {
 
 GS_API void gs_os_flush_stdout(void) { fflush(stdout); }
 
-/* One line of stdin, without its newline; false at end of input. */
+/* One line of stdin, without its newline or a carriage return before it;
+   false at end of input. */
 GS_API uint8_t gs_os_read_line(gs_rref out) {
     int c = fgetc(stdin);
     if (c == EOF) return 0;
+    int64_t start = out.hdr->len;
     while (c != EOF && c != '\n') {
         uint8_t b = (uint8_t)c;
         gs_bld_append(out, &b, 1);
         c = fgetc(stdin);
     }
-    if (out.hdr->len > 0 && out.hdr->base[out.hdr->len - 1] == '\r') {
+    if (out.hdr->len > start && out.hdr->base[out.hdr->len - 1] == '\r') {
         out.hdr->len--;
         out.stk->top--;
     }
@@ -559,7 +573,13 @@ GS_API int64_t gs_os_clock_ns(void) {
 GS_API void gs_os_sleep_ms(int64_t ms) {
     if (ms <= 0) return;
 #ifdef _WIN32
-    Sleep((DWORD)ms);
+    /* Sleep takes 32 bits, the largest of them meaning INFINITE: a longer
+       sleep goes in parts. */
+    while (ms > 0) {
+        DWORD part = ms > 0x7fffffff ? 0x7fffffff : (DWORD)ms;
+        Sleep(part);
+        ms -= part;
+    }
 #else
     struct timespec ts;
     ts.tv_sec = (time_t)(ms / 1000);
@@ -588,12 +608,20 @@ GS_API uint64_t gs_os_random_u64(void) {
         if (n == sizeof v) return v;
     }
 #endif
+    /* Which call this is, counted atomically: workers calling at once each
+       get a count of their own. */
+#ifdef _WIN32
+    static volatile LONG64 counter;
+    uint64_t count = (uint64_t)InterlockedIncrement64(&counter);
+#else
     static uint64_t counter;
+    uint64_t count = __atomic_add_fetch(&counter, 1, __ATOMIC_SEQ_CST);
+#endif
     uint64_t seed = (uint64_t)gs_os_time_ns();
     seed = gs_os_mix64(seed ^ (uint64_t)gs_os_clock_ns());
 #ifdef _WIN32
     seed = gs_os_mix64(seed ^ (uint64_t)GetCurrentProcessId());
 #endif
     seed = gs_os_mix64(seed ^ (uint64_t)(uintptr_t)&counter);
-    return gs_os_mix64(seed ^ ++counter);
+    return gs_os_mix64(seed ^ count);
 }

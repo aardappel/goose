@@ -341,6 +341,10 @@ inline bool IsOpaque(const TypeExpr *t) { return t && t->kind == TY_GENERIC && t
 inline bool IsPlainRef(const TypeExpr *t) {
     return t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0;
 }
+// A relative reference (§3.9): an offset stored in place of an address.
+inline bool IsRelRef(const TypeExpr *t) { return t->kind == TY_REF && t->ref->lenstorage >= 0; }
+// One measured from where it lies, rather than from an `in pool` base.
+inline bool IsSelfRelRef(const TypeExpr *t) { return IsRelRef(t) && !t->ref->pool; }
 inline bool IsArrayKind(const TypeExpr *t, ArrayKind k) {
     return t->kind == TY_ARRAY && t->arr->akind == k;
 }
@@ -364,6 +368,11 @@ inline bool IsU8(const TypeExpr *t) {
 // An index or bound type (`u32 in a`, `u32 upto a`).
 inline bool IsIndexT(const TypeExpr *t) { return t && t->kind == TY_INT && t->ix; }
 inline bool IsF32(const TypeExpr *t) { return t && t->kind == TY_FLT && t->fltstorage == FS_F32; }
+// The ADT a variant type is a variant of, and an enum type's own; else null.
+inline TypeExpr *AdtOf(TypeExpr *t) {
+    if (t->kind == TY_VARIANT) return t->var->adt->kind == TY_ENUM ? t->var->adt : nullptr;
+    return t->kind == TY_ENUM ? t : nullptr;
+}
 
 // The primitive type keyword tokens, in a contiguous range.
 inline bool IsPrimTypeToken(TType t) { return t >= T_TBOOL && t <= T_TF64; }
@@ -1081,7 +1090,6 @@ NODE(Call)
     Block *fvbody = nullptr;            // Call of a function value: checked body instance.
     Node *defaultinit = nullptr;        // Per-use default construction, visible to every pass.
     vector<VarDef *> fvparams;          //   its parameter bindings.
-    SFunction *fvtarget = nullptr;      //   the named fn a plain `return` inside exits.
     vector<TypeExpr *> rettypes;        // All return values (exprtype is rettypes[0] or void).
     // A call to a nested function that the optimizer copied out of the body
     // declaring it (Inliner): the variables the callee reaches as free
@@ -1467,6 +1475,14 @@ struct SFunction {
     // against (TypeCheck::ResolveCall).
     bool brokensig = false;
     vector<FnSpec *> specs;     // Specializations (typecheck), owned by Ast.
+
+    // Checked once per distinct argument types (§7.7): a function with type
+    // parameters or an untyped parameter.
+    bool IsGeneric() const {
+        if (!generics.empty()) return true;
+        for (auto &p : params) if (!p.type) return true;
+        return false;
+    }
 };
 
 struct SStruct {
@@ -1628,7 +1644,7 @@ struct VarDef {
     bool constlit = false;
     bool constuns = false;      // constval's bits are a u64 above i64.max (Val::uns).
     int64_t constval = 0;
-    bool constnot = false;      // constval is `~c` of a constant c >= 0 (Val::notconst).
+    bool constnot = false;      // A constlit whose constval is `~c`, c >= 0 (Val::notconst).
     bool constflt = false;      // A float constant, of value constfval.
     double constfval = 0;
     VarDef *constfrom = nullptr;    // The initializer's Val::constfrom.
@@ -1770,6 +1786,11 @@ struct StructInst {
     SizeClass sclass = SC_FIXED;
     bool flat = true;
     bool validated = false;        // Guards against recursive by-value nesting.
+    // Its build was cut short by the error that ended the root it was in
+    // (TypeCheck::CheckRoot): never used again, and a use of it ends its own
+    // root silently, as a consequence of the error reported
+    // (TypeCheck::GetStructInst).
+    bool failed = false;
     // Resizable-tailed with an all-fixed prefix free of relative references:
     // a frame object (C.2), whose fixed fields and tail header live in the
     // owning frame and whose tail alone occupies the data stack.
@@ -1790,6 +1811,7 @@ struct EnumInst {
     SizeClass varclass = SC_VARIABLE;     // Class when used in variable mode.
     bool flat = true;
     bool validated = false;
+    bool failed = false;                  // As StructInst::failed.
     // Per variant while the instance is being built: 1 while its payload's
     // fields are being validated, 2 once they are.
     vector<uint8_t> vbuilt;
@@ -1813,6 +1835,20 @@ template<typename F> bool AnyFieldOf(span<const FieldRun> runs, F f) {
 template<typename F> void EachFieldOf(span<const FieldRun> runs, F f) {
     for (auto &run : runs)
         for (auto ft : *run.ftypes) if (ft) f(ft);
+}
+
+// Whether a value of type t holds a relative reference by value, at any
+// depth, variable-size parts included but not what a plain reference or a
+// slice leads to: any with `inpool`, else a self-relative one, whose offset
+// depends on where the value sits (§3.9). `runs` is the pass's FieldRuns, as
+// for AnyFieldOf.
+template<typename R> bool HasRelRefOf(TypeExpr *t, bool inpool, R runs) {
+    switch (t->kind) {
+        case TY_REF: return IsRelRef(t) && (inpool || !t->ref->pool);
+        case TY_ARRAY: return HasRelRefOf(t->arr->sub, inpool, runs);
+        default:
+            return AnyFieldOf(runs(t), [&](TypeExpr *ft) { return HasRelRefOf(ft, inpool, runs); });
+    }
 }
 
 // Call-site facts about one reference/slice or holder parameter, part of the
@@ -1860,12 +1896,13 @@ struct RootArg {
     // the same reason growshrink is: the shrink scans dismiss a slice whose
     // pointee the root cannot hold, and this is the one that survives that.
     bool byteview = false;
-    // Val::rootexact of the argument, ANDed over every call site that reaches
-    // the specialization. Deliberately not part of the key: within the callee
-    // a class always names one root's storage (typecheck.h keeps an inexactly rooted
-    // argument out of every other argument's class), and the only use of this
-    // bit -- codegen's proof that two classes are *different* arrays -- runs
-    // after every call site has been seen.
+    // Roots::Exact() of the roots the argument's class stands for (where it
+    // may point, or a holder's contents may), ANDed over every call site that
+    // reaches the specialization. Deliberately not part of the key: within
+    // the callee a class always names one root's storage (typecheck.h keeps
+    // an inexactly rooted argument out of every other argument's class), and
+    // the only use of this bit -- codegen's proof that two classes are
+    // *different* arrays -- runs after every call site has been seen.
     bool exact = true;
     // For a holder parameter (§9.2): everything the argument holds points
     // into the one array its class names, which the body then takes as that
@@ -2170,7 +2207,7 @@ struct FnSpec {
     vector<TypeExpr *> rets;       // TY_VOID-free: empty = no return values.
     bool retsknown = false;
     bool inprogress = false;
-    // Its body was being checked when the root being checked ended on an
+    // Its check was in progress when the root being checked ended on an
     // error (TypeCheck::CheckRoot): checked no further, never reused, and a
     // call that would reuse it ends its own root silently, as a
     // consequence of the error reported (TypeCheck::GetOrCreateSpec).
@@ -2190,8 +2227,10 @@ struct FnSpec {
     // record from the round before, which the calls back into it read while
     // it is in progress -- none in the first round, whose back edges have no
     // effects and results that point nowhere yet. `stale`: a member the
-    // next round has yet to check again. The class roots its parameters
-    // stand at are made once and kept across rounds (TypeCheck::ThreadedClass).
+    // next round has yet to check again, and once the cycle is checked, one
+    // its last round did not, which no later call reuses. The class roots
+    // its parameters stand at are made once and kept across rounds
+    // (TypeCheck::ThreadedClass).
     vector<FnSpec *> cyclemembers;
     FnRecord record;
     unique_ptr<FnRecord> prev;
@@ -2208,7 +2247,10 @@ struct FnSpec {
     // The body stored a value rooted at one of its parameters' classes into
     // a variable outside its activation, or bound a reference variable there
     // to one, which its call mapped onto that call's arguments in place
-    // (TypeCheck::ApplyCalleeStores): no other call reuses the check.
+    // (TypeCheck::ApplyCalleeStores), or a function value's body checked in
+    // it returned a reference out of it into the record of a function outside
+    // it, mapped the same way (TypeCheck::ReturnThroughCalls): no other call
+    // reuses the check.
     bool storesout = false;
     // A value with self-relative references is returned as the body's named
     // result, which is right only where it is built at the destination

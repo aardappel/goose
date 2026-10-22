@@ -1,0 +1,5 @@
+false true false true
+R { X { 2 } } R { X { 1 } }
+A { B { 1 } } B { 2 } 3
+5 6 1 2 true false
+V { B { 7 } } V { 8 }

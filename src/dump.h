@@ -570,6 +570,7 @@ inline void FunVal::Dump(string &s, int ind) const {
     if (explicit_params) {
         for (size_t i = 0; i < params.size(); i++) {
             s += i ? ", " : " ";
+            if (params[i].isvar) s += "var ";
             s += params[i].name;
             if (params[i].type) { s += ": "; params[i].type->Dump(s); }
         }

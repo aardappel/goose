@@ -43,11 +43,11 @@
 #include "jit.h"
 #include "progress.h"
 #include "buildfile.h"
+#include "json.h"
 #include "toolchain.h"
 #include "builtin.h"
 #include "build.h"
 #include "packages.h"
-#include "json.h"
 #include "native.h"
 #include "lsp_rpc.h"
 #include "lsp_analysis.h"
@@ -122,17 +122,25 @@ string RelativeTo(const string &path, const string &dir) {
 
 // Where the standard library lives (§11.1): an explicit --stdlib or
 // GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
-// was built in, found by walking up from the executable.
+// was built in, found by walking up from the executable. A directory more
+// than one of those name is in the list once, as the first named it.
 vector<string> StdlibDirs(const string &stdlibdir, const string &exe) {
-    vector<string> dirs;
-    if (!stdlibdir.empty()) dirs.push_back(cat(stdlibdir, "/"));
-    if (auto env = getenv("GOOSE_STDLIB")) dirs.push_back(cat(env, "/"));
+    vector<string> cands;
+    if (!stdlibdir.empty()) cands.push_back(cat(stdlibdir, "/"));
+    if (auto env = getenv("GOOSE_STDLIB")) cands.push_back(cat(env, "/"));
     auto exedir = DirOf(exe);
-    dirs.push_back(cat(exedir, "stdlib/"));
-    dirs.push_back(cat(exedir, "../stdlib/"));
-    dirs.push_back(cat(exedir, "../../stdlib/"));
-    dirs.push_back(cat(exedir, "../../../stdlib/"));
-    dirs.push_back("stdlib/");
+    cands.push_back(cat(exedir, "stdlib/"));
+    cands.push_back(cat(exedir, "../stdlib/"));
+    cands.push_back(cat(exedir, "../../stdlib/"));
+    cands.push_back(cat(exedir, "../../../stdlib/"));
+    cands.push_back("stdlib/");
+    vector<string> dirs;
+    set<string> seen;
+    for (auto &dir : cands) {
+        std::error_code ec;
+        auto canon = filesystem::weakly_canonical(filesystem::path(dir), ec);
+        if (seen.insert(ec ? dir : canon.string()).second) dirs.push_back(dir);
+    }
     return dirs;
 }
 
@@ -393,11 +401,8 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                                     }
                                 if (!havestd) {
                                     Append(msg, "\nand found no standard library, looking in");
-                                    set<string> shown;
-                                    for (auto &dir : stdlibdirs) {
-                                        auto abs = ForwardSlashes(AbsolutePath(dir));
-                                        if (shown.insert(abs).second) Append(msg, "\n    ", abs);
-                                    }
+                                    for (auto &dir : stdlibdirs)
+                                        Append(msg, "\n    ", ForwardSlashes(AbsolutePath(dir)));
                                     Append(msg, "\nset --stdlib or GOOSE_STDLIB to its directory");
                                 }
                                 ImportError(filename, imp, msg);
@@ -659,8 +664,8 @@ R"(  --diagnostics json    Print the errors and warnings as JSON on stdout, and
                         found from where goose is by default.
   --update              Fetch packages at a tag or branch again (a commit is
                         never fetched again).
-  --stack-reserve size  Address space reserved per data stack, with a K, M, G
-                        or T suffix (default 2G).
+  --stack-reserve size  Address space reserved per data stack, from 64K, with a
+                        K, M, G or T suffix (default 2G).
   --stacks              Report the data stacks the program and each worker can
                         take, and the cap that puts on hardware_threads().
   --no-bce              Keep every bounds check.
@@ -734,8 +739,8 @@ the packages the program uses. Intermediates go under GOOSE_HOME.
 
 Options:
   -o exe                Where the executable goes.
-  -O0, -O1, -O2         Inlining level and the C compiler's optimization
-                        (default -O2).
+  -O0, -O1, -O2         Inlining level (default -O2). The C compiler
+                        optimizes at every level, unless --debug.
   --debug               Overflow, range and tag checks that name the source
                         line they fail on, and the C built for a debugger.
 )", COMPILEOPTIONS,
@@ -1026,8 +1031,8 @@ int Main(int argc, char **argv) {
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     auto jsondiag = false;
     string ccrequest;
-    // A build is for a deliverable: the inlining and the C compiler's
-    // optimization both at their highest.
+    // A build is for a deliverable: the inlining at its highest. The C
+    // compiler optimizes whatever the level, unless --debug (Builder::CFlags).
     auto optlevel = verb == "build" ? 2 : 1;
     vector<string> cdefines, progargs, includenames, files;
     for (int i = firstarg; i < argc; i++) {
@@ -1046,8 +1051,10 @@ int Main(int argc, char **argv) {
         else if (arg == "--stacks") stacks = true;
         else if (arg == "--stack-reserve" && i + 1 < argc) {
             uint64_t size;
-            if (!ParseSize(argv[++i], size) || !size || size > (1ull << 48)) {
-                fprintf(stderr, "--stack-reserve takes a size from 1 byte to 256 TB (2^48, "
+            // A whole page at least, 64 KB being the largest a platform
+            // uses: the runtime rounds a reservation down to whole pages.
+            if (!ParseSize(argv[++i], size) || size < (64ull << 10) || size > (1ull << 48)) {
+                fprintf(stderr, "--stack-reserve takes a size from 64 KB to 256 TB (2^48, "
                                 "goose_spec.md 10.4), with an optional K, M, G or T suffix: %s\n",
                         argv[i]);
                 return 1;
@@ -1071,7 +1078,15 @@ int Main(int argc, char **argv) {
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
         else if (arg == "--multi-test") multitest = true;
-        else if (arg == "--gen-runtime-header") { GenRuntimeHeader(exe.c_str()); return 0; }
+        else if (arg == "--gen-runtime-header") {
+            try {
+                GenRuntimeHeader(exe.c_str());
+            } catch (CompileError &e) {
+                fprintf(stderr, "%s\n", e.msg.c_str());
+                return 1;
+            }
+            return 0;
+        }
         else if (arg == "--emit-runtime" && i + 1 < argc) {
             auto path = argv[++i];
             auto src = RuntimeObjectSource();
@@ -1472,8 +1487,8 @@ int Main(int argc, char **argv) {
                     if (!BuildNativePart(*astp, pkg, filename, b, false, nb)) return 1;
                     rsps.push_back(nb.rsp);
                 }
-                return BuildExecutable(filename, outfile, builddir, tc, buildopts, DirOf(exe),
-                                       msgs, rsps, astp->packages[0].output);
+                return BuildExecutable(filename, outfile, builddir, tc, buildopts, msgs, rsps,
+                                       astp->packages[0].output);
             }
             if (program.empty()) return code;
             // The native parts the program reaches hand the run their

@@ -94,6 +94,9 @@ inline Node *TypeCheck::ExpansionConstant(Node *n, set<VarDecl *> &visiting) {
     set<VarDecl *> integers;
     ConstUse use { n, "const for source" };
     if (ConstIntValue(n, v, literal, integers, &use)) {
+        // `~c` (Val::notconst) stays one, to adapt where the entry is used.
+        if (v.notconst)
+            return ast.New<Unary>(n->line, T_BITNOT, ast.New<IntLit>(n->line, v.litlo));
         auto i = ast.New<IntLit>(n->line, v.ival, string_view {}, v.uns);
         // An unannotated named literal keeps its ordinary adaptability.
         // Arithmetic still follows ConstIntValue's evaluation widths.

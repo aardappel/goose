@@ -56,6 +56,10 @@ fn main() {
 // lsp: hover 16:31 "x: i64"
 // lsp: hover 40:9 "Shape"
 // lsp: hover 32:33 "mass: i64"
+// lsp: hover 31:20 "unknown type Vec2"
+// lsp: definition 31:20 -> none
+// lsp: rename 31:20 Vec3 -> error
+// lsp: token 31:20 none
 // lsp: definition 39:13 -> 16:4
 // lsp: symbol Point struct
 // lsp: symbol broken function

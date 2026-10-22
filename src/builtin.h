@@ -118,10 +118,7 @@ inline string AbsoluteLinkFile(const string &rsp, const string &pkgname, const s
     // Another goose may be linking with this file: it is replaced whole.
     FileLock lock(cat(dest, ".lock"),
                   cat("waiting for another goose writing the link file of ", pkgname));
-    if (LoadFile(dest, old) && old == out) return dest;
-    auto tmp = cat(dest, ".tmp");
-    if (!WriteFileMakingDirs(tmp, out) || RenamePath(tmp, dest))
-        throw CompileError { cat("cannot write ", dest) };
+    if (!WriteFileIfChanged(dest, out)) throw CompileError { cat("cannot write ", dest) };
     return dest;
 }
 

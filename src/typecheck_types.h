@@ -56,11 +56,19 @@ inline void TypeCheck::LimitNestedInsts(TypeExpr *t) {
     Error(t->line, s);
 }
 
+// An instance found again, unless the error of another root cut its build
+// short (StructInst::failed): what that error reported stands for this use
+// too, and the root making it ends here, silently.
+template<typename Inst> Inst *Reused(Inst *inst) {
+    if (inst->failed) throw Abandoned {};
+    return inst;
+}
+
 inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     auto st = t->struc->st;
-    if (t->struc->inst) return t->struc->inst;
+    if (t->struc->inst) return Reused(t->struc->inst);
     for (auto inst : st->insts)
-        if (TypeArgsEq(inst->args, t->struc->args)) return t->struc->inst = inst;
+        if (TypeArgsEq(inst->args, t->struc->args)) return Reused(t->struc->inst = inst);
     LimitNestedInsts(t);
     auto inst = ast.NewStructInst();
     inst->st = st;
@@ -88,9 +96,12 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
                                 " cannot be ", zs, ": ", TypeStr(ft), " (§3.4)"));
         auto c = ClassOf(ft);
         if (c == SC_RESIZABLE) {
-            if (i != lastreal)
+            // A pad after the tail too: its bytes would lie where the tail
+            // grows.
+            if (i + 1 < (int)st->fields.size())
                 Error(st->line, cat("resizable field ", st->fields[i].name, " of struct ",
-                                    st->name, " must be the final field"));
+                                    st->name, " must be the final field",
+                                    i == lastreal ? ", with no pad after it" : ""));
             inst->sclass = SC_RESIZABLE;
         } else if (c == SC_VARIABLE && inst->sclass == SC_FIXED) {
             inst->sclass = SC_VARIABLE;
@@ -118,9 +129,9 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
 
 inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
     auto en = t->enu->en;
-    if (t->enu->inst) return t->enu->inst;
+    if (t->enu->inst) return Reused(t->enu->inst);
     for (auto inst : en->insts)
-        if (TypeArgsEq(inst->args, t->enu->args)) return t->enu->inst = inst;
+        if (TypeArgsEq(inst->args, t->enu->args)) return Reused(t->enu->inst = inst);
     LimitNestedInsts(t);
     auto inst = ast.NewEnumInst();
     inst->en = en;
@@ -190,9 +201,10 @@ inline void TypeCheck::BuildVariant(EnumInst *inst, size_t vi) {
                                 " cannot be ", zs, ": ", TypeStr(ft), " (§3.4)"));
         auto c = ClassOf(ft);
         if (c == SC_RESIZABLE) {
-            if (i != lastreal)
+            if (i + 1 < (int)v.fields.size())
                 Error(en->line, cat("resizable field ", v.fields[i].name, " of variant ",
-                                    en->name, ".", v.name, " must be the final field"));
+                                    en->name, ".", v.name, " must be the final field",
+                                    i == lastreal ? ", with no pad after it" : ""));
             inst->varclass = SC_RESIZABLE;
         }
         if (c != SC_FIXED) inst->allfixed = false;
@@ -351,21 +363,22 @@ inline bool TypeCheck::IsFlat(TypeExpr *t) {
     }
 }
 
-// Whether a value of type t holds an index or bound type at any depth,
-// through references and slices too: what may not reach code that neither
-// keeps the array's length nor is checked against it (§3.11).
-inline bool TypeCheck::HoldsIndexT(TypeExpr *t) {
-    set<void *> seen;
+// Whether t, or a type a value of it reaches through references, slices,
+// arrays and fields, satisfies pred. Each struct, enum and variant type is
+// entered once, as a recursive type reaches itself again; a variant type
+// apart from its enum, since entering it walks that variant's payload only.
+inline bool TypeCheck::Reaches(TypeExpr *t, const function<bool(TypeExpr *)> &pred) {
+    set<pair<void *, void *>> seen;
     function<bool(TypeExpr *)> walk = [&](TypeExpr *t) -> bool {
+        if (pred(t)) return true;
         switch (t->kind) {
-            case TY_INT: return t->ix != nullptr;
             case TY_REF: return walk(t->ref->sub);
             case TY_SLICE: return walk(t->sub);
             case TY_ARRAY: return walk(t->arr->sub);
             case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
-                // An instance once: a recursive type reaches itself again.
-                auto key = t->kind == TY_STRUCT ? (void *)GetStructInst(t)
-                           : (void *)GetEnumInst(t->kind == TY_ENUM ? t : t->var->adt);
+                auto key = t->kind == TY_STRUCT ? pair<void *, void *>(GetStructInst(t), nullptr)
+                           : t->kind == TY_ENUM ? pair<void *, void *>(GetEnumInst(t), nullptr)
+                           : pair<void *, void *>(GetEnumInst(t->var->adt), t->var->variant);
                 if (!seen.insert(key).second) return false;
                 return AnyField(t, walk);
             }
@@ -373,6 +386,13 @@ inline bool TypeCheck::HoldsIndexT(TypeExpr *t) {
         }
     };
     return walk(t);
+}
+
+// Whether a value of type t holds an index or bound type at any depth,
+// through references and slices too: what may not reach code that neither
+// keeps the array's length nor is checked against it (§3.11).
+inline bool TypeCheck::HoldsIndexT(TypeExpr *t) {
+    return Reaches(t, [](TypeExpr *t) { return t->kind == TY_INT && t->ix; });
 }
 
 // Whether a value of type t can hold a plain reference or a slice at any
@@ -429,10 +449,8 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
             if (!ImageSafe(t, why)) return false;
             auto p = t->ref->sub;
             if (TypeEq(p, elem)) return true;
-            if (p->kind == TY_VARIANT && elem->kind == TY_ENUM &&
-                p->var->adt->kind == TY_ENUM && p->var->adt->enu->en == elem->enu->en &&
-                TypeArgsEq(p->var->adt->enu->args, elem->enu->args))
-                return true;
+            auto adt = p->kind == TY_VARIANT ? AdtOf(p) : nullptr;
+            if (adt && elem->kind == TY_ENUM && SameAdt(adt, elem)) return true;
             why = cat(TypeStr(t), " points at ", TypeStr(p), ", not at an element of the "
                       "array or one of its variants");
             return false;
@@ -445,9 +463,10 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
 }
 
 // Does a type have a default value (§4.2)? Everything does except a
-// non-optional reference, which has nothing to point at, and so anything
-// containing one without a declared field default. default<T>() gives it
-// for a fixed-size T only; DefaultValue builds it for any.
+// non-optional reference, which has nothing to point at, an enum without
+// variants, which has no value at all, and anything containing either
+// without a declared field default. default<T>() gives it for a fixed-size
+// T only; DefaultValue builds it for any.
 inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
     switch (t->kind) {
         case TY_INT:
@@ -465,7 +484,13 @@ inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
             return false;
         case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
             auto runs = FieldRuns(t);
-            if (t->kind == TY_ENUM) runs = runs.first(1);   // Variant 0 is the default variant.
+            if (t->kind == TY_ENUM) {
+                if (runs.empty()) {
+                    why = cat(TypeStr(t), " has no variants");
+                    return false;
+                }
+                runs = runs.first(1);   // Variant 0 is the default variant.
+            }
             for (auto &run : runs) {
                 for (size_t i = 0; i < run.fields->size(); i++) {
                     auto &f = (*run.fields)[i];
@@ -545,6 +570,11 @@ inline TypeExpr *TypeCheck::PendingElemFromSeq(const Val &av, Node *at) {
 inline void TypeCheck::CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l) {
     arrt->arr->sub = elem;
     ValidateType(arrt, l, VT_LOCAL);
+    auto pool = pendingpools.find(arrt);
+    if (pool != pendingpools.end() && ClassOf(elem) != SC_FIXED)
+        Error(l, cat(pool->second->reusable == RU_SLICES ? "reusable[]" : "reusable",
+                     " applies to grow-only arrays of fixed-size elements (§5.4), and this "
+                     "makes ", pool->second->name, " a ", TypeStr(arrt)));
 }
 
 inline void TypeCheck::RequireComplete(TypeExpr *t, Line l) {
@@ -674,7 +704,7 @@ inline TypeExpr *TypeCheck::LoadType(TypeExpr *t) {
     // A const value loads as a copy, which is plain; a const reference or
     // slice loads as itself, its qualifier being about the pointee.
     if (t->cq && !IsRefOrSlice(t)) return ast.PlainOf(t);
-    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+    if (IsRelRef(t)) {
         auto r = ast.RefTo(t->ref->sub, t->line, t->ref->optional);
         r->cq = t->cq;
         return r;
@@ -693,7 +723,7 @@ inline bool TypeCheck::LoadedTypeEq(TypeExpr *t, TypeExpr *of) {
         value.cq = false;
         return TypeEq(&value, of);
     }
-    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+    if (IsRelRef(t)) {
         TypeRef ref;
         ref.sub = t->ref->sub;
         ref.optional = t->ref->optional;
@@ -707,7 +737,7 @@ inline bool TypeCheck::LoadedTypeEq(TypeExpr *t, TypeExpr *of) {
 // or a default<T>(). A relative reference is only ever storage, so as a
 // value it is the plain reference a load of it gives (§3.9).
 inline TypeExpr *TypeCheck::ValueType(TypeExpr *t) {
-    return t->kind == TY_REF && t->ref->lenstorage >= 0 ? LoadType(t) : t;
+    return IsRelRef(t) ? LoadType(t) : t;
 }
 
 // The type of a variable or parameter declared with written type t, which
@@ -717,7 +747,7 @@ inline TypeExpr *TypeCheck::ValueType(TypeExpr *t) {
 // generic code over an array of links, holds the plain reference, as a
 // result of that type does (§3.9).
 inline TypeExpr *TypeCheck::DeclType(TypeExpr *t, TypeExpr *s) {
-    return t->kind == TY_REF && t->ref->lenstorage >= 0 ? s : ValueType(s);
+    return IsRelRef(t) ? s : ValueType(s);
 }
 
 // The implicit numeric widenings (§6.3): conversions that can never
@@ -728,13 +758,6 @@ inline bool TypeCheck::ImplicitInt(IntStorage from, IntStorage to) {
     if (from == to) return true;
     if (IntBits(from) >= IntBits(to)) return false;
     return IsUnsigned(to) ? IsUnsigned(from) : true;
-}
-
-// The pointee type when v is a (non-optional) reference, else null.
-inline TypeExpr *TypeCheck::DerefType(TypeExpr *t) {
-    if (t->kind != TY_REF) return nullptr;
-    if (t->ref->optional) return nullptr;
-    return t->ref->sub;
 }
 
 // Positions that accept any integer type (indices, slice bounds, sizes,
@@ -753,11 +776,7 @@ inline Val TypeCheck::CheckIntAny(Node *n) {
 // `in pool` offset is measured from the pool and copies fine (§3.9), and
 // counts only with `inpool`.
 inline bool TypeCheck::HasRelRefT(TypeExpr *t, bool inpool) {
-    switch (t->kind) {
-        case TY_REF: return t->ref->lenstorage >= 0 && (inpool || !t->ref->pool);
-        case TY_ARRAY: return HasRelRefT(t->arr->sub, inpool);
-        default: return AnyField(t, [&](TypeExpr *ft) { return HasRelRefT(ft, inpool); });
-    }
+    return HasRelRefOf(t, inpool, [&](TypeExpr *x) { return FieldRuns(x); });
 }
 
 // Whether n's value (`result`: which of a multi-value call's results) is
@@ -919,7 +938,7 @@ inline void TypeCheck::CheckNamedResultUses(FnSpec *spec) {
 inline void TypeCheck::SelfRelPointees(TypeExpr *t, vector<TypeExpr *> &out) {
     switch (t->kind) {
         case TY_REF:
-            if (t->ref->lenstorage >= 0 && !t->ref->pool) out.push_back(LoadType(t->ref->sub));
+            if (IsSelfRelRef(t)) out.push_back(LoadType(t->ref->sub));
             return;
         case TY_ARRAY: SelfRelPointees(t->arr->sub, out); return;
         default: EachField(t, [&](TypeExpr *ft) { SelfRelPointees(ft, out); });
@@ -1123,14 +1142,15 @@ inline TypeExpr *TypeCheck::PointeeOf(TypeExpr *t) {
     return nullptr;
 }
 
-// Every variable in scope in the body being checked and in its lexical
-// parents at the call (§7.5): all LookupVar reaches that is still in scope,
-// and for a nested function also what its declaration does not see, since a
-// reference handed to the body may point there (a later nested function's
-// result, a function value written at the call). Globals are enumerated
-// separately.
-inline void TypeCheck::VisibleVars(const function<void(VarDef *)> &f) {
-    for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+// The variables of frame fi and of the frames up its lexical chain,
+// innermost first: each frame's, as many as are declared by now, then those
+// of its lexical parent, or for a default's frame those of the code running
+// it, the frame below. A frame `seen` marks ends the walk, and each frame
+// walked is marked.
+inline void TypeCheck::LexicalVars(int fi, vector<bool> *seen,
+                                   const function<void(VarDef *)> &f) {
+    while (fi >= 0 && !(seen && (*seen)[fi])) {
+        if (seen) (*seen)[fi] = true;
         auto &fr = frames[fi];
         auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
                                                   : frames[fi + 1].varbase;
@@ -1139,24 +1159,24 @@ inline void TypeCheck::VisibleVars(const function<void(VarDef *)> &f) {
     }
 }
 
+// Every variable in scope in the body being checked and in its lexical
+// parents at the call (§7.5): all LookupVar reaches that is still in scope,
+// and for a nested function also what its declaration does not see, since a
+// reference handed to the body may point there (a later nested function's
+// result, a function value written at the call). Globals are enumerated
+// separately.
+inline void TypeCheck::VisibleVars(const function<void(VarDef *)> &f) {
+    LexicalVars((int)frames.size() - 1, nullptr, f);
+}
+
 // The variables a shrink at the point being checked may leave pointing into
 // freed storage: those VisibleVars gives, and inside a function value's body
 // those of the function running it, which the body cannot name but runs in
 // the middle of (§7.6), with that function's lexical parents in turn.
 inline void TypeCheck::ShrinkScanVars(const function<void(VarDef *)> &f) {
     vector<bool> seen(frames.size(), false);
-    auto walk = [&](int fi) {
-        while (fi >= 0 && !seen[fi]) {
-            seen[fi] = true;
-            auto &fr = frames[fi];
-            auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
-                                                      : frames[fi + 1].varbase;
-            for (auto i = limit - 1; i >= fr.varbase; i--) f(vars[i]);
-            fi = fr.isdefault ? fi - 1 : fr.lexframe;
-        }
-    };
     for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
-        walk(fi);
+        LexicalVars(fi, &seen, f);
         if (!frames[fi].isfunval) break;
     }
 }
@@ -1297,7 +1317,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         out.unknown = true;
         return out;
     }
-    auto relative = rt->kind == TY_REF && rt->ref->lenstorage >= 0;
+    auto relative = IsRelRef(rt);
     if (contents && !relative && container.Any([&](const RootAlt &a) { return IsTemp(a.root); }))
         return contents->roots;
     // A relative reference that names a pool points into that pool, exactly,
@@ -1433,7 +1453,6 @@ inline string TypeCheck::ReadBackWhy(const Roots &r) {
     auto from = r.From();
     if (!from) return {};
     auto n = r.alts.size();
-    if (n == 0) return cat("it was read out of ", from->name, ", whose contents this function cannot trace");
     auto global = BoundAnywhere(from);
     string s = global ? cat(from->name, " is a global var, which any function may bind, and may "
                                         "point into ")

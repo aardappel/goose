@@ -24,10 +24,8 @@ inline bool CodeGen::TEq(TypeExpr *a, TypeExpr *b) {
             auto &x = *a->arr, &y = *b->arr;
             if (x.akind != y.akind || !TEq(x.sub, y.sub)) return false;
             switch (x.akind) {
-                case A_FIXED:   return ArrSize(a->arr) == ArrSize(b->arr);
+                case A_FIXED: case A_LIMITED: return ArrSize(a->arr) == ArrSize(b->arr);
                 case A_VAR:     return LenStore(a->arr) == LenStore(b->arr);
-                case A_LIMITED: return (x.sizeexpr ? ArrSize(a->arr) : -1) ==
-                                       (y.sizeexpr ? ArrSize(b->arr) : -1);
                 default:        return true;
             }
         }
@@ -385,7 +383,67 @@ inline string CodeGen::Unique(string base) {
 // every per-type artifact (typedef, size fn, eq fn); the C name is the
 // uniquified mangle.
 
+// The raw spelling does not tell every pair of types apart: `E<F..>` and
+// `E<F>..` both spell E_g_F_g_vm, `E<G.B>` and `E<G>.B` both E_g_G_g_B_p,
+// and `A<B>` spells what a struct named A_g_B does. The first type to spell
+// one keeps it; a type of other parts (SameMangle) spelling it later gets a
+// suffix, `_m1` and up, past every mangle already handed out. Parts are
+// mangled here too, so a type built of told-apart ones is told apart too.
 inline string CodeGen::Mangle(TypeExpr *t) {
+    auto raw = RawMangle(t);
+    auto &owners = mangleowners[raw];
+    for (auto &[o, m] : owners)
+        if (SameMangle(o, t)) return m;
+    auto m = raw;
+    for (auto n = 1; mangles.count(m); n++) m = cat(raw, "_m", n);
+    mangles.insert(m);
+    owners.push_back({ t, m });
+    return m;
+}
+
+// Whether two types are made of the parts RawMangle spells: TEq, but for
+// a nominal type its declaration and arguments rather than its instance,
+// so that instances whose arguments differ only in `const`, which shares a
+// layout, keep sharing their C types too.
+inline bool CodeGen::SameMangle(TypeExpr *a, TypeExpr *b) {
+    if (a == b) return true;
+    if (a->kind != b->kind) return false;
+    auto sameargs = [&](const vector<TypeExpr *> &x, const vector<TypeExpr *> &y) {
+        if (x.size() != y.size()) return false;
+        for (size_t i = 0; i < x.size(); i++)
+            if (!SameMangle(x[i], y[i])) return false;
+        return true;
+    };
+    switch (a->kind) {
+        case TY_INT:
+            return a->intstorage == b->intstorage && !a->ix == !b->ix &&
+                   (!a->ix || (a->ix->arr == b->ix->arr && a->ix->upto == b->ix->upto));
+        case TY_STRUCT:
+            return a->struc->st == b->struc->st && sameargs(a->struc->args, b->struc->args);
+        case TY_ENUM:
+            return a->enu->en == b->enu->en && a->enu->varmode == b->enu->varmode &&
+                   sameargs(a->enu->args, b->enu->args);
+        case TY_VARIANT:
+            return a->var->variant == b->var->variant && SameMangle(a->var->adt, b->var->adt);
+        case TY_ARRAY: {
+            auto &x = *a->arr, &y = *b->arr;
+            if (x.akind != y.akind || !SameMangle(x.sub, y.sub)) return false;
+            switch (x.akind) {
+                case A_FIXED: case A_LIMITED: return ArrSize(a->arr) == ArrSize(b->arr);
+                case A_VAR:                   return LenStore(a->arr) == LenStore(b->arr);
+                default:                      return true;
+            }
+        }
+        case TY_SLICE: return SameMangle(a->sub, b->sub);
+        case TY_REF:
+            return a->ref->optional == b->ref->optional &&
+                   a->ref->lenstorage == b->ref->lenstorage &&
+                   SameMangle(a->ref->sub, b->ref->sub);
+        default: return TEq(a, b);
+    }
+}
+
+inline string CodeGen::RawMangle(TypeExpr *t) {
     switch (t->kind) {
         case TY_INT: {
             if (t->intstorage == IS_VARINT) return "vi";
@@ -606,17 +664,19 @@ inline void CodeGen::EmitCFields(string &d, const vector<Field> &fields,
     }
     for (auto i = n; i < fields.size(); i++) {
         EmitCoreTypes();
-        Append(d, "    ", IsFrameObj(ftypes[i]) ? CT(ftypes[i]) : string("gs_rhdr"), " ",
-               Sanitize(fields[i].name), ";\n");
+        Append(d, "    ", RzCT(ftypes[i]), " ", Sanitize(fields[i].name), ";\n");
     }
 }
 
 inline void CodeGen::EnsureTagEnum(EnumInst *ei) {
     if (tagenums.count(ei)) return;
     tagenums.insert(ei);
-    // Use the base (mode-less) mangle as the constant prefix.
-    string base = Sanitize(ei->en->ns, ei->en->name);
-    for (auto a : ei->args) Append(base, "_", Mangle(a));
+    // Use the base (mode-less) mangle as the constant prefix, told apart
+    // from another instance's as a mangle is (Mangle).
+    string raw = Sanitize(ei->en->ns, ei->en->name);
+    for (auto a : ei->args) Append(raw, "_", Mangle(a));
+    auto base = raw;
+    for (auto n = 1; !tagbases.insert(base).second; n++) base = cat(raw, "_m", n);
     tagprefix[ei] = base;
     string d = "enum {\n";
     for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
@@ -748,34 +808,12 @@ inline void CodeGen::EmitSizeElems(string &b, TypeExpr *elem, const string &q) {
     }
 }
 
-// The size of the all-zeroes minimal value of a type (arrays empty, ADTs
-// at variant 0): what a missed qpoll writes so the value stays valid.
-inline int64_t CodeGen::ZeroSize(TypeExpr *t) {
-    assert(!IsResz(t));   // Resizable zero values are empty headers.
-    if (IsFix(t)) return FixedSize(t);
-    switch (t->kind) {
-        case TY_INT: case TY_REF: return 1;   // varint / varint relref: one 0 byte.
-        case TY_ARRAY:
-            switch (t->arr->akind) {
-                case A_VAR:     return LenStore(t->arr) == IS_VARINT ? 1
-                                                                     : IntSize(LenStore(t->arr));
-                case A_LIMITED: return 8;
-                default:        return 8;
-            }
-        case TY_STRUCT: case TY_VARIANT: {
-            int64_t n = 0;
-            EachField(t, [&](TypeExpr *ft) { n += ZeroSize(ft); });
-            return n;
-        }
-        case TY_ENUM:
-            return TagSize(EIOf(t)->en) + ZeroSize(VariantType(t, 0));
-        default: assert(false); return 0;
-    }
-}
-
 // The fewest bytes any value of this type can occupy: what bounds the
 // element count a length field may claim, before a single element is walked.
-inline int64_t CodeGen::MinBytes(TypeExpr *t) {
+// With `zero`, the size of the all-zeroes value instead, whose arrays are
+// empty and whose ADTs are at variant 0: what a missed qpoll writes so the
+// value stays valid.
+inline int64_t CodeGen::MinBytes(TypeExpr *t, bool zero) {
     if (IsFix(t)) return FixedSize(t);
     switch (t->kind) {
         case TY_INT: case TY_REF: return 1;   // varint / varint-width relative ref
@@ -791,13 +829,14 @@ inline int64_t CodeGen::MinBytes(TypeExpr *t) {
                 for (size_t i = 0; i < run.fields->size(); i++) {
                     auto &f = (*run.fields)[i];
                     if (f.ispad) { if (f.padsize > 0) n += f.padsize; continue; }
-                    n += MinBytes((*run.ftypes)[i]);
+                    n += MinBytes((*run.ftypes)[i], zero);
                 }
             }
             return n;
         }
         case TY_ENUM: {
             auto ei = EIOf(t);
+            if (zero) return TagSize(ei->en) + MinBytes(VariantType(t, 0), true);
             int64_t m = INT64_MAX;
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
                 m = std::min(m, MinBytes(VariantType(t, (int)vi)));
@@ -815,11 +854,7 @@ inline int64_t CodeGen::MinBytes(TypeExpr *t) {
 // HasRelRef this looks through variable-size types too, since an image's
 // elements are exactly the types HasRelRef does not reach.
 inline bool CodeGen::HasRelRefAny(TypeExpr *t) {
-    switch (t->kind) {
-        case TY_REF: return t->ref->lenstorage >= 0;
-        case TY_ARRAY: return HasRelRefAny(t->arr->sub);
-        default: return AnyField(t, [&](TypeExpr *ft) { return HasRelRefAny(ft); });
-    }
+    return HasRelRefOf(t, true, [&](TypeExpr *x) { return FieldRuns(x); });
 }
 
 // Whether the verifier has anything to say about a value of this type, or
@@ -1384,7 +1419,9 @@ inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
             if (IsFix(x)) return BitwiseEq(x);
             switch (x->kind) {
                 case TY_INT: case TY_REF: return true;
-                case TY_ARRAY: return rec(x->arr->sub);
+                // A runtime-capacity limited array's capacity and the slots
+                // past its length are no part of its value.
+                case TY_ARRAY: return x->arr->akind != A_LIMITED && rec(x->arr->sub);
                 case TY_STRUCT: case TY_VARIANT: case TY_ENUM:
                     for (auto &run : FieldRuns(x))
                         for (size_t i = 0; i < run.fields->size(); i++)
@@ -1472,7 +1509,19 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
             return;
         }
         case TY_STRUCT: case TY_VARIANT:
-            EachField(t, [&](TypeExpr *ft) { EmitEqWalk(bo, ft, pa, pb, depth); });
+            for (auto &run : FieldRuns(t)) {
+                for (size_t i = 0; i < run.fields->size(); i++) {
+                    auto &f = (*run.fields)[i];
+                    if (!f.ispad) {
+                        EmitEqWalk(bo, (*run.ftypes)[i], pa, pb, depth);
+                    } else if (f.padsize > 0) {
+                        // Stepped over, never compared (§4.5). A bare pad has
+                        // no bytes in a bytes layout.
+                        Append(bo, I, pa, " += ", f.padsize, "; ", pb, " += ", f.padsize,
+                               ";\n");
+                    }
+                }
+            }
             return;
         case TY_ENUM: {
             auto ei = EIOf(t);

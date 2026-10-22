@@ -203,7 +203,10 @@ struct Lexer {
         if (start[0] == '"' && start[1] == '"' && start[2] == '"') {
             auto close = strstr(start + 3, "\"\"\"");
             if (close) {
-                for (auto q = p; q < close; q++)
+                // `line` counts the line breaks before linestart, which
+                // LexRawString moves past p through the lines it checked
+                // before the one it raised the error on.
+                for (auto q = linestart; q < close; q++)
                     if (*q == '\n') { line++; linestart = q + 1; }
                 p = close + 3;
                 Next();

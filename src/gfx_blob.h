@@ -3,7 +3,8 @@
    that creating an SDL_GPU shader or pipeline needs. The compiler writes it
    (src/shaderc.c) and embeds it in the program as static data; the gfx
    package's layer reads it back from its own copy of this header
-   (packages/gfx/src/gfx/gfx_blob.h), which the version below keeps in step.
+   (src/gfx/gfx_blob.h in github.com/aardappel/goose_gfx), which the version
+   below keeps in step.
    Plain C, so both can read it.
 
    Layout, little-endian and unaligned (a blob sits in a byte array):

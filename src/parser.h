@@ -64,8 +64,9 @@ struct Parser {
     // if any: kept as a statement of its own where the rest of the
     // statement is lost, so that a completion finds it.
     Dot *pendingdot = nullptr;
-    // An error at the end of the file has been reported: the blocks still
-    // open there end silently, rather than each report the end once more.
+    // Recovering from an error has skipped to the end of the file (Resync):
+    // the blocks still open there end silently, rather than each report
+    // the end once more.
     bool eoferror = false;
 
     Parser(Ast &_ast, string_view filename, const char *source, int _fileidx)
@@ -83,7 +84,6 @@ struct Parser {
             ast.Report(d);
         }
         for (auto &d : e.diags) ast.Report(d);
-        if (lex.tok == T_EOF) eoferror = true;
     }
 
     // The next token, past any the lexer rejects, each reported once; a
@@ -105,9 +105,14 @@ struct Parser {
     // declaration), so that a skip finding it at depth 0 stops before it.
     bool StartsNext(bool declaration) {
         switch (lex.tok) {
-            case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: case T_FN: case T_RECURSIVE:
+            case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: case T_RECURSIVE:
             case T_THREADFN: case T_EXTERN: case T_EXPORT: case T_SIMD:
                 return true;
+            case T_FN: {
+                // Not `fn(`, a function type.
+                auto next = lex.PeekTok();
+                return next == T_IDENT || next == T_COLONCOLON;
+            }
             case T_IMPORT: case T_NAMESPACE: case T_STRUCT: case T_ENUM: case T_TYPE:
                 return declaration;
             case T_IF: case T_MATCH: case T_LOOP: case T_WHILE: case T_FOR: case T_GUARD:
@@ -119,21 +124,27 @@ struct Parser {
     }
 
     // Skips what is left of a statement or declaration an error was raised
-    // in, from the token the error is at, `startp` being where it began.
-    // A statement is skipped through the next `;` at the block's depth,
-    // or up to and including the `}` that closes the block, braces
-    // balanced; a declaration through the next `;` at depth 0, or through
+    // in, from the token the error is at, `startp` being where it began
+    // and, for a statement, `stmtdepth` the braces open before it. A
+    // statement is skipped through the next `;` outside the braces opened
+    // since the error, or up to and including the `}` that closes the
+    // block, which, like a keyword that ends the skip, is where the lexer's
+    // count of the braces open (Lexer::DepthBefore) is back at `stmtdepth`:
+    // the braces of a struct literal or a match the error is inside are
+    // skipped; a declaration through the next `;` at depth 0, or through
     // the `}` matching a `{` at depth 0, its body's. A keyword that can
     // only start the next statement or declaration (StartsNext) ends the
     // skip before it, unless it is the token the failed one began with,
     // which would skip nothing. Returns whether the block ended: its `}`
     // was consumed, or the file ended.
-    bool Resync(bool declaration, const char *startp) {
+    bool Resync(bool declaration, const char *startp, int stmtdepth = 0) {
         if (lex.scanning) NextSkipping();
-        auto depth = 0;
+        auto depth = 0;  // The braces opened since the error that are open.
         for (auto consumed = lex.attr.data() != startp;; consumed = true) {
+            auto atstmt = !declaration && lex.DepthBefore() <= stmtdepth;
             switch (lex.tok) {
                 case T_EOF:
+                    eoferror = true;
                     return true;
                 case T_SEMI:
                     if (depth == 0) {
@@ -145,20 +156,23 @@ struct Parser {
                     depth++;
                     break;
                 case T_RCURLY:
-                    if (depth == 0) {
-                        // The block's own: a stray one at the top level is
-                        // skipped like any token.
-                        if (!declaration) {
-                            NextSkipping();
-                            return true;
-                        }
-                    } else if (--depth == 0 && declaration) {
+                    if (atstmt) {
+                        // The block's own.
+                        NextSkipping();
+                        return true;
+                    }
+                    // One closing a brace the statement opened before the
+                    // error, or a stray one at the top level, is skipped
+                    // like any token.
+                    if (depth > 0 && --depth == 0 && declaration) {
                         NextSkipping();
                         return false;
                     }
                     break;
                 default:
-                    if (depth == 0 && consumed && StartsNext(declaration)) return false;
+                    if ((declaration ? depth == 0 : atstmt) && consumed &&
+                        StartsNext(declaration))
+                        return false;
                     break;
             }
             NextSkipping();
@@ -167,12 +181,10 @@ struct Parser {
 
     // Whether the token can only begin a declaration, where a skip through
     // a struct's or enum's body finds it outside the body's own braces: the
-    // body lacks its `}`. A field may begin with `let` or `const`, and its
-    // type be a function type, `fn(`.
+    // body lacks its `}`. A field may begin with `let` or `const`.
     bool StartsDeclInBody() {
         switch (lex.tok) {
             case T_LET: case T_CONST: return false;
-            case T_FN: return lex.PeekTok() == T_IDENT;
             default: return StartsNext(true);
         }
     }
@@ -197,11 +209,12 @@ struct Parser {
     // Parses the rest of a declaration whose name stands (`f`), which an
     // error then costs only what had not been parsed: the error is
     // reported, what the member it was raised in made is dropped
-    // (Ast::DropSince of `kept`, which `f` moves past each whole member),
-    // the declaration is marked `broken`, and the parse skips the rest of
-    // it: where `depth`, the braces open before the declaration, is given
-    // and the error is inside its body, through the body's `}` (SkipBody),
-    // else as Resync skips a declaration, `startp` being where it began.
+    // (Ast::DropSince of `kept`, which `f` moves past each whole member
+    // with KeepMember), the declaration is marked `broken`, and the parse
+    // skips the rest of it: where `depth`, the braces open before the
+    // declaration, is given and the error is inside its body, through the
+    // body's `}` (SkipBody), else as Resync skips a declaration, `startp`
+    // being where it began.
     template<typename F> void ParseMembers(bool &broken, int depth, const char *startp, F f) {
         auto kept = ast.Mark();
         try {
@@ -217,6 +230,15 @@ struct Parser {
             if (depth >= 0 && lex.DepthBefore() > depth) SkipBody(depth);
             else Resync(true, startp);
         }
+    }
+
+    // Moves `kept`, where given, past a whole member (ParseMembers). An
+    // incomplete `.` in the member stands with it, and the error of a
+    // later member is no consequence of it.
+    void KeepMember(Ast::DeclMark *kept) {
+        if (!kept) return;
+        *kept = ast.Mark();
+        pendingdot = nullptr;
     }
 
     // Where the current token starts.
@@ -448,9 +470,11 @@ struct Parser {
             GenericParam g;
             g.line = CurLine();
             g.name = ExpectIdent("generic parameter list");
+            for (auto &prev : generics)
+                if (prev.name == g.name) Error(cat("duplicate type parameter name: ", g.name));
             if (IsNext(T_COLON)) g.bound = ParseType();
             generics.push_back(g);
-            if (kept) *kept = ast.Mark();
+            KeepMember(kept);
             if (!IsNext(T_COMMA)) break;
             if (lex.tok == T_GT || lex.tok == T_SHR) break;
         }
@@ -526,7 +550,7 @@ struct Parser {
                 if (IsNext(T_ASSIGN)) f.defaultval = ParseExpr();
             }
             fields.push_back(f);
-            if (kept) *kept = ast.Mark();
+            KeepMember(kept);
             if (!IsNext(T_COMMA)) break;
         }
     }
@@ -562,7 +586,7 @@ struct Parser {
                     Expect(T_RCURLY, "enum variant");
                 }
                 en->variants.push_back(v);
-                kept = ast.Mark();
+                KeepMember(&kept);
                 if (!IsNext(T_COMMA)) break;
             }
             Expect(T_RCURLY, "enum declaration");
@@ -675,7 +699,7 @@ struct Parser {
                               " before it has one (§7.1)"));
                 }
                 sf->params.push_back(p);
-                if (kept) *kept = ast.Mark();
+                KeepMember(kept);
                 if (!IsNext(T_COMMA)) break;
             }
             Expect(T_RPAREN, "function declaration");
@@ -684,7 +708,7 @@ struct Parser {
                 sf->has_rets = true;
                 for (;;) {
                     sf->rets.push_back(ParseType());
-                    if (kept) *kept = ast.Mark();
+                    KeepMember(kept);
                     if (!IsNext(T_COMMA)) break;
                 }
             }
@@ -1639,6 +1663,10 @@ struct Parser {
             auto save = lex;
             vector<Param> params;
             auto ok = true;
+            // The lexer at a parameter named as an earlier one: raised inside
+            // the tentative prefix, the error would only backtrack it, so it
+            // is raised from there once the prefix stands.
+            optional<Lexer> dup;
             try {
                 Tentatively t(*this);
                 for (;;) {
@@ -1647,6 +1675,8 @@ struct Parser {
                     if (lex.tok != T_IDENT) { ok = false; break; }
                     p.line = CurLine();
                     p.name = lex.attr;
+                    for (auto &prev : params)
+                        if (prev.name == p.name && !dup) dup = lex;
                     lex.Next();
                     if (IsNext(T_COLON)) p.type = ParseType();
                     params.push_back(p);
@@ -1655,6 +1685,7 @@ struct Parser {
                 if (!ok || !IsNext(T_FATARROW)) ok = false;
             } catch (CompileError &) { ok = false; }
             if (ok) {
+                if (dup) dup->Error(cat("duplicate parameter name: ", dup->attr));
                 fv->params = std::move(params);
                 fv->explicit_params = true;
             } else {
@@ -1691,6 +1722,7 @@ struct Parser {
             if (lex.tok == T_EOF && eoferror) return;
             auto nfunctions = ast.functions.size();
             auto startp = lex.attr.data();
+            auto stmtdepth = lex.DepthBefore();
             pendingdot = nullptr;
             try {
                 if (!ParseStatement(b)) return;
@@ -1709,7 +1741,7 @@ struct Parser {
                 pendingdot = nullptr;
                 if (b->brokenat < 0) b->brokenat = (int)b->stmts.size();
                 if (curfn) curfn->broken = true;
-                if (Resync(false, startp)) return;
+                if (Resync(false, startp, stmtdepth)) return;
             }
         }
     }

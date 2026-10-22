@@ -125,14 +125,14 @@ rest keep working; `goose foo.goose` is `goose run foo.goose`.
 | Verb | Does |
 |---|---|
 | `run` | fetches what the root declares, builds the native parts the program reaches, compiles the program in-process (TinyCC) and runs it; `-O1` by default, as today |
-| `build` | the same, then writes the C, compiles it and links an executable beside the root source (`foo`, `foo.exe`); `-O2` by default for Goose and the C compiler |
+| `build` | the same, then writes the C, compiles it and links an executable beside the root source (`foo`, `foo.exe`); `-O2` by default, Goose's inlining, while the C compiler optimizes at every level |
 | `check` | fetches the Goose sources it needs and typechecks; never builds C |
 | `fetch` | fetches every package the root declares, and builds nothing; `--update` re-fetches refs that are not commit hashes |
 | `toolchain` | prints the C compiler, cmake and git it would use, and why, or what it could not find; `--json` for scripts |
 | `version` | the compiler's version (§11: a commit count, when there is one) and the runtime hash |
 
-Options of `build`: `-O0`/`-O1`/`-O2` (Goose inlining and the C
-optimization level together), `--debug` (`-DGS_DEBUG=1` for the generated C,
+Options of `build`: `-O0`/`-O1`/`-O2` (Goose inlining; the C compiler
+optimizes at every level), `--debug` (`-DGS_DEBUG=1` for the generated C,
 debug information and no optimization for the C compiler; packages stay
 release builds), `--standalone` (no runtime object), `-o <exe>`, `--cc
 <name|path>` (§6.1), `--dry-run` (print every command and write nothing),
@@ -323,18 +323,26 @@ header is spliced into the generated C as today.
 A package with any `c_*` key or a `cmake_target` has a native part, built once
 per toolchain (§6.1) under `build/pkg/…/<toolchain>/`, release configuration,
 static C runtime on Windows, in two forms: what an AOT program links, and a
-shared library the JIT loads. Both are built in one go, by the first `run` or
-`build` that reaches the package; `check` never builds. Inputs are stamped:
+shared library the JIT loads. The first `run` or `build` that reaches the
+package builds the first, and the first `run` the library, from the same
+objects; `check` never builds. Inputs are stamped:
 a path package rebuilds when any of its C sources (by path, modification
 time and size), its sidecar or the set of its extern fns changes, and every
 package, a git checkout included, when `goose.h` does: the header the
 compiler gives native C for the values it cannot declare itself, a
-builder's `gs_rref` (spec §7.10).
+builder's `gs_rref` (spec §7.10). Every program and process that reaches a
+package builds it in that one directory, under a cross-process lock on its
+persistent `build.lock`: one that waited checks the stamp again before
+building anything, and the response file and the stamp, which a build that
+finds the stamp current reads without the lock, are written beside and
+renamed into place, the stamp last.
 
 ### 5.1 Plain C sources
 
 Each file of `c_sources` is compiled to an object with the package's
-includes, defines and flags. The AOT form is the objects themselves, listed
+includes, defines and flags, named for the file's name and a hash of its
+path, so that two of one name in different directories do not share one.
+The AOT form is the objects themselves, listed
 in the response file ahead of `c_libs`: no archiver is needed. The JIT form
 links the objects, `goose_symbols.c` (§5.3) and the system libraries into
 `goose_jit_<name>.{dll,so,dylib}` through the same driver (`-shared`, or
@@ -373,7 +381,9 @@ compilers, the `cmake_options`, and a generator chosen as Ninja if on PATH,
 else the platform default; built with `--config Release`. The configure
 command that last succeeded is kept beside the build; any other one (an
 edited `cmake_options`, or a configure that failed) configures again from a
-fresh cache.
+fresh cache. The wrapper and its two C files are written only when they
+change, so that a build with nothing new compiles and relinks nothing: on
+Windows a JIT library another process has loaded cannot be written over.
 
 The response file for AOT programs is the link closure of `<cmake_target>`:
 its archive, every static library it depends on, and the system libraries
@@ -458,7 +468,10 @@ gfx, audio, physics and ui all set it.
   the packages it requires, so ui's response file precedes gfx's, which is
   what the GNU linker needs; otherwise the root's declaration order.
 * A package is built release, once per toolchain; `--debug` affects the
-  program and the runtime object only.
+  program and the runtime object only. The program's own `c_sources` follow
+  it, built apart from their release build (`native/<toolchain>-debug` in
+  the program's build directory); a CMake part, the program's too, is
+  always built release.
 * The archives built this way link into a program built by the same
   toolchain; the toolchain id (§6.1) is in the build path, so switching
   `--cc` builds the package again rather than mixing.
@@ -505,11 +518,11 @@ and only where stderr is a terminal does a live line, redrawn in place,
 show the running command, its time and the last line it printed.
 `GOOSE_PROGRESS=plain|live` overrides the terminal check.
 
-Without any C compiler:
+Without any C compiler, on Windows:
 
-    cannot find a C compiler (looked for cl, clang-cl, clang on PATH and in
-    Visual Studio), needed to build foo.goose. Install Visual Studio with C++
-    or LLVM, or set GOOSE_CC.
+    cannot find a C compiler (looked for cl, clang-cl and clang on PATH and in
+    Visual Studio, and for gcc and cc on PATH); install Visual Studio with C++
+    or LLVM, or set GOOSE_CC
 
 ### 6.2 The runtime object
 

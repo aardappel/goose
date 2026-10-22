@@ -116,14 +116,16 @@ inline string Unary::CgX(CodeGen &cg) {
 inline string Binary::CgX(CodeGen &cg) {
     if (op == T_DOTEQ || op == T_DOTNEQ) {
         // Reference identity: the addresses (a fat reference's header
-        // pointer); null is the null address.
+        // pointer); null is the null address. A relative reference variable
+        // holds an offset, which loads as the address it encodes (§3.9).
         auto side = [&](Node *n) -> string {
             if (Is<NullLit>(n)) return "NULL";
             string x;
             TypeExpr *t = n->exprtype;
             if (auto id = Is<Ident>(n); id && id->vdef && id->vdef->type->kind == TY_REF) {
-                x = cg.VarLoc(id->vdef).s;
                 t = id->vdef->type;
+                auto lv = cg.VarLoc(id->vdef);
+                x = t->ref->lenstorage >= 0 ? cg.LoadLoc(lv, t, line) : lv.s;
             } else {
                 x = cg.GenX(n);
             }
@@ -138,7 +140,7 @@ inline string Binary::CgX(CodeGen &cg) {
     if (op == T_ANDAND || op == T_OROR) {
         auto l = cg.GenTruth(left);
         auto t = cg.T();
-        cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
+        cg.L("uint8_t ", t, " = (uint8_t)(", l, " != 0);");
         // In a loop that can be straight-line code, a right operand that can
         // neither fail nor have an effect runs whatever the left gave,
         // combined with & or | on the two 0/1 values: a C compiler can
@@ -225,8 +227,6 @@ inline string Binary::CgX(CodeGen &cg) {
         return cg.GenElemwise(this, l, r);
     auto isint = lt->kind == TY_INT && lt->intstorage != IS_VARINT;
     auto isflt = lt->kind == TY_FLT;
-    auto f32 = exprtype && exprtype->kind == TY_FLT &&
-               exprtype->fltstorage == FS_F32;
     // Operands were unified by the typechecker; casting to the common C type
     // realizes any implicit widening (and truncates nothing).
     auto ct = isint || isflt ? cg.CT(lt) : "";
@@ -234,53 +234,11 @@ inline string Binary::CgX(CodeGen &cg) {
     auto rc = isint || isflt ? cat("(", ct, ")(", r, ")") : r;
     switch (op) {
         case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
-            if (isflt) {
-                if (op == T_MOD) return cat(f32 ? "fmodf(" : "fmod(", lc, ", ", rc, ")");
-                const char *o = op == T_PLUS ? " + " : op == T_MINUS ? " - "
-                                : op == T_MUL ? " * " : " / ";
-                return cat("(", lc, o, rc, ")");
-            }
-            if (isint) {
-                auto sfx = cg.IntSfx(lt->intstorage);
-                switch (op) {
-                    case T_PLUS:  return cat("gs_add_", sfx, "(", l, ", ", r,
-                                             cg.OvfLocArgs(lt->intstorage, line), ")");
-                    case T_MINUS: return cat("gs_sub_", sfx, "(", l, ", ", r,
-                                             cg.OvfLocArgs(lt->intstorage, line), ")");
-                    case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r,
-                                             cg.OvfLocArgs(lt->intstorage, line), ")");
-                    default: {   // T_DIV, T_MOD
-                        auto div = op == T_DIV;
-                        auto plainx = [&] {
-                            return nonneg ? cat("(", ct, ")((uint64_t)(", lc, div ? ") / " : ") % ",
-                                                "(uint64_t)(", rc, "))")
-                                          : cg.DivX(div, lt->intstorage, l, r, line);
-                        };
-                        // A divisor fixed for an enclosing loop: its magic, unless
-                        // gs_divu_gen found none to give (HoistDivisors).
-                        auto key = cg.LoopDivisible(this) ? cg.DivisionKey(this) : string();
-                        auto dm = key.empty() ? cg.divmagic.end() : cg.divmagic.find(key);
-                        if (dm == cg.divmagic.end()) return plainx();
-                        auto &mg = dm->second;
-                        auto w = mg.narrow ? "uint32_t" : "uint64_t";
-                        auto q = cat(mg.narrow ? "gs_divu32_q(" : "gs_divu_q(", "(", w, ")(", lc,
-                                     "), ", mg.magic, ", ", mg.more, ")");
-                        auto fast = div ? q : cat("(", w, ")(", lc, ") - ", q, " * ", mg.val);
-                        // Where only a zero divisor goes without, the plain division would
-                        // fail. Failing outright leaves a test of the loop-invariant `more`
-                        // that gcc takes out of the loop; the plain division's own zero
-                        // test would be a loop exit after which the loop's stores might
-                        // not run, which keeps gcc from holding them in registers (and
-                        // from vectorizing the loop).
-                        auto plain = mg.zeronone ? cat("(gs_divfail(", cg.LocArgs(line), "), 0)")
-                                                 : plainx();
-                        return cat("(", ct, ")(", mg.more, " != GS_DIVU_NONE ? ", fast, " : ",
-                                   plain, ")");
-                    }
-                }
-            }
             // Elementwise math on identical struct/fixed-array types (§6.1).
-            return cg.GenElemwise(this, l, r);
+            if (!isint && !isflt) return cg.GenElemwise(this, l, r);
+            auto x = [&] { return cg.ArithX(op, lt, l, r, line, nonneg); };
+            CodeGen::Division dv;
+            return CodeGen::AsDivision(this, dv) ? cg.FixedDivX(dv, l, x, line) : x();
         }
         case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
             const char *o = op == T_LT ? " < " : op == T_GT ? " > "
@@ -295,16 +253,8 @@ inline string Binary::CgX(CodeGen &cg) {
             auto eq = cg.GenEquality(lt, l, r);
             return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
         }
-        case T_BITAND: return cat("(", ct, ")(", lc, " & ", rc, ")");
-        case T_BITOR:  return cat("(", ct, ")(", lc, " | ", rc, ")");
-        case T_XOR:    return cat("(", ct, ")(", lc, " ^ ", rc, ")");
-        case T_SHL:    return cat("gs_shl_", cg.IntSfx(lt->intstorage), "(", l,
-                                  ", (int64_t)(", r, "))");
-        case T_SHR:
-            if (nonneg)
-                return cat("(", ct, ")((uint64_t)(", lc, ") >> ((int64_t)(", r, ") & ",
-                           IntBits(lt->intstorage) - 1, "))");
-            return cat("gs_shr_", cg.IntSfx(lt->intstorage), "(", l, ", (int64_t)(", r, "))");
+        case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR:
+            return cg.ArithX(op, lt, l, r, line, nonneg);
         default: assert(false); return l;
     }
 }
@@ -783,7 +733,7 @@ inline void Call::CgAny(CodeGen &cg, const Dst &d) {
     if (!rets.empty() && !cg.IsVoidT(exprtype) &&
         (!cg.IsBytesT(exprtype) || IsVarintT(exprtype) || exprtype->kind == TY_REF)) {
         auto r0 = cg.CallVal0(this, rets[0], d.t);
-        if (d.k == DK_LVALUE && d.t && d.t->kind == TY_REF && d.t->ref->lenstorage >= 0)
+        if (d.k == DK_LVALUE && d.t && IsRelRef(d.t))
             cg.EmitRelStoreAt(cat("(uint8_t *)&", d.s), d.t, r0, line, false);
         else if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
     }
@@ -861,31 +811,11 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
         auto c = Is<Call>(inits[0]);
         assert(c);
         vector<Dst> dsts;
-        for (size_t i = 0; i < defs.size(); i++) {
-            auto d = defs[i];
-            auto rt = c->rettypes[i];
-            auto name = cg.LocalName(d);
-            if (cg.IsResz(rt) && cg.IsFrameObj(rt)) {
-                cg.EmitCoreTypes();
-                auto stk = cg.AllocStk(true);
-                cg.L(cg.CT(rt), " ", name, ";");
-                cg.SaveBase(true, stk, cat(cg.FoTailHdr(rt, name), ".base"));
-                cg.vstk[d] = stk;
-                dsts.push_back(Dst { DK_STACK, stk, d->type, name });
-            } else if (cg.IsResz(rt)) {
-                cg.EmitCoreTypes();
-                auto stk = cg.AllocStk(true);
-                cg.L("gs_rhdr ", name, " = { ", cg.Top(stk), ", 0 };");
-                cg.SaveBase(true, stk, cat(name, ".base"));
-                cg.vstk[d] = stk;
-                dsts.push_back(Dst { DK_STACK, stk, d->type, cat(name, ".len") });
-            } else if (cg.IsBytesT(rt)) {
-                auto stk = cg.AllocStk(true);
-                cg.L("uint8_t *", name, " = ", cg.Top(stk), ";");
-                cg.SaveBase(true, stk, name);
-                cg.vstk[d] = stk;
-                dsts.push_back(Dst { DK_STACK, stk });
+        for (auto d : defs) {
+            if (cg.IsResz(d->type) || cg.IsBytesT(d->type)) {
+                dsts.push_back(cg.DeclStackLocal(d, true));
             } else {
+                auto name = cg.LocalName(d);
                 cg.FixedLocal(d->type, name, "", true);
                 cg.vnames[d] = name;
                 dsts.push_back(Dst { DK_LVALUE, name, d->type });
@@ -942,48 +872,20 @@ inline void Assign::CgStmt(CodeGen &cg) {
                                cg.OperandT(rhs->exprtype)->kind != lv.t->kind);
             return;
         }
+        // The old value and the operand, which reaches the target's type
+        // implicitly, take part as they are, the C conversions doing the
+        // widening. A `/=` or `%=` divides by the magic number of a divisor a
+        // loop fixed, as `/` and `%` do.
         auto r = cg.GenX(rhs);
-        auto sfx = lv.t->kind == TY_INT ? cg.IntSfx(lv.t->intstorage) : "";
-        auto ovf = [&] { return cg.OvfLocArgs(lv.t->intstorage, line); };
-        switch (op) {
-            case T_PLUSEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " + (", r, ");");
-                else cg.L(lv.s, " = gs_add_", sfx, "(", old, ", ", r, ovf(), ");");
-                break;
-            case T_MINUSEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " - (", r, ");");
-                else cg.L(lv.s, " = gs_sub_", sfx, "(", old, ", ", r, ovf(), ");");
-                break;
-            case T_MULEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " * (", r, ");");
-                else cg.L(lv.s, " = gs_mul_", sfx, "(", old, ", ", r, ovf(), ");");
-                break;
-            case T_DIVEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " / (", r, ");");
-                else cg.L(lv.s, " = ", cg.DivX(true, lv.t->intstorage, old, r, line), ";");
-                break;
-            case T_MODEQ:
-                if (lv.t->kind == TY_FLT)
-                    cg.L(lv.s, " = ", lv.t->fltstorage == FS_F32 ? "fmodf(" : "fmod(", old,
-                      ", ", r, ");");
-                else cg.L(lv.s, " = ", cg.DivX(false, lv.t->intstorage, old, r, line), ";");
-                break;
-            case T_ANDEQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", old, " & (", r, "));"); break;
-            case T_SHLEQ:
-                cg.L(lv.s, " = gs_shl_", sfx, "(", old, ", (int64_t)(", r, "));");
-                break;
-            case T_SHREQ:
-                cg.L(lv.s, " = gs_shr_", sfx, "(", old, ", (int64_t)(", r, "));");
-                break;
-            case T_OREQ:  cg.L(lv.s, " = (", cg.CT(lv.t), ")(", old, " | (", r, "));"); break;
-            case T_XOREQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", old, " ^ (", r, "));"); break;
-            default: assert(false);
-        }
+        auto x = [&] { return cg.ArithX(op, lv.t, old, r, line, false, old, cat("(", r, ")")); };
+        CodeGen::Division dv;
+        cg.L(lv.s, " = ", CodeGen::AsDivision(this, dv) ? cg.FixedDivX(dv, old, x, line) : x(),
+             ";");
         return;
     }
     // Plain assignment, by the target's representation (§4.4).
     auto t = lv.t;
-    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+    if (IsRelRef(t)) {
         // Relative-reference slot: encode from the plain reference value.
         cg.GenRelAssign(lv, lval, rhs, line);
         return;
@@ -1025,9 +927,7 @@ inline void IncDec::CgStmt(CodeGen &cg) {
     auto lv = cg.GenLoc(lval);
     if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
     assert(lv.val);
-    auto o = op == T_INC ? "gs_add_" : "gs_sub_";
-    cg.L(lv.s, " = ", o, cg.IntSfx(lv.t->intstorage), "(", lv.s, ", 1",
-         cg.OvfLocArgs(lv.t->intstorage, line), ");");
+    cg.L(lv.s, " = ", cg.ArithX(op == T_INC ? T_PLUS : T_MINUS, lv.t, lv.s, "1", line), ";");
 }
 
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.
@@ -1063,7 +963,7 @@ inline void While::CgStmt(CodeGen &cg) {
 inline void ForLoop::CgStmt(CodeGen &cg) {
     auto d = Dst {};
     CodeGen::ViewScope vs(cg, hoistrefs, hoistfields);
-    auto iv = vdef ? cg.LocalName(vdef) : cg.T();
+    auto iv = cg.LocalName(vdef);
     auto ix = idxdef ? cg.LocalName(idxdef) : "";
     if (iterkind == IK_RANGE || iterkind == IK_COUNT) {
         // The loop variable runs at the range's own type: narrow counters
@@ -1233,7 +1133,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
                                 esz, "))");
         if (!vdef->copybind && !held) {
             cg.L(cg.CT(et), " ", iv, " = &", elem, ";");
-        } else if (v.elem->kind == TY_REF && v.elem->ref->lenstorage >= 0) {
+        } else if (IsRelRef(v.elem)) {
             // A relative-reference element bound by value: the binding is the
             // decoded pointer, as indexing the array would give (§3.9).
             auto fa = cg.T();
@@ -1304,10 +1204,9 @@ inline void Return::CgStmt(CodeGen &cg) {
     // Exiting an inlined body?
     for (auto i = (int)cg.cscopes.size() - 1; i >= 0; i--) {
         if (cg.cscopes[i].kind == CodeGen::SC_IB && cg.cscopes[i].ibsf == target) {
-            if (!vals.empty()) {
-                cg.GenExitValue(vals[0], i);
-                for (size_t j = 1; j < vals.size(); j++) cg.GenAny(vals[j], Dst {});
-            }
+            // A function with several results is never inlined (Optimizer::Scan).
+            assert(vals.size() <= 1);
+            if (!vals.empty()) cg.GenExitValue(vals[0], i);
             cg.EmitExitRestores(i);
             cg.cscopes[i].usedbrk = true;
             cg.L("goto ", cg.cscopes[i].brklbl, ";");

@@ -25,6 +25,7 @@
     #include <dlfcn.h>
     #include <fcntl.h>
     #include <sys/file.h>
+    #include <sys/stat.h>
 #endif
 
 namespace goose {
@@ -44,8 +45,14 @@ ProcessResult RunProcess(const vector<string> &argv, const string &cwd, bool ech
     subprocess_s p;
     if (subprocess_create_ex(args.data(), options, nullptr, cwd.empty() ? nullptr : cwd.c_str(),
                              &p)) {
-        r.output = cat("cannot start ", argv.empty() ? string("(nothing)") : argv[0], ": ",
-                       strerror(errno));
+        // subprocess.h leaves the reason in GetLastError on Windows, in
+        // errno elsewhere.
+        auto what = cat("cannot start ", argv.empty() ? string("(nothing)") : argv[0]);
+        #ifdef _WIN32
+            r.output = cat(what, " (Windows error ", (unsigned)GetLastError(), ")");
+        #else
+            r.output = cat(what, ": ", strerror(errno));
+        #endif
         return r;
     }
     r.started = true;
@@ -69,7 +76,10 @@ static bool IsFile(const string &path) {
         auto attr = GetFileAttributesA(path.c_str());
         return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
     #else
-        return access(path.c_str(), X_OK) == 0;
+        // A directory one may search is X_OK too.
+        struct stat st;
+        return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+               access(path.c_str(), X_OK) == 0;
     #endif
 }
 

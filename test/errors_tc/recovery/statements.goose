@@ -4,10 +4,12 @@
 // error: expected ')' in call arguments, found 'a'
 // error: expression expected, found 'let'
 // error: expected ';' in assignment statement, found '}'
+// error: expected identifier in variable declaration, found '='
 // The parser reports the error a statement raises, loses the statement,
 // and goes on at the next one, in the same block or after its `}`
 // (docs/design/language_server.md §5 D): every function's errors come
-// out, in order, one per broken statement.
+// out, in order, one per broken statement. A function type, `fn(`, in
+// what is skipped starts no nested function.
 fn f(x: i64) -> i64 {
     let y = x +;
     let z = x * 2;
@@ -36,6 +38,11 @@ fn k(a: i64[:]) -> i64 {
     let b = 5;
     var c = 1;
     c = b
+}
+
+fn cast(a: i64) -> i64 {
+    let = f as fn(i64) -> i64;
+    a
 }
 
 fn main() {

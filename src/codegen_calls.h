@@ -172,7 +172,7 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
     // A relative reference parameter takes the argument's offset (§3.9). The
     // `in pool` form's is the same in the callee's copy; a self-relative one
     // can only be null, which is zero wherever it is.
-    if (pt->kind == TY_REF && pt->ref->lenstorage >= 0) {
+    if (IsRelRef(pt)) {
         auto t = T();
         L(CT(pt), " ", t, ";");
         EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, true, RelValue(node));
@@ -356,8 +356,6 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
         // report the count (the one caller-side copy of this fallback).
         EmitSlidePrefix(slidebase, LenStore(sp->rets[0]->arr), slide.s, slide.lenlv);
     }
-    // A fixed first return requested onto a stack: store it (mixed cases
-    // are handled above via cret; nothing more to do here).
     return retex;
 }
 
@@ -608,31 +606,13 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         }
     };
     // Evaluate every argument in source order, including the dispatched
-    // argument; its position is not necessarily the first one.
-    vector<string> shared(an.size());
-    vector<string> sharedstk(an.size());
+    // argument; its position is not necessarily the first one. The others
+    // become the C arguments every arm passes, read before the switch (the
+    // cases agree on those parameters' types).
+    vector<vector<string>> shared(an.size());
     for (size_t i = 0; i < an.size(); i++) {
-        if ((int)i == pos) { scrutinee(); continue; }
-        auto pt = sp0->argtypes[i];
-        if (IsPoolParam(sp0, i)) {
-            shared[i] = GenPrefVal(an[i]);
-        } else if (IsResz(pt)) {
-            string stk;
-            auto h = RzTemp(pt, stk);
-            GenConstruct(an[i], stk, pt, RzLenLv(pt, h));
-            shared[i] = h;
-            sharedstk[i] = stk;
-        } else if (IsBytesT(pt)) {
-            string stk;
-            auto base = BytesTemp(stk);
-            GenConstruct(an[i], stk, pt);
-            shared[i] = base;
-            sharedstk[i] = stk;
-        } else {
-            auto value = GenXD(an[i], pt);
-            shared[i] = T();
-            FixedLocal(pt, shared[i], value);
-        }
+        if ((int)i == pos) scrutinee();
+        else EmitArg(sp0, i, an[i], shared[i], true);
     }
     // Shared return channels.
     vector<string> retex(sp0->rets.size());
@@ -707,17 +687,14 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         // Assemble the arm's call.
         vector<string> args;
         for (size_t i = 0; i < an.size(); i++) {
-            auto pt = sp->argtypes[i];
-            auto &v = (int)i == pos ? varg : shared[i];
-            if (IsLargeFixed(pt)) args.push_back(cat("&", v));
-            else if (IsResz(pt)) args.push_back(v);
-            else PushArg(args, pt, IsPoolParam(sp, i), v);
-            if ((int)i == pos) {
-                if (IsBytesT(pt) && IsResz(pt))
-                    Fail(c->line, "resizable by-value dispatch payloads are unsupported");
-            } else if (IsBytesT(pt) && IsResz(pt)) {
-                args.push_back(sharedstk[i]);
+            if ((int)i != pos) {
+                args.insert(args.end(), shared[i].begin(), shared[i].end());
+                continue;
             }
+            auto pt = sp->argtypes[i];
+            if (IsResz(pt)) Fail(c->line, "resizable by-value dispatch payloads are unsupported");
+            if (IsLargeFixed(pt)) args.push_back(cat("&", varg));
+            else PushArg(args, pt, IsPoolParam(sp, i), varg);
         }
         for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
         for (size_t i = 0; i < sp->rets.size(); i++) {

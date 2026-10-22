@@ -140,10 +140,13 @@ inline void CodeGen::StackReport(FILE *out, const StackConfig &cfg) {
         workerregions = std::max(workerregions,
                                  describe(cat("worker `", name, "`"), ProgramStacks({ sp }),
                                           thunkregions[sp], "argument and global stacks"));
+    // As gs_rt_start computes it: workers that hold no regions leave
+    // hardware_threads() uncapped.
     if (workers.empty()) {
         fprintf(out, "thread cap: none, no workers\n");
+    } else if (workerregions == 0) {
+        fprintf(out, "thread cap: none, no worker holds a region\n");
     } else {
-        // As gs_rt_start computes it.
         auto spare = (int64_t)std::min<uint64_t>(total, INT64_MAX) - mainregions;
         auto cap = spare > workerregions ? spare / workerregions : 1;
         fprintf(out, "thread cap: %lld workers ((%llu - %lld) / %lld), what hardware_threads() "

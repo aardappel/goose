@@ -1,4 +1,4 @@
-// Functions and function values written in a function value's body name its
+// dump-runtime: functions and function values written in a function value's body name its
 // parameters and locals (§7.5, §7.6). Each check of a call of the value
 // clones the body and binds them anew: another call site, or the same call
 // checked again as an argument, specializes what the body declares again,

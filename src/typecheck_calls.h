@@ -71,10 +71,6 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
     // `ns::f` never names one.
     auto bd = LookupBuiltin(GlobalLeaf(id->name));
     if (!cands.empty()) {
-        for (auto sf : cands)
-            if (sf->isthread)
-                Error(c, cat("thread_fn ", id->name, " is spawned with thread_spawn, "
-                             "not called"));
         Node *nopre = nullptr;
         // A user function set sharing a builtin's name (a `format`
         // overload, §3.7) takes the calls it matches; the builtin the rest.
@@ -84,12 +80,11 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
                              entryreach, bd ? &nomatch : nullptr, expected);
         if (!nomatch) return v;
         // Without a cast, an argument might have matched a function (JudgeCastAt).
-        auto args = c->args;
-        for (auto a : args) builtinfallback.insert(a);
+        auto fallback = builtinfallback;
+        fallback.insert(c->args.begin(), c->args.end());
+        Saved<unordered_set<Node *>> fs(builtinfallback, std::move(fallback));
         reachable = entryreach;
-        v = CheckBuiltin(c, *bd, c->args, nullptr);
-        for (auto a : args) builtinfallback.erase(a);
-        return v;
+        return CheckBuiltin(c, *bd, c->args, nullptr);
     }
     if (!bd) {
         if (LookupVar(id->name, id->ns))
@@ -352,7 +347,8 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
                 v = CheckV(a, nullptr);
             }
             // A pending array (`var out = []`) is completed by the builtin
-            // sharing this name (push, append, format), never by user code.
+            // sharing this name (push, append, alloc_index, alloc_ref,
+            // format), never by user code.
             if (nomatch && IsPendingArray(v.type)) {
                 *nomatch = true;
                 return Val {};
@@ -387,8 +383,6 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
                      which));
     };
     if (tied.size() > 1) ambiguous(tied);
-    if (tied.size() == 1)
-        JudgeCallCasts(c, cands, env, argnodes, argvals, best, name, nomatch != nullptr);
     if (tied.empty()) {
         // Tag dispatch (§8.2): the match-as-overload-set form.
         auto v = TryDispatch(c, cands, env, argnodes, argvals, name, entryreach);
@@ -421,6 +415,20 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         if (converting.size() > 1) ambiguous(converting);
         best = converting[0];
     }
+    // Without a cast, the call resolves as it does where it comes to best
+    // again: as the one match that ranks best, or as the one that converts
+    // an integer to a float, where neither tag dispatch (an ADT argument)
+    // nor a builtin of the name comes first.
+    JudgeCallCasts(cands, best, argnodes, argvals, [&](vector<Val> &trial) {
+        vector<MatchInfo> ties, conv;
+        MatchCandidates(c, cands, env, trial, ties, conv, nullptr, name);
+        if (ties.size() == 1) return SameMatch(ties[0], best);
+        auto adt = any_of(trial.begin(), trial.end(), [](const Val &av) {
+            auto t = IsPlainRef(av.type) ? av.type->ref->sub : av.type;
+            return t && t->kind == TY_ENUM;
+        });
+        return ties.empty() && conv.size() == 1 && !nomatch && !adt && SameMatch(conv[0], best);
+    });
     ContextualFloatCall(c, cands, env, argnodes, argvals, best, expected, name);
     FnSpec *denv = nullptr;
     if (best.nwritten < best.paramtypes.size()) {
@@ -434,40 +442,14 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         BindBranchesByRef(argnodes, argvals, best.paramtypes, best.sf, -1, best.nwritten);
     }
     auto spec = GetOrCreateSpec(best, argvals, c);
-    ApplyCalleeShrinks(c, spec, argvals, name, &argnodes);
+    ApplyCalleeShrinks(c, spec, argvals, name, argnodes);
     ApplyCalleeGrows(c, spec, argvals, name);
-    // Phase 2: re-check arguments against the resolved parameter types.
-    // Arguments construct into fresh parameter slots, not curdst.
-    // Start at the call's entry again: a later argument may have diverged
-    // during discovery, but earlier arguments still execute before it.
+    // Phase 2 starts at the call's entry again: a later argument may have
+    // diverged during discovery, but earlier arguments still execute before
+    // it.
     auto argsreach = reachable;
     reachable = entryreach;
-    {
-        DestScope ds(*this, Dest {});
-        for (size_t i = 0; i < best.paramtypes.size(); i++) {
-            UnrefForValueParam(argnodes[i], best.paramtypes[i]);
-            // A `&` at a parameter declared as a reference is redundant
-            // (§4.1) -- unless it picked this overload. RefArg has warned
-            // of one to a value that is not fixed-size; a varint's is the
-            // i64 it decodes to (§3.6).
-            auto &p = best.sf->params[i];
-            if (i < best.nwritten && UserRefOf(argnodes[i]) && cands.size() == 1 && p.type &&
-                !HasGenerics(p.type) && p.type->kind == TY_REF &&
-                ClassOf(LoadType(p.type->ref->sub)) == SC_FIXED)
-                Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
-                                      " is passed by reference without it (§4.1)"));
-            if (i < best.nwritten) CheckArg(argnodes[i], best.paramtypes[i]);
-            else InParamDefault(c, best, denv, i,
-                                [&]() { CheckArg(argnodes[i], best.paramtypes[i]); });
-            // A by-value non-fixed-size parameter takes a copy of its
-            // argument (§4.1), a temporary of the statement whatever the
-            // argument names (NoteTemp).
-            if (ClassOf(best.paramtypes[i]) != SC_FIXED) argnodes[i]->nftemp = true;
-            // The call's own operands are what later arguments' checks see
-            // held (HeldOperands), so a rebound one replaces its original now.
-            c->SetArgNode(i, argnodes[i]);
-        }
-    }
+    RecheckArgs(c, cands, best, denv, argnodes, -1, {});
     // A C function's parameters are what they say (§7.10): a read-only
     // reference or slice needs the parameter declared const.
     if (best.sf->isextern) {
@@ -483,11 +465,62 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     // Arguments the re-check rebound by reference replace the originals.
     c->SetArgNodes(argnodes);
     c->spec = spec;
-    CheckfreeCallee(c, spec->sf);
-    reachable = reachable && argsreach;
-    ApplyCalleeRebinds(spec);
-    if (auto rec = RecordOf(spec); rec && !rec->mayreturn) reachable = false;
+    CalleesReturn(c, { spec }, argsreach);
     return CallResult(c, spec, argvals);
+}
+
+// Phase 2 of a call (ResolveCall, TryDispatch): each argument checked again
+// against its parameter's type as resolution chose it, in order, each
+// constructing into a fresh parameter slot rather than curdst; a parameter
+// from mi.nwritten on takes its default (AddParamDefaults), checked in the
+// default's frame. `skip` is a dispatch position, whose value the cases
+// take as it is, where `atskip` runs instead.
+inline void TypeCheck::RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInfo &mi,
+                                   FnSpec *denv, vector<Node *> &argnodes, int skip,
+                                   const function<void()> &atskip) {
+    DestScope ds(*this, Dest {});
+    for (size_t i = 0; i < mi.paramtypes.size(); i++) {
+        if ((int)i == skip) {
+            atskip();
+            continue;
+        }
+        UnrefForValueParam(argnodes[i], mi.paramtypes[i]);
+        // A `&` at a parameter declared as a reference is redundant
+        // (§4.1) -- unless it picked this overload. RefArg has warned
+        // of one to a value that is not fixed-size; a varint's is the
+        // i64 it decodes to (§3.6).
+        auto &p = mi.sf->params[i];
+        if (i < mi.nwritten && UserRefOf(argnodes[i]) && cands.size() == 1 && p.type &&
+            !HasGenerics(p.type) && p.type->kind == TY_REF &&
+            ClassOf(LoadType(p.type->ref->sub)) == SC_FIXED)
+            Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
+                                  " is passed by reference without it (§4.1)"));
+        if (i < mi.nwritten) CheckArg(argnodes[i], mi.paramtypes[i]);
+        else InParamDefault(c, mi, denv, i, [&]() { CheckArg(argnodes[i], mi.paramtypes[i]); });
+        // A by-value non-fixed-size parameter takes a copy of its
+        // argument (§4.1), a temporary of the statement whatever the
+        // argument names (NoteTemp).
+        if (ClassOf(mi.paramtypes[i]) != SC_FIXED) argnodes[i]->nftemp = true;
+        // The call's own operands are what later arguments' checks see
+        // held (HeldOperands), so a rebound one replaces its original now.
+        c->SetArgNode(i, argnodes[i]);
+    }
+}
+
+// What a call's callees do once its arguments are checked again: one, or a
+// dispatch's cases, alternatives of one call (TryDispatch). The checkfree
+// rule holds for each, the optionals any may rebind are rebound, and the
+// call returns where any of them may -- one whose record is not read yet,
+// a back edge's in its cycle's first round, may.
+inline void TypeCheck::CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach) {
+    auto mayreturn = false;
+    for (auto sp : specs) {
+        CheckfreeCallee(c, sp->sf);
+        ApplyCalleeRebinds(sp);
+        auto rec = RecordOf(sp);
+        mayreturn = mayreturn || !rec || rec->mayreturn;
+    }
+    reachable = reachable && argsreach && mayreturn;
 }
 
 // A control construct whose branches are all storage, or references, binds
@@ -613,62 +646,53 @@ inline void TypeCheck::ContextualFloatCall(Call *c, vector<SFunction *> &cands, 
     if (expected && IsF32(expected)) best = tied[0];
 }
 
-// The followed casts (§6.3) among a call's written arguments, each judged by
-// resolving the call without it (§7.1): to the same function, with the same
-// parameter types, bindings (a generic one's inference, §7.7) and literal
-// parameters, as the one match that ranks best; or as the one match that
-// converts an integer to a float, where neither tag dispatch nor a builtin
-// of the name (`builtin`) comes first. The argument then meets its parameter
-// as a value meets a typed destination (JudgeCastAt). Where overloads or
-// generic parameters resolve the arguments together, the arguments whose
-// values would differ without their casts (casttyped) are resolved without
-// all of them as well: two may both go where the call resolves alike all
-// three ways, and where it does not without both, one may, the later one
-// where it can; more are not judged.
-inline void TypeCheck::JudgeCallCasts(Call *c, vector<SFunction *> &cands, FnSpec *env,
-                                      vector<Node *> &argnodes, vector<Val> &argvals,
-                                      MatchInfo &best, string_view name, bool builtin) {
-    auto same = [&](MatchInfo &mi) {
-        if (mi.sf != best.sf || mi.nwritten != best.nwritten || mi.litparams != best.litparams ||
-            mi.paramtypes.size() != best.paramtypes.size() || !BindingsEq(mi.bindings, best.bindings))
-            return false;
-        for (size_t k = 0; k < mi.paramtypes.size(); k++)
-            if (!TypeEq(mi.paramtypes[k], best.paramtypes[k])) return false;
-        return true;
-    };
-    // Tag dispatch needs an ADT argument (TryDispatch).
-    auto dispatchable = [&](const vector<Val> &vals) {
-        for (auto &av : vals) {
-            auto t = IsPlainRef(av.type) ? av.type->ref->sub : av.type;
-            if (t && t->kind == TY_ENUM) return true;
-        }
+// Whether two resolutions of a call chose alike: the same function, with the
+// same parameter types, bindings (a generic one's inference, §7.7) and
+// literal parameters.
+inline bool TypeCheck::SameMatch(MatchInfo &a, MatchInfo &b) {
+    if (a.sf != b.sf || a.nwritten != b.nwritten || a.litparams != b.litparams ||
+        a.paramtypes.size() != b.paramtypes.size() || !BindingsEq(a.bindings, b.bindings))
         return false;
-    };
-    auto resolves = [&](const vector<size_t> &without) {
+    for (size_t k = 0; k < a.paramtypes.size(); k++)
+        if (!TypeEq(a.paramtypes[k], b.paramtypes[k])) return false;
+    return true;
+}
+
+// The followed casts (§6.3) among a call's written arguments, each judged by
+// resolving the call without it (§7.1): `resolves` says whether the call,
+// given the arguments with the casts in question deleted, comes to the
+// choice it made, best -- for a dispatch, the case of each variant (§8.2).
+// The argument then meets its parameter as a value meets a typed
+// destination (JudgeCastAt). Where overloads or generic parameters resolve
+// the arguments together, the arguments whose values would differ without
+// their casts (casttyped) are resolved without all of them as well: two may
+// both go where the call resolves alike all three ways, and where it does
+// not without both, one may, the later one where it can; more are not
+// judged.
+inline void TypeCheck::JudgeCallCasts(vector<SFunction *> &cands, MatchInfo &best,
+                                      vector<Node *> &argnodes, vector<Val> &argvals,
+                                      const function<bool(vector<Val> &)> &resolves) {
+    auto without = [&](const vector<size_t> &deleted) {
         auto trial = argvals;
-        for (auto i : without) {
+        for (auto i : deleted) {
             auto &a = castalts[argnodes[i]];
             trial[i] = a.pending ? a.alt : a.raw;
         }
-        vector<MatchInfo> tied, converting;
-        MatchCandidates(c, cands, env, trial, tied, converting, nullptr, name);
-        return tied.size() == 1 ? same(tied[0])
-               : tied.empty() && converting.size() == 1 && !builtin && !dispatchable(trial) &&
-                     same(converting[0]);
+        return resolves(trial);
     };
     auto joint = cands.size() > 1 || !best.bindings.empty();
     for (auto &p : best.sf->params) joint = joint || !p.type || HasGenerics(p.type);
     vector<size_t> differing;
     for (size_t i = 0; i < best.nwritten && i < argnodes.size(); i++)
         if (casttyped.count(argnodes[i])) differing.push_back(i);
-    auto together = !joint || differing.size() < 2 || (differing.size() == 2 && resolves(differing));
+    auto together = !joint || differing.size() < 2 || (differing.size() == 2 && without(differing));
     auto pair = !together && differing.size() == 2;
-    auto later = pair && resolves({ differing[1] });
+    auto later = pair && without({ differing[1] });
     for (size_t i = 0; i < best.nwritten && i < argnodes.size(); i++) {
         auto it = castalts.find(argnodes[i]);
         if (it == castalts.end()) continue;
         auto a = it->second;
-        auto ok = resolves({ i });
+        auto ok = without({ i });
         if (ok && casttyped.count(argnodes[i]) && !together)
             ok = pair && (i == differing[1] || !later);
         if (ok) JudgeCastAt(argnodes[i], best.paramtypes[i], DecayRef(argvals[i]));
@@ -707,10 +731,6 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         mi.bindings.push_back({ sf->generics[i].name, t });
     }
     mi.paramtypes.resize(P);
-    // The callee's own generic names must not resolve to same-named
-    // enclosing bindings while unifying (the recursive-generic case).
-    auto saveex = ownexclude;
-    ownexclude = &sf->generics;
     // A literal argument (or a literal parameter passed on) to a parameter
     // whose type is a bare type variable no typed argument binds, or that
     // is untyped, stays a literal inside the specialization (§7.7): the
@@ -723,11 +743,13 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     };
     auto isliteral = [](const Val &av) { return av.ck != CK_NONE || av.unsized; };
     set<string_view> litbound;   // Type variables bound by literals alone.
-    // Trying a candidate records nothing: the chosen overload's
-    // argument re-check does.
-    auto saverecord = litrecord;
-    litrecord = false;
     auto paramsok = [&]() {
+        // The callee's own generic names must not resolve to same-named
+        // enclosing bindings while unifying (the recursive-generic case).
+        Saved<const vector<GenericParam> *> ex(ownexclude, &sf->generics);
+        // Trying a candidate records nothing: the chosen overload's
+        // argument re-check does.
+        FlagScope lr(litrecord, false);
         // A literal argument adapts to whatever type the other arguments
         // give a type parameter (§3.1), so they unify after the typed ones:
         // a float one first, whose type an integer one converts to (§6.3).
@@ -794,8 +816,6 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         }
         return true;
     }();
-    ownexclude = saveex;
-    litrecord = saverecord;
     if (!paramsok) return false;
     // Leftover generics bind function values, in order (§7.6).
     vector<string_view> unbound;
@@ -835,9 +855,11 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     // The left-out parameters' types, as the arguments made them. A type
     // variable a function value took leaves one undecided as well.
     for (auto i = K; i < P; i++) {
-        ownexclude = &sf->generics;
-        auto pt = Subst(sf->params[i].type);
-        ownexclude = saveex;
+        TypeExpr *pt;
+        {
+            Saved<const vector<GenericParam> *> ex(ownexclude, &sf->generics);
+            pt = Subst(sf->params[i].type);
+        }
         auto ct = DeclType(sf->params[i].type, SubstOwn(pt, mi.bindings));
         if (HasGenerics(ct)) {
             for (auto g : unbound) if (undecided(g)) return false;
@@ -1065,18 +1087,38 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     vector<MatchInfo> matches;  // Per variant, for the found position.
     TypeExpr *enumtype = nullptr;
     auto byref = false;
-    // Whether each variant of et, passed at pos, matches exactly one case,
-    // which vm collects. A dispatched call evaluates its arguments once,
-    // before the tag picks the case, so the cases get every argument
+    // The ADT the argument vals[pos] is, if any, and whether the cases take
+    // its payload by reference.
+    auto adtat = [&](const vector<Val> &vals, size_t pos, bool &isref) -> TypeExpr * {
+        auto at = vals[pos].type;
+        TypeExpr *et = nullptr;
+        isref = false;
+        if (at->kind == TY_ENUM) {
+            et = at;
+            // A control construct whose branches are all storage passes
+            // them by reference, as that storage would be (§4.1).
+            isref = vals[pos].storagebranches;
+        } else if (IsPlainRef(at) && at->ref->sub->kind == TY_ENUM) {
+            et = at->ref->sub;
+            isref = true;
+        }
+        // Fixed-mode payloads pass by copy even through a reference, for
+        // the same soundness reason as match binders (§3.5).
+        isref = isref && et && et->enu->varmode;
+        return et;
+    };
+    // Whether each variant of et, passed at pos among vals, matches exactly
+    // one case, which vm collects. A dispatched call evaluates its arguments
+    // once, before the tag picks the case, so the cases get every argument
     // written, and none of their defaults (§8.2): only `defaults` tries
     // with them, to say so. A case converting an integer argument to a
     // float counts only where no other matches (ResolveCall).
-    auto dispatches = [&](size_t pos, TypeExpr *et, bool isref, bool defaults,
-                          vector<MatchInfo> &vm) {
+    auto dispatches = [&](vector<Val> &vals, size_t pos, TypeExpr *et, bool isref,
+                          bool defaults, vector<MatchInfo> &vm) {
         for (auto &var : et->enu->en->variants) {
             auto vt = ast.VariantTypeOf(et, &var, c->line);
-            auto saved = argvals[pos];
-            argvals[pos].type = isref ? ast.RefTo(vt, c->line) : vt;
+            auto saved = vals[pos];
+            vals[pos].type = isref ? ast.RefTo(vt, c->line) : vt;
             MatchInfo onlymatch, onlyconverting;
             auto count = 0, converting = 0;
             for (auto sf : cands) {
@@ -1084,7 +1126,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
                 mi.sf = sf;
                 mi.env = env;
                 string why;
-                if (!TryMatch(sf, c, argvals, mi, why, defaults)) continue;
+                if (!TryMatch(sf, c, vals, mi, why, defaults)) continue;
                 if (mi.tier == MatchInfo::INTTOFLOAT) {
                     onlyconverting = mi;
                     converting++;
@@ -1093,7 +1135,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
                     count++;
                 }
             }
-            argvals[pos] = saved;
+            vals[pos] = saved;
             if (!count) {
                 count = converting;
                 onlymatch = onlyconverting;
@@ -1105,26 +1147,13 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     };
     auto withdefaults = false;
     for (size_t pos = 0; pos < argvals.size(); pos++) {
-        auto at = argvals[pos].type;
-        TypeExpr *et = nullptr;
         auto isref = false;
-        if (at->kind == TY_ENUM) {
-            et = at;
-            // A control construct whose branches are all storage passes
-            // them by reference, as that storage would be (§4.1).
-            isref = argvals[pos].storagebranches;
-        } else if (IsPlainRef(at) && at->ref->sub->kind == TY_ENUM) {
-            et = at->ref->sub;
-            isref = true;
-        }
+        auto et = adtat(argvals, pos, isref);
         if (!et) continue;
-        // Fixed-mode payloads pass by copy even through a reference, for
-        // the same soundness reason as match binders (§3.5).
-        isref = isref && et->enu->varmode;
         vector<MatchInfo> vm;
-        if (!dispatches(pos, et, isref, false, vm)) {
+        if (!dispatches(argvals, pos, et, isref, false, vm)) {
             vector<MatchInfo> unused;
-            withdefaults = withdefaults || dispatches(pos, et, isref, true, unused);
+            withdefaults = withdefaults || dispatches(argvals, pos, et, isref, true, unused);
             continue;
         }
         if (found >= 0)
@@ -1141,6 +1170,26 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
                          "written: a dispatched call passes no case's defaults (§8.2)"));
         return Val {};
     }
+    // Without a cast, the call resolves as it does where no overload takes
+    // it (ResolveCall) and it dispatches at the same position, each variant
+    // to the same case.
+    JudgeCallCasts(cands, matches[0], argnodes, argvals, [&](vector<Val> &trial) {
+        vector<MatchInfo> ties, conv;
+        MatchCandidates(c, cands, env, trial, ties, conv, nullptr, name);
+        if (!ties.empty()) return false;
+        auto alike = false;
+        for (size_t pos = 0; pos < trial.size(); pos++) {
+            auto isref = false;
+            auto et = adtat(trial, pos, isref);
+            vector<MatchInfo> vm;
+            if (!et || !dispatches(trial, pos, et, isref, false, vm)) continue;
+            if ((int)pos != found) return false;
+            alike = true;
+            for (size_t vi = 0; vi < vm.size(); vi++)
+                alike = alike && SameMatch(vm[vi], matches[vi]);
+        }
+        return alike;
+    });
     if (ClassOf(enumtype) == SC_RESIZABLE)
         Error(c, "dispatching a resizable ADT payload is not supported by the C backend "
                  "yet; match its tag without a payload binder, or use a standalone "
@@ -1190,7 +1239,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
         armvals[found] = argvals[found];
         armvals[found].type = byref ? ast.RefTo(vt, c->line) : vt;
         auto spec = GetOrCreateSpec(mi, armvals, c);
-        ApplyCalleeShrinks(c, spec, armvals, name);
+        ApplyCalleeShrinks(c, spec, armvals, name, argnodes);
         ApplyCalleeGrows(c, spec, armvals, name);
         if (first) {
             if (spec->rets.size() != first->rets.size())
@@ -1213,26 +1262,15 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     // calls cannot clobber lastcallrets); the dispatch arg keeps its type.
     auto argsreach = reachable;
     reachable = entryreach;
-    {
-        DestScope ds(*this, Dest {});
-        for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
-            if ((int)i != found) {
-                UnrefForValueParam(argnodes[i], matches[0].paramtypes[i]);
-                CheckArg(argnodes[i], matches[0].paramtypes[i]);
-                // As in ResolveCall: the rebound argument replaces its original.
-                c->SetArgNode(i, argnodes[i]);
-            } else {
-                // Value cases receive an enum snapshot before later arguments.
-                // A reference case retains the original storage instead.
-                auto byreference = false;
-                for (auto sp : c->dispatch)
-                    byreference |= sp->argtypes[i]->kind == TY_REF;
-                RecordVal(argnodes[i], byreference ? argvals[i] : DecayRef(argvals[i]));
-            }
-    }
+    RecheckArgs(c, cands, matches[0], nullptr, argnodes, found, [&]() {
+        // Value cases receive an enum snapshot before later arguments.
+        // A reference case retains the original storage instead.
+        auto byreference = false;
+        for (auto sp : c->dispatch) byreference |= sp->argtypes[found]->kind == TY_REF;
+        RecordVal(argnodes[found], byreference ? argvals[found] : DecayRef(argvals[found]));
+    });
     // Like an ordinary call's, the cases' rebinds follow the argument checks.
-    for (auto sp : c->dispatch) ApplyCalleeRebinds(sp);
-    for (auto sp : c->dispatch) CheckfreeCallee(c, sp->sf);
+    CalleesReturn(c, c->dispatch, argsreach);
     // The cases are alternatives of one call, like a match's arms: the result
     // is only as long-lived, exact and writable as every case's result. A case
     // checked without recording a root for a result only returns null there or
@@ -1251,13 +1289,6 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
     }
     lastcallrets = results;
-    reachable = reachable && argsreach;
-    auto mayreturn = false;
-    for (auto spec : c->dispatch) {
-        auto rec = RecordOf(spec);
-        mayreturn |= !rec || rec->mayreturn;
-    }
-    reachable = reachable && mayreturn;
     return results.empty() ? VoidVal() : results[0];
 }
 
@@ -1330,6 +1361,12 @@ inline bool TypeCheck::HasView(Val &av, TypeExpr *pt, int reach, SFunction *sf) 
 inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode) {
     auto sf = mi.sf;
     if (sf->brokensig) throw Abandoned {};
+    // A thread_fn starts a program of its own (§11.2), whose one
+    // specialization a spawn makes (EnsureThreadSpec): no call runs it,
+    // however it names it -- as a member, through a function value, as a
+    // dispatched case or as a format overload.
+    if (sf->isthread)
+        Error(callnode, cat("thread_fn ", sf->name, " is spawned with thread_spawn, not called"));
     // A nested function is specialized where it is declared (§7.5). A call
     // that reaches the declaration ahead of the declaring body (a nested
     // function declared earlier calling it) would have it name variables
@@ -1568,6 +1605,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (!spec->inprogress && !spec->stale && !spec->failed &&
             (spec->storesout || !EnvUnchanged(spec)))
             continue;
+        // One the last round of its cycle did not reach has no record that
+        // settled (CheckSpecBody): a call after the cycle is checked anew.
+        if (spec->stale && !CycleHead(spec)->inprogress) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
         // A type argument no parameter type mentions (`size<u8>()`) shows
         // only in the bindings.
@@ -1685,8 +1725,10 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     spec->litparams = mi.litparams;
     spec->fnvals = mi.fnvals;
     spec->bindings = mi.bindings;
-    sf->specs.push_back(spec);
+    // An error in what the call's literal arguments rely on is the call
+    // site's: it leaves no specialization behind for a later call to reuse.
     NoteLitArgs(spec, argvals, callnode);
+    sf->specs.push_back(spec);
     CheckSpecBody(spec, &argvals, callnode->line);
     NoteCalleeEnvReads(spec);
     return spec;
@@ -1931,7 +1973,7 @@ inline void TypeCheck::NoteLitArgs(FnSpec *spec, vector<Val> &argvals, Node *at)
 }
 
 inline void TypeCheck::VerifyLiterals() {
-    for (auto &lc : litchecks) {
+    for (auto &lc : litchecks) CheckItem([&] {
         set<pair<FnSpec *, int>> seen;
         vector<pair<FnSpec *, int>> todo { { lc.spec, lc.param } };
         while (!todo.empty()) {
@@ -1950,7 +1992,7 @@ inline void TypeCheck::VerifyLiterals() {
             for (auto &lf : spec->litflows)
                 if (lf.param == param) todo.push_back({ lf.to, lf.toparam });
         }
-    }
+    });
 }
 
 inline void TypeCheck::ValidateCycle(FnSpec *spec, Node *callnode) {
@@ -1970,7 +2012,7 @@ inline void TypeCheck::ValidateCycle(FnSpec *spec, Node *callnode) {
     // A cycle function without an explicit return type is committed to
     // returning nothing at the back edge; a later `return v` then errors
     // with a mismatch (return-type inference cannot cross the back edge).
-    if (!spec->retsknown) spec->retsknown = true;
+    spec->retsknown = true;
 }
 
 inline FnSpec *TypeCheck::CycleHead(FnSpec *s) {
@@ -2042,12 +2084,26 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
 // literal, or the text print or str renders -- was under construction while
 // its parts were checked, on such a stack, so a call into the cycle among
 // them (the frame counts them, JoinCycle) held that stack across the call.
-// Not so format, whose text goes into the storage it is given.
+// Not so format, whose text goes into the storage it is given. A block's
+// value is built at its call's destination, which codegen takes before the
+// block's arguments and body run (EmitFvCall), so the calls into the cycle
+// among them hold it unless it is in place.
 inline void TypeCheck::NoteTemp(Node *n, const Val &v, int cyclecalls) {
     auto nonfixed = v.type && ClassOf(v.type) != SC_FIXED;
     n->nftemp = nonfixed && !v.lvalue && !v.pointee;
     auto fi = (int)frames.size() - 1;
     if (frames[fi].cyclecalls == cyclecalls) return;
+    if (auto c = Is<Call>(n); c && c->fvbody && nonfixed) {
+        auto &path = StateOf(fi).nodepath;
+        auto k = (int)path.size() - 1;
+        if (k >= 0 && path[k].node == n && !BuiltInPlace(fi, k, { v.type }))
+            Error(n, cat(FrameFnName(fi), " calls into its recursive cycle inside the block it "
+                         "calls here, whose non-fixed-size value would land in a temporary, "
+                         "holding a data stack across the call (§7.8): return it as the whole "
+                         "result, or take an output buffer by reference and build into it in "
+                         "place"));
+        return;
+    }
     const char *where = nullptr;
     if (auto c = Is<Call>(n)) {
         if (c->builtin == B_PRINT) where = "the arguments of print(...), whose text";
@@ -2149,25 +2205,18 @@ inline void TypeCheck::CycleCallTemps(int fi, Node *callnode) {
 }
 
 // The result of each frame's call into the cycle (JoinCycle), where it is
-// of non-fixed-size class: it is built where the call's destination is,
-// which is a temporary of the statement -- a data stack taken before the
-// call and held across it (§7.8) -- unless the destination is the caller's,
-// where the call is the whole value of a return of the same result types
-// (forwarded, codegen GenNormalReturn), reached through the constructs
-// whose value it is (a block's tail, a branch, a break's value); resizable
-// storage the value is pushed or appended into, built in place at its top
-// (which §1.3(4) then rejects where the callee grows that storage, as every
-// function of a cycle appending into it does); or a local being
-// initialized, which CheckCycleInit reports. An assignment's value is one
-// whose callee may use the target, rejected by §4.4 before this. A frame's
+// of non-fixed-size class, must be built in place (BuiltInPlace). A frame's
 // call is the innermost call on its path, whose callee's body the next
-// frame checks.
+// frame checks. A frame calling a block makes its call into the cycle
+// through the block's body, whose value is not known before the body's
+// check ends: NoteTemp checks that call then. A frame taking a default
+// makes none: the default's frame does.
 inline void TypeCheck::CycleCallResult(FnSpec *spec, Node *callnode) {
     auto last = (int)frames.size() - 1;
     auto fi = FrameOfSpec(CycleHead(spec));
     if (fi < 0) fi = 0;
     for (auto i = fi; i <= last; i++) {
-        if (!frames[i].spec || !frames[i].sf || frames[i].isfunval) continue;
+        if (!frames[i].spec) continue;
         auto callee = i == last ? spec : frames[i + 1].spec;
         if (i < last && (!callee || !frames[i + 1].sf || frames[i + 1].isfunval)) continue;
         auto nonfixed = false;
@@ -2177,59 +2226,80 @@ inline void TypeCheck::CycleCallResult(FnSpec *spec, Node *callnode) {
         auto k = (int)path.size() - 1;
         while (k >= 0 && (path[k].frame != i || !Is<Call>(path[k].node))) k--;
         if (k < 0 || (i == last && path[k].node != callnode)) continue;
-        auto call = path[k].node;
-        auto returned = [&](FnSpec *target, size_t at, size_t count) {
-            if (!target || !target->retsknown) return false;
-            if (count == 1 && callee->rets.size() > 1) {
-                // A single call forwarding every result (§7.1).
-                if (target->rets.size() != callee->rets.size()) return false;
-                for (size_t r = 0; r < callee->rets.size(); r++)
-                    if (!TypeEq(callee->rets[r], target->rets[r])) return false;
-                return true;
-            }
-            return callee->rets.size() == 1 && at < target->rets.size() &&
-                   TypeEq(callee->rets[0], target->rets[at]);
-        };
-        auto ok = false, exiting = false;
-        for (k--; k >= 0; k--) {
-            auto parent = path[k].node, child = path[k + 1].node;
-            // A break's value lands where the loop or block it exits
-            // delivers its own; nothing between them consumes it.
-            if (exiting) {
-                if (Is<LoopExpr>(parent) || Is<EarlyBlock>(parent)) exiting = false;
-                else if (Is<While>(parent) || Is<ForLoop>(parent)) break;
-                continue;
-            }
-            if (Is<Break>(parent)) { exiting = true; continue; }
-            if (auto b = Is<Block>(parent)) { if (b->tail == child) continue; break; }
-            if (auto ie = Is<IfExpr>(parent)) { if (child != ie->cond) continue; break; }
-            if (auto m = Is<MatchExpr>(parent)) { if (child != m->scrutinee) continue; break; }
-            if (Is<EarlyBlock>(parent) || Is<LoopExpr>(parent)) continue;
-            if (auto r = Is<Return>(parent)) {
-                size_t at = 0;
-                while (at < r->vals.size() && r->vals[at] != child) at++;
-                ok = returned(r->targetspec, at, r->vals.size());
-            } else if (auto c = Is<Call>(parent)) {
-                ok = (c->builtin == B_PUSH || c->builtin == B_APPEND) &&
-                     OperandIndex(c, child) == 1;
-            } else if (Is<VarDecl>(parent)) {
-                ok = true;
-            }
-            break;
-        }
-        // Off the top of the path through constructs whose value the call's
-        // is: the body's tail, which is returned (CheckSpecBodyOnce), else a
-        // statement whose value is dropped.
-        auto body = frames[i].spec->body;
-        if (k < 0 && !exiting && body && path[0].node == body->tail)
-            ok = returned(frames[i].spec, 0, 1);
-        if (ok) continue;
-        Error(call, cat(FrameFnName(i), " calls into its recursive cycle through ",
-                        callee->sf->name, ", whose non-fixed-size result would land in a "
-                        "temporary here, holding a data stack across the call (§7.8): return "
-                        "it as the whole result, or take an output buffer by reference and "
-                        "build into it in place"));
+        if (BuiltInPlace(i, k, callee->rets)) continue;
+        Error(path[k].node, cat(FrameFnName(i), " calls into its recursive cycle through ",
+                                callee->sf->name, ", whose non-fixed-size result would land in "
+                                "a temporary here, holding a data stack across the call (§7.8): "
+                                "return it as the whole result, or take an output buffer by "
+                                "reference and build into it in place"));
     }
+}
+
+// Whether the non-fixed-size value of path[k], a node of frame fi's
+// statement, of types `rets` (several for a call forwarding them all, §7.1),
+// is built where its destination is rather than in a temporary of the
+// statement: a data stack taken before the value is built, and held across
+// the calls into the recursive cycle made meanwhile (§7.8). It is where the
+// destination is the caller's, the value being the whole value of a return
+// of the same result types (forwarded, codegen GenNormalReturn, or built in
+// a long-distance return's channels, GenFromReturn), reached through the
+// constructs whose value it is (a block's tail, a branch, a break's value);
+// resizable storage the value is pushed or appended into, built in place at
+// its top (which §1.3(4) then rejects where the callee grows that storage,
+// as every function of a cycle appending into it does); or a local being
+// initialized, which CheckCycleInit reports. An assignment's value is one
+// whose callee may use the target, rejected by §4.4 before this. A function
+// value's body and a default are checked in frames of their own on the path
+// of the statement taking them: a function value's body's value lands where
+// its call's does, which NoteTemp checks once the body's check ends, and a
+// default's in the argument or field taking it.
+inline bool TypeCheck::BuiltInPlace(int fi, int k, const vector<TypeExpr *> &rets) {
+    auto &path = StateOf(fi).nodepath;
+    auto returned = [&](FnSpec *target, size_t at, size_t count) {
+        if (!target || !target->retsknown) return false;
+        if (count == 1 && rets.size() > 1) {
+            // A single call forwarding every result (§7.1).
+            if (target->rets.size() != rets.size()) return false;
+            for (size_t r = 0; r < rets.size(); r++)
+                if (!TypeEq(rets[r], target->rets[r])) return false;
+            return true;
+        }
+        return rets.size() == 1 && at < target->rets.size() && TypeEq(rets[0], target->rets[at]);
+    };
+    auto exiting = false;
+    for (k--; k >= 0; k--) {
+        auto parent = path[k].node, child = path[k + 1].node;
+        // Out of a function value's body, or out of a default.
+        if (path[k].frame != fi) {
+            auto c = Is<Call>(parent);
+            return !exiting && frames[fi].tailvalue && c && c->fvbody && c->fvbody->tail == child;
+        }
+        // A break's value lands where the loop or block it exits delivers
+        // its own; nothing between them consumes it.
+        if (exiting) {
+            if (Is<LoopExpr>(parent) || Is<EarlyBlock>(parent)) exiting = false;
+            else if (Is<While>(parent) || Is<ForLoop>(parent)) return false;
+            continue;
+        }
+        if (Is<Break>(parent)) { exiting = true; continue; }
+        if (auto b = Is<Block>(parent)) { if (b->tail == child) continue; return false; }
+        if (auto ie = Is<IfExpr>(parent)) { if (child != ie->cond) continue; return false; }
+        if (auto m = Is<MatchExpr>(parent)) { if (child != m->scrutinee) continue; return false; }
+        if (Is<EarlyBlock>(parent) || Is<LoopExpr>(parent)) continue;
+        if (auto r = Is<Return>(parent)) {
+            size_t at = 0;
+            while (at < r->vals.size() && r->vals[at] != child) at++;
+            return returned(r->targetspec, at, r->vals.size());
+        }
+        if (auto c = Is<Call>(parent))
+            return (c->builtin == B_PUSH || c->builtin == B_APPEND) && OperandIndex(c, child) == 1;
+        return Is<VarDecl>(parent) != nullptr;
+    }
+    // Off the top of the path through constructs whose value it is: the
+    // body's tail, which is returned (CheckSpecBodyOnce), else a statement
+    // whose value is dropped.
+    auto body = frames[fi].isfunval ? nullptr : frames[fi].spec->body;
+    return !exiting && body && path[0].node == body->tail && returned(frames[fi].spec, 0, 1);
 }
 
 // A cycle's back edges take the roots of its functions' results before their
@@ -2388,42 +2458,41 @@ inline string TypeCheck::CycleStoreError(VarDef *root, const string &more) {
     return s;
 }
 
+// spec's `return from` target t on one call path that reaches spec, of n
+// entries, outermost first: step(i) is a (function, specialization) pair,
+// with no function for a function value's body, which `from` cannot name.
+// The innermost call of t's function on it must be t (§7.9), and every
+// specialization after it lies between them, needing t as well.
+template<typename F>
+void TypeCheck::NeedOnPath(FnSpec *spec, FnSpec *t, Node *at, int n, F step) {
+    auto found = n - 1;
+    while (found >= 0 && step(found).first != t->sf) found--;
+    if (found < 0)
+        Error(at, cat("call to ", spec->sf->name, " requires an enclosing call of ", t->sf->name,
+                      " (it does `return ... from ", t->sf->name, "`)"));
+    if (step(found).second != t)
+        Error(at, "recursive call changes the enclosing specialization of a long-distance return");
+    for (auto i = found + 1; i < n; i++) AddNeed(step(i).second, t);
+}
+
 // `return from` targets recorded by a callee must be live on every
 // compile-time call path (§7.9); cached reuse re-validates here.
 inline void TypeCheck::ValidateNeeds(FnSpec *spec, Node *callnode) {
-    for (auto t : spec->needs) {
-        auto found = -1;
-        for (auto i = (int)frames.size() - 1; i >= 0; i--)
-            if (frames[i].sf == t->sf && !frames[i].isfunval) { found = i; break; }
-        if (found < 0)
-            Error(callnode, cat("call to ", spec->sf->name, " requires an enclosing call "
-                                "of ", t->sf->name, " (it does `return ... from ", t->sf->name,
-                                "`)"));
-        if (frames[found].spec != t)
-            Error(callnode, "recursive call changes the enclosing specialization of a "
-                            "long-distance return");
-        for (auto i = found + 1; i < (int)frames.size(); i++)
-            if (frames[i].spec != t) AddNeed(frames[i].spec, t);
-    }
+    for (auto t : spec->needs)
+        NeedOnPath(spec, t, callnode, (int)frames.size(), [&](int i) {
+            return pair<SFunction *, FnSpec *>(frames[i].isfunval ? nullptr : frames[i].sf,
+                                               frames[i].spec);
+        });
 }
 
 // Records a `return from` target on a spec, and on every path a call reached
-// it by before the target was known.
+// it by before the target was known. The target needs nothing of itself: a
+// function value's body the target's own body calls stands on a path as the
+// target's specialization, which the return lands in.
 inline void TypeCheck::AddNeed(FnSpec *s, FnSpec *t) {
-    if (!s || !s->needs.insert(t).second) return;
-    for (auto &e : s->neededges) {
-        auto &path = e.second;
-        auto found = -1;
-        for (auto i = (int)path.size() - 1; i >= 0; i--)
-            if (path[i].first == t->sf) { found = i; break; }
-        if (found < 0)
-            Error(e.first, cat("call to ", s->sf->name, " requires an enclosing call of ",
-                               t->sf->name, " (it does `return ... from ", t->sf->name, "`)"));
-        if (path[found].second != t)
-            Error(e.first, "recursive call changes the enclosing specialization of a "
-                           "long-distance return");
-        for (auto i = found + 1; i < (int)path.size(); i++) AddNeed(path[i].second, t);
-    }
+    if (!s || s == t || !s->needs.insert(t).second) return;
+    for (auto &e : s->neededges)
+        NeedOnPath(s, t, e.first, (int)e.second.size(), [&](int i) { return e.second[i]; });
 }
 
 // checkfree (§7.14): what runs while a checkfree function does is its own
@@ -2635,8 +2704,9 @@ inline int TypeCheck::EnvReach(const MatchInfo &mi) {
 // each round (FnSpec::stale, GetOrCreateSpec) with the class roots its first
 // round made, so a store it made before a call joined it to the cycle is
 // checked as inside it, and one relying on a class a later call broke finds
-// it broken. A member whose calls a round no longer reaches is left as it
-// is: nothing checked afterwards names it.
+// it broken. A member the last round no longer reaches stays stale: its
+// record, read by no call of that round, settled with nothing, so a call
+// after the cycle is checked does not reuse it (GetOrCreateSpec).
 inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
     ast.CheckCancel();
     struct RoundScope {
@@ -2669,13 +2739,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             fprintf(stderr, "round %d of %.*s: a variable outside it changed\n", spec->rounds,
                     (int)spec->sf->name.size(), spec->sf->name.data());
         auto settled = broken == 0 && !outer;
-        for (auto m : members) {
-            if (m->stale) {
-                m->stale = false;
-                continue;
-            }
-            settled = settled && SameRecord(m->record, *m->prev, m);
-        }
+        for (auto m : members)
+            if (!m->stale) settled = settled && SameRecord(m->record, *m->prev, m);
         for (auto m : members) m->prev = nullptr;
         if (settled) break;
     }
@@ -2752,6 +2817,9 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
 }
 
 inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline) {
+    // In progress from here, so that an error before the body's check, an
+    // extern's included, leaves it failed (Checkpoint).
+    spec->inprogress = true;
     // A body is checked inside the call that first reaches it, so the native
     // stack holds one of these per call on the compile-time call path.
     if (StackLow()) {
@@ -2762,7 +2830,6 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     }
     auto sf = spec->sf;
     if (sf->isextern) { CheckExternSpec(spec); return; }
-    spec->inprogress = true;
     spec->record.eventstart = storeevents.size();
     spec->envreads.clear();
     // A cycle's rounds keep the parameters' identity, as they keep the
@@ -2805,6 +2872,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     f.callline = callline;
     f.expansiontrace = ActiveExpansionTrace();
     f.exits = &exits;
+    f.argvals = argvals;
     frames.push_back(f);
     auto fi = (int)frames.size() - 1;
     // The caller's body state is its own (BodyState): this body's loops run
@@ -3021,7 +3089,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             // A result is a value, which is never relative (§3.9): written so,
             // it is an error, and one a type argument makes relative is the
             // plain reference a load of it gives.
-            if (rt->kind == TY_REF && rt->ref->lenstorage >= 0)
+            if (IsRelRef(rt))
                 Error(sf->line, cat("function ", sf->name, " cannot return ", TypeStr(ct),
                                     ": a result is a value, never a relative reference "
                                     "(§3.9); return ", TypeStr(LoadType(ct)),
@@ -3115,9 +3183,8 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         if (spec->retsknown && !spec->rets.empty())
             Error(sf->body, cat("function ", sf->name,
                                 " can fall off the end without returning value(s)"));
-        if (!spec->retsknown) spec->retsknown = true;  // No returns at all: void.
     }
-    if (!spec->retsknown) spec->retsknown = true;
+    spec->retsknown = true;   // Where no return settled them: none, void.
     if (!abandoned) {
         NamedResultCopyWarning(spec);
         CheckNamedResultUses(spec);
@@ -3365,6 +3432,71 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     return lastcallrets[0];
 }
 
+// A return out of a function value's body leaves the calls between its frame
+// and the target's, frame tf, and gives the target what returning out of
+// each in turn would: where it is rooted at a call's parameter classes, it
+// points where that call's arguments did, as the call's own result would
+// (RetAltVal), and a variable of the call, the body's own locals among them,
+// dies with it. What is left is rooted where the target names it, which the
+// target's calls map in turn (RecordReturn). What the target's record gets is
+// then this call's, as what ApplyCalleeStores maps in place is: another call
+// reusing the check -- a later pass of a loop, a later round of a cycle the
+// target is in, which records its returns anew -- would give it nothing.
+inline void TypeCheck::ReturnThroughCalls(Val &v, int tf, Return *r) {
+    auto isrs = IsRefOrSlice(v.type);
+    if (!isrs && !HoldsPlainRef(v.type)) return;
+    Val mapped;
+    mapped.type = v.type;
+    mapped.TakeAlts(isrs ? v.AsRoots() : ContentsOf(v));
+    mapped.writable = true;
+    for (auto k = (int)frames.size() - 1; k > tf; k--) {
+        auto s = frames[k].spec;
+        if (frames[k].isfunval || !s || s == frames[tf].spec) continue;
+        s->storesout = true;
+        auto classof = [&](const RootAlt &a) {
+            return a.root && find(s->classroots.begin(), s->classroots.end(), a.root) !=
+                                 s->classroots.end();
+        };
+        for (auto &a : mapped.alts)
+            if (a.root && a.root->ownerspec == s)
+                Error(r, cat("returning a reference rooted in ", a.root->name,
+                             ", which dies with the call of ", s->sf->name,
+                             " that this return leaves (§7.9)"));
+        if (!mapped.Any(classof)) continue;
+        Val out;
+        auto first = true;
+        for (auto &a : mapped.alts) {
+            Val m;
+            if (classof(a) && frames[k].argvals) {
+                m = RetAltVal(s, a, *frames[k].argvals, mapped.type, r);
+            } else {
+                m.type = mapped.type;
+                m.alts.push_back(a);
+                m.writable = true;
+            }
+            out = first ? m : MergeVals(out, true, m, true, r, true);
+            first = false;
+        }
+        if (auto left = find_if(out.alts.begin(), out.alts.end(), classof); left != out.alts.end())
+            Error(r, cat("returning a reference rooted at parameter ", left->root->name, " of ",
+                         s->sf->name, ", whose call this return leaves (§7.9)"));
+        out.unknown = out.unknown || mapped.unknown;
+        out.writable = out.writable && mapped.writable;
+        out.byteview = out.byteview || mapped.byteview;
+        out.freshview = out.freshview || mapped.freshview;
+        mapped = out;
+    }
+    v.byteview = v.byteview || mapped.byteview;
+    if (!isrs) {
+        v.contents = mapped.AsRoots();
+        v.holderset = true;
+        return;
+    }
+    v.TakeAlts(mapped);
+    v.writable = v.writable && mapped.writable;
+    v.freshview = v.freshview || mapped.freshview;
+}
+
 inline void TypeCheck::CheckReturn(Return *r) {
     if (frames.back().isdefault) Error(r, "return outside of a function");
     // Which function does this exit? `from f` names one on the current
@@ -3401,8 +3533,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
     auto tspec = frames[tf].spec;
     r->target = frames[tf].sf;
     r->targetspec = tspec;
-    for (auto i = tf + 1; i < (int)frames.size(); i++)
-        if (frames[i].spec != tspec) AddNeed(frames[i].spec, tspec);
+    for (auto i = tf + 1; i < (int)frames.size(); i++) AddNeed(frames[i].spec, tspec);
     // Values.
     vector<Val> vals;
     auto expectone = [&](size_t i) -> TypeExpr * {
@@ -3453,10 +3584,16 @@ inline void TypeCheck::CheckReturn(Return *r) {
         Error(r, cat("function ", frames[tf].sf->name, " must return value(s)"));
     if (!vals.empty() || !tspec->retsknown) {
         // For long-distance returns, references, including those a returned
-        // value holds, must not be rooted in frames that unwind;
-        // conservatively require globals/static.
-        if (tf != (int)frames.size() - 1 && !frames.back().isfunval) {
+        // value holds, must not be rooted in frames that unwind. One out of a
+        // function value's body is mapped through the calls it leaves; one
+        // written in a named function must conservatively be rooted at
+        // globals/static.
+        if (tf != (int)frames.size() - 1) {
             for (auto &v : vals) {
+                if (frames.back().isfunval) {
+                    ReturnThroughCalls(v, tf, r);
+                    continue;
+                }
                 auto isrs = IsRefOrSlice(v.type);
                 if (!isrs && !HoldsPlainRef(v.type)) continue;
                 const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
@@ -3478,6 +3615,8 @@ inline void TypeCheck::CheckReturn(Return *r) {
 
 inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
     if (sf->brokensig) throw Abandoned {};
+    // One an earlier spawn made, the checks below passed: a call makes none
+    // (GetOrCreateSpec).
     if (!sf->specs.empty()) {
         // Its one check failed (FnSpec::failed): what that reported stands
         // for this spawn too.
@@ -3624,14 +3763,17 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
         }
         c->fvparams.push_back(vd);
     }
-    c->fvtarget = env->sf;
     c->fvbody = (Block *)fv->body->Clone(ast);
     BlockScope bs(*this, c->fvbody);
     CheckStmts(c->fvbody);
     Val v = VoidVal();
     if (auto tail = c->fvbody->tail) {
-        if (IsValuelessTail(tail)) CheckStmtExpr(tail);
-        else v = CheckValue(c->fvbody->tail, nullptr);
+        if (IsValuelessTail(tail)) {
+            CheckStmtExpr(tail);
+        } else {
+            frames.back().tailvalue = true;
+            v = CheckValue(c->fvbody->tail, nullptr);
+        }
     }
     // The body's value is checked without a destination and the call's value
     // is built as the body's, so a [] there never gets an element type.

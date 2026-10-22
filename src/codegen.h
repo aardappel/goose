@@ -230,6 +230,9 @@ struct CodeGen {
     // only the innermost tail's elements occupy a data stack. A gs_rref to
     // one carries the object's address in `hdr`.
     bool IsFrameObj(TypeExpr *t) { return t->kind == TY_STRUCT && SI(t)->frameobj; }
+    // The C type of a resizable value's header: a frame object's own struct,
+    // a gs_rhdr for anything else.
+    string RzCT(TypeExpr *t) { return IsFrameObj(t) ? CT(t) : "gs_rhdr"; }
     string FoTailHdr(TypeExpr *t, const string &obj);
     TypeExpr *FoTailArr(TypeExpr *t);
     string FoPrefixSize(TypeExpr *t);
@@ -284,7 +287,13 @@ struct CodeGen {
     // uniquified mangle.
 
     string Mangle(TypeExpr *t);
+    string RawMangle(TypeExpr *t);
+    bool SameMangle(TypeExpr *a, TypeExpr *b);
     map<VarDef *, int> ixmangles;   // Index types' arrays, numbered for Mangle.
+    // Per raw spelling, the types it was handed out for (one of each set of
+    // parts, SameMangle) with the mangle each got; and every mangle handed out.
+    unordered_map<string, vector<pair<TypeExpr *, string>>> mangleowners;
+    unordered_set<string> mangles;
 
     unordered_map<string, string> ctypes;   // mangle -> emitted C type name.
     bool corebuiltins = false;
@@ -301,6 +310,7 @@ struct CodeGen {
     // Tag constants, one enum per EnumInst: <Mangle>_<Variant>_k.
     set<EnumInst *> tagenums;
     unordered_map<EnumInst *, string> tagprefix;
+    unordered_set<string> tagbases;   // The prefixes taken.
 
     void EnsureTagEnum(EnumInst *ei);
     string TagConst(EnumInst *ei, int vi);
@@ -320,8 +330,7 @@ struct CodeGen {
     string SizeFn(TypeExpr *t);
     void EmitSizeWalk(string &b, TypeExpr *t, const string &q);
     void EmitSizeElems(string &b, TypeExpr *elem, const string &q);
-    int64_t ZeroSize(TypeExpr *t);
-    int64_t MinBytes(TypeExpr *t);
+    int64_t MinBytes(TypeExpr *t, bool zero = false);
 
     // ------------------------------------------------------------------
     // The verifier from_bytes runs over an untrusted image
@@ -668,6 +677,7 @@ struct CodeGen {
     vector<string> loopcons;
     static constexpr const char *BLOCKREGION = "{";
     bool InConsOf(const string &stk);
+    int OpenRegion(const string &cons);
     int MarkLoopBegin();
     int MarkBlockBegin();
     void MarkLoopEnd(int id);
@@ -765,6 +775,7 @@ struct CodeGen {
     void FindRefAliases(FnSpec *sp);
     const VarDef *AliasTarget(VarDef *d, Node *init, Node *&path);
     static bool HandedRef(Node *n);
+    static Node *FieldChainRoot(Node *n, bool typed);
 
     // Optimizer splices can leave a reference-typed tree in a slot whose
     // checked type already decayed; Dst::t says what the receiver wants, and
@@ -859,6 +870,8 @@ struct CodeGen {
     };
     string GenPure(Node *n);
     string DivX(bool div, IntStorage s, const string &l, const string &r, Line line);
+    string ArithX(TType op, TypeExpr *t, const string &l, const string &r, Line line,
+                  bool nonneg = false, string lx = "", string rx = "");
     string IndexTypeCheck(const string &x, TypeExpr *t, Line ln);
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);
@@ -967,6 +980,8 @@ struct CodeGen {
     void StoreWhole(const string &p, TypeExpr *t, const string &x);
     void EmitLenCheck(IntStorage ls, const string &n);
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
+    void EmitArrayCount(const string &stk, TypeExpr *at, const string &lenlv, const string &n,
+                        bool check);
     void EmitVarintStore(const string &stk, const string &x);
     void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
     RelFacts RelValue(Node *v);
@@ -1027,6 +1042,13 @@ struct CodeGen {
     void FixedArrayLitAt(ArrayLit *al, const string &base, bool inroot);
     void StructLitAt(StructLit *sl, const string &base, bool inroot);
     void EmitValStoreTag(const string &stk, IntStorage ts, const string &x);
+    // How many elements an array literal writes: its fill count, which the
+    // checker evaluated into an IntLit (§4.2), or its element list's length.
+    static int64_t LitCount(ArrayLit *al) {
+        if (!al->fillval) return (int64_t)al->elems.size();
+        assert(Is<IntLit>(al->fillcount));
+        return ((IntLit *)al->fillcount)->val;
+    }
     void GenArrayLit(ArrayLit *al, const string &stk, const string &lenlv = "",
                      TypeExpr *as = nullptr);
     static bool HasSelfInit(StructLit *sl);
@@ -1056,6 +1078,13 @@ struct CodeGen {
     // the watermarks of declarations it ran past, so the continue label
     // sits after the fallthrough restores rather than sharing them.
 
+    // A Goose loop's scope, open around the C loop or loops that run its body
+    // (OpenLoop to CloseLoop): its index and top-caching region, and the
+    // divisors fixed for it.
+    struct OpenedLoop { int si = -1, loopid = -1; vector<string> divisors; };
+    OpenedLoop OpenLoop(Block *bodyb, Node *cond, const vector<const VarDef *> &binders,
+                        const Dst &d);
+    void CloseLoop(const OpenedLoop &lp);
     void GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
                      const string &forhead = "", Node *cond = nullptr, size_t first = 0,
                      vector<const VarDef *> binders = {});
@@ -1073,9 +1102,17 @@ struct CodeGen {
     // made to somewhere in it (RefdLocals), for refdspec.
     set<const VarDef *> refdlocals;
     FnSpec *refdspec = nullptr;
-    bool LoopDivisible(Binary *b);
-    static bool NarrowDivision(Binary *b);
-    string DivisionKey(Binary *b, const VarDef **root = nullptr, bool *path = nullptr);
+    // A `/` or `%`, or a `/=` or `%=` dividing its target (AsDivision): the
+    // plain operator, the dividend's type, the divisor, and whether BCE found
+    // a signed one to be of nonnegative operands (Binary::nonneg, which BCE
+    // judges for no compound assignment).
+    struct Division { TType op; TypeExpr *t; Node *divisor; bool nonneg; };
+    static bool AsDivision(Node *n, Division &dv);
+    bool LoopDivisible(const Division &dv);
+    static bool NarrowDivision(const Division &dv);
+    string DivisionKey(const Division &dv, const VarDef **root = nullptr, bool *path = nullptr);
+    string FixedDivX(const Division &dv, const string &l, const function<string()> &plain,
+                     Line line);
     string DivisorKey(Node *n, const VarDef **root = nullptr, bool *path = nullptr);
     string DivisorValue(Node *n, string &ok);
     const set<const VarDef *> &RefdLocals();
@@ -1113,7 +1150,7 @@ struct CodeGen {
     bool Dupable(Node *n);
     int BlockSize(ForLoop *f);
     string AtLeastLeft(TypeExpr *ct, const string &hi, const string &ctr, int k, bool fromzero);
-    void GenBodyCopy(Block *bodyb, int si);
+    void GenBodyCopy(Block *bodyb, int si, size_t first = 0);
     void GenBlocked(ForLoop *f, int k, const string &more, const string &step,
                     const function<void()> &bind, const string &cond);
 
@@ -1134,6 +1171,7 @@ struct CodeGen {
     // Declarations and assignment.
 
     void BindLocal(VarDef *d, Node *init, bool forlocal = true);
+    Dst DeclStackLocal(VarDef *d, bool forlocal);
     string GenPrefVal(Node *n);
     string Unique2(const string &base);
     void GenRelAssign(Loc lv, Node *lval, Node *rhs, Line ln);
@@ -1212,6 +1250,7 @@ struct CodeGen {
     void RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call *c, Line ln);
     void RenderVariant(Loc &out, Loc lv, TypeExpr *t, Call *c, Line ln);
     string RefArg(const Loc &lv, TypeExpr *sub, Line ln);
+    string PrefArg(const Loc &lv, Line ln);
     void EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln);
 
     // A type that reaches itself through references renders the levels of a
@@ -1232,7 +1271,6 @@ struct CodeGen {
     void EmitRenderFn(RenderFnReq r);
     Loc RenderedLoc(Node *a);
     Loc RenderToTemp(Node *a, Call *c);
-    void EmitOutArg(Node *a, Call *c);
     string FmtCall(Node *a, const string &dst);
     void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c);
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
@@ -1254,11 +1292,14 @@ struct CodeGen {
 
     RzDest OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what);
     void CloseRzDest(RzDest &rd, const string &count);
+    string NewElemResult(const string &e, TypeExpr *elem, const Loc &lv, Line ln);
     vector<string> EmitPush(vector<Node *> &an, Line ln);
+    string ElemValue(Node *n, TypeExpr *elem);
+    void StoreElemAt(Node *n, TypeExpr *elem, const string &e, const string &ev, Line ln);
     bool LiteralBytes(Node *n, TypeExpr *t, vector<uint8_t> &out);
     bool UniformFillByte(Node *n, TypeExpr *t, int &byte);
     void EmitAppend(vector<Node *> &an, Line ln);
-    vector<string> EmitAlloc(Call *c, vector<Node *> &an);
+    vector<string> EmitAlloc(Call *c, vector<Node *> &an, Line ln);
     vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);
     string SpanArgs(const Loc &lv);
     string PlaceRun(const Loc &lv, const string &n);
@@ -1288,7 +1329,7 @@ struct CodeGen {
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
     void PlanTopClasses(FnSpec *sp);
-    bool RefTopsOk(FnSpec *sp);
+    bool RefTopsOk(FnSpec *sp, bool farreturn);
     void ResetFnState();
     string EnsureEr(FnSpec *sp);
     void EmitSpec(FnSpec *sp, bool er = false);

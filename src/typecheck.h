@@ -199,6 +199,9 @@ struct TypeCheck {
         string_view expansiontrace;  // Structural entry containing the call site.
         bool isfunval = false;
         bool isdefault = false;    // Lexically isolated, but caller values remain live.
+        // A function value's body checking its tail as its value, the value
+        // of the call (CheckFunValCall, BuiltInPlace).
+        bool tailvalue = false;
         // A parameter default's (§7.1): the function, which parameter, and
         // for a nested function its declaration site, whose names the
         // default may not use (DefaultScopeName).
@@ -218,8 +221,11 @@ struct TypeCheck {
         // index in outerbodies the state is saved at while a body is
         // checked inside it, or past them for the state being checked now.
         int bodyidx = 0;
-        // A specialization's body being checked (CheckSpecBodyOnce): its exits.
+        // A specialization's body being checked (CheckSpecBodyOnce): its exits,
+        // and the arguments of the call it is checked for, as the caller
+        // checked them, where there is one.
         BodyExits *exits = nullptr;
+        vector<Val> *argvals = nullptr;
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK, SK_EXPANSION };
@@ -434,6 +440,13 @@ struct TypeCheck {
         FlagScope(bool &f, bool v) : flag(f), saved(f) { f = v; }
         ~FlagScope() { flag = saved; }
     };
+    // The same for a variable of any type.
+    template<typename T> struct Saved {
+        T &var;
+        T saved;
+        Saved(T &v, T val) : var(v), saved(std::move(v)) { var = std::move(val); }
+        ~Saved() { var = std::move(saved); }
+    };
     // The destination of the value under construction (for reference stores):
     // where the storage the value lands in may be (an lvalue's roots).
     struct Dest {
@@ -448,6 +461,9 @@ struct TypeCheck {
         // The slot a reference to a slice names, which may be a slice
         // variable's own (StoreIntoSlot).
         bool slot = false;
+        // A resize's fill value: built once and copied into each slot the
+        // resize adds, so no position in the array is its own (§3.9).
+        bool fill = false;
         Dest() {}
         Dest(const Roots &r, bool vb = false, TypeExpr *re = nullptr)
             : roots(r), varbind(vb), reached(re), unknown(r.None()) {}
@@ -923,6 +939,12 @@ struct TypeCheck {
         return true;
     }
 
+    // Two enum types of one ADT, whichever mode each is in, which TypeEq
+    // tells apart.
+    bool SameAdt(TypeExpr *a, TypeExpr *b) {
+        return a->enu->en == b->enu->en && TypeArgsEq(a->enu->args, b->enu->args);
+    }
+
     // Generic bindings bind each name once, in whatever order explicit type
     // arguments and inference produced them.
     bool BindingsEq(vector<pair<string_view, TypeExpr *>> &a,
@@ -1162,6 +1184,7 @@ struct TypeCheck {
     Node *DefaultValue(TypeExpr *t, Line line);
     SizeClass ClassOf(TypeExpr *t);
     bool IsFlat(TypeExpr *t);
+    bool Reaches(TypeExpr *t, const function<bool(TypeExpr *)> &pred);
     bool HoldsIndexT(TypeExpr *t);
     SFunction *TextFn();
     void CheckfreeCallee(Node *at, SFunction *callee);
@@ -1194,6 +1217,9 @@ struct TypeCheck {
     TypeExpr *PendingElemFrom(const Val &av, Node *at);
     TypeExpr *PendingElemFromSeq(const Val &av, Node *at);
     void CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l);
+    // The pending arrays of `reusable` declarations, by the pool each is the
+    // type of: whatever completes one gives a pool its element (§5.4).
+    map<TypeExpr *, VarDef *> pendingpools;
     void RequireComplete(TypeExpr *t, Line l);
     void ValidateType(TypeExpr *t, Line l, int pos);
 
@@ -1379,7 +1405,6 @@ struct TypeCheck {
     bool InScope(VarDef *v, int idx) { return idx < (int)vars.size() && vars[idx] == v; }
     bool ScopeEnded(const DeclSite &d);
     void DeclareLocalFn(FnDecl *fd);
-    string_view CurNs();
     int FrameOfSpec(FnSpec *sp);
     int LexFrame(FnSpec *env);
     int LexFrame(FnSpec *env, SFunction *sf);
@@ -1546,7 +1571,6 @@ struct TypeCheck {
     TypeExpr *ValueType(TypeExpr *t);
     TypeExpr *DeclType(TypeExpr *t, TypeExpr *s);
     static bool ImplicitInt(IntStorage from, IntStorage to);
-    TypeExpr *DerefType(TypeExpr *t);
     Val CheckIntAny(Node *n);
     bool HasRelRefT(TypeExpr *t, bool inpool = false);
     bool BuiltWhereReceived(Node *n, size_t result);
@@ -1620,6 +1644,7 @@ struct TypeCheck {
     bool ReachesThroughRefs(TypeExpr *t, TypeExpr *of);
     void BoundReach(VarDef *r, vector<TypeExpr *> &out);
     TypeExpr *PointeeOf(TypeExpr *t);
+    void LexicalVars(int fi, vector<bool> *seen, const function<void(VarDef *)> &f);
     void VisibleVars(const function<void(VarDef *)> &f);
     void ShrinkScanVars(const function<void(VarDef *)> &f);
     bool StaticCanContain(TypeExpr *of);
@@ -1658,6 +1683,7 @@ struct TypeCheck {
     void ReadBackLVal(LVal &lv);
     bool SlotLoadWritable(TypeExpr *t, bool path);
     Val ContainerRead(LVal lv);
+    void CheckAccessorOwner(Node *at, TypeExpr *owner, TypeExpr *t, StructLit *lit = nullptr);
     void ResolveMemberLValue(LVal &lv, Dot *d);
     // Where a holder value's references point: what was derived for it, else
     // for a reference or slice its own roots, and for a by-value holder what
@@ -2073,8 +2099,7 @@ struct TypeCheck {
     Val TempCopy(Val v);
     Node *WholeSlice(Node *n);
     Val CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue);
-    Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
-                      Node *scopenode = nullptr);
+    Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue);
     Val CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue);
     Val CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue);
     void CheckLoopBody(Block *body);
@@ -2149,8 +2174,12 @@ struct TypeCheck {
     void MatchCandidates(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Val> &argvals,
                          vector<MatchInfo> &tied, vector<MatchInfo> &converting, string *failures,
                          string_view name);
-    void JudgeCallCasts(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Node *> &argnodes,
-                        vector<Val> &argvals, MatchInfo &best, string_view name, bool builtin);
+    bool SameMatch(MatchInfo &a, MatchInfo &b);
+    void JudgeCallCasts(vector<SFunction *> &cands, MatchInfo &best, vector<Node *> &argnodes,
+                        vector<Val> &argvals, const function<bool(vector<Val> &)> &resolves);
+    void RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInfo &mi, FnSpec *denv,
+                     vector<Node *> &argnodes, int skip, const function<void()> &atskip);
+    void CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach);
     // `defaults`: the call may leave out parameters that have a default
     // (§7.1), which ResolveCall then passes. Tag dispatch and rendering
     // hooks give every argument.
@@ -2242,6 +2271,7 @@ struct TypeCheck {
     bool ThreadStorable(VarDef *r);
     void Unthread(VarDef *cls, const string &why);
     string CycleStoreError(VarDef *root, const string &more = {});
+    template<typename F> void NeedOnPath(FnSpec *spec, FnSpec *t, Node *at, int n, F step);
     void ValidateNeeds(FnSpec *spec, Node *callnode);
     void AddNeed(FnSpec *s, FnSpec *t);
     // The record of a callee a call reads: the callee's own once it is
@@ -2264,6 +2294,7 @@ struct TypeCheck {
     void NamedResultCopyWarning(FnSpec *spec);
     Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
+    void ReturnThroughCalls(Val &v, int tf, Return *r);
     void CheckReturn(Return *r);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
 
@@ -2537,9 +2568,10 @@ struct TypeCheck {
     void ShrinkThrough(Node *at, const string &verb, const string &recv, const Roots &roots,
                        TypeExpr *arr, ShrinkBalance balance = SB_UNBALANCED);
     // `argnodes`: the argument expressions, aligned with argvals, which say
-    // what part of the caller's holders a callee's kills empty (Kill).
+    // what part of the caller's holders a callee's kills empty (Kill); null
+    // for an argument that is no expression of the call's.
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name,
-                            const vector<Node *> *argnodes = nullptr);
+                            const vector<Node *> &argnodes);
     // A shrink's scan sees the views of the activation only, and takes a
     // parameter's class for an array of its own: whether an argument was a
     // view of the shrunk array, or the shrunk array one the activation's
@@ -2561,8 +2593,8 @@ struct TypeCheck {
     void NoteLiveViews(Node *at, const string &prefix, VarDef *root, const string &what,
                        bool growonly, TypeExpr *bound);
     // A view still used after a shrink (NoteLiveViews), or one a callee's
-    // pair leads to at a call (MapLiveShrinks): where it may point, and at
-    // what.
+    // pair leads to at a call (ApplyCalleeLiveShrinks): where it may point,
+    // and at what.
     struct LiveView {
         Prov p;
         TypeExpr *pointee = nullptr;
@@ -2584,21 +2616,8 @@ struct TypeCheck {
                    const TempHolds *temps = nullptr, VarDef *base = nullptr,
                    TypeExpr *arrtype = nullptr);
     template<typename F> void EachHolderRoot(VarDef *holder, size_t from, F f);
-    int NoteLiveShrink(LiveShrink ls, FnSpec *current);
+    bool NoteLiveShrink(LiveShrink ls, FnSpec *current);
     void ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
-    // A call, with its arguments' roots, whose callee's pairs are mapped
-    // onto them (MapLiveShrinks).
-    struct CallSite {
-        Node *at = nullptr;
-        FnSpec *caller = nullptr;
-        FnSpec *callee = nullptr;   // Stable parameter/class mapping.
-        const FnRecord *record = nullptr;   // This call's round (RecordOf).
-        vector<Roots> args;   // What each parameter's class stands for here.
-        string name;
-        vector<Roots> views;  // And each parameter's view, the slice its slot held.
-        TempHolds temps;      // What the temporaries among the arguments hold.
-    };
-    bool MapLiveShrinks(const CallSite &site);
     // A growth of the array rooted at root -- a push, an append, a pool
     // allocation, format, resize, a whole assignment -- by this body or by
     // a callee, or a shrink of it. A value built in place at a root's top or
@@ -2674,6 +2693,7 @@ struct TypeCheck {
     Node *FindTemp(Node *n, bool self = true);
     void CycleCallTemps(int fi, Node *callnode);
     void CycleCallResult(FnSpec *spec, Node *callnode);
+    bool BuiltInPlace(int fi, int k, const vector<TypeExpr *> &rets);
     // A fresh body state for the extent of a scope; the enclosing one
     // returns when it ends.
     struct BodyScope {
@@ -2699,10 +2719,12 @@ struct TypeCheck {
     TypeExpr *SoleResizableIn(TypeExpr *t);
     void ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // Whether an element pushed into, or allocated in, an array of `elem`
-    // is built in place at its slot: a variable-size one, or a fixed one
-    // holding relative references of either form, which codegen writes
-    // where the element stays (an `in pool` offset measures from the pool,
-    // but is stored field by field all the same).
+    // is built in place at its slot, as codegen builds it (ElemValue): a
+    // variable-size one, or a fixed one holding relative references of
+    // either form, since a self-relative offset measures from where the
+    // element lives and an `in pool` `self` is its position in the pool. A
+    // relative-reference element is the plain reference it encodes,
+    // evaluated before the slot is claimed.
     bool BuiltInPlace(TypeExpr *elem);
     // The array an array literal appended to an array of `elem` is: the run
     // of elements it adds (§4.2).
@@ -2741,7 +2763,8 @@ struct TypeCheck {
     // Its results for callees whose bodies were all checked, which no
     // later check changes.
     map<FnSpec *, vector<VarDef *>> namedoutside;
-    void ElemArg(Node *&n, TypeExpr *elem, Val &rv);
+    // `fill`: a resize's fill value (Dest::fill).
+    void ElemArg(Node *&n, TypeExpr *elem, Val &rv, bool fill = false);
 
     // ------------------------------------------------------------------
     // Calling a function value F(a): the body is cloned and checked inline
@@ -2758,14 +2781,15 @@ struct TypeCheck {
     // by then is closed again -- the frames, scopes, variables and nested
     // functions past the root's own, the body state, a type build in
     // progress -- the globals' flow is as it was, and the specializations
-    // whose bodies were being checked are marked failed (FnSpec::failed).
-    // What the root recorded for the whole-program fixups stays: it is
-    // what checked code did, and a specialization that completed is sound
-    // and reused as any other.
+    // whose checks were in progress are marked failed (FnSpec::failed), as
+    // are the struct and enum instances whose builds were
+    // (StructInst::failed). What the root recorded for the whole-program
+    // fixups stays: it is what checked code did, and a specialization or
+    // an instance that completed is sound and reused as any other.
     struct Checkpoint {
         TypeCheck &tc;
         size_t frames, scopes, vars, localfns, blockpos, outerbodies, cyclerounds, typechain,
-               laterpointees, fnspecs;
+               laterpointees, fnspecs, structinsts, enuminsts;
         int typesbuilding;
         BodyState cur;
         struct GlobalFlow { VarDef *v; bool assigned, maybeassigned; TypeExpr *narrowed; };
@@ -2775,7 +2799,8 @@ struct TypeCheck {
               localfns(t.localfns.size()), blockpos(t.blockpos.size()),
               outerbodies(t.outerbodies.size()), cyclerounds(t.cyclerounds.size()),
               typechain(t.typechain.size()), laterpointees(t.laterpointees.size()),
-              fnspecs(t.ast.fnspecs.size()), typesbuilding(t.typesbuilding), cur(t.cur) {
+              fnspecs(t.ast.fnspecs.size()), structinsts(t.ast.structinsts.size()),
+              enuminsts(t.ast.enuminsts.size()), typesbuilding(t.typesbuilding), cur(t.cur) {
             for (auto g : tc.ast.globals)
                 for (auto v : g->defs) globals.push_back({ v, v->assigned, v->maybeassigned, v->narrowed });
         }
@@ -2801,6 +2826,10 @@ struct TypeCheck {
                 sp->inprogress = false;
                 sp->stale = false;
             }
+            for (auto i = structinsts; i < tc.ast.structinsts.size(); i++)
+                if (!tc.ast.structinsts[i]->validated) tc.ast.structinsts[i]->failed = true;
+            for (auto i = enuminsts; i < tc.ast.enuminsts.size(); i++)
+                if (!tc.ast.enuminsts[i]->validated) tc.ast.enuminsts[i]->failed = true;
             for (auto &g : globals) {
                 g.v->assigned = g.assigned;
                 g.v->maybeassigned = g.maybeassigned;
@@ -2811,26 +2840,47 @@ struct TypeCheck {
 
     // Checks one root of the program -- a global's initializer, main, a
     // thread entry, a function nothing reached, an export, a whole-program
-    // fixup -- and goes on past its error: a CompileError is reported
-    // (Ast::Report), an Abandoned is a consequence of one reported before,
-    // and either returns the checker to the root's entry (Checkpoint).
-    // Returns whether the root completed.
-    template<typename F> bool CheckRoot(F f) {
+    // fixup, an exemplar -- and goes on past its error: a CompileError is
+    // reported (Ast::Report) unless `report` is off, an Abandoned is a
+    // consequence of one reported before, and either returns the checker
+    // to the root's entry (Checkpoint). Returns whether the root completed.
+    template<typename F> bool CheckRoot(F f, bool report = true) {
         Checkpoint cp(*this);
         try {
             f();
             return true;
         } catch (CompileError &e) {
-            if (e.diags.empty()) {
-                Diagnostic d;
-                d.message = d.text = e.msg;
-                ast.Report(d);
-            }
-            for (auto &d : e.diags) ast.Report(d);
+            if (report) ReportError(e);
         } catch (Abandoned &) {
         }
         cp.Restore();
         return false;
+    }
+
+    // One item of a whole-program fixup -- a literal argument, a growth
+    // conflict, a shrink of a global array -- whose error ends that item
+    // alone, so the fixup goes on to report the next one's. An item opens
+    // no frame or scope, so nothing is left to restore. Items repeat where
+    // the code they come from was checked more than once -- a call in each
+    // specialization of the function it is in, or in each round of a cycle
+    // -- and an error reported already is not reported again.
+    set<string> itemerrors;
+    template<typename F> void CheckItem(F f) {
+        try {
+            f();
+        } catch (CompileError &e) {
+            if (itemerrors.insert(e.msg).second) ReportError(e);
+        } catch (Abandoned &) {
+        }
+    }
+
+    void ReportError(const CompileError &e) {
+        if (e.diags.empty()) {
+            Diagnostic d;
+            d.message = d.text = e.msg;
+            ast.Report(d);
+        }
+        for (auto &d : e.diags) ast.Report(d);
     }
 
     // The globals whose initializer's check failed: unassigned for good,
@@ -2892,9 +2942,10 @@ struct TypeCheck {
     // The roots, each checked past the others' errors (CheckRoot): the
     // globals' initializers in order, main, the thread entry points, the
     // functions nothing reached, the exports, then the whole-program
-    // fixups. An error ends the root it is in, and costs the program the
-    // diagnostics of the code that root reached after it; the rest is
-    // checked as if the root had completed.
+    // fixups, whose items are each checked past the others' (CheckItem). An
+    // error ends the root it is in, and costs the program the diagnostics of
+    // the code that root reached after it; the rest is checked as if the
+    // root had completed.
     void CheckRoots() {
         for (auto g : ast.globals) {
             if (CheckRoot([&] { CheckVarDecl(g, true); })) {
@@ -2978,7 +3029,8 @@ struct TypeCheck {
                 }
                 return found;
             };
-            if (!distinct(gc.grown) || !distinct(gc.built)) Error(gc.at, gc.msg);
+            if (!distinct(gc.grown) || !distinct(gc.built))
+                CheckItem([&] { Error(gc.at, gc.msg); });
         }
     }
 
@@ -3016,8 +3068,7 @@ struct TypeCheck {
 
     void CheckUnreached(SFunction *sf) {
         if (!sf->specs.empty() || sf->isthread || sf->isnested || sf->brokensig) return;
-        if (!sf->generics.empty()) return;
-        for (auto &p : sf->params) if (!p.type) return;
+        if (sf->IsGeneric()) return;
         set<string_view> names = { sf->name };
         auto foreign = false;
         if (sf->body) ScanForeignFrom(sf->body, names, foreign);
@@ -3044,23 +3095,14 @@ struct TypeCheck {
         for (auto sf : ast.functions) {
             if (!sf->specs.empty() || sf->isthread || sf->isnested || sf->isextern || !sf->body)
                 continue;
-            auto generic = !sf->generics.empty();
-            for (auto &p : sf->params) generic = generic || !p.type;
-            if (generic) todo.push_back(sf);
+            if (sf->IsGeneric()) todo.push_back(sf);
         }
         if (todo.empty()) return;
         exemplarbase = (int)ast.fnspecs.size();
         FlagScope q(quiet, true);
         for (auto sf : todo) {
             auto from = ast.fnspecs.size();
-            Checkpoint cp(*this);
-            try {
-                CheckExemplar(sf);
-            } catch (CompileError &) {
-                cp.Restore();
-            } catch (Abandoned &) {
-                cp.Restore();
-            }
+            CheckRoot([&] { CheckExemplar(sf); }, false);
             for (auto i = from; i < ast.fnspecs.size(); i++) ast.fnspecs[i]->exemplar = sf;
         }
         for (auto sf : ast.functions)
@@ -3192,15 +3234,8 @@ struct TypeCheck {
     // bytes, which no program can tell from a copy of its own (§11.2).
     bool StaticViewsOnly(VarDef *g) {
         if (g->isvar) return false;
-        function<bool(TypeExpr *)> relative = [&](TypeExpr *t) {
-            switch (t->kind) {
-                case TY_REF: return t->ref->lenstorage >= 0 || relative(t->ref->sub);
-                case TY_SLICE: return relative(t->sub);
-                case TY_ARRAY: return relative(t->arr->sub);
-                default: return AnyField(t, relative);
-            }
-        };
-        if (relative(g->type)) return false;
+        if (Reaches(g->type, [](TypeExpr *t) { return IsRelRef(t); }))
+            return false;
         auto statics = [](const Roots &r) {
             return !r.unknown && r.All([](const RootAlt &a) { return !a.root && a.exact; });
         };

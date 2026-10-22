@@ -63,7 +63,6 @@ struct Optimizer {
     int nc = 0, ncu = 0;         // Inline thresholds; 0 = inlining off.
     bool caninline = false;
     FnSpec *curspec = nullptr;   // Specialization being optimized (null: globals).
-    SFunction *cursf = nullptr;
     int inlined = 0, folded = 0, propagated = 0, tailloops = 0;
 
     // Per-VarDef write/address facts, collected across every live body before
@@ -125,14 +124,20 @@ struct Optimizer {
     bool deferonce = false;
     vector<FnSpec *> deferred;
 
-    // Whether block b ends by leaving: a return, a break, or abort or exit.
+    // Whether control never goes on past statement st: a return, a break, a
+    // continue, or abort or exit.
+    static bool Jumps(Node *st) {
+        if (Is<Return>(st) || Is<Break>(st) || Is<Continue>(st)) return true;
+        auto c = Is<Call>(st);
+        return c && (c->builtin == B_ABORT || c->builtin == B_EXIT);
+    }
+    // Whether block b ends by leaving: a return, a break, or abort or exit (a
+    // continue goes on with its loop).
     static bool Leaves(Node *b) {
         auto blk = Is<Block>(b);
         if (!blk || blk->tail || blk->stmts.empty()) return false;
         auto last = blk->stmts.back();
-        if (Is<Return>(last) || Is<Break>(last)) return true;
-        auto c = Is<Call>(last);
-        return c && (c->builtin == B_ABORT || c->builtin == B_EXIT);
+        return Jumps(last) && !Is<Continue>(last);
     }
     // The deepest C nesting an inlined body may reach: half of MSVC's limit
     // of 128 blocks in a function. The rest is for the blocks codegen opens
@@ -145,6 +150,14 @@ struct Optimizer {
     static bool ScalarType(TypeExpr *t) {
         return t && (t->kind == TY_BOOL || t->kind == TY_FLT ||
                      (t->kind == TY_INT && t->intstorage != IS_VARINT));
+    }
+
+    // A scalar variable that nothing assigns or takes the address of, by the
+    // write/address facts: wherever it is read, it holds what it was bound to.
+    static bool Unwritten(unordered_map<VarDef *, VarFacts> &facts, VarDef *d) {
+        if (!ScalarType(d->type)) return false;
+        auto &f = facts[d];
+        return f.writes == 0 && f.addrof == 0;
     }
 
     static Node *AsLiteral(Node *n) {
@@ -172,8 +185,10 @@ struct Optimizer {
     }
 
     Node *NewInt(Node *at, int64_t v) {
-        auto r = ast.New<IntLit>(at->line, v);
-        r->exprtype = at->exprtype;
+        auto t = at->exprtype;
+        auto r = ast.New<IntLit>(at->line, v, string_view {},
+                                 v < 0 && t && t->kind == TY_INT && t->intstorage == IS_U64);
+        r->exprtype = t;
         folded++;
         return r;
     }
@@ -440,9 +455,7 @@ struct Optimizer {
             out.push_back(r);
             // The checker leaves values after program termination unadapted:
             // they never reach a destination and must not become C assignments.
-            auto call = Is<Call>(r);
-            if (Is<Return>(r) || Is<Break>(r) || Is<Continue>(r) ||
-                (call && (call->builtin == B_ABORT || call->builtin == B_EXIT))) dead = true;
+            if (Jumps(r)) dead = true;
         }
         b->stmts = std::move(out);
         if (b->tail) {
@@ -464,8 +477,7 @@ struct Optimizer {
             if (vd->names.size() == 1 && vd->inits.size() == 1 && vd->defs.size() == 1) {
                 auto d = vd->defs[0];
                 auto lit = AsLiteral(vd->inits[0]);
-                auto &f = facts[d];
-                if (lit && ScalarType(d->type) && f.writes == 0 && f.addrof == 0) {
+                if (lit && Unwritten(facts, d)) {
                     consts[d] = lit;
                     // Uses outside this walk exist only via capture; otherwise
                     // every use gets replaced and the binding is dead.
@@ -572,8 +584,7 @@ struct Optimizer {
         if (g->names.size() == 1 && g->inits.size() == 1 && !g->defs.empty()) {
             auto d = g->defs[0];
             auto lit = AsLiteral(g->inits[0]);
-            auto &f = facts[d];
-            if (lit && ScalarType(d->type) && f.writes == 0 && f.addrof == 0)
+            if (lit && Unwritten(facts, d))
                 consts[d] = lit;  // The declaration itself always stays.
         }
     }
@@ -600,14 +611,12 @@ struct Optimizer {
         caninline = nc > 0;
         for (auto sp : postorder) {
             curspec = sp;
-            cursf = sp->sf;
             SetupBaseCase(sp);
             OptBody(sp);
             TailRecurse(sp);
             Scan(sp);
         }
         curspec = nullptr;
-        cursf = nullptr;
         // Globals again, now able to inline into their initializers.
         for (auto g : ast.globals) OptGlobal(g);
         // Final liveness over the rewritten trees: specs whose every call got
@@ -660,6 +669,10 @@ struct Inliner {
     // Variables src does not own that the copy names under another one: the
     // copies the call being inlined passes for them (Call::fvremap).
     unordered_map<VarDef *, VarDef *> outer;
+    // The calls to nested functions the copy under way has made, each with
+    // the call it copied, for Finish; and how deep in Cp that copy is.
+    vector<pair<const Call *, Call *>> nestedcopies;
+    int cpdepth = 0;
 
     VarDef *Remap(VarDef *v) {
         if (!v) return v;
@@ -699,9 +712,8 @@ struct Inliner {
     // Remap owns all copied-variable state, including the write/address facts
     // that later folds use, for ordinary and recursive base-case inlining.
     VarDecl *BindArg(VarDef *pv, Node *arg, Line ln) {
-        auto &f = o.facts[pv];
-        if (Optimizer::AsLiteral(arg) && Optimizer::ScalarType(pv->type) &&
-            f.writes == 0 && f.addrof == 0 && !(keepcaptured && pv->captured)) {
+        if (Optimizer::AsLiteral(arg) && Optimizer::Unwritten(o.facts, pv) &&
+            !(keepcaptured && pv->captured)) {
             subst[pv] = arg;
             return nullptr;
         }
@@ -714,14 +726,27 @@ struct Inliner {
     }
 
     Node *Cp(const Node *n) {
+        cpdepth++;
         auto r = n->Cp1(*this);
         r->end = n->end;
         r->exprtype = n->exprtype;
         r->expansiontrace = n->expansiontrace;
+        if (!--cpdepth) Finish();
         return r;
     }
 
     Block *CpBlock(const Block *b) { return (Block *)Cp(b); }
+
+    // What a copy can settle only once it is whole, done as the outermost Cp
+    // returns, so that no use of the copier leaves it undone: the free
+    // variables each copied call to a nested function passes, which the
+    // scopes around the call may copy only after it (a `for` copies its
+    // variable after its body), and the provenance of the copied variables.
+    void Finish() {
+        for (auto [from, to] : nestedcopies) RemapFreeVars(from, to);
+        nestedcopies.clear();
+        RemapProvenance();
+    }
 
     // A copied variable's provenance still names the variables of the body
     // it was copied from; point it at their copies, so that an analysis
@@ -793,7 +818,6 @@ inline Node *Optimizer::TryInline(Call *c) {
         }
     }
     auto body = inl.CpBlock(K->body);
-    inl.RemapProvenance();
     body->stmts.insert(body->stmts.begin(), decls.begin(), decls.end());
     auto ib = ast.New<InlineBlock>(c->line, K->sf, K, body);
     ib->exprtype = c->exprtype;
@@ -911,16 +935,17 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->poolcheck = poolcheck;
     c->qtype = qtype;
     c->shaderblob = shaderblob;
-    c->fvtarget = fvtarget;
     c->rettypes = rettypes;
     c->fmtspecs = fmtspecs;
     c->fmtcontexts = fmtcontexts;
     for (auto p : fvparams) c->fvparams.push_back(inl.Remap(p));
     c->fvbody = fvbody ? inl.CpBlock(fvbody) : nullptr;
-    // Case functions nested in one scope are dispatch targets too.
+    // What a call to a nested function passes for the variables it reaches
+    // is filled in once the copy is whole (Inliner::Finish). Case functions
+    // nested in one scope are dispatch targets too.
     auto nested = spec && spec->lexparent;
     for (auto d : dispatch) nested = nested || d->lexparent;
-    if (nested) inl.RemapFreeVars(this, c);
+    if (nested) inl.nestedcopies.push_back({ this, c });
     c->defaultinit = defaultinit ? inl.Cp(defaultinit) : nullptr;
     return c;
 }
@@ -1142,6 +1167,19 @@ inline Node *Binary::Opt(Optimizer &o) {
     }
     left = o.Opt(left);
     right = o.Opt(right);
+    // A comparison of two constants, at the type they compare at; null for
+    // any other operator.
+    auto compare = [&](auto a, auto b) -> Node * {
+        switch (op) {
+            case T_LT:   return o.NewBool(this, a < b);
+            case T_GT:   return o.NewBool(this, a > b);
+            case T_LTEQ: return o.NewBool(this, a <= b);
+            case T_GTEQ: return o.NewBool(this, a >= b);
+            case T_EQ:   return o.NewBool(this, a == b);
+            case T_NEQ:  return o.NewBool(this, a != b);
+            default:     return nullptr;
+        }
+    };
     auto li = Is<IntLit>(left), ri = Is<IntLit>(right);
     if (li && ri) {
         // Folds compute at the operands' checked type (the typechecker
@@ -1155,30 +1193,9 @@ inline Node *Binary::Opt(Optimizer &o) {
         if (FoldIntOp(op, li->val, ri->val, s, r)) return o.NewInt(this, r);
         // A comparison has no integer result to fold, so it is not one of
         // FoldIntOp's; its operands compare at their own signedness.
-        if (IsUnsigned(s)) {
-            auto a = (uint64_t)li->val, b = (uint64_t)ri->val;
-            switch (op) {
-                case T_LT:   return o.NewBool(this, a < b);
-                case T_GT:   return o.NewBool(this, a > b);
-                case T_LTEQ: return o.NewBool(this, a <= b);
-                case T_GTEQ: return o.NewBool(this, a >= b);
-                case T_EQ:   return o.NewBool(this, a == b);
-                case T_NEQ:  return o.NewBool(this, a != b);
-                default: break;
-            }
-            return this;
-        }
-        auto a = li->val, b = ri->val;
-        switch (op) {
-            case T_LT:   return o.NewBool(this, a < b);
-            case T_GT:   return o.NewBool(this, a > b);
-            case T_LTEQ: return o.NewBool(this, a <= b);
-            case T_GTEQ: return o.NewBool(this, a >= b);
-            case T_EQ:   return o.NewBool(this, a == b);
-            case T_NEQ:  return o.NewBool(this, a != b);
-            default: break;
-        }
-        return this;
+        auto c = IsUnsigned(s) ? compare((uint64_t)li->val, (uint64_t)ri->val)
+                               : compare(li->val, ri->val);
+        return c ? c : this;
     }
     auto lf = Is<FltLit>(left), rf = Is<FltLit>(right);
     if (lf && rf) {
@@ -1192,15 +1209,10 @@ inline Node *Binary::Opt(Optimizer &o) {
             case T_MINUS: return o.NewFlt(this, f32 ? (double)(float)(a - b) : a - b);
             case T_MUL:   return o.NewFlt(this, f32 ? (double)(float)(a * b) : a * b);
             case T_DIV:   return o.NewFlt(this, f32 ? (double)(float)(a / b) : a / b);
-            case T_LT:    return o.NewBool(this, a < b);
-            case T_GT:    return o.NewBool(this, a > b);
-            case T_LTEQ:  return o.NewBool(this, a <= b);
-            case T_GTEQ:  return o.NewBool(this, a >= b);
-            case T_EQ:    return o.NewBool(this, a == b);
-            case T_NEQ:   return o.NewBool(this, a != b);
-            default: break;  // % (fmod) is left to the runtime.
+            default: break;
         }
-        return this;
+        auto c = compare(a, b);
+        return c ? c : this;   // % (fmod) is left to the runtime.
     }
     auto lb = Is<BoolLit>(left), rb = Is<BoolLit>(right);
     if (lb && rb && (op == T_EQ || op == T_NEQ))

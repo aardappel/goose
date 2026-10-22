@@ -147,16 +147,23 @@ inline uintptr_t StackPointer() {
 inline bool StackLow() { return StackPointer() < stackfloor; }
 
 // Reads a whole file; the returned string's c_str() gives the lexer its 0 terminator.
+// It reads to the end rather than the length a seek reports: a directory
+// opens on POSIX systems, with no such length, and fails to read (EISDIR).
 inline bool LoadFile(const string &path, string &dest) {
     auto f = fopen(path.c_str(), "rb");
     if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    auto len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    dest.resize((size_t)len);
-    auto read = fread(dest.data(), 1, (size_t)len, f);
+    dest.clear();
+    for (size_t got = 0;;) {
+        dest.resize(std::max<size_t>(got * 2, 1 << 16));
+        got += fread(dest.data() + got, 1, dest.size() - got, f);
+        if (got < dest.size()) {
+            dest.resize(got);
+            break;
+        }
+    }
+    auto ok = !ferror(f);
     fclose(f);
-    return read == (size_t)len;
+    return ok;
 }
 
 // A path's file name without its directory and extension.

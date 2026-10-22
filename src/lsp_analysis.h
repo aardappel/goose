@@ -30,11 +30,11 @@ struct Occurrence {
                                     // LOCAL: the VarDecl. BINDER: the ForLoop, MatchExpr or FunVal.
     TypeExpr *type = nullptr;       // TYPE
     SFunction *sf = nullptr;        // FN, PARAM
-    SStruct *st = nullptr;          // STRUCT, FIELD of a struct
-    SEnum *en = nullptr;            // ENUM, VARIANT, FIELD of a variant
+    SStruct *st = nullptr;          // STRUCT
+    SEnum *en = nullptr;            // ENUM, VARIANT
     SAlias *al = nullptr;           // ALIAS
     const Field *field = nullptr;   // FIELD
-    const SVariant *variant = nullptr;      // VARIANT, FIELD of a variant
+    const SVariant *variant = nullptr;      // VARIANT
     const Param *param = nullptr;   // PARAM
     const GenericParam *generic = nullptr;  // GENERIC
     int index = 0;                  // GLOBAL, LOCAL: which name. INIT: which initializer. BINDER: 0
@@ -101,11 +101,12 @@ struct FileIndex {
 struct Analysis {
     unique_ptr<Ast> ast;
     bool parsed = false;            // Past resolution: the indexes stand on a whole program.
-    bool checked = false;           // Checked, optimized and bounds-check analyzed without error.
-    bool built = false;             // The indexes below stand.
+    bool indexed = false;           // The source's indexes stand (IndexSource).
+    bool built = false;             // All the indexes below stand.
     vector<Diagnostic> diags;       // Warnings as they came, then the error's.
     map<string, int> fileof;        // PathKey -> index in ast->sources.
     vector<FileIndex> files;        // Per source.
+    unordered_map<const Node *, const FunVal *> funvals;  // A block's body -> the block.
     unordered_map<const Node *, vector<Node *>> clones;   // Source node -> its clones.
     // The clones an exemplar check made (FnSpec::exemplar), which follow
     // the real ones in `clones`.
@@ -197,10 +198,15 @@ struct Analysis {
         }
     }
 
-    // The rest of the indexes, from the Ast as the check left it.
-    void Build() {
-        if (built) return;
-        built = true;
+    // The indexes of the program as written, from the Ast as resolution
+    // left it. The check rewrites a global's initializer in place, as it
+    // checks it rather than a clone of it: it puts the defaults of the
+    // parameters a call leaves out among its arguments, orders a struct
+    // literal's initializers by field with the defaults filled in, and
+    // expands a const for.
+    void IndexSource() {
+        if (indexed) return;
+        indexed = true;
         auto &a = *ast;
         if (files.size() != a.sources.size()) IndexFiles();
         auto infile = [&](int fileidx) { return fileidx >= 0 && fileidx < (int)files.size(); };
@@ -229,14 +235,11 @@ struct Analysis {
                 at(o, g.line, g.name);
             }
         };
-        auto fields = [&](const vector<Field> &fs, SStruct *st, SEnum *en, const SVariant *v) {
+        auto fields = [&](const vector<Field> &fs) {
             for (auto &f : fs) {
                 if (f.ispad) continue;
                 auto o = decl(Occurrence::FIELD);
                 o.field = &f;
-                o.st = st;
-                o.en = en;
-                o.variant = v;
                 o.isvar = !f.isconst;
                 at(o, f.line, f.name);
             }
@@ -259,7 +262,7 @@ struct Analysis {
             o.st = st;
             view(o, st->line.fileidx, st->name);
             generics(st->generics);
-            fields(st->fields, st, nullptr, nullptr);
+            fields(st->fields);
         }
         for (auto en : a.enums) {
             auto o = decl(Occurrence::ENUM);
@@ -271,7 +274,7 @@ struct Analysis {
                 vo.en = en;
                 vo.variant = &v;
                 at(vo, v.line, v.name);
-                fields(v.fields, nullptr, en, &v);
+                fields(v.fields);
             }
         }
         for (auto al : a.aliases) {
@@ -323,7 +326,6 @@ struct Analysis {
         // and the extent of every node, from the earliest token in it to
         // its end: a visit gives where its node's tokens start, -1 for
         // none known.
-        unordered_map<const Node *, const FunVal *> funvals;    // A block's body -> the block.
         function<int64_t(Node *, bool)> visit = [&](Node *n, bool callee) -> int64_t {
             if (!n) return -1;
             auto fileidx = n->line.fileidx;
@@ -370,14 +372,17 @@ struct Analysis {
                     o.index = 1;
                     view(o, fileidx, fl->idxvar);
                 }
-            } else if (auto m = Is<MatchExpr>(n)) {
-                for (size_t i = 0; i < m->arms.size(); i++) {
-                    if (m->arms[i].pat.binder.empty()) continue;
+            } else if (Is<MatchExpr>(n) || Is<ConstFor>(n)) {
+                // A match's arms, or those a const for in its arm list
+                // generates.
+                auto &arms = Is<MatchExpr>(n) ? Is<MatchExpr>(n)->arms : Is<ConstFor>(n)->arms;
+                for (size_t i = 0; i < arms.size(); i++) {
+                    if (arms[i].pat.binder.empty()) continue;
                     auto o = decl(Occurrence::BINDER);
                     o.node = n;
                     o.index = (int)i;
-                    o.isvar = m->arms[i].pat.byref;
-                    view(o, fileidx, m->arms[i].pat.binder);
+                    o.isvar = arms[i].pat.byref;
+                    view(o, fileidx, arms[i].pat.binder);
                 }
             } else if (auto fv = Is<FunVal>(n)) {
                 funvals[fv->body] = fv;
@@ -446,10 +451,22 @@ struct Analysis {
                 return x.start != y.start ? x.start < y.start : x.end > y.end;
             });
         }
+    }
+
+    // The rest of the indexes, from the Ast as the check left it.
+    void Build() {
+        if (built) return;
+        built = true;
+        IndexSource();
+        auto &a = *ast;
+        auto infile = [&](int fileidx) { return fileidx >= 0 && fileidx < (int)files.size(); };
         // The clones: every specialization's body, the bodies of the
         // function values its calls checked, and the defaults they made.
         // From them, where each checked variable is declared and what each
-        // match pattern names, which the source nodes alone do not say.
+        // match pattern names, which the source nodes alone do not say. A
+        // clone's names are views of the source's, and a match's arms are
+        // its own: those a const for generated, one set per entry, have no
+        // counterpart among the source's.
         auto bind = [&](const VarDef *vd, Place p) { if (vd && p.Known()) defplaces[vd] = p; };
         auto exemplar = false;
         function<void(Node *)> mark = [&](Node *n) {
@@ -460,21 +477,17 @@ struct Analysis {
             }
             auto fileidx = n->Origin()->line.fileidx;
             if (auto v = Is<VarDecl>(n)) {
-                auto o = Is<VarDecl>(n->Origin());
-                for (size_t i = 0; i < v->defs.size() && i < o->names.size(); i++) {
+                for (size_t i = 0; i < v->defs.size() && i < v->names.size(); i++) {
                     if (!v->defs[i]) continue;
-                    vardecls[v->defs[i]] = o;
-                    bind(v->defs[i], PlaceOfView(fileidx, o->names[i]));
+                    vardecls[v->defs[i]] = Is<VarDecl>(n->Origin());
+                    bind(v->defs[i], PlaceOfView(fileidx, v->names[i]));
                 }
             } else if (auto fl = Is<ForLoop>(n)) {
-                auto o = Is<ForLoop>(n->Origin());
-                bind(fl->vdef, PlaceOfView(fileidx, o->var));
-                bind(fl->idxdef, PlaceOfView(fileidx, o->idxvar));
+                bind(fl->vdef, PlaceOfView(fileidx, fl->var));
+                bind(fl->idxdef, PlaceOfView(fileidx, fl->idxvar));
             } else if (auto m = Is<MatchExpr>(n)) {
-                auto o = Is<MatchExpr>(n->Origin());
-                for (size_t i = 0; i < m->arms.size() && i < o->arms.size(); i++) {
-                    auto &arm = m->arms[i];
-                    bind(arm.binder, PlaceOfView(fileidx, o->arms[i].pat.binder));
+                for (auto &arm : m->arms) {
+                    bind(arm.binder, PlaceOfView(fileidx, arm.pat.binder));
                     if (arm.variants.size() != arm.pat.items.size()) continue;
                     for (size_t k = 0; k < arm.variants.size(); k++)
                         if (arm.pat.items[k].lo && arm.variants[k])

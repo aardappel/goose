@@ -163,7 +163,6 @@ inline void ResolveTypeNames(Ast &ast) {
             case TY_VARIANT: checkaliases(t->var->adt); break;
             case TY_STRUCT: each(t->struc->args); break;
             case TY_ENUM: each(t->enu->args); break;
-            case TY_GENERIC: each(t->named->args); break;
             case TY_FN: each(t->fn->args); each(t->fn->rets); break;
             default: break;
         }
@@ -189,34 +188,21 @@ inline void ResolveTypeNames(Ast &ast) {
         if (varmode && target->kind == TY_ENUM && target->enu->varmode) {
             ErrorAt(t, use, "type is already variable-mode");
             varmode = false;
-        } else if (varmode && target->kind != TY_ENUM && target->kind != TY_GENERIC) {
-            ErrorAt(t, use, "variable mode (..) requires an ADT type");
+        } else if (varmode && target->kind != TY_ENUM) {
+            // An alias's type names no generic (unknownin): a name in it
+            // that names nothing is the struct standing for it, whose `..`
+            // is a consequence of the error reported for the name.
+            if (!(target->kind == TY_STRUCT && target->struc->st->unknown))
+                ErrorAt(t, use, "variable mode (..) requires an ADT type");
             varmode = false;
         }
         if (varmode) {
-            switch (target->kind) {
-                case TY_ENUM: {
-                    auto d = ast.NewDetail<TypeEnum>();
-                    d->en = target->enu->en;
-                    d->args = target->enu->args;
-                    d->varmode = true;
-                    t->kind = TY_ENUM;
-                    t->enu = d;
-                    break;
-                }
-                case TY_GENERIC: {
-                    auto d = ast.NewDetail<TypeName>();
-                    d->name = target->named->name;
-                    d->ns = target->named->ns;
-                    d->args = target->named->args;
-                    d->varmode = true;
-                    t->kind = TY_GENERIC;
-                    t->named = d;
-                    break;
-                }
-                default:
-                    assert(false);
-            }
+            auto d = ast.NewDetail<TypeEnum>();
+            d->en = target->enu->en;
+            d->args = target->enu->args;
+            d->varmode = true;
+            t->kind = TY_ENUM;
+            t->enu = d;
         } else {
             auto line = t->line;
             auto cq = t->cq;

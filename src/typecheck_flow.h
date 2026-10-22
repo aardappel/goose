@@ -35,16 +35,14 @@ inline void TypeCheck::PopScope() {
 }
 
 // A grow-shrink array anywhere in a value of type t: the array itself, or
-// the tail of a struct (elements are never resizable, §3.3).
+// the tail of a struct or of a variant type's payload (elements are never
+// resizable, §3.3). An enum's payloads are left out: a resizable ADT's are
+// never bound by reference (§8.1), so no reference reaches into one.
 inline bool TypeCheck::ContainsGrowShrink(TypeExpr *t) {
     switch (t->kind) {
         case TY_ARRAY: return t->arr->akind == A_GROWSHRINK;
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            for (auto ft : inst->ftypes)
-                if (ft && ContainsGrowShrink(ft)) return true;
-            return false;
-        }
+        case TY_STRUCT: case TY_VARIANT:
+            return AnyField(t, [&](TypeExpr *ft) { return ContainsGrowShrink(ft); });
         default: return false;
     }
 }
@@ -66,16 +64,15 @@ inline bool TypeCheck::IsGrowShrinkRoot(VarDef *r) {
 }
 
 // The element types of the grow-shrink arrays a value of type t holds by
-// value.
+// value, where ContainsGrowShrink finds them.
 inline void TypeCheck::GrowShrinkElems(TypeExpr *t, vector<TypeExpr *> &out) {
     switch (t->kind) {
         case TY_ARRAY:
             if (t->arr->akind == A_GROWSHRINK) out.push_back(t->arr->sub);
             else GrowShrinkElems(t->arr->sub, out);
             return;
-        case TY_STRUCT:
-            for (auto ft : GetStructInst(t)->ftypes)
-                if (ft) GrowShrinkElems(ft, out);
+        case TY_STRUCT: case TY_VARIANT:
+            EachField(t, [&](TypeExpr *ft) { GrowShrinkElems(ft, out); });
             return;
         default: return;
     }
@@ -504,7 +501,7 @@ inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
 inline bool TypeCheck::BoundAnywhere(VarDef *vd) {
     auto t = vd->type;
     return vd->isglobal && vd->isvar && t && IsRefOrSlice(t) &&
-           !(t->kind == TY_REF && t->ref->lenstorage >= 0 && !t->ref->pool);
+           !IsSelfRelRef(t);
 }
 
 // Where such a global points, as a read of it in a function's body sees it.
@@ -745,15 +742,6 @@ inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     });
     declsiteof[{ fr.lexspec, fd->sf }] = &site;
     localfns.push_back({ (int)scopes.size() - 1, fd->sf });
-}
-
-// The namespace of the function being checked (a function value's is its
-// definer's): where names the checker looks up without a node of their own
-// resolve first.
-inline string_view TypeCheck::CurNs() {
-    for (auto i = (int)frames.size() - 1; i >= 0; i--)
-        if (frames[i].sf) return frames[i].sf->ns;
-    return {};
 }
 
 // The frame whose vars the above may address next: used to find a spec's
@@ -1337,7 +1325,7 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     {
         PathScope ps(*this, onpath ? x->thenb : nullptr);
         JoinPathScope js(*this, onjoin ? x->thenb : nullptr);
-        tv = CheckBlockVal(x->thenb, expected, wantvalue, SK_PLAIN);
+        tv = CheckBlockVal(x->thenb, expected, wantvalue);
     }
     auto aflow = SaveFlow();
     RestoreFlow(entry);
@@ -1351,7 +1339,7 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
         NodeScope ns(*this, ei);
         ev = CheckIf(ei, expected, wantvalue);
     } else if (x->elseb) {
-        ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue, SK_PLAIN);
+        ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue);
     } else if (wantvalue) {
         Error(x, "an if used as a value requires an else branch");
     }
@@ -1373,11 +1361,10 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     return onjoin ? v : TempCopy(v);
 }
 
-inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
-                                    Node *scopenode) {
+inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == b;
     auto onjoin = joinpath == b;
-    PushScope(b->expansionboundary ? SK_EXPANSION : scopekind, scopenode);
+    PushScope(b->expansionboundary ? SK_EXPANSION : SK_PLAIN);
     BlockScope bs(*this, b);
     CheckStmts(b);
     Val v = VoidVal();
@@ -1429,8 +1416,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     for (auto &arm : m->arms) {
         for (auto &pi : arm.pat.items) {
             auto owner = pi.variantowner;
-            if (owner && (!enumtype || owner->enu->en != enumtype->enu->en ||
-                          !TypeArgsEq(owner->enu->args, enumtype->enu->args)))
+            if (owner && (!enumtype || !SameAdt(owner, enumtype)))
                 Error(arm.body, cat("const for variant ", ExprStr(pi.lo), " belongs to ",
                                     TypeStr(owner), ", not ", TypeStr(enumtype ? enumtype : st)));
         }
@@ -1604,6 +1590,12 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             ConstUse use { n, "match pattern" };
             if (!ConstIntValue(n, v, literal, visiting, &use))
                 Error(n, "constant integer expression expected for match pattern");
+            // `~c` is ~c at the scrutinee's width, where c fits it; where it
+            // does not, i64's ~c does not either.
+            if (v.notconst && FitsIntStorage(v.litlo, false, sit)) {
+                v.ival = WrapStorage(v.ival, sit);
+                v.uns = sit == IS_U64 && v.ival < 0;
+            }
             uns = v.uns;
             return v.ival;
         };
@@ -1634,8 +1626,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         for (auto &arm : m->arms) {
             if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
             if (!arm.pat.binder.empty())
-                Error(arm.pat.items[0].lo, cat("constant pattern ",
-                                               Is<Ident>(arm.pat.items[0].lo)->name,
+                Error(arm.pat.items[0].lo, cat("constant pattern ", ExprStr(arm.pat.items[0].lo),
                                                " has no payload to bind"));
             arm.ranges.clear();
             for (auto &pi : arm.pat.items) {
@@ -1833,8 +1824,6 @@ inline void TypeCheck::CheckWhile(While *x) {
     });
     RestoreFlow(exit);
     JoinBreakFlow(sc, true);
-    if (sc.breaktype)
-        Error(x, "break with a value exits loop/block only, not while");
 }
 
 inline void TypeCheck::CheckFor(ForLoop *x) {
@@ -2034,8 +2023,6 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         CheckLoopBody(x->body);
     });
     JoinBreakFlow(sc, true);
-    if (sc.breaktype)
-        Error(x, "break with a value exits loop/block only, not for");
 }
 
 inline int TypeCheck::RealFrameIndex() {
@@ -2088,7 +2075,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form,
         // but for a number's: an integer constant, or a float of literals,
-        // adapts as a branch's does (§6.4).
+        // adapts as a branch's does (§6.4), relying on the named constants
+        // it was read from (RelyOnNamed).
         Val exit;
         exit.SetProv(v);
         exit.type = v.type;
@@ -2097,6 +2085,7 @@ inline void TypeCheck::CheckBreak(Break *b) {
             exit.nonneg = exit.litlo >= 0;
         }
         exit.litfloat = LitFloat(v);
+        exit.constfrom = v.constfrom;
         exit.isnull = v.isnull;
         exit.contents = v.contents;
         exit.holderset = v.holderset;
@@ -2177,7 +2166,7 @@ inline void TypeCheck::CheckStmtExpr(Node *n) {
     NodeScope ns(*this, n);
     if (auto x = Is<IfExpr>(n)) { CheckIf(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<Block>(n)) {
-        CheckBlockVal(x, nullptr, false, SK_PLAIN);
+        CheckBlockVal(x, nullptr, false);
         n->exprtype = ast.voidtype;
         return;
     }
@@ -2237,6 +2226,9 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             if (!IsArrayKind(t, A_GROW) || ClassOf(t->arr->sub) != SC_FIXED)
                 Error(vd, cat(kw, " applies to grow-only arrays of fixed-size "
                                   "elements (§5.4)"));
+            // `= []` leaves the element to what first goes into the pool
+            // (§4.2), which CompletePending judges.
+            if (IsPendingArray(t)) pendingpools[t] = d;
         }
         if (!global) {
             CheckCycleInit(d, fi, calls);
@@ -2370,7 +2362,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         auto fltlit = vt && vt->kind == TY_FLT && !IsF32(vt) && LitFloat(v);
         d->constlit = !vd->isvar && !ann && !vd->byref &&
                       ((global && (v.ck == CK_INT || v.notconst)) || fltlit);
-        d->constnot = v.notconst;
+        d->constnot = d->constlit && v.notconst;
         d->constval = v.notconst ? ~v.litlo : v.ival;
         d->constuns = v.uns;
         d->constflt = v.ck == CK_FLT;
@@ -2598,11 +2590,8 @@ inline void TypeCheck::CheckAssign(Assign *a) {
 // function's or function value's written inside one: a function with type
 // parameters or untyped parameters (§7.7).
 inline bool TypeCheck::InGenericBody() {
-    for (auto sf = frames.back().sf; sf; sf = sf->outer) {
-        if (!sf->generics.empty()) return true;
-        for (auto &p : sf->params)
-            if (!p.type) return true;
-    }
+    for (auto sf = frames.back().sf; sf; sf = sf->outer)
+        if (sf->IsGeneric()) return true;
     return false;
 }
 

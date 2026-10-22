@@ -3,7 +3,8 @@
 // which std::unordered_map gives a heap node and a rehash walk per entry.
 // The table holds keys and value indices only, so probing and growing never
 // touch the values; those live in fixed chunks, where a reference to one
-// stays valid as the map grows, as std::unordered_map's do.
+// stays valid as the map grows, as std::unordered_map's do. An erased key's
+// value cell goes to a key added later.
 #pragma once
 
 namespace goose {
@@ -26,8 +27,9 @@ template<typename K, typename V> class flat_map {
     };
     vector<Slot> slots;            // A power of two in size, at most half full.
     vector<unique_ptr<V[]>> chunks;
+    vector<uint32_t> freecells;    // Erased keys' value cells, reset.
     uint32_t count = 0;
-    uint32_t used = 0;             // Value cells handed out, including erased ones'.
+    uint32_t used = 0;             // Value cells handed out, the free ones included.
     int shift = 64;                // 64 - log2(slots.size()).
 
     size_t Home(const K &k) const { return (size_t)(FlatHash(k) >> shift); }
@@ -48,6 +50,12 @@ template<typename K, typename V> class flat_map {
     }
 
   public:
+    flat_map() = default;
+    // Nothing moves a map, whose count and cells a defaulted move would leave
+    // behind with no table or chunks.
+    flat_map(flat_map &&) = delete;
+    flat_map &operator=(flat_map &&) = delete;
+
     // Room for n keys without growing.
     void reserve(size_t n) {
         while (slots.size() < n * 2) Grow();
@@ -56,6 +64,7 @@ template<typename K, typename V> class flat_map {
     bool empty() const { return !count; }
 
     V *find(const K &k) {
+        assert(k != K {});
         if (!count) return nullptr;
         auto &s = slots[Probe(k)];
         return s.key == k ? &Cell(s.index) : nullptr;
@@ -66,20 +75,27 @@ template<typename K, typename V> class flat_map {
         if ((count + 1) * 2 > slots.size()) Grow();
         auto &s = slots[Probe(k)];
         if (s.key == k) return Cell(s.index);
-        if (used % CHUNK == 0) chunks.push_back(make_unique<V[]>(CHUNK));
+        if (!freecells.empty()) {
+            s.index = freecells.back();
+            freecells.pop_back();
+        } else {
+            if (used % CHUNK == 0) chunks.push_back(make_unique<V[]>(CHUNK));
+            s.index = used++;
+        }
         s.key = k;
-        s.index = used++;
         count++;
         return Cell(s.index);
     }
 
-    // Its value's cell is reset and left unused: erasing is rare.
+    // Its value's cell is reset, for a key added later.
     void erase(const K &k) {
+        assert(k != K {});
         if (!count) return;
         auto mask = slots.size() - 1;
         auto i = Probe(k);
         if (slots[i].key != k) return;
         Cell(slots[i].index) = V();
+        freecells.push_back(slots[i].index);
         count--;
         // Backward-shift deletion: move up each later key of the run that
         // the hole now separates from its home slot.

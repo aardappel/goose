@@ -1,8 +1,8 @@
 // The compiler's side of graphics: compiling the shaders `embed_shader`
-// embeds into a program, for the gfx package (packages/gfx) or any other
-// graphics library that reads the blob. Shader compilation (src/shaderc.c)
-// is always built: a program using gfx typechecks and emits the same C
-// whether or not the package is compiled in.
+// embeds into a program, for the gfx package (github.com/aardappel/goose_gfx)
+// or any other graphics library that reads the blob. Shader compilation
+// (src/shaderc.c) is always built: a program using gfx typechecks and emits
+// the same C whether or not the package is compiled in.
 
 #pragma once
 

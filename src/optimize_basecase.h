@@ -66,18 +66,10 @@ struct BaseCaseInliner {
             case TY_REF:  return t->ref->lenstorage != IS_VARINT;
             case TY_FLT: case TY_BOOL: case TY_SLICE: return true;
             case TY_STRUCT: return t->struc->inst && t->struc->inst->sclass == SC_FIXED;
-            case TY_ENUM: return !t->enu->varmode ||
-                                 (t->enu->inst && t->enu->inst->varclass == SC_FIXED);
+            case TY_ENUM: return !t->enu->varmode;
             case TY_ARRAY: return t->arr->akind == A_FIXED;
             default: return false;
         }
-    }
-
-    static int TreeSize(Node *n) {
-        if (!n) return 0;
-        auto k = 1;
-        RunChildren(n, [&](Node *ch) { k += TreeSize(ch); });
-        return k;
     }
 
     // The direct self-call sites the rewrite would copy the base case to, in
@@ -98,7 +90,7 @@ struct BaseCaseInliner {
     // nothing may jump out of the subtree, and nothing may call back into the
     // cycle. `pure` restricts the node kinds to reads on top of that, for the
     // test, which the recursing arm evaluates a second time.
-    bool BaseOK(Node *n, set<VarDef *> &bound, vector<SFunction *> &ibs, bool pure) {
+    bool BaseOK(Node *n, set<VarDef *> &bound, bool pure) {
         if (!n) return true;
         if (auto id = Is<Ident>(n)) {
             auto v = id->vdef;   // Null: a function reference.
@@ -110,25 +102,18 @@ struct BaseCaseInliner {
                       Is<AsCast>(n) || Is<Index>(n) || Is<SliceExpr>(n)))
             return false;
         // A jump out of the subtree would land in the caller instead of the
-        // callee; a nested declaration is a separate tree left behind.
-        if (Is<Break>(n) || Is<Continue>(n) || Is<FnDecl>(n) || Is<FunVal>(n)) return false;
-        if (auto r = Is<Return>(n)) {
-            auto inside = false;
-            for (auto sf : ibs) inside = inside || sf == r->target;
-            if (!inside) return false;
-        }
+        // callee; a nested declaration is a separate tree left behind. Every
+        // return is one: Setup reads a recursive function's body before it
+        // is optimized, and nothing is ever inlined into one (TryInline).
+        assert(!Is<InlineBlock>(n));
+        if (Is<Break>(n) || Is<Continue>(n) || Is<Return>(n) || Is<FnDecl>(n) || Is<FunVal>(n))
+            return false;
         if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) bound.insert(d);
         if (auto fl = Is<ForLoop>(n)) {
             bound.insert(fl->vdef);
             if (fl->idxdef) bound.insert(fl->idxdef);
         }
         if (auto m = Is<MatchExpr>(n)) for (auto &a : m->arms) if (a.binder) bound.insert(a.binder);
-        if (auto ib = Is<InlineBlock>(n)) {
-            ibs.push_back(ib->sf);
-            auto ok = BaseOK(ib->body, bound, ibs, pure);
-            ibs.pop_back();
-            return ok;
-        }
         if (auto c = Is<Call>(n)) {
             // A callee that may `return ... from` us would leave the frame
             // the copy is in, the caller's, rather than the callee's.
@@ -140,7 +125,7 @@ struct BaseCaseInliner {
             for (auto p : c->fvparams) bound.insert(p);
         }
         auto ok = true;
-        RunChildren(n, [&](Node *ch) { ok = ok && BaseOK(ch, bound, ibs, pure); });
+        RunChildren(n, [&](Node *ch) { ok = ok && BaseOK(ch, bound, pure); });
         return ok;
     }
 
@@ -182,10 +167,9 @@ struct BaseCaseInliner {
         if (r->vals.size() > 1 || r->vals.size() != sp->rets.size()) return false;
         auto expr = r->vals.empty() ? nullptr : r->vals[0];
         set<VarDef *> bound;
-        vector<SFunction *> ibs;
-        if (!BaseOK(cond, bound, ibs, true)) return false;
-        if (!BaseOK(expr, bound, ibs, false)) return false;
-        if (!SizeOK(sp, TreeSize(cond) + TreeSize(expr))) return false;
+        if (!BaseOK(cond, bound, true)) return false;
+        if (!BaseOK(expr, bound, false)) return false;
+        if (!SizeOK(sp, CountNodes(cond) + CountNodes(expr))) return false;
         Inliner inl { o, ast, sp, sp, {}, {} };
         for (auto pv : sp->params) inl.vmap[pv] = pv;   // Parameters stay themselves.
         basecond = inl.Cp(cond);
@@ -205,12 +189,7 @@ struct BaseCaseInliner {
             if (!v || !v->isparam || v->ownerspec != sp) return false;
             // Write facts describe the binding. Composite and reference-like
             // values can still observe storage changed through another binding.
-            switch (v->type->kind) {
-                case TY_INT: case TY_FLT: case TY_BOOL: break;
-                default: return false;
-            }
-            auto &f = o.facts[v];
-            return f.writes == 0 && f.addrof == 0;
+            return Optimizer::Unwritten(o.facts, v);
         }
         if (auto u = Is<Unary>(n)) return u->op == T_NOT && GuardOK(u->child, sp);
         if (auto b = Is<Binary>(n)) {
@@ -258,21 +237,19 @@ struct BaseCaseInliner {
             return;
         }
         set<VarDef *> bound;
-        vector<SFunction *> ibs;
-        auto sz = TreeSize(ife->cond) + TreeSize(expr);
+        auto sz = CountNodes(ife->cond) + CountNodes(expr);
         for (auto part : { &pre, &post })
             for (auto st : *part) {
-                if (!BaseOK(st, bound, ibs, false)) return;
-                sz += TreeSize(st);
+                if (!BaseOK(st, bound, false)) return;
+                sz += CountNodes(st);
             }
-        if (!BaseOK(expr, bound, ibs, false) || !SizeOK(sp, sz)) return;
+        if (!BaseOK(expr, bound, false) || !SizeOK(sp, sz)) return;
         Inliner inl { o, ast, sp, sp, {}, {} };
         for (auto pv : sp->params) inl.vmap[pv] = pv;   // Parameters stay themselves.
         basecond = inl.Cp(ife->cond);
         for (auto part : { &pre, &post })
             for (auto st : *part) basestmts.push_back(inl.Cp(st));
         if (expr) baseexpr = inl.Cp(expr);
-        inl.RemapProvenance();
         guarded = true;
         basespec = sp;
     }
@@ -326,7 +303,6 @@ struct BaseCaseInliner {
             auto leaf = arm(nullptr);
             for (auto st : basestmts) leaf->stmts.push_back(inl.Cp(st));
             if (baseexpr) leaf->tail = inl.Cp(baseexpr);
-            inl.RemapProvenance();
             auto around = decls.empty() ? 0 : 1;
             o.depth += around;
             o.OptBlock(leaf);

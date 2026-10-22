@@ -33,6 +33,7 @@ class Client:
         self.seq = 0
         self.pending = []    # Notifications read while waiting for a reply.
         self.requests = []   # The methods of the server's requests, each answered with null.
+        self.published = {}  # The diagnostics last published for each URI (lower case), as an editor has them.
 
     def send(self, method, params=None, request=True):
         msg = {"jsonrpc": "2.0", "method": method}
@@ -61,6 +62,8 @@ class Client:
                 self.requests.append(m["method"])
                 self.write({"jsonrpc": "2.0", "id": m["id"], "result": None})
                 continue
+            if m.get("method") == "textDocument/publishDiagnostics":
+                self.published[m["params"]["uri"].lower()] = m["params"]["diagnostics"]
             return m
 
     def read_one(self):
@@ -192,8 +195,13 @@ def check_lsp_protocol(exe, base):
                 if not got or json.loads(want) not in got["contents"]["value"]:
                     fail(f"hover {pos} lacks {want}", got)
             elif kind == "definition":
+                # `-> none`: a name that resolves to no declaration.
                 pos, _, target = rest.split(" ", 2)
                 got = client.request("textDocument/definition", {**doc, "position": position(pos)})
+                if target == "none":
+                    if got:
+                        fail(f"definition {pos} is not none", got)
+                    continue
                 if not got:
                     fail(f"definition {pos}", got)
                 if target.endswith(".goose"):
@@ -223,6 +231,7 @@ def check_lsp_protocol(exe, base):
                 if (name in labels) != (mode == "has"):
                     fail(f"completion {pos} {mode} {name}", sorted(labels))
             elif kind == "token":
+                # `none`: no token at the place.
                 pos, want = rest.split()
                 got = client.request("textDocument/semanticTokens/full", doc)
                 legend = ["namespace", "type", "struct", "enum", "enumMember", "typeParameter",
@@ -236,7 +245,7 @@ def check_lsp_protocol(exe, base):
                     char = char + dchar if dline == 0 else dchar
                     tokens[(line, char)] = legend[ttype]
                 p = position(pos)
-                if tokens.get((p["line"], p["character"])) != want:
+                if tokens.get((p["line"], p["character"]), "none") != want:
                     fail(f"token {pos} is not {want}", {"at": p, "got": tokens.get((p["line"], p["character"]))})
             elif kind == "references":
                 pos, want = rest.split()
@@ -271,6 +280,12 @@ def check_lsp_protocol(exe, base):
                 p = position(pos)
                 if not any(h["position"] == p and h["label"] == want for h in got or []):
                     fail(f"hint {pos} is not {want}", got)
+            elif kind == "hints":
+                # `hints L N`: line L has N hints, no more.
+                at, want = (int(x) for x in rest.split())
+                got = client.request("textDocument/inlayHint", {**doc, "range": whole_range()})
+                if sum(h["position"]["line"] == at - 1 for h in got or []) != want:
+                    fail(f"line {at} has not {want} hints", got)
             elif kind == "lens":
                 # `lens L "title"`: a lens on line L with that title. A count
                 # of instantiations has as many lines as its data, which its
@@ -395,6 +410,19 @@ def check_lsp_protocol(exe, base):
     broken = fixtures / "broken_decls.goose"
     btext = broken.read_text(encoding="utf-8")
     queries(broken, btext, open_fixture(broken, btext))
+    # The names as written where the check rewrites a global's initializer
+    # in place, the bindings of the arms a const for generates, and the
+    # commas in literals and comments, which are no argument's.
+    sindex = fixtures / "source_index.goose"
+    stext = sindex.read_text(encoding="utf-8")
+    queries(sindex, stext, open_fixture(sindex, stext))
+
+    # Statements with errors inside the braces of a struct literal or a
+    # match they opened: each published where it is, and nothing after
+    # them lost to the function it is in.
+    braces = HERE / "errors_tc" / "recovery" / "inside_braces.goose"
+    ibtext = braces.read_text(encoding="utf-8")
+    queries(braces, ibtext, open_fixture(braces, ibtext))
     # Completion, on a program whose last statement is the `p.` an editor
     # has when it asks.
     complete = fixtures / "complete.goose"
@@ -408,8 +436,105 @@ def check_lsp_protocol(exe, base):
                      HERE / "errors_tc" / "recovery" / "exemplar_unchecked.goose"):
         etext = exemplar.read_text(encoding="utf-8")
         queries(exemplar, etext, open_fixture(exemplar, etext))
+
+    # Roots as files open and close (docs/design/language_server.md §4),
+    # judged by the diagnostics an editor has once a request has had the
+    # analyses due run, and by the queries answering. A module with an
+    # error, opened alone, is a root of its own; a program opened after it
+    # takes it over, and its error stays; the program closed, the module is
+    # a root again; two programs reaching it report its error once, and it
+    # stays when one stops importing it.
+    lib, app, app2 = (fixtures / f"roots_{n}.goose" for n in ("lib", "app", "app2"))
+
+    def close_doc(path):
+        client.send("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}}, request=False)
+
+    def change_doc(path, body):
+        client.send("textDocument/didChange", {"textDocument": {"uri": uri_of(path), "version": 2},
+                                               "contentChanges": [{"text": body}]}, request=False)
+
+    def lib_error(when):
+        client.request("workspace/symbol", {"query": "nothing is named this"})
+        got = client.published.get(uri_of(lib).lower())
+        if [d["range"]["start"]["line"] + 1 for d in got or []] != [6]:
+            fail(f"roots_lib.goose's diagnostics {when}", got)
+
+    def hover_has(path, pos, want, when):
+        got = client.request("textDocument/hover", {"textDocument": {"uri": uri_of(path)}, "position": position(pos)})
+        if not got or want not in got["contents"]["value"]:
+            fail(f"hover {pos} in {path.name} {when} lacks {want}", got)
+
+    open_fixture(lib, lib.read_text(encoding="utf-8"))
+    lib_error("opened alone")
+    open_fixture(app, app.read_text(encoding="utf-8"))
+    lib_error("once roots_app.goose, which imports it, is open")
+    close_doc(app)
+    lib_error("once roots_app.goose closes")
+    hover_has(lib, "6:4", "fn roots_lib::helperfn", "once roots_app.goose closes")
+    if not client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri_of(lib)}}):
+        fail("roots_lib.goose's symbols once roots_app.goose closes", None)
+    atext = app.read_text(encoding="utf-8")
+    open_fixture(app, atext)
+    open_fixture(app2, app2.read_text(encoding="utf-8"))
+    lib_error("with two programs importing it")
+    change_doc(app, atext.replace("import roots_lib;", "").replace("roots_lib::helperfn(1)", "1"))
+    lib_error("once one of the two programs stops importing it")
+    # The configured entry goes while a file only it reached is open: the
+    # file gets a root of its own.
+    open_fixture(helper, helper.read_text(encoding="utf-8"))
+    close_doc(complete)
+    close_doc(main)
+    client.send("workspace/didChangeConfiguration", {"settings": {"goose": {"entryFiles": []}}}, request=False)
+    hover_has(helper, "4:4", "fn helper::twice", "once basics.goose is no entry file")
     client.request("shutdown", None)
     client.send("exit", request=False)
     code = client.p.wait(timeout=30)
     if code != 0:
         raise RuntimeError(f"goose lsp exited with {code}:\n{tc.decode(client.p.stderr.read())}")
+
+    # Two programs importing one module, both entry files of a client of
+    # their own (docs/design/language_server.md §10): the module's twice is
+    # renamed, and its references and callers found, in both programs, each
+    # place once, though the first program's analysis answers for the
+    # module; and its second half, which only a generic function the second
+    # program alone instantiates calls, is found called there.
+    shared = fixtures / "two_shared.goose"
+    two = Client(exe, fixtures)
+    two.request("initialize", {"processId": None, "rootUri": uri_of(fixtures), "capabilities": {},
+                               "initializationOptions": {"entryFiles": [str(fixtures / "two_a.goose"),
+                                                                        str(fixtures / "two_b.goose")]}})
+    two.send("initialized", {}, request=False)
+    two.send("textDocument/didOpen", {"textDocument": {"uri": uri_of(shared), "languageId": "goose", "version": 1,
+                                                       "text": shared.read_text(encoding="utf-8")}}, request=False)
+    sdoc = {"textDocument": {"uri": uri_of(shared)}}
+
+    def places(locations):
+        """Each location as file:line:column, sorted."""
+        return sorted(f"{loc['uri'].rsplit('/', 1)[-1]}:{loc['range']['start']['line'] + 1}:"
+                      f"{loc['range']['start']['character'] + 1}" for loc in locations)
+
+    def renamed(pos):
+        changes = two.request("textDocument/rename", {**sdoc, "position": position(pos), "newName": "renamed"})
+        return places({"uri": uri, "range": e["range"]} for uri, es in changes["changes"].items() for e in es)
+
+    def callers(pos):
+        items = two.request("textDocument/prepareCallHierarchy", {**sdoc, "position": position(pos)})
+        calls = two.request("callHierarchy/incomingCalls", {"item": items[0]}) if items else None
+        return sorted(f"{c['from']['uri'].rsplit('/', 1)[-1]}:{c['from']['name']}@" +
+                      ",".join(str(r["start"]["line"] + 1) for r in c["fromRanges"]) for c in calls or [])
+
+    for what, got, want in (
+            ("rename 5:4", renamed("5:4"), ["two_a.goose:5:31", "two_b.goose:6:23", "two_shared.goose:5:4"]),
+            ("references 5:4", places(two.request("textDocument/references", {
+                **sdoc, "position": position("5:4"), "context": {"includeDeclaration": True}})),
+             ["two_a.goose:5:19", "two_b.goose:6:11", "two_shared.goose:5:4"]),
+            ("incoming 5:4", callers("5:4"), ["two_a.goose:main@5", "two_b.goose:main@6"]),
+            ("rename 8:4", renamed("8:4"), ["two_shared.goose:13:44", "two_shared.goose:8:4"]),
+            ("incoming 8:4", callers("8:4"), ["two_shared.goose:apply@13"])):
+        if got != want:
+            fail(f"two entry files: {what} are not {want}", got)
+    two.request("shutdown", None)
+    two.send("exit", request=False)
+    code = two.p.wait(timeout=30)
+    if code != 0:
+        raise RuntimeError(f"goose lsp exited with {code}:\n{tc.decode(two.p.stderr.read())}")

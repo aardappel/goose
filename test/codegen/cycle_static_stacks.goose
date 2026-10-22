@@ -2,10 +2,11 @@
 // the calling activation in use (§7.8), so every activation starts its
 // stacks at the same index and the program's stack count is static. The
 // shapes that are allowed: a non-fixed result returned whole, through
-// branches and a block's tail; text delivered through a buffer passed in by
-// reference, built in place; fixed-size values and temporaries anywhere, a
-// large fixed one included; a non-fixed temporary in a statement of its own
-// before the call; scratch passed in from outside and viewed across the
+// branches and a block's tail, a function value's body included, or by a
+// return inside a function value; text delivered through a buffer passed in
+// by reference, built in place; fixed-size values and temporaries anywhere,
+// a large fixed one included; a non-fixed temporary in a statement of its
+// own before the call; scratch passed in from outside and viewed across the
 // calls with mark and resize; format into a buffer passed by reference, a
 // recursive overload included.
 
@@ -26,6 +27,20 @@ recursive fn chain(n: i64) -> u8[>..] {
     if n == 0 { return "end"; }
     if n % 2 == 0 { return chain(n - 1); }
     return { let k = n; if k > 10 { "big" } else { chain(n - 1) } };
+}
+
+// A function value's body runs inside the function calling it: a call into
+// the cycle there whose result is the body's value is built where the call
+// of the function value puts it, here in the caller's destination of
+// through, which returns it whole; a plain return inside one returns from
+// nest, built in the destination of nest's caller.
+fn through<F>(n: i64) -> u8[>..] { F(n) }
+fn probe<F>(n: i64) -> i64 { return F(n); }
+recursive fn nest(n: i64) -> u8[>..] {
+    if n <= 1 { return str("base", n); }
+    if n % 2 == 0 { return through(n) { m => if m > 3 { nest(m - 1) } else { nest(m - 3) } }; }
+    let k = probe(n) { m => if m > 3 { return nest(m - 1); } m * 10 };
+    return str(k);
 }
 
 // Text built in place into the buffer passed in from outside the cycle,
@@ -80,6 +95,7 @@ recursive fn count(items: Item&, n: i64) -> i64 {
 
 fn main() {
     print(chain(5), " ", chain(4));
+    print(nest(7), " ", nest(2));
     var out: u8[>..] = [];
     build(out, 3);
     print(out);

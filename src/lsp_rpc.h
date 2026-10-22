@@ -151,11 +151,6 @@ struct Transport {
         return true;
     }
 
-    bool Pending() {
-        lock_guard<mutex> lock(m);
-        return !queue.empty();
-    }
-
     bool IsCancelled(const string &id) {
         lock_guard<mutex> lock(m);
         return cancelled.erase(id) > 0;

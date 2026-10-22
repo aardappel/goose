@@ -15,9 +15,18 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
 int RunOnCompilerStack(const function<int()> &fn);
 
 struct Document {
-    string uri;         // As the editor spells it, which its diagnostics are published under.
     string path;        // Canonical.
     string text;
+};
+
+// A diagnostic as the protocol's JSON. Its key, the range, severity and
+// message it starts with, is what two roots' reports of one error in a
+// file both reach share; the related lines after it, an instantiation
+// chain, may differ by root.
+struct PublishedDiagnostic {
+    string json;
+    size_t keylen = 0;
+    string_view Key() const { return string_view(json).substr(0, keylen); }
 };
 
 struct Root {
@@ -25,9 +34,14 @@ struct Root {
     bool configured = false;        // An entry file the editor configured, else an open file.
     unique_ptr<Analysis> analysis;  // The latest that got past resolution, which queries read.
     set<string> files;              // Keys of the files the latest attempt reached.
-    set<string> published;          // URIs the latest attempt published diagnostics to.
+    // The diagnostics the latest attempt gave each file it reached, by
+    // URI, an empty list for one it found none in.
+    map<string, vector<PublishedDiagnostic>> published;
     bool dirty = true;
     chrono::steady_clock::time_point due;
+
+    // Whether the root is the file or its latest attempt reached it.
+    bool Reaches(const string &k) const { return k == key || files.count(k) > 0; }
 };
 
 struct Workspace {
@@ -130,24 +144,41 @@ struct Workspace {
         return roots.back().get();
     }
 
+    // A root goes; the files it reached keep the diagnostics the other
+    // roots reaching them gave.
     void RemoveRoot(Root *root) {
-        for (auto &uri : root->published) PublishEmpty(uri);
-        Reap(std::move(root->analysis));
-        for (auto it = roots.begin(); it != roots.end(); ++it)
-            if (it->get() == root) { roots.erase(it); return; }
+        auto it = find_if(roots.begin(), roots.end(), [&](const unique_ptr<Root> &r) { return r.get() == root; });
+        if (it == roots.end()) return;
+        auto gone = std::move(*it);
+        roots.erase(it);
+        Reap(std::move(gone->analysis));
+        for (auto &[uri, diags] : gone->published) PublishDiagnostics(uri);
+    }
+
+    bool Reached(const string &key) const {
+        for (auto &r : roots) if (r->Reaches(key)) return true;
+        return false;
+    }
+
+    // Every open file no root reaches becomes a root of its own: one just
+    // opened, or one whose root went or stopped reaching it.
+    void RootOpenFiles() {
+        for (auto &[key, doc] : open) if (!Reached(key)) AddRoot(doc.path, false);
     }
 
     // An open-file root is dropped where a root reaches its file, which is
     // then checked as part of that program; where a root no longer
     // configured is open, it stays as an open file's root, else it goes.
+    // An open file that only the roots gone reached gets a root again.
     void PruneUnreached() {
         for (size_t i = 0; i < roots.size();) {
             auto &r = *roots[i];
             auto reached = false;
-            for (auto &o : roots) if (o.get() != &r && o->files.count(r.key)) reached = true;
+            for (auto &o : roots) if (o.get() != &r && o->Reaches(r.key)) reached = true;
             if (!r.configured && (reached || !open.count(r.key))) RemoveRoot(&r);
             else i++;
         }
+        RootOpenFiles();
     }
 
     void Dirty(Root &r, int delayms) {
@@ -158,20 +189,14 @@ struct Workspace {
     // A file changed: every root reaching it is analyzed again; an open
     // file no root reaches becomes a root of its own.
     void Touch(const string &key) {
-        auto reached = false;
-        for (auto &r : roots)
-            if (r->key == key || r->files.count(key)) {
-                Dirty(*r, DEBOUNCE_MS);
-                reached = true;
-            }
-        if (!reached)
-            if (auto it = open.find(key); it != open.end()) AddRoot(it->second.path, false);
+        for (auto &r : roots) if (r->Reaches(key)) Dirty(*r, DEBOUNCE_MS);
+        RootOpenFiles();
     }
 
     void Open(const string &uri, const string &text) {
         auto path = PathOfUri(uri);
         auto key = PathKey(path);
-        open[key] = Document { uri, CanonicalPath(path), text };
+        open[key] = Document { CanonicalPath(path), text };
         Touch(key);
     }
 
@@ -186,8 +211,12 @@ struct Workspace {
     void Close(const string &uri) {
         auto key = PathKey(PathOfUri(uri));
         open.erase(key);
-        if (auto r = FindRoot(key); r && !r->configured) RemoveRoot(r);
-        else Touch(key);   // Its text is the disk's again.
+        if (auto r = FindRoot(key); r && !r->configured) {
+            RemoveRoot(r);
+            RootOpenFiles();
+        } else {
+            Touch(key);   // Its text is the disk's again.
+        }
     }
 
     // The next moment an analysis is due, if any root is dirty.
@@ -250,18 +279,20 @@ struct Workspace {
                 ParseProgram(ast, r.path, stdlibdirs, DirOf(exe), sources);
                 ResolveTypeNames(ast);
                 an->parsed = true;
+                // The source's indexes stand on the tree as written, which
+                // the check rewrites where it checks in place (a global's
+                // initializer); the clones' on the tree as the checker left
+                // it: the optimizer then rewrites the bodies, inlining calls
+                // and dropping constants, and the nodes the features read
+                // with them.
+                an->IndexSource();
                 TypeCheckProgram(ast, false, true);
-                // The indexes stand on the tree as the checker left it: the
-                // optimizer then rewrites the bodies, inlining calls and
-                // dropping constants, and the nodes the features read with
-                // them.
                 an->Build();
                 if (!ast.errors.empty()) return 0;
                 Optimizer opt(ast, 1);
                 BCE bce(ast);
                 bce.RunAll();
                 if (!bce.checkfreefails.empty()) throw bce.CheckfreeError();
-                an->checked = true;
                 return 0;
             });
         } catch (CompileError &e) {
@@ -278,7 +309,7 @@ struct Workspace {
         r.dirty = false;
         r.files.clear();
         for (auto &[path, text] : ast.sources) r.files.insert(PathKey(path));
-        if (!an->built) an->IndexFiles();
+        if (!an->indexed) an->IndexFiles();
         Publish(r, *an);
         if (an->parsed || !r.analysis) {
             if (!an->built) an->Build();
@@ -303,15 +334,14 @@ struct Workspace {
         rpc.Send(j.s);
     }
 
-    // Where a file's queries are answered from: the first root (the
-    // configured ones first) whose analysis reached it.
-    bool Locate(const string &key, Root *&root, Analysis *&an, int &fileidx) {
+    // Where a file's queries are answered from: the analysis of the first
+    // root (the configured ones first) that reached it.
+    bool Locate(const string &key, Analysis *&an, int &fileidx) {
         for (auto configured : { true, false })
             for (auto &r : roots) {
                 if (r->configured != configured || !r->analysis) continue;
                 auto f = r->analysis->FileOf(key);
                 if (f < 0) continue;
-                root = r.get();
                 an = r->analysis.get();
                 fileidx = f;
                 return true;
@@ -358,8 +388,9 @@ struct Workspace {
         j.EndObject();
     }
 
-    void WriteDiagnostic(JsonOut &j, const Diagnostic &d, const Analysis &an, int fileidx) {
+    static PublishedDiagnostic RenderDiagnostic(const Diagnostic &d, const Analysis &an, int fileidx) {
         auto &files = an.files;
+        JsonOut j;
         j.BeginObject();
         DiagLoc where = d.where;
         if (where.fileidx != fileidx) where = DiagLoc { fileidx, 1, 0, 0, 0 };
@@ -372,6 +403,8 @@ struct Workspace {
             if (r.where.fileidx < 0 || r.where.fileidx >= (int)files.size() || r.where.line <= 0)
                 Append(message, "\n", r.message);
         j.Member("message", message);
+        PublishedDiagnostic p;
+        p.keylen = j.s.size();
         auto any = false;
         for (auto &r : d.related) {
             if (r.where.fileidx < 0 || r.where.fileidx >= (int)files.size() || r.where.line <= 0) continue;
@@ -391,9 +424,14 @@ struct Workspace {
         }
         if (any) j.EndArray();
         j.EndObject();
+        p.json = std::move(j.s);
+        return p;
     }
 
-    void PublishEmpty(const string &uri) {
+    // A file's diagnostics, as every root reaching it last gave them: what
+    // they report alike once, and an empty list, so the editor drops the
+    // ones before, where they give none or no root reaches the file.
+    void PublishDiagnostics(const string &uri) {
         JsonOut j;
         j.BeginObject();
         j.Member("jsonrpc", "2.0");
@@ -403,17 +441,23 @@ struct Workspace {
         j.Member("uri", uri);
         j.Key("diagnostics");
         j.BeginArray();
+        set<string_view> seen;
+        for (auto &r : roots)
+            if (auto it = r->published.find(uri); it != r->published.end())
+                for (auto &d : it->second)
+                    if (seen.insert(d.Key()).second) j.Raw(d.json);
         j.EndArray();
         j.EndObject();
         j.EndObject();
         rpc.Send(j.s);
     }
 
-    // Every file the attempt reached gets its diagnostics, an empty list
-    // where it has none, so the editor drops the last attempt's; a file
-    // the last attempt reached and this one did not gets an empty list
-    // too. A diagnostic at no place in the program (a file that cannot be
-    // opened) is reported at the root file's first line.
+    // The attempt's diagnostics replace those of the root's last attempt,
+    // and every file either of them reached is published again.
+    // Diagnostics, like locations, go under the URI the server spells for
+    // a file (UriOfPath), whatever spelling the editor opened it by. A
+    // diagnostic at no place in the program (a file that cannot be opened)
+    // is reported at the root file's first line.
     void Publish(Root &r, const Analysis &an) {
         auto &ast = *an.ast;
         map<int, vector<const Diagnostic *>> perfile;
@@ -423,39 +467,17 @@ struct Workspace {
                 perfile[d.where.fileidx].push_back(&d);
             else nowhere.push_back(&d);
         }
-        set<string> published;
+        map<string, vector<PublishedDiagnostic>> published;
         for (size_t i = 0; i < ast.sources.size(); i++) {
-            auto &uri = an.files[i].uri;
-            JsonOut j;
-            j.BeginObject();
-            j.Member("jsonrpc", "2.0");
-            j.Member("method", "textDocument/publishDiagnostics");
-            j.Key("params");
-            j.BeginObject();
-            j.Member("uri", uri);
-            j.Key("diagnostics");
-            j.BeginArray();
-            for (auto d : perfile[(int)i]) WriteDiagnostic(j, *d, an, (int)i);
-            if (i == 0) for (auto d : nowhere) WriteDiagnostic(j, *d, an, 0);
-            j.EndArray();
-            j.EndObject();
-            j.EndObject();
-            rpc.Send(j.s);
-            published.insert(uri);
+            auto &diags = published[an.files[i].uri];
+            for (auto d : perfile[(int)i]) diags.push_back(RenderDiagnostic(*d, an, (int)i));
+            if (i == 0) for (auto d : nowhere) diags.push_back(RenderDiagnostic(*d, an, 0));
         }
         if (ast.sources.empty() && !nowhere.empty()) {
             // The root itself could not be read: its message, at its first line.
-            auto uri = UriOfPath(r.path);
-            JsonOut j;
-            j.BeginObject();
-            j.Member("jsonrpc", "2.0");
-            j.Member("method", "textDocument/publishDiagnostics");
-            j.Key("params");
-            j.BeginObject();
-            j.Member("uri", uri);
-            j.Key("diagnostics");
-            j.BeginArray();
+            auto &diags = published[UriOfPath(r.path)];
             for (auto d : nowhere) {
+                JsonOut j;
                 j.BeginObject();
                 j.Key("range");
                 j.Raw("{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}");
@@ -463,15 +485,12 @@ struct Workspace {
                 j.Member("source", "goose");
                 j.Member("message", d->message);
                 j.EndObject();
+                diags.push_back({ j.s, j.s.size() });
             }
-            j.EndArray();
-            j.EndObject();
-            j.EndObject();
-            rpc.Send(j.s);
-            published.insert(uri);
         }
-        for (auto &uri : r.published) if (!published.count(uri)) PublishEmpty(uri);
-        r.published = std::move(published);
+        swap(r.published, published);
+        for (auto &[uri, diags] : r.published) PublishDiagnostics(uri);
+        for (auto &[uri, diags] : published) if (!r.published.count(uri)) PublishDiagnostics(uri);
     }
 };
 

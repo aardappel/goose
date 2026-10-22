@@ -1,6 +1,7 @@
 // The compiler's own containers (small_vector.h, flat_map.h) against the
 // standard ones they stand in for, across their in-place/heap and growth
-// boundaries. Keep assertions active even in an optimized test build.
+// boundaries, and flat_map's reuse of erased cells. Keep assertions active
+// even in an optimized test build.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -164,6 +165,39 @@ static void FlatMap() {
     for (int i = 0; i < 100; i++)
         for (int j = 0; j < 100; j++) assert(*pm.find({ key(i), key(j) }) == ((i + j) % 3 == 0));
     assert(!pm.find({ key(100), key(0) }));
+
+    // An erased key's value cell goes to a key added later, reset: keys
+    // erased and added in turn keep to one cell, and at random take no more
+    // cells than were ever live at once, while a key never erased keeps its
+    // cell and its value.
+    flat_map<long long *, vector<int>> cm;
+    auto kept = &cm[key(5000)];
+    kept->push_back(-1);
+    auto cell = &cm[key(0)];
+    for (int i = 1; i <= 1000; i++) {
+        cm.erase(key(i - 1));
+        auto &v = cm[key(i)];
+        assert(&v == cell && v.empty());
+        v.push_back(i);
+    }
+    set<vector<int> *> cells;
+    auto most = cm.size();
+    for (int op = 0; op < 20000; op++) {
+        auto k = key(rnd(64));
+        if (rnd(2)) {
+            auto added = !cm.find(k);
+            auto &v = cm[k];
+            assert(added == v.empty());
+            if (added) v.push_back(op);
+            cells.insert(&v);
+        } else {
+            cm.erase(k);
+        }
+        most = std::max(most, cm.size());
+    }
+    assert(cells.size() <= most);
+    assert(cm.find(key(5000)) == kept && *kept == vector<int> { -1 });
+    assert(*cm.find(key(1000)) == vector<int> { 1000 });
 }
 
 int main() {

@@ -403,12 +403,53 @@ recursive fn tre_inloop(n: i64) -> i64 {
     return n;
 }
 
+// A walk handing on the node it read out of a copy of its parameter's
+// payload: that lies outside the activation, so the loop carries it.
+enum TreList { Nil, Cons { v: i64, next: TreList? } }
+recursive fn tre_walk(l: TreList&) -> i64 {
+    match l {
+        Cons c => {
+            let next = c.next;
+            guard next else { return c.v; }
+            return c.v + tre_walk(next);
+        },
+        Nil => 0,
+    }
+}
+
+// A reference to a local, which the recursion keeps for the call, but which
+// the loop would reinitialize: this one keeps its calls.
+recursive fn tre_local(n: i64, p: i64&) -> i64 {
+    var t = 100;
+    if n == 0 { return p; }
+    t = p + 1;
+    return 1 + tre_local(n - 1, t);
+}
+
+// `&` over u64: the accumulator starts at all ones, a u64 above i64.max,
+// and so is the fold of u64_fold's constants; the runner checks that the
+// --specs dump shows them as those values.
+recursive fn tre_and(n: i64) -> u64 {
+    let before_basecase = 0;
+    if n <= 0 { return 18446744073709551615; }
+    return tre_and(n - 1) & 0xFFFF;
+}
+fn u64_fold() -> u64 {
+    let top: u64 = 18446744073709551615;
+    return top - 12345;
+}
+
 fn tailrec_op() {
     print(tre_add(6) + tre_rev(5) + tre_mod(4));      // 42 + 3 + 29 = 74
     print(tre_mixed(5) + tre_plain(4, 0));            // 51 + 10 = 61
     print(tre_flt(3, 0.125));                         // 1.625
     print(tre_from(6));                               // 6 + 5 + 100 = 111
     print(tre_inloop(3));                             // 10 + 10 + 10 + 0 = 30
+    var tl_end: TreList = TreList.Cons { v: 4, next: null };
+    let tl: TreList = TreList.Cons { v: 5, next: tl_end };
+    var tl_x = 6;
+    print(tre_walk(tl) + tre_local(2, tl_x));         // 9 + 10 = 19
+    print(tre_and(3), " ", u64_fold());               // 65535 18446744073709539270
 }
 
 // --- variable-mode ADT payloads by reference through inlining ----------------

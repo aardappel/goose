@@ -909,15 +909,6 @@ static void gs_rt_stats(void) {
 #endif
 }
 
-/* Every region the calling thread program owns, with its stack block. No
-   Goose reference to these mappings may outlive it. */
-static void gs_free_thread_stacks(void) {
-    gs_release_regions();
-    free(gs_stks);
-    gs_stks = NULL;
-    gs_nstks = 0;
-}
-
 #if GS_NEED_THREADS
 /* A worker's thread program: its entry thunk opens the stack block, whose
    count the compiler knows, and allocates the globals instance. */
@@ -1098,12 +1089,7 @@ GS_API int64_t gs_fmt_bool(uint8_t *dst, int64_t v);
 /* A u8 array inside an aggregate: quoted, with the escapes Goose reads. */
 GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n);
 
-/* print(...) (§3.7): each argument's text, then a newline. */
-GS_API void gs_out_int(int64_t v);
-GS_API void gs_out_uint(uint64_t v);
-GS_API void gs_out_flt(double v);
-GS_API void gs_out_f32(float v);
-GS_API void gs_out_bool(int64_t v);
+/* print(...) (§3.7): the whole line, rendered first, in one write. */
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len);
 
 /* Byte search behind std's find_any and find_pair (runtime_impl.h): the

@@ -183,6 +183,27 @@ fn ref_fixed(m: i64[37]&) -> i64 {
     return s;
 }
 
+// A divisor the loop cannot change: both copies of the body multiply by the
+// magic number computed for it ahead of the loop.
+fn shape_strip_div(xs: u32[:], d: u32) -> u32 {
+    var lanes: u32[4] = [0; 4];
+    for x, i in xs { lanes[i % 4] += x / d * 3 + x % d; }
+    return (lanes[0] * 7) ^ (lanes[1] * 5) ^ (lanes[2] * 3) ^ lanes[3];
+}
+
+// The divisor read from an array element, which divides by itself.
+fn ref_strip_div(xs: u32[:], d: u32) -> u32 {
+    var lanes: u32[4] = [0; 4];
+    let ds: u32[1] = [d];
+    var i = 0;
+    while i < xs.len {
+        let x = xs[i];
+        lanes[i & 3] += x / ds[0] * 3 + x % ds[0];
+        i++;
+    }
+    return (lanes[0] * 7) ^ (lanes[1] * 5) ^ (lanes[2] * 3) ^ lanes[3];
+}
+
 // --- in-order float sums --------------------------------------------------------
 
 fn shape_sum_dot(x: f64[:], y: f64[:]) -> f64 {
@@ -270,6 +291,29 @@ fn ref_sum_reads(xs: f64[:]) -> f64 {
     var k = 0;
     while k < xs.len {
         s += s * 0.5 + xs[k];
+        k++;
+    }
+    return s;
+}
+
+// A term with a && whose right operand can run whatever the left gives, which
+// both copies of the body take in the unconditional form (§6.11).
+fn shape_sum_spec(xs: f64[:], lo: f64, hi: f64) -> f64 {
+    var s = 0.0;
+    for x in xs { s += if x > lo && x < hi { x } else { 0.5 }; }
+    return s;
+}
+
+fn ref_sum_spec(xs: f64[:], lo: f64, hi: f64) -> f64 {
+    var s = 0.0;
+    var k = 0;
+    while k < xs.len {
+        let x = xs[k];
+        var t = 0.5;
+        if x > lo {
+            if x < hi { t = x; }
+        }
+        s += t;
         k++;
     }
     return s;
@@ -568,7 +612,7 @@ fn check(what: const u8[:], n: i64, ok: bool) {
 // More calls of the small shape_ and keep_ functions, so that -O1 keeps each
 // a function of its own, whose C the runner reads.
 fn again(xs: f64[:], ys: f64[:], fs: f32[:], m: i64[37]&, node: Node&, longs: i64[:],
-         p: u8[64]&, q: u8[64]&) {
+         p: u8[64]&, q: u8[64]&, us: u32[:]) {
     print(shape_sum_dot(xs, ys) + shape_sum_dot(ys, xs) + shape_sum_dot(xs, xs) +
           shape_sum_dot(ys, ys) + shape_sum_dot(ys[1..], xs));
     print(shape_sum_f32(fs) + shape_sum_f32(fs[1..]) + shape_sum_f32(fs[2..]) +
@@ -601,6 +645,11 @@ fn again(xs: f64[:], ys: f64[:], fs: f32[:], m: i64[37]&, node: Node&, longs: i6
           keep_chain_value(5, 9));
     print(keep_chain_spec(p, q, 1, 2) + keep_chain_spec(q, p, 2, 1) + keep_chain_spec(p, p, 0, 0) +
           keep_chain_spec(q, q, 3, 3));
+    print(shape_strip_div(us, 3) + shape_strip_div(us, 5) + shape_strip_div(us[1..], 7) +
+          shape_strip_div(us[2..], 9) + shape_strip_div(us[3..], 11));
+    print(shape_sum_spec(xs, 1.0, 9.0) + shape_sum_spec(ys, 0.1, 0.3) +
+          shape_sum_spec(xs[1..], 2.0, 4.0) + shape_sum_spec(ys[1..], 0.0, 1.0) +
+          shape_sum_spec(xs[2..], 5.0, 6.0));
 }
 
 fn main() {
@@ -610,6 +659,8 @@ fn main() {
     var xs: f64[>..] = [];
     var ys: f64[>..] = [];
     var fs: f32[>..] = [];
+    var us: u32[>..] = [];
+    let divisors: u32[] = [1, 3, 7, 1000, 0x80000001, 0xFFFFFFFF];
     for n in 40 {
         bytes.clear();
         longs.clear();
@@ -617,6 +668,7 @@ fn main() {
         xs.clear();
         ys.clear();
         fs.clear();
+        us.clear();
         for k in n {
             bytes.push((k * 37 + 11) as! u8);
             longs.push(k * 5 + 3);
@@ -624,6 +676,7 @@ fn main() {
             xs.push(k * 0.37 + 0.1);
             ys.push(1.0 / (k + 3.0));
             fs.push(k * 0.3);
+            us.push((k * 2654435761 + 12345) as! u32);
         }
         check("lanes", n, shape_strip_lanes(bytes) == ref_lanes(bytes));
         check("count", n, shape_strip_count(n - 3, 1000000) == ref_count(n - 3, 1000000));
@@ -636,11 +689,13 @@ fn main() {
             check("return early", n, shape_strip_return(longs) == ref_return(longs));
         }
         check("structs", n, shape_strip_structs(ps) == ref_structs(ps));
+        for d in divisors { check("strip div", n, shape_strip_div(us, d) == ref_strip_div(us, d)); }
         check("dot", n, shape_sum_dot(xs, ys) == ref_dot(xs, ys));
         check("sum count", n, shape_sum_count(n, n) == ref_sum_count(n, n));
         check("f32", n, shape_sum_f32(fs) == ref_sum_f32(fs));
         check("range sum", n, shape_sum_range(-n, n * 2 / 3) == ref_sum_range(-n, n * 2 / 3));
         check("reads", n, keep_sum_reads(xs) == ref_sum_reads(xs));
+        check("sum spec", n, shape_sum_spec(xs, 1.0, 9.0) == ref_sum_spec(xs, 1.0, 9.0));
         check("down", n, shape_down(n - 2) == ref_down(n - 2));
         check("down jumps", n, shape_down_jumps(n - 2) == ref_down_jumps(n - 2));
         check("down twice", n, keep_down_twice(n - 2) == ref_down_twice(n - 2));
@@ -648,6 +703,7 @@ fn main() {
     print(shape_strip_lanes(bytes), " ", shape_strip_count(39, 1000), " ", shape_strip_range(39),
           " ", shape_strip_u8(255), " ", shape_strip_return(longs), " ", shape_strip_structs(ps));
     print(shape_sum_dot(xs, ys), " ", shape_sum_count(5, 39), " ", shape_sum_f32(fs));
+    print(shape_strip_div(us, 7), " ", shape_sum_spec(xs, 1.0, 9.0));
     print(shape_sum_range(9223372036854775800, 9223372036854775807), " ",
           shape_sum_range(-9223372036854775807 - 1, -9223372036854775807 + 12), " ",
           shape_sum_range(5, 3));
@@ -726,7 +782,7 @@ fn main() {
     }
     print(shape_chain_guard(gs, 2), " ", shape_chain_order(false, true, true), " ",
           keep_chain_value(3, 5), " ", keep_chain_spec(p, q, 1, 2));
-    again(xs, ys, fs, m, node, gs, p, q);
+    again(xs, ys, fs, m, node, gs, p, q, us);
 }
 
 fn check_call(s: u8[:]) {

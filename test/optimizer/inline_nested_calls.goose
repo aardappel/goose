@@ -61,6 +61,20 @@ fn look(v: i64) -> i64 {
     return s;
 }
 
+// The nested function reaches the `for` loop's variables, which the body
+// names nowhere else: the copied call still passes their copies.
+fn weigh(a: i64[:]) -> i64 {
+    var total = 0;
+    for x, i in a {
+        fn add() -> i64, i64 {
+            total += x * i;
+            return total, 0;
+        }
+        add();
+    }
+    return total;
+}
+
 // The nested function writes the index the caller tested: the test's fact
 // does not survive the call, in the copy either.
 fn after(a: i64[:], start: i64) -> i64 {
@@ -83,4 +97,5 @@ fn main() {
     print(look(4));                                // 10 + 12 + 14
     let a = [3, 1, 4, 1, 5];
     print(after(a, 0), " ", after(a, 9));           // 5 -1
+    print(weigh(a));                               // 1 + 8 + 3 + 20
 }

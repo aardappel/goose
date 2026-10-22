@@ -114,8 +114,8 @@ typedef pthread_cond_t gs_cond;
    a compiler-generated entry thunk. Only active workers have records. IDs
    increase monotonically, so an issued ID absent from the active list has
    completed; neither repeated waits nor unjoined workers retain resources,
-   but for the id of each contained worker that aborted, and its message
-   until a wait takes it. Workers still
+   but for a bit for the id of each contained worker that aborted, and its
+   message until a wait takes it. Workers still
    running at process exit are killed by teardown (§11.2). */
 
 typedef struct gs_thread {
@@ -133,9 +133,12 @@ static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
 static gs_cond gs_threads_done = GS_COND_INIT;
 
-/* The contained workers that aborted, from which thread_wait answers: each
-   one's id and the message of its abort (gs_fail), which the first wait that
-   asks for it takes, NULL after. Under gs_threads_mutex. */
+/* The contained workers that aborted, from which thread_wait answers: a bit
+   for each one's id, and the messages of their aborts (gs_fail) that no
+   wait has taken yet, the first wait that asks for one taking it. Under
+   gs_threads_mutex. */
+static uint8_t *gs_abortbits;
+static int64_t gs_abortbytes;
 typedef struct {
     int64_t id;
     uint8_t *msg;
@@ -145,6 +148,17 @@ static gs_abort_rec *gs_aborted;
 static int64_t gs_naborted, gs_abortedcap;
 
 static void gs_aborted_add(int64_t id, uint8_t *msg, int64_t len) {
+    if (id / 8 >= gs_abortbytes) {
+        int64_t n = gs_abortbytes ? gs_abortbytes : 16;
+        while (n <= id / 8) n *= 2;
+        uint8_t *bits = (uint8_t *)realloc(gs_abortbits, (size_t)n);
+        if (!bits) gs_panic("out of memory recording an aborted thread");
+        memset(bits + gs_abortbytes, 0, (size_t)(n - gs_abortbytes));
+        gs_abortbits = bits;
+        gs_abortbytes = n;
+    }
+    gs_abortbits[id / 8] |= (uint8_t)(1u << (id % 8));
+    if (!msg) return;
     if (gs_naborted == gs_abortedcap) {
         int64_t cap = gs_abortedcap ? gs_abortedcap * 2 : 16;
         gs_abort_rec *p = (gs_abort_rec *)realloc(gs_aborted, (size_t)cap * sizeof(gs_abort_rec));
@@ -278,16 +292,16 @@ GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
         *msg = NULL;
         *len = 0;
     }
-    for (int64_t i = 0; i < gs_naborted; i++)
-        if (gs_aborted[i].id == id) {
-            returned = 0;
-            if (msg && gs_aborted[i].msg) {
+    if (id / 8 < gs_abortbytes && (gs_abortbits[id / 8] >> (id % 8) & 1)) {
+        returned = 0;
+        for (int64_t i = 0; msg && i < gs_naborted; i++)
+            if (gs_aborted[i].id == id) {
                 *msg = gs_aborted[i].msg;
                 *len = gs_aborted[i].len;
-                gs_aborted[i].msg = NULL;
-                gs_aborted[i].len = 0;
+                gs_aborted[i] = gs_aborted[--gs_naborted];
+                break;
             }
-        }
+    }
     gs_mutex_unlock(&gs_threads_mutex);
     return returned;
 }

@@ -174,9 +174,12 @@ inline void RemoveTree(const string &path) {
     filesystem::path p(path);
     if (!filesystem::exists(p, ec)) return;
     #ifdef _WIN32
-        for (auto &e : filesystem::recursive_directory_iterator(p, ec))
-            filesystem::permissions(e.path(), filesystem::perms::owner_write,
-                                    filesystem::perm_options::add, ec);
+        for (filesystem::recursive_directory_iterator it(p, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            std::error_code pec;
+            filesystem::permissions(it->path(), filesystem::perms::owner_write,
+                                    filesystem::perm_options::add, pec);
+        }
     #endif
     filesystem::remove_all(p, ec);
 }

@@ -1792,7 +1792,8 @@ without conversion overhead.
 
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
-integers or all floats; the result has that same type. The compound forms
+integers or all floats, none of an index or bound type (§3.11); the
+result has that same type. The compound forms
 `+= -= *= /= %=` apply to these same types, resolving the destination once
 and reading its old value before the right-hand side runs (§2). Unary `-`
 negates such a value memberwise where no leaf is an unsigned integer
@@ -4074,9 +4075,10 @@ the end, each with where its resolution lives.
     narrowing; and rebinding to a plain reference first (`let r: T& = o;`)
     is the only escape hatch. Possibly fine; revisit with usage.
 0d. **Lifetime precision, remaining cases** — two checker conservatisms
-    still exceed the spec: long-distance returns (§7.9) only carry
-    references to globals/static data (precise rule: rooted at or above the
-    target's frame), and the recursive-cycle store rule (§7.8) admits only
+    still exceed the spec: long-distance returns (§7.9) written in a named
+    function only carry references to globals/static data (precise rule,
+    which a function value's return follows: rooted at or above the target's
+    frame), and the recursive-cycle store rule (§7.8) admits only
     globals, free variables, pool parameters and parameters every call back
     into the cycle passes on as roots of stored references — a reference to
     a caller's fixed-size local that such a call replaces is still

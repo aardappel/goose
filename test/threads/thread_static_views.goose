@@ -11,12 +11,16 @@ let NAMES = ["ab", "cd"];
 struct Cfg { name: const u8[:], n: i64 }
 let CFG = Cfg { name: "cfg", n: 3 };
 let EMPTY: const u8[:] = "";
+// A null reference leads nowhere, whatever its type reaches: here itself.
+struct Node { v: i32, next: Node? }
+let HEAD: Node? = null;
 
 thread_fn worker(i: i64) {
     var out: u8[>..] = [];
     json::format_number(out, 0.5);
     print(PAIRS[i], " ", DIGITS[i], " ", NAMES[i], " ", CFG.name, " ", CFG.n, " ", EMPTY.len,
           " ", out);
+    if HEAD { print(HEAD.v); } else { print("no head"); }
 }
 
 fn main() {

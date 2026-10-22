@@ -2,7 +2,8 @@
 warnings a check found as a JSON array on stdout, one object each with its
 severity, message, place and related lines, and the text the text mode would
 have printed; the progress lines go to stderr. Checks the two modes agree, and
-the places: a lexer error's column is its caret's, a typecheck error ranges
+the places: a lexer error's column is its caret's, the errors after a raw
+string the lexer rejected are at their own lines, a typecheck error ranges
 over the node it is at with its instantiation chain at the calls, a warning
 has a range too, an import error covers the whole import, a checkfree
 function's kept checks are several errors at once, and an error with no
@@ -78,6 +79,27 @@ def check_diagnostics_json(exe, base):
         require(diags[0]["col"] == caret.index("^") + 1 and
                 diags[0]["endCol"] == diags[0]["col"] + 1 and diags[0]["endLine"] == 2,
                 "lexer error at its caret", err + "\n" + json.dumps(diags))
+
+        # The errors after a """ string the lexer rejected, which the parse
+        # skips past, at their own lines: a line short of the margin, text
+        # before the closing quotes, and text after the opening ones.
+        raw = ('fn main() {\n'
+               '    let a = """\n'
+               '        ok\n'
+               '      short\n'
+               '        """;\n'
+               '    let x: i64 = ;\n'
+               '    let b = """\n'
+               '        ok\n'
+               '      x """;\n'
+               '    let y: i64 = ;\n'
+               '    let c = """text\n'
+               '        """;\n'
+               '    let z: i64 = ;\n'
+               '}\n')
+        diags, err = both("rawstr.goose", raw)
+        require([d["line"] for d in diags] == [4, 6, 9, 10, 11, 13],
+                "the lines of the errors after a rejected \"\"\" string", err)
 
         # A typecheck error, over the node it is at, reached through a call:
         # the chain's entries are at the calls that made the instantiations.

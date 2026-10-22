@@ -1,8 +1,9 @@
 // Goose compiler — a JSON reader, for what CMake's file API replies about
 // a package's link line (native.h). Enough of JSON for that: objects,
-// arrays, strings with their escapes, numbers, true, false and null. And
-// the one piece of writing the compiler does: a string with its escapes,
-// for the diagnostics `--diagnostics json` prints (main.cpp).
+// arrays, strings with their escapes, numbers, true, false and null. And a
+// string with its escapes, for what the compiler writes as JSON: the
+// diagnostics `--diagnostics json` prints (main.cpp), `goose toolchain
+// --json` (toolchain.h) and the language server's messages (lsp_rpc.h).
 #pragma once
 
 namespace goose {

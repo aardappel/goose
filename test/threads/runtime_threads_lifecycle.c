@@ -262,7 +262,10 @@ int main(void) {
     check(GetProcessHandleCount(GetCurrentProcess(), &handles_after), "read handle count");
     check(handles_after == handles_before, "native thread handles released");
 #endif
-    gs_free_thread_stacks();
+    /* As a worker's end does (gs_thread_main): the stack block and globals
+       instance (main has none here), then the regions. */
+    gs_thread_release();
+    gs_release_regions();
     check(counter_add(&live_allocations, 0) == 1, "test releases its main stack block");
     check(counter_add(&live_regions, 0) == 0, "test releases its main reservation");
     puts("runtime thread cleanup ok");

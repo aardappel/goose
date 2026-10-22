@@ -177,8 +177,9 @@ static char **gs_argv;
 
 /* What a new region reserves: the usable part, which halves whenever the
    platform refuses one (gs_reserve_region), and the guard gap behind it;
-   and the usable part as configured, for the reports. */
-static size_t gs_region_usable, gs_region_gap, gs_region_reserve;
+   the usable part as configured, for the reports; and the page size, a
+   whole number of which the usable part always is (gs_rt_start). */
+static size_t gs_region_usable, gs_region_gap, gs_region_reserve, gs_region_page;
 /* The worker running on this thread, main's being -1 (runtime_threads.h). */
 static GS_TLS int64_t gs_current_thread_id = -1;
 /* The program's address space budget for regions and the most regions its
@@ -312,7 +313,8 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
         const gs_region *r = &gs_regions[i];
         if ((uintptr_t)hit - (uintptr_t)r->base < r->size) {
             /* Within the usable part: commit another chunk (clamped to the
-               region) and resume. Within the gap: a data stack overran. */
+               region) and resume, or where the system has no more memory to
+               commit, say so. Within the gap: a data stack overran. */
             if (hit < r->base + r->usable) {
                 uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
                 size_t n = GS_COMMIT_CHUNK;
@@ -320,6 +322,12 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
                     n = (size_t)(r->base + r->usable - page);
                 if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
                     return EXCEPTION_CONTINUE_EXECUTION;
+                static const char nomem[] =
+                    "goose runtime error: out of memory committing a data stack\n";
+                DWORD written;
+                WriteFile(GetStdHandle(STD_ERROR_HANDLE), nomem, sizeof(nomem) - 1, &written,
+                          NULL);
+                ExitProcess(1);
             }
             char msg[GS_OVERFLOW_TEXT];
             DWORD written;
@@ -331,11 +339,16 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* Installed once by main, before any worker can start. */
-static void gs_regions_init(void) {
+/* The unit memory is committed and protected in. */
+static size_t gs_os_page_size(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    gs_page_size = si.dwPageSize;
+    return si.dwPageSize;
+}
+
+/* Installed once by main, before any worker can start. */
+static void gs_regions_init(void) {
+    gs_page_size = gs_os_page_size();
     if (!AddVectoredExceptionHandler(1, gs_fault_filter))
         gs_panic("cannot install data stack fault handler");
 }
@@ -417,6 +430,12 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     /* Not ours: the access faults again under what handled it before, the
        default action or a sanitizer's report. */
     sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
+}
+
+/* The unit memory is mapped and protected in. */
+static size_t gs_os_page_size(void) {
+    long n = sysconf(_SC_PAGESIZE);
+    return n > 0 ? (size_t)n : 4096;
 }
 
 static void gs_regions_init(void) {
@@ -546,12 +565,13 @@ static GS_NORETURN void gs_end(int code) {
 #define GS_REGION_MIN (1u << 20)
 
 /* A region of the size new ones currently get. Where the platform refuses
-   one, every region from then on is half as large, down to GS_REGION_MIN:
-   a smaller region is always safe, since the checks the compiler leaves
-   out assume no more than GS_STACK_RESERVE bytes in a stack, and the guard
-   gap behind a smaller one aborts growth that much sooner. Workers racing
-   through a refusal may each halve the size once more than needed, or
-   restore a larger one for a moment; it only ever settles downward. */
+   one, every region from then on is half as large, in whole pages, down to
+   GS_REGION_MIN: a smaller region is always safe, since the checks the
+   compiler leaves out assume no more than GS_STACK_RESERVE bytes in a
+   stack, and the guard gap behind a smaller one aborts growth that much
+   sooner. Workers racing through a refusal may each halve the size once
+   more than needed, or restore a larger one for a moment; it only ever
+   settles downward. */
 GS_API uint8_t *gs_reserve_region(void) {
     if (gs_nregions >= gs_regions_cap)
         gs_panic("too many data stack regions");
@@ -562,6 +582,7 @@ GS_API uint8_t *gs_reserve_region(void) {
         if (p) break;
         if (usable <= GS_REGION_MIN) gs_panic("cannot reserve data stack address space");
         usable /= 2;
+        usable -= usable % gs_region_page;
         gs_region_usable = usable;
     }
     long i = gs_nregions;
@@ -1333,6 +1354,13 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions) {
     gs_argc = argc;
     gs_argv = argv;
+    /* A region's usable part is whole pages: the guard gap behind it has to
+       start on a page to be protected, and on Windows a stack would run on
+       unseen through the rest of a part page committed at its end, past the
+       GS_STACK_RESERVE bytes the compiler's checks go by. */
+    gs_region_page = gs_os_page_size();
+    reserve -= reserve % gs_region_page;
+    if (!reserve) gs_panic("the data stack reservation (GS_STACK_RESERVE) is less than a page");
     gs_region_usable = gs_region_reserve = (size_t)reserve;
     gs_region_gap = (size_t)gap;
     gs_stack_budget = budget;
@@ -1356,7 +1384,10 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     #ifdef _WIN32
         // The bytes a program writes are the bytes that come out, '\n' one
         // byte as on every other platform, rather than a "\r\n" the CRT's
-        // text mode makes of it byte by byte.
+        // text mode makes of it byte by byte; and the bytes it reads are
+        // the bytes that came in, where text mode would make "\r\n" '\n'
+        // and stop at the first Ctrl-Z.
+        _setmode(_fileno(stdin), _O_BINARY);
         _setmode(_fileno(stdout), _O_BINARY);
         _setmode(_fileno(stderr), _O_BINARY);
     #endif
@@ -1650,24 +1681,5 @@ GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     return (int64_t)(d - dst);
 }
 
-/* stdout is unbuffered (gs_rt_start), so every piece is its own write;
-   revisit if print throughput ever matters. */
-
-GS_API void gs_out_int(int64_t v) {
-    uint8_t buf[GS_FMT_MAX];
-    fwrite(buf, 1, (size_t)gs_fmt_i64(buf, v), stdout);
-}
-GS_API void gs_out_uint(uint64_t v) {
-    uint8_t buf[GS_FMT_MAX];
-    fwrite(buf, 1, (size_t)gs_fmt_u64(buf, v), stdout);
-}
-GS_API void gs_out_flt(double v) {
-    uint8_t buf[GS_FMT_MAX];
-    fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
-}
-GS_API void gs_out_f32(float v) {
-    uint8_t buf[GS_FMT_MAX];
-    fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
-}
-GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
+/* stdout is unbuffered (gs_rt_start): each print is this one write. */
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }

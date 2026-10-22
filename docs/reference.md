@@ -2359,7 +2359,8 @@ var edges: NodeId[>..] = [];
 * **Using one.** Indexing `a` with an index of `a` needs no check. A
   value converts implicitly to its plain integer type, so arithmetic on it
   gives plain integers; compound assignment on a place of an index type is
-  an error.
+  an error, and so is memberwise arithmetic on a struct or fixed array
+  holding one.
 * **Loops.** `for i in lo..hi` whose bounds are index or bound types of
   one array gives `i` that array's index type; so does `for i in n` with
   `n` of one.
@@ -3061,7 +3062,10 @@ foo(1, h)                            // a named function
   nested function.
 * A `return` inside a block returns from the **lexically enclosing named
   function**, not from the function calling the block, so a hand-written
-  iterator has the same structuring power as `for`.
+  iterator has the same structuring power as `for`. A reference it returns
+  may be one the function calling the block handed it, which points where
+  that call's argument does, but not one into that function's own locals
+  or the block's, which die as the return leaves them.
 * A named function keeps its parameter defaults as a value; a block's
   parameters have none. A function value may follow fewer arguments than
   the callee has parameters where the rest have defaults.
@@ -3299,8 +3303,9 @@ error: line 1: bad age
   function in scope, else the name's overload set, with `from ns::parse`
   explicit. An unrelated function that merely shares the name never
   catches the return.
-* The current compiler lets a long-distance return carry references to
-  globals and static data only; return owned values, as above.
+* The current compiler lets a long-distance return written in a named
+  function carry references to globals and static data only; return owned
+  values, as above.
 
 The same machinery is what lets a block `return` from its enclosing
 function through a higher-order function ([section 18](#function-values)).
