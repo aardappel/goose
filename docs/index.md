@@ -17,10 +17,12 @@ library, the tools and the compiler.
 
 ## Library and tools
 
-* [Standard library](stdlib.md): the fifteen modules, `std`, `dictionary`,
-  `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`,
-  `exception`, and `gfx`, `audio`, `physics` and `ui` for graphics, sound,
-  rigid bodies and widgets. All readable Goose under `stdlib/`.
+* [Standard library](stdlib.md): the fifteen modules. `std`, `dictionary`,
+  `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`, and
+  `exception` are Goose under `stdlib/`. `gfx`, `audio`, and `ui` are the
+  [goose_gfx](https://github.com/aardappel/goose_gfx) package, and `physics`
+  is [goose_physics](https://github.com/aardappel/goose_physics): graphics,
+  sound, rigid bodies, and widgets.
 * [Building programs and using packages](packages.md): `goose build`,
   libraries from git repositories or directories, a program's own C, and
   how to make a package.
@@ -80,6 +82,11 @@ and the reference describe what was built; these say why.
   implemented.
 * [WebAssembly](design/wasm.md): running without address-space reservation,
   fixed partitions against relocating stacks; a proposal.
+
+## Contributing
+
+[CONTRIBUTING.md](../CONTRIBUTING.md): how to build the compiler, where a
+test goes, and the shape of the C++.
 
 ## Getting the compiler
 

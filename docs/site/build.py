@@ -29,6 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(SITE))
 # Markdown pages, as (source relative to the repository, output page).
 PAGES = []
 PAGES.append(("README.md", "index.html"))
+PAGES.append(("CONTRIBUTING.md", "contributing.html"))
 PAGES.append(("docs/index.md", "docs/index.html"))
 for src in sorted(glob.glob(os.path.join(ROOT, "docs", "*.md"))):
     name = os.path.basename(src)

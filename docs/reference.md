@@ -3694,7 +3694,8 @@ functions are not thread-safe: call them from the thread that called
 ## 25. Builtins
 
 The language's own functions. Everything else is the standard library,
-written in Goose under `stdlib/` and documented in [stdlib.md](stdlib.md).
+documented in [stdlib.md](stdlib.md): Goose under `stdlib/`, and the `gfx`,
+`audio`, `ui`, and `physics` packages.
 
 | Builtin | Meaning | Section |
 |---|---|---|

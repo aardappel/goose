@@ -3923,9 +3923,10 @@ targets are currently unsupported. Failure returns an empty array and
 payload. The implementation notes, section 6.9, give the byte contract and
 current resource limits; section 11 identifies violations still to fix.
 
-Everything else is the standard library: Goose source under `stdlib/`,
-reached by `import` (§11.1) and documented in `stdlib.md` (the design it
-came from is `design/stdlib_design.md`). The math types of §6.1 are its
+Everything else is the standard library: Goose source under `stdlib/`, and
+the `gfx`, `audio`, `ui`, and `physics` packages, reached by `import`
+(§11.1) and documented in `stdlib.md` (the design it came from is
+`design/stdlib_design.md`). The math types of §6.1 are its
 `vec` module; the C behind `math` and `os` enters through `extern fn`
 (§7.10).
 

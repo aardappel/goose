@@ -4,8 +4,9 @@ The documentation is written as markdown that reads on GitHub, with
 relative links between the files as they lie in the repository. This
 directory turns the same files into a static site for GitHub Pages, with
 pandoc, keeping the repository's layout so that every link still works:
-`README.md` becomes `index.html`, `docs/tutorial.md` becomes
-`docs/tutorial.html`, `samples/README.md` becomes `samples/index.html`,
+`README.md` becomes `index.html`, `CONTRIBUTING.md` becomes
+`contributing.html`, `docs/tutorial.md` becomes `docs/tutorial.html`,
+`samples/README.md` becomes `samples/index.html`,
 and each sample program gets a highlighted page of its own.
 
 ```bash

@@ -21,9 +21,10 @@
 
 </details>
 
-The standard library has fifteen modules under `stdlib/`: `std`,
-`dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`,
-`audio`, `gfx`, `physics`, `ui`, and `exception`. Import each module by name,
+The standard library has fifteen modules. Eleven live in this tree's
+`stdlib/`: `std`, `dictionary`, `vec`, `math`, `os`, `binary`, `base64`,
+`csv`, `json`, `regex`, and `exception`. `audio`, `gfx`, `ui`, and `physics`
+are packages in repositories of their own, named below. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`

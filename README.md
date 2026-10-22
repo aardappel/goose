@@ -568,13 +568,17 @@ has the configuration for Neovim, Helix and Emacs.
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
   file tree built from two pools, a spinning cube on the GPU, thousands of
   boxes raining into a heap and a to-do list in windows of widgets.
-* [Standard library](docs/stdlib.md): fourteen modules, all readable Goose under
-  `stdlib/`, including `gfx`, graphics on SDL3's GPU API
-  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md)), `physics`, rigid body physics
-  on Box3D ([how it is built](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md)), and `ui`, fonts,
+* [Standard library](docs/stdlib.md): fifteen modules. Eleven are Goose in
+  this tree's `stdlib/`, including `exception`. `gfx`, graphics on SDL3's GPU API
+  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md)),
+  `audio`, and `ui`, fonts,
   [text rendering and game HUDs](docs/stdlib.md#text-rendering-and-game-huds),
   windows and widgets on Nuklear, drawn through gfx
-  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md)).
+  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md)),
+  are the [goose_gfx](https://github.com/aardappel/goose_gfx) package. `physics`,
+  rigid body physics on Box3D
+  ([how it is built](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md)),
+  is the [goose_physics](https://github.com/aardappel/goose_physics) package.
 * [Building programs and using packages](docs/packages.md): `goose build`,
   libraries from git repositories or directories, a program's own C, and
   how to make a package of your own.
@@ -585,13 +589,18 @@ has the configuration for Neovim, Helix and Emacs.
 
 ## Status
 
-Goose is new. What exists today is a whole-program compiler of about thirty
+Goose is new. What exists today is a whole-program compiler of about sixty
 thousand lines of C++, the specification, the standard library, the samples,
 and a test suite that CI runs on Windows, macOS and Linux with an extra
 sanitizer job. Deliberately out of scope for now: moves for resizable values,
 more than one resizable per struct, labeled `break`, namespace privacy, and
 more OS/library access. Open items are tracked in the
 [specification's Appendix B](docs/goose_spec.md#appendix-b-todo--open-items).
+
+## Contributing
+
+Pull requests go against `master`. [CONTRIBUTING.md](CONTRIBUTING.md) covers
+the build, the tests, and the shape of the compiler code.
 
 ## License
 
