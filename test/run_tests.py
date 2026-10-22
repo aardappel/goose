@@ -2356,9 +2356,13 @@ def main():
         nowhere = gendir / "nowhere"
         nowhere.mkdir(exist_ok=True)
         env = {k: v for k, v in os.environ.items()
-               if k.upper() not in ("GOOSE_CC", "PATH", "PROGRAMFILES(X86)")}
-        # Nothing on PATH, and no Visual Studio where vswhere would be.
+               if k.upper() not in ("GOOSE_CC", "PATH", "PROGRAMFILES", "PROGRAMW6432",
+                                     "PROGRAMFILES(X86)")}
+        # Nothing on PATH, no Visual Studio where vswhere would be, and no
+        # LLVM where its installer puts it. Windows gives a 64-bit process
+        # ProgramFiles from ProgramW6432, so that one is hidden too.
         env.update({"PATH": str(nowhere), "GOOSE_HOME": str(nowhere / "home"),
+                    "PROGRAMFILES": str(nowhere), "PROGRAMW6432": str(nowhere),
                     "PROGRAMFILES(X86)": str(nowhere)})
         nocc = subprocess.run([str(exe), "toolchain"], capture_output=True, text=True,
                               errors="replace", env=env)
