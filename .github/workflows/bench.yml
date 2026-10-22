@@ -1,0 +1,137 @@
+# Times every pull request against the branch it targets on the LangArena
+# suite (bench/kostya), in time and peak memory: the compiler of the PR (its
+# merge into the base) and the compiler of the base's latest commit each build
+# the PR's benchmark sources, and bench/kostya/ci_ab.py runs the two binaries
+# interleaved, one process per benchmark, best of several reps. A regression
+# beyond the script's thresholds is a warning, a wrong checksum fails the job;
+# the table goes to the run's summary and to a comment on the PR, updated in
+# place on every push (a PR from a fork gets no comment: its token cannot
+# write one).
+name: Benchmark
+
+# Only a PR that changes what the compiler is built from, or the benchmark
+# and its harness, is timed; documentation, tests, samples and the editor
+# support leave the two binaries the same.
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'stdlib/**'
+      - 'third_party/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'bench/kostya/goose/**'
+      - 'bench/kostya/*.py'
+      - '.github/workflows/bench.yml'
+      - '!**.md'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The LangArena commit whose run.js the suite reads: pinned, so that a
+  # change of its configuration upstream never shows up as one of the PR's.
+  LANGARENA_REF: 3c9f84ddaeec834c0631747cb789e8cfd602f993
+  LANGARENA: ${{ github.workspace }}/LangArena
+  REPS: 5
+
+jobs:
+  langarena:
+    name: LangArena A/B
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: head
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Fetch LangArena
+        run: |
+          git init -q LangArena
+          git -C LangArena fetch -q --depth 1 https://github.com/kostya/LangArena.git "$LANGARENA_REF"
+          git -C LangArena checkout -q FETCH_HEAD
+
+      # No builtin packages: the benchmarks use only the standard library.
+      # The two builds are mostly one translation unit each, so they run
+      # side by side.
+      - name: Build both compilers
+        run: |
+          for side in base head; do
+            (cmake -S $side -B $side/build -DCMAKE_BUILD_TYPE=Release > $side.log 2>&1 &&
+             cmake --build $side/build --target goose --parallel 2 >> $side.log 2>&1
+             echo $? > $side.status) &
+          done
+          wait
+          for side in base head; do
+            if [ "$(cat $side.status)" != 0 ]; then tail -50 $side.log; exit 1; fi
+          done
+
+      - name: Run the A/B
+        id: ab
+        run: |
+          set +e
+          python head/bench/kostya/ci_ab.py \
+            --base-goose base/build/goose --head-goose head/build/goose \
+            --base-src base/bench/kostya/goose/src --head-src head/bench/kostya/goose/src \
+            --base-label "${{ github.event.pull_request.base.ref }} @ ${GITHUB_BASE_SHA::7}" \
+            --head-label "#${{ github.event.pull_request.number }} @ ${GITHUB_HEAD_SHA::7}" \
+            --reps "$REPS" --summary report.md --json samples.json
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: langarena-ab
+          path: |
+            report.md
+            samples.json
+          if-no-files-found: ignore
+
+      # One comment per PR, found by its marker and rewritten on every run.
+      - name: Comment on the PR
+        if: always() && hashFiles('report.md') != '' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- langarena-ab -->'
+          { echo "$marker"; cat report.md; } > comment.md
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+                 --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@comment.md > /dev/null
+          fi
+
+      # A slower or larger program is worth a look, not a reason to stop the
+      # PR; a wrong checksum is a miscompile and fails the job.
+      - name: Warn on a regression
+        if: steps.ab.outputs.status == '2'
+        run: |
+          echo "::warning::LangArena A/B: performance regression, see the job summary"
+
+      - name: Fail on a wrong checksum
+        if: steps.ab.outputs.status != '0' && steps.ab.outputs.status != '2'
+        run: |
+          echo "::error::LangArena A/B: wrong checksum or no result from the PR's build, see the job summary"
+          exit 1

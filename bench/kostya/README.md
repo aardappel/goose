@@ -91,3 +91,21 @@ compilers) interleaved, best of N, each build also as renamed copies:
 Windows places an executable by its file name, and code placement alone
 moves single benchmarks by 10-30%, so only interleaved same-session
 comparisons over several builds are worth reading.
+
+`ci_ab.py` is the A/B the `Benchmark` workflow (`.github/workflows/bench.yml`)
+runs on every pull request that changes the compiler's sources, the standard
+library or the benchmark (documentation, tests and samples alone do not
+start it): the compiler of the PR and the compiler of the
+latest commit of the branch it targets each build the PR's benchmark sources,
+and every benchmark runs in a process of its own, the two builds back to back,
+best of five reps, for its time and its peak resident memory. A change counts
+when it is beyond the threshold (10% in time, 10% and 1 MiB in memory, 3% in
+the geomean of the time ratios) and holds in every rep; a regression is a
+warning on the run, a wrong checksum fails the job, and the table goes to the run's summary and to a
+comment on the PR. LangArena's `run.js` is read at a pinned commit
+(`LANGARENA_REF` in the workflow). Locally, with two compilers:
+
+```
+LANGARENA=../LangArena python bench/kostya/ci_ab.py \
+    --base-goose ../goose-master/build/goose --head-goose build/goose --reps 3
+```
