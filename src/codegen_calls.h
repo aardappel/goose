@@ -95,7 +95,7 @@ inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
 inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     if (std::find(usedexterns.begin(), usedexterns.end(), sp) == usedexterns.end())
         usedexterns.push_back(sp);
-    auto callee = sp->sf->dylib.empty() ? sp->sf->cname : DlSlot(sp);
+    auto callee = sp->sf->dylib.empty() ? sp->sf->cname : DlCall(sp);
     auto an = CallArgNodes(c, sp->argtypes.size());
     string argstr;
     // A builder argument (`u8[>..]&`, or a value holding one) is appended
@@ -125,19 +125,32 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
 
 // The C prototype of an extern fn, from its Goose declaration (§7.10); for
 // one bound from a shared library, the declaration of the pointer it is
-// called through, which gs_dl_bind fills.
+// called through, which gs_dl_bind fills, and the function calls go through
+// to reach it, which leaves the call out of clang's function-type check
+// (GS_DL_CALL).
 inline string CodeGen::ExternProto(FnSpec *sp) {
     auto dynamic = !sp->sf->dylib.empty();
+    auto ret = sp->rets.empty() ? string("void") : CT(sp->rets[0]);
     string s = dynamic ? "static " : "";
-    s += sp->rets.empty() ? string("void") : CT(sp->rets[0]);
+    s += ret;
     if (dynamic) Append(s, " (*", DlSlot(sp), ")(");
     else Append(s, " ", sp->sf->cname, "(");
+    string params, args;
     for (size_t i = 0; i < sp->argtypes.size(); i++) {
-        if (i) s += ", ";
+        if (i) {
+            s += ", ";
+            params += ", ";
+            args += ", ";
+        }
         s += CT(sp->argtypes[i]);
+        Append(params, CT(sp->argtypes[i]), " a", i);
+        Append(args, "a", i);
     }
-    if (sp->argtypes.empty()) s += "void";
+    if (sp->argtypes.empty()) s += "void", params = "void";
     s += ");\n";
+    if (dynamic)
+        Append(s, "static GS_DL_CALL ", ret, " ", DlCall(sp), "(", params, ") { ",
+               sp->rets.empty() ? "" : "return ", DlSlot(sp), "(", args, "); }\n");
     return s;
 }
 

@@ -71,6 +71,16 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #pragma fp_contract(off)
 #endif
 
+/* The function a dynamic extern is called through (§7.10). Its pointer has
+   the Goose declaration's C types, which match the library's in layout but
+   not in name (struct Point_g for the library's Point), so clang's
+   -fsanitize=function would report a call that the ABI makes sound. */
+#if defined(__clang__)
+#define GS_DL_CALL __attribute__((no_sanitize("function")))
+#else
+#define GS_DL_CALL
+#endif
+
 #ifndef GS_NEED_THREADS
 #define GS_NEED_THREADS 0
 #endif
@@ -185,13 +195,13 @@ GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char
 GS_API GS_NORETURN void gs_exit(int64_t code);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
-GS_API GS_NORETURN void gs_divovf(const char *file, int line);
+)GSRT"
+R"GSRT(GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line);
 GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line);
-)GSRT"
-R"GSRT(GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
+GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
                                     const char *file, int line);
 GS_API GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
                                     const char *file, int line);
@@ -346,12 +356,12 @@ static uint64_t gs_bytemask(int64_t k) {
 }
 
 /* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
-   pointer is NULL where the slice was zero-filled (default<T>(), a default
+)GSRT"
+R"GSRT(   pointer is NULL where the slice was zero-filled (default<T>(), a default
    element), and C leaves all three undefined on a null pointer even for
    zero bytes. A copy of up to 16 bytes loads both overlapping halves before
    it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
-)GSRT"
-R"GSRT(   overlapping, where the library's memcpy would take a call and a dispatch
+   overlapping, where the library's memcpy would take a call and a dispatch
    on the length; as the C library's memcpy, it takes runs that do not
    overlap. */
 static void gs_memcpy(void *dst, const void *src, size_t n) {
@@ -513,15 +523,15 @@ static T gs_neg_##SFX(T a, const char *file, int line) { \
     if (r < MIN || r > MAX) gs_ovf_neg(a, #SFX, file, line); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
-    return (T)((uint64_t)a << (n & (BITS - 1))); } \
+)GSRT"
+R"GSRT(    return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
     return (T)((int64_t)a >> (n & (BITS - 1))); }
 
 /* Unsigned types wrap modulo 2^width by definition (§6.2) in every build:
    plain C unsigned arithmetic, truncated back to the width. */
 #define GS_INTOPS_U(SFX, T, MAX, BITS) \
-)GSRT"
-R"GSRT(static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
+static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
 static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
 static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
 static T gs_shl_##SFX(T a, int64_t n) { \
@@ -701,7 +711,8 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
     return q >> more;
 #else
     (void)magic;
-    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
+)GSRT"
+R"GSRT(    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
 #endif
 }
 
@@ -709,8 +720,7 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
    magic: x / d is the high half of a 32x32 product, which a C compiler
    vectorizes where it keeps the 64x64 one scalar, and which needs no
    128-bit arithmetic, so only a zero divisor gets GS_DIVU_NONE. */
-)GSRT"
-R"GSRT(static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
+static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
     int k = 31;
     uint64_t n;
     uint32_t m, rem;
@@ -876,14 +886,14 @@ GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
    `msg` is not NULL, the first such wait for a worker that aborted takes its
    message: `msg` and `len` are set to it, which the caller frees with
    gs_free_msg, or to NULL and no bytes. */
-GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+)GSRT"
+R"GSRT(GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
                                const char *file, int line);
 GS_API void gs_free_msg(uint8_t *msg);
 
 /* One queue per flat element type the program uses (the compiler emits a
    gs_queue global per type, which main sets up before anything can use it).
-)GSRT"
-R"GSRT(   Values are contiguous byte images: gs_qget, gs_qwait and gs_qpoll return a
+   Values are contiguous byte images: gs_qget, gs_qwait and gs_qpoll return a
    malloc'd node the caller copies from and frees, gs_qwait and gs_qpoll NULL
    when nothing came. gs_qput returns 0, queueing nothing, when the queue is
    at its limit. */
@@ -1077,7 +1087,8 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
         v |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) {
+)GSRT"
+R"GSRT(        if (!(b & 0x80)) {
             if (shift && !b) return 0;  /* Redundant high zero group. */
             break;
         }
@@ -1089,8 +1100,7 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
 
 /* The same for a signed (zigzag) varint: a value field or a self-relative
    offset of varint width (3.6). */
-)GSRT"
-R"GSRT(static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
+static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
     uint64_t u = 0;
     int64_t k = gs_uleb_check(p, end, &u);
     if (k) *out = (int64_t)((u >> 1) ^ (0u - (u & 1)));

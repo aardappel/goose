@@ -119,6 +119,8 @@ struct CodeGen {
         assert(it != usedexterns.end() && !sp->sf->dylib.empty());
         return cat("gs_dl", it - usedexterns.begin(), "_", sp->sf->cname);
     }
+    // The function a call goes through to reach the pointer (ExternProto).
+    string DlCall(FnSpec *sp) { return cat(DlSlot(sp), "_call"); }
     // The library a dynamic extern binds from, with the spelling each
     // platform opens: the sidecars' (§7.10), the program's over the
     // package's for a platform either says anything about, and empty where
