@@ -3097,10 +3097,79 @@ struct TypeCheck {
         auto foreign = false;
         if (sf->body) ScanForeignFrom(sf->body, names, foreign);
         if (foreign) return;
+        // Nor one whose calls reach a `return ... from` it does not enclose
+        // (a helper returning from the call its own callers run it under):
+        // checked from here, that is an error only the missing caller makes.
+        if (ReachesForeignFrom(sf)) return;
         auto spec = ast.NewFnSpec();
         spec->sf = sf;
         for (auto &p : sf->params) spec->argtypes.push_back(Subst(p.type));
         CheckStandalone(spec);
+    }
+
+    // Per top-level function, the leaf names of the `return ... from`
+    // targets some call path from it reaches with no function of that name
+    // on the path (ReachesForeignFrom). Calls are followed by leaf name
+    // alone, before resolution, to every top-level function of that name,
+    // and any name in a body (a call, a function value, a field) counts as
+    // a call: more paths than the real ones, so CheckUnreached skips more
+    // functions, never fewer.
+    map<SFunction *, set<string_view>> foreignfrom;
+    bool foreignfromdone = false;
+
+    static string_view LeafName(string_view name) {
+        auto at = name.rfind("::");
+        return at == string_view::npos ? name : name.substr(at + 2);
+    }
+
+    bool ReachesForeignFrom(SFunction *sf) {
+        if (!foreignfromdone) {
+            foreignfromdone = true;
+            unordered_map<string_view, vector<SFunction *>> byname;
+            for (auto f : ast.functions)
+                if (!f->isnested) byname[f->name].push_back(f);
+            // What each function encloses (its own name and its nested
+            // functions'), and the functions it may call.
+            struct Uses { set<string_view> own; vector<SFunction *> callees; };
+            map<SFunction *, Uses> uses;
+            for (auto f : ast.functions) {
+                if (f->isnested || !f->body) continue;
+                auto &u = uses[f];
+                auto &targets = foreignfrom[f];
+                u.own.insert(f->name);
+                set<string_view> called;
+                function<void(Node *)> walk = [&](Node *n) {
+                    if (!n) return;
+                    if (auto r = Is<Return>(n)) {
+                        if (!r->from.empty()) targets.insert(LeafName(r->from));
+                    } else if (auto id = Is<Ident>(n)) {
+                        called.insert(LeafName(id->name));
+                    } else if (auto d = Is<Dot>(n)) {
+                        called.insert(LeafName(d->name));
+                    } else if (auto fd = Is<FnDecl>(n)) {
+                        // Not among Children, as in ScanForeignFrom.
+                        u.own.insert(fd->sf->name);
+                        walk(fd->sf->body);
+                        return;
+                    }
+                    n->Children(walk);
+                };
+                walk(f->body);
+                for (auto t : u.own) targets.erase(t);
+                for (auto c : called)
+                    if (auto it = byname.find(c); it != byname.end())
+                        for (auto g : it->second) u.callees.push_back(g);
+            }
+            for (auto changed = true; changed;) {
+                changed = false;
+                for (auto &[f, u] : uses)
+                    for (auto g : u.callees)
+                        for (auto t : foreignfrom[g])
+                            if (!u.own.count(t) && foreignfrom[f].insert(t).second) changed = true;
+            }
+        }
+        auto it = foreignfrom.find(sf);
+        return it != foreignfrom.end() && !it->second.empty();
     }
 
     // The language server's exemplar checks (Ast::exemplars), after every
