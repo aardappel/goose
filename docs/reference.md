@@ -3753,7 +3753,10 @@ Goose's shapes. What that means in practice:
   h }` matches `struct Rect { x: i32, y: i32, w: i32, h: i32 }`; a `u8`
   before an `i32` needs `pad 3` written where C pads, and a struct whose
   size C rounds up, `{ a: i32, b: u8 }`, needs `pad 3` at the end to be
-  passed by value or kept in an array C indexes. A struct passed by
+  kept in an array C indexes. A struct with `pad` crosses by reference
+  only: by value, its pad is bytes the calling convention passes, where
+  C's padding is nothing, so `{ x: f32, pad 4, y: f64 }` would arrive in
+  the wrong registers. A struct passed by
   reference, `const Rect&`, wants a variable: a literal is no reference
   target, so `let r = Rect { 0, 0, 10, 10 }; SDL_HasIntersection(r, s)`
   rather than the literal in the call.

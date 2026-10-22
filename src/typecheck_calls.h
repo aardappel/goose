@@ -2566,6 +2566,27 @@ inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why) {
     return ExternValueOk(t, why);
 }
 
+// A value a member of an extern block passes or returns by value goes to C
+// compiled against the library's own types, not Goose's, so its C type must
+// pass the same way as theirs. A `pad` is a byte array in the generated C,
+// where the library's struct has padding the calling convention passes
+// nothing in: `{ f32, pad 4, f64 }` goes in an integer register where C's
+// `{ float; double; }` goes in two float ones (x86-64 System V), so such a
+// value crosses by reference, which passes a pointer either way. A static
+// extern is compiled against the Goose type itself (goose.h) and agrees.
+inline bool TypeCheck::DylibValueOk(SFunction *sf, TypeExpr *t, string &why) {
+    if (sf->dylib.empty() || t->kind == TY_REF || t->kind == TY_SLICE) return true;
+    auto padded = Reaches(t, [&](TypeExpr *t) {
+        if (t->kind != TY_STRUCT) return false;
+        for (auto &f : GetStructInst(t)->st->fields) if (f.ispad) return true;
+        return false;
+    });
+    if (!padded) return true;
+    why = "a struct with pad passes by value unlike the library's own struct, whose padding "
+          "the calling convention leaves out; pass it by reference (§7.10)";
+    return false;
+}
+
 // The C keywords, which no symbol the generated C names can be.
 inline bool IsCKeyword(string_view n) {
     static const unordered_set<string_view> ckeywords = {
@@ -2605,7 +2626,7 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
         auto pt = spec->argtypes[i];
         ValidateType(pt, sf->line, VT_PARAM);
         string why;
-        if (!ExternParamOk(pt, why))
+        if (!ExternParamOk(pt, why) || !DylibValueOk(sf, pt, why))
             Error(sf->line, cat("extern fn ", sf->name, ": parameter ", p.name, " of type ",
                                 TypeStr(pt), " cannot cross to C: ", why));
         auto vd = ast.NewVarDef();
@@ -2623,7 +2644,7 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
         auto t = Subst(rt);
         ValidateType(t, sf->line, VT_LOCAL);
         string why;
-        if (!ExternValueOk(t, why))
+        if (!ExternValueOk(t, why) || !DylibValueOk(sf, t, why))
             Error(sf->line, cat("extern fn ", sf->name, " cannot return ", TypeStr(t), ": ",
                                 why));
         spec->rets.push_back(t);

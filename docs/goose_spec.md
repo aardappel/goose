@@ -2917,7 +2917,10 @@ extern "SDL2" {
 ```
 
 A member is an `extern fn` in every respect above: fully typed, not
-generic, no body, the same shapes crossing, a string after `=` its C symbol
+generic, no body, the same shapes crossing (except a struct holding a
+`pad` by value: the library's own struct has padding where Goose's C has
+a byte array, which a calling convention may pass differently, so such a
+value crosses by reference), a string after `=` its C symbol
 and its Goose leaf name otherwise, a `declname` so a namespaced member is
 written as it would be outside the block. A member is written without
 `extern`, since the block's covers it; `export`, `thread_fn` and the

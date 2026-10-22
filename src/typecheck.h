@@ -2308,6 +2308,7 @@ struct TypeCheck {
     bool SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec);
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
+    bool DylibValueOk(SFunction *sf, TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
     void CheckExport(SFunction *sf);
     int ClassDepth(VarDef *r);

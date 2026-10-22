@@ -317,8 +317,15 @@ Most of a library's API fits; what does not is listed last.
   matches only with `pad` written where C pads (§3.2 has `pad` and `pad n`
   for exactly this). Tail padding too: a C struct's size is a multiple of
   its alignment, so `{ a: i32, b: u8 }` needs `pad 3` at the end to be
-  passed by value or stored in an array C indexes. The documentation says
-  this plainly, with the two examples.
+  stored in an array C indexes. The documentation says this plainly, with
+  the two examples. Matching the bytes is not matching the calling
+  convention, though: a `pad` is a `uint8_t` array in the generated C, so
+  by value `{ x: f32, pad 4, y: f64 }` goes in an integer register where
+  the library's `{ float; double; }` goes in two float ones (x86-64 System
+  V; an ARM64 float aggregate likewise). A struct holding a `pad` is
+  therefore refused by value in a block and crosses by reference. Emitting
+  a natural-alignment mirror of such a struct for the call would lift
+  that, later.
 * **What needs an adapter still.** Reading memory the library owns, a
   `const char *` it returns (`SDL_GetError`) or an array it keeps
   (`SDL_GetKeyboardState`): Goose has no way to read through a `u64`, and
