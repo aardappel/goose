@@ -570,8 +570,8 @@ overrides the terminal check.
 Without any C compiler, on Windows:
 
     cannot find a C compiler (looked for cl, clang-cl and clang on PATH and in
-    Visual Studio, and for gcc and cc on PATH); install Visual Studio with C++
-    or LLVM, or set GOOSE_CC
+    Visual Studio, for clang in Program Files\LLVM, and for gcc and cc on PATH);
+    install Visual Studio with C++ or LLVM, or set GOOSE_CC
 
 ### 6.2 The runtime object
 
