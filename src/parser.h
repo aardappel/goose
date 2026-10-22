@@ -623,7 +623,11 @@ struct Parser {
     bool InFetchedPackage() const {
         if (fileidx < 0 || fileidx >= (int)ast.filepkg.size()) return false;
         auto pkg = ast.filepkg[fileidx];
-        return pkg >= 0 && pkg < (int)ast.packages.size() && !ast.packages[pkg].cachekey.empty();
+        if (pkg < 0 || pkg >= (int)ast.packages.size()) return false;
+        // A package compiled into the compiler was fetched by its build and
+        // is read from there, by path.
+        auto &p = ast.packages[pkg];
+        return !p.cachekey.empty() || p.builtin >= 0;
     }
 
     // An `extern` a caller consumed before ParseFnDecl, with its string: a
