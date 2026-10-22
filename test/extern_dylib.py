@@ -266,6 +266,18 @@ def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
         if code == 0 or message not in err:
             raise RuntimeError(f"{name}.goose: expected the error {message!r}, got exit {code}:"
                                f"\n{out}{err}")
+    # A package's mapping may be for a module of it the program does not
+    # import: the package's blocks are those of all its files.
+    optional = base / "pkgs" / "optional"
+    optional.mkdir(parents=True, exist_ok=True)
+    tc.write_text(optional / "optional.goose", 'namespace optional;\nfn pure() -> i32 { 42 }\n')
+    tc.write_text(optional / "extra.goose",
+                  'namespace optional;\nextern "extra" { fn foreign() -> i32; }\n')
+    tc.write_text(optional / "optional.build", 'dylibs = ["extra=lib/dltest"];\n')
+    unimported = base / "pkgunimported.goose"
+    tc.write_text(unimported, 'import optional from "./pkgs/optional";\n'
+                              'fn main() { print(optional::pure()); }\n')
+    expect_output(unimported, lines=["42"])
     # A package with a native part may declare both kinds: a program calling
     # its static extern builds and loads the part, one calling only its
     # dynamic extern does not need it, with no toolchain at all.

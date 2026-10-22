@@ -450,13 +450,28 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                      });
     // A sidecar's dylibs entry names a library some extern block declares
     // (§7.10): the program's, one in any package it uses; a package's, one
-    // of its own. Every block is known now, so a typo is caught here.
+    // of its own. A package's blocks are those of all its files, including
+    // modules this program does not import, which only a scan of them finds
+    // (PackageExternNames); it is made only for a name no parsed block has.
+    vector<set<string>> scanned(ast.packages.size());
+    vector<bool> isscanned(ast.packages.size());
+    auto scannedlibs = [&](size_t p) -> const set<string> & {
+        if (!isscanned[p]) {
+            PackageExternNames(ast, (int)p, &scanned[p]);
+            isscanned[p] = true;
+        }
+        return scanned[p];
+    };
     for (size_t p = 0; p < ast.packages.size(); p++) {
         auto &pkg = ast.packages[p];
         for (auto &d : pkg.dylibs) {
             auto declared = false;
             for (auto sf : ast.functions)
                 if (sf->dylib == d.name && (p == 0 || ast.filepkg[sf->line.fileidx] == (int)p))
+                    declared = true;
+            for (size_t q = 1; q < ast.packages.size() && !declared; q++)
+                if ((p == 0 || q == p) && !ast.packages[q].stdlib && ast.packages[q].builtin < 0 &&
+                    !ast.packages[q].root.empty() && scannedlibs(q).count(d.name))
                     declared = true;
             if (!declared)
                 throw CompileError { cat(pkg.sidecar, ": dylibs maps ", d.name, ", which no "
