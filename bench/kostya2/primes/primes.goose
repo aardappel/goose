@@ -5,8 +5,8 @@
 import std;
 import os;
 
-extern "goose_notify_start" fn notify_start(variant: const u8[:]);
-extern "goose_notify_stop" fn notify_stop();
+extern fn notify_start(variant: const u8[:]) = "goose_notify_start";
+extern fn notify_stop() = "goose_notify_stop";
 
 let UPPER_BOUND = 5000000;
 let PREFIX = 32338;

@@ -423,7 +423,7 @@ fn edge_cases() {
 
 // extern declarations (§7.10): with and without a C symbol.
 extern fn cbrt(x: f64) -> f64;
-extern "sqrtf" fn sqrt_f32(x: f32) -> f32;
+extern fn sqrt_f32(x: f32) -> f32 = "sqrtf";
 
 fn main_parser_all() {
     assert(from_mod(3) == 7);  // Root-relative import, then its sibling import.

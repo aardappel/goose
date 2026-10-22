@@ -2958,7 +2958,7 @@ Spec §7.5.
 | Qualifier | Meaning | Section |
 |---|---|---|
 | `recursive fn` | the entry of a recursive cycle | [19](#19-recursion) |
-| `extern fn`, `extern "sym" fn` | a C function | [24](#24-calling-c-and-being-called-from-c) |
+| `extern fn`, `extern fn … = "sym"` | a C function | [24](#24-calling-c-and-being-called-from-c) |
 | `export fn`, `export "sym" fn` | a Goose function callable from C | [24](#24-calling-c-and-being-called-from-c) |
 | `thread_fn` | a worker's entry point | [22](#22-threads) |
 | `checkfree fn` | no bounds check may remain in it | [15](#checkfree-fn) |
@@ -3658,15 +3658,17 @@ links the checker never proved. The byte contract is in
 
 ### `extern fn`
 
-A declaration without a body binds a Goose signature to a C function; the
-optional string is the C symbol, and the Goose name is used otherwise. It
+A declaration without a body binds a Goose signature to a C function; a
+string after `=`, where the body would go, is the C symbol, and the Goose
+name is used otherwise. The older `extern "cbrt" fn cube_root(...)`,
+with the string after `extern`, is deprecated and warns. It
 is top-level, fully typed, not generic, and joins overload resolution like
 any function. A call compiles to a direct C call.
 
 ```goose
 struct Stats { lo: i32, hi: i32, mean: f64 }
 
-extern "cbrt" fn cube_root(x: f64) -> f64;      // libm, by its C name
+extern fn cube_root(x: f64) -> f64 = "cbrt";    // libm, by its C name
 extern fn hypot(x: f64, y: f64) -> f64;
 extern fn crc32_bytes(s: const u8[:]) -> u32;   // a slice crosses as { data, len }
 extern fn stats_of(xs: i32[:], out: Stats&);    // a struct filled through a pointer
@@ -3693,15 +3695,15 @@ An `extern` block names a shared library and declares functions bound
 from it when the program starts, with no C to compile or link: the
 program opens the library and looks the symbols up, and a library or
 symbol that is missing is a runtime error naming the spelling it tried.
-A member is an `extern fn` written without the word; its string, if any,
-is its C symbol.
+A member is an `extern fn` written without the word; its string after
+`=`, if any, is its C symbol.
 
 ```goose
 extern "SDL2" {
     fn SDL_Init(flags: u32) -> i32;
     fn SDL_Quit();
     fn SDL_GetTicks64() -> u64;
-    "SDL_Delay" fn delay(ms: u32);
+    fn delay(ms: u32) = "SDL_Delay";
 }
 ```
 

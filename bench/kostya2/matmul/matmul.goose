@@ -4,8 +4,8 @@
 import std;
 import os;
 
-extern "goose_notify_start" fn notify_start(variant: const u8[:]);
-extern "goose_notify_stop" fn notify_stop();
+extern fn notify_start(variant: const u8[:]) = "goose_notify_start";
+extern fn notify_stop() = "goose_notify_stop";
 
 // A matrix is an array of rows. An array cannot hold growable arrays, so the
 // rows are runs of one pool, which the caller owns, laid end to end.

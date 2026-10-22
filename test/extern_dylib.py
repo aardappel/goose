@@ -61,18 +61,18 @@ BLOCK = '''
 import ffi;
 struct Point { x: i32, y: i32 }
 extern "%s" {
-    "dlt_add" fn add(a: i32, b: i32) -> i32;
-    "dlt_scale" fn scale(x: f64, f: f32) -> f64;
-    "dlt_swap" fn swap(p: Point) -> Point;
-    "dlt_bump" fn bump(p: Point&);
-    "dlt_sum" fn sum(xs: const i32[:]) -> i64;
-    "dlt_greet" fn greet(out: u8[>..]&, name: const u8[:]);
-    "dlt_new" fn new_counter(v: i32) -> u64;
-    "dlt_get" fn get(h: u64) -> i32;
-    "dlt_free" fn free_counter(h: u64);
-    "dlt_name" fn name() -> u64;
-    "dlt_null" fn null_ptr() -> u64;
-    "dlt_unused" fn unused();
+    fn add(a: i32, b: i32) -> i32 = "dlt_add";
+    fn scale(x: f64, f: f32) -> f64 = "dlt_scale";
+    fn swap(p: Point) -> Point = "dlt_swap";
+    fn bump(p: Point&) = "dlt_bump";
+    fn sum(xs: const i32[:]) -> i64 = "dlt_sum";
+    fn greet(out: u8[>..]&, name: const u8[:]) = "dlt_greet";
+    fn new_counter(v: i32) -> u64 = "dlt_new";
+    fn get(h: u64) -> i32 = "dlt_get";
+    fn free_counter(h: u64) = "dlt_free";
+    fn name() -> u64 = "dlt_name";
+    fn null_ptr() -> u64 = "dlt_null";
+    fn unused() = "dlt_unused";
 }
 '''
 
@@ -227,7 +227,7 @@ def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
     pkg = base / "pkgs" / "mapped"
     pkg.mkdir(parents=True, exist_ok=True)
     tc.write_text(pkg / "mapped.goose", 'namespace mapped;\n'
-                  'extern "mappedlib" { "dlt_add" fn add(a: i32, b: i32) -> i32; }\n')
+                  'extern "mappedlib" { fn add(a: i32, b: i32) -> i32 = "dlt_add"; }\n')
     tc.write_text(pkg / "mapped.build", 'dylibs = ["mappedlib=lib/dltest"];\n')
     use = 'import mapped from "./pkgs/mapped";\nfn main() { print(mapped::add(2, 3)); }\n'
     default = base / "pkgdefault.goose"
@@ -274,8 +274,8 @@ def check_extern_dylib(exe, cc, base, *, jit, runtime, extra=()):
         (pkg / "src").mkdir(parents=True, exist_ok=True)
         tc.write_text(pkg / "mixed.goose",
                       'namespace mixed;\n'
-                      'extern "mixed_twice" fn twice(x: i32) -> i32;\n'
-                      'extern "lib/dltest" { "dlt_add" fn add(a: i32, b: i32) -> i32; }\n')
+                      'extern fn twice(x: i32) -> i32 = "mixed_twice";\n'
+                      'extern "lib/dltest" { fn add(a: i32, b: i32) -> i32 = "dlt_add"; }\n')
         tc.write_text(pkg / "mixed.build", 'c_sources = ["src/mixed.c"];\n')
         tc.write_text(pkg / "src" / "mixed.c",
                       '#include <stdint.h>\nint32_t mixed_twice(int32_t x) { return x * 2; }\n')

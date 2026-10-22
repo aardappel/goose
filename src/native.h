@@ -56,9 +56,10 @@ inline string NativeBuildDir(const Ast &ast, int pkg, const string &rootfile, co
     return cat(GooseHome(), "/build/pkg/local/", Hex8(p.root), "/", b.tc.id);
 }
 
-// The C symbols a file's extern fns name: `extern "sym" fn f` gives sym,
-// `extern fn f` or `extern fn ns::f` gives the leaf name (§7.10). Read by
-// the lexer alone, since this is asked of files the program never parsed.
+// The C symbols a file's extern fns name: `extern fn f(...) = "sym"` (or the
+// deprecated `extern "sym" fn f`) gives sym, `extern fn f` or `extern fn
+// ns::f` gives the leaf name (§7.10). Read by the lexer alone, since this is
+// asked of files the program never parsed.
 inline void ExternNamesIn(const string &path, const string &text, set<string> &names) {
     Lexer lex(path, text.c_str());
     while (lex.tok != T_EOF) {
@@ -91,6 +92,19 @@ inline void ExternNamesIn(const string &path, const string &text, set<string> &n
             if (lex.tok == T_COLONCOLON) {
                 lex.Next();
                 if (lex.tok == T_IDENT) leaf = string(lex.attr);
+            }
+            // Past the signature to its `;`: an `=` outside the parameters'
+            // parentheses (where defaults have theirs) is the symbol's.
+            auto parens = 0;
+            while (lex.tok != T_SEMI && lex.tok != T_EOF && lex.tok != T_EXTERN) {
+                if (lex.tok == T_LPAREN) parens++;
+                else if (lex.tok == T_RPAREN) parens--;
+                else if (lex.tok == T_ASSIGN && parens == 0) {
+                    lex.Next();
+                    if (lex.tok == T_STRLIT) cname = lex.sval;
+                    continue;
+                }
+                lex.Next();
             }
             if (cname.empty()) cname = leaf;
         }

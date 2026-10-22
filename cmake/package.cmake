@@ -54,8 +54,10 @@ endfunction()
 
 # The C of the package's symbol table: goose_symbols_<name>, as native.h
 # writes goose_symbols for a package the compiler builds itself. The names
-# are every `extern "sym" fn` and `extern fn name` (or `ns::name`) in the
-# package's .goose files, comments stripped.
+# are every `extern fn name(...) = "sym"` (or the deprecated `extern "sym" fn`)
+# and `extern fn name` (or `ns::name`) in the package's .goose files, comments
+# stripped. A match runs to the declaration's `;`, which it leaves out (a `;`
+# would split the list), so a symbol after the signature ends it.
 function(goose_symbol_table pkgroot pkgname outfile)
     file(GLOB_RECURSE goosefiles "${pkgroot}/*.goose")
     set(names)
@@ -63,14 +65,16 @@ function(goose_symbol_table pkgroot pkgname outfile)
         file(READ "${f}" text)
         string(REGEX REPLACE "//[^\n]*" "" text "${text}")
         string(REGEX MATCHALL
-               "extern[ \t\r\n]+(\"[A-Za-z_][A-Za-z0-9_]*\"[ \t\r\n]+)?fn[ \t\r\n]+[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)?"
+               "extern[ \t\r\n]+(\"[A-Za-z_][A-Za-z0-9_]*\"[ \t\r\n]+)?fn[ \t\r\n]+[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)?[^;]*"
                matches "${text}")
         foreach(m IN LISTS matches)
-            if(m MATCHES "extern[ \t\r\n]+\"([A-Za-z_][A-Za-z0-9_]*)\"")
+            if(m MATCHES "=[ \t\r\n]*\"([A-Za-z_][A-Za-z0-9_]*)\"[ \t\r\n]*$")
                 list(APPEND names "${CMAKE_MATCH_1}")
-            elseif(m MATCHES "fn[ \t\r\n]+([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)$")
+            elseif(m MATCHES "^extern[ \t\r\n]+\"([A-Za-z_][A-Za-z0-9_]*)\"")
+                list(APPEND names "${CMAKE_MATCH_1}")
+            elseif(m MATCHES "^extern[ \t\r\n]+fn[ \t\r\n]+([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)")
                 list(APPEND names "${CMAKE_MATCH_2}")
-            elseif(m MATCHES "fn[ \t\r\n]+([A-Za-z_][A-Za-z0-9_]*)$")
+            elseif(m MATCHES "^extern[ \t\r\n]+fn[ \t\r\n]+([A-Za-z_][A-Za-z0-9_]*)")
                 list(APPEND names "${CMAKE_MATCH_1}")
             endif()
         endforeach()

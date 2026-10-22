@@ -14,7 +14,7 @@ export "c_weigh" fn weigh(xs: const i64[:], w: i64) -> i64 {
 }
 
 // The wrapper, called back through its C symbol.
-extern "c_weigh" fn c_weigh(xs: const i64[:], w: i64) -> i64;
+extern fn c_weigh(xs: const i64[:], w: i64) -> i64 = "c_weigh";
 
 fn main() {
     print(hello_world(), " ", add(20, 22));

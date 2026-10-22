@@ -89,7 +89,7 @@ fn each_step<F>(n: i64, step: i64 = 1) {
 fn show(i: i64) { print("show ", i); }
 
 // An extern: the C function gets every argument.
-extern "fmod" fn fmod_by(a: f64, b: f64 = 3.0) -> f64;
+extern fn fmod_by(a: f64, b: f64 = 3.0) -> f64 = "fmod";
 
 // Nested functions: a default names the global, not the local of the same
 // name the enclosing function declares after it.

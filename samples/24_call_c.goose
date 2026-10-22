@@ -15,11 +15,11 @@ import std;
 struct Stats { lo: i32, hi: i32, mean: f64 }
 
 // libm directly, without the math module: the string is the C symbol.
-extern "cbrt" fn cube_root(x: f64) -> f64;
+extern fn cube_root(x: f64) -> f64 = "cbrt";
 extern fn hypot(x: f64, y: f64) -> f64;
 // `abs` rather than `labs`: C's `long` is 32 bits on Windows and 64 on Linux
 // and macOS, so it has no one Goose type, where `int` is i32 everywhere.
-extern "abs" fn c_abs(x: i32) -> i32;
+extern fn c_abs(x: i32) -> i32 = "abs";
 
 // From call_c.h: a slice in, a scalar out.
 extern fn crc32_bytes(s: const u8[:]) -> u32;

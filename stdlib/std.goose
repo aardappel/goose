@@ -66,9 +66,9 @@ fn next_pow2(x: i64) -> i64 {
 
 // The bits set, and the leading / trailing zero bits, 64 for zero: the
 // runtime's (src/runtime/runtime_ext.h), one instruction where it can.
-extern "gs_popcount" fn popcount(x: u64) -> i64;
-extern "gs_clz" fn clz(x: u64) -> i64;
-extern "gs_ctz" fn ctz(x: u64) -> i64;
+extern fn popcount(x: u64) -> i64 = "gs_popcount";
+extern fn clz(x: u64) -> i64 = "gs_clz";
+extern fn ctz(x: u64) -> i64 = "gs_ctz";
 
 // The values a and b refer to. `T&` of a reference type is that reference
 // (spec §3.8), so for two elements of an array of references this swaps
@@ -442,11 +442,11 @@ fn byte_set(bytes: u8[:]) -> ByteSet {
 }
 
 // The first i with s[i] in the set, -1 if none.
-extern "gs_find_any" fn find_any(s: const u8[:], set: const ByteSet&) -> i64;
+extern fn find_any(s: const u8[:], set: const ByteSet&) -> i64 = "gs_find_any";
 
 // find_pair, but for its check of d.
-extern "gs_find_pair" fn byte_set_pair(s: const u8[:], a: const ByteSet&, d: i64,
-                                       b: const ByteSet&) -> i64;
+extern fn byte_set_pair(s: const u8[:], a: const ByteSet&, d: i64,
+                          b: const ByteSet&) -> i64 = "gs_find_pair";
 
 // The first i with s[i] in a and s[i + d] in b, of those with i + d < s.len;
 // -1 if none. d >= 0.

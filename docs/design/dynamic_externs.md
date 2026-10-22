@@ -100,7 +100,7 @@ extern "SDL2" {
     fn SDL_Init(flags: u32) -> i32;
     fn SDL_Quit();
     fn SDL_GetTicks64() -> u64;
-    "SDL_Delay" fn delay(ms: u32);
+    fn delay(ms: u32) = "SDL_Delay";
 }
 ```
 
@@ -108,14 +108,16 @@ The grammar gains one top-level form:
 
 ```
 externblock  := "extern" strlit "{" externmember* "}"
-externmember := strlit? "fn" declname "(" params? ")" ("->" rettypes)? ";"
+externmember := "fn" declname "(" params? ")" ("->" rettypes)? ("=" strlit)? ";"
 ```
 
-After `extern` and a string the parser sees either `fn` (the existing
-declaration, the string being its symbol) or `{` (a block, the string being
-its library). The forms are unambiguous and the block keeps the string's
-meaning inside: a member's string is its symbol, as in §7.10, and a member
-without one binds the symbol spelled like its Goose leaf name. A member
+A symbol is the string after `=` where a body would go, at the top level
+(§7.10) and inside a block alike. A string after `extern` names a library
+when `{` follows it; when `fn` follows, it is the deprecated top-level
+spelling of a symbol, still accepted with a warning, which members do not
+have. A member without one binds the symbol
+spelled like its Goose leaf name, so the Goose names stay in one column:
+`fn delay(` is what a reader or a grep looks for. A member
 takes `declname`, so a namespaced `fn gfx::init(...)` is written as it would
 be outside the block. The qualifiers an extern cannot carry today
 (`checkfree`, `simd`, `inline`, `recursive`, a body) are errors inside the
@@ -329,8 +331,8 @@ Most of a library's API fits; what does not is listed last.
 
   ```goose
   // stdlib/ffi.goose, proposed, after the feature lands
-  extern "gs_ffi_cstr"  fn cstr(p: u64, out: u8[>..]&);              // bytes at p up to a NUL
-  extern "gs_ffi_bytes" fn bytes(p: u64, n: i64, out: u8[>..]&);     // n bytes at p
+  extern fn cstr(p: u64, out: u8[>..]&) = "gs_ffi_cstr";             // bytes at p up to a NUL
+  extern fn bytes(p: u64, n: i64, out: u8[>..]&) = "gs_ffi_bytes";   // n bytes at p
   ```
 
   They copy into Goose storage, so nothing foreign is ever a Goose value

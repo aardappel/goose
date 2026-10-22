@@ -5,8 +5,8 @@ import std;
 import os;
 import base64;
 
-extern "goose_notify_start" fn notify_start(variant: const u8[:]);
-extern "goose_notify_stop" fn notify_stop();
+extern fn notify_start(variant: const u8[:]) = "goose_notify_start";
+extern fn notify_stop() = "goose_notify_stop";
 
 let STR_SIZE = 131072;
 let TRIES = 8192;

@@ -8,9 +8,9 @@ namespace ffi;
 
 // The bytes at p up to its NUL, the NUL left out: a C string. Appends
 // nothing and returns false for a null p.
-extern "gs_ffi_cstr" fn cstr(p: u64, out: u8[>..]&) -> bool;
+extern fn cstr(p: u64, out: u8[>..]&) -> bool = "gs_ffi_cstr";
 // The n bytes at p. Appends nothing and returns false for a null p.
-extern "gs_ffi_bytes" fn bytes(p: u64, n: i64, out: u8[>..]&) -> bool;
+extern fn bytes(p: u64, n: i64, out: u8[>..]&) -> bool = "gs_ffi_bytes";
 
 // The fresh-string forms: empty for a null p.
 fn cstr(p: u64) -> u8[>..] {

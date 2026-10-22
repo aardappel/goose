@@ -2848,13 +2848,18 @@ local propagation and `return from` to return across several calls.
 
 ```goose
 extern fn sqrt(x: f64) -> f64;
-extern "sqrtf" fn sqrt(x: f32) -> f32;
-extern "gs_os_read_file" fn read_file(path: u8[:], out: u8[>..]&) -> bool;
+extern fn sqrt(x: f32) -> f32 = "sqrtf";
+extern fn read_file(path: u8[:], out: u8[>..]&) -> bool = "gs_os_read_file";
 extern fn gl_vertex3(v: float3&);
 ```
 
-A declaration without a body binds a Goose signature to a C function: the
-optional string is the C symbol (default: the Goose name). It is top-level
+A declaration without a body binds a Goose signature to a C function: a
+string after `=`, where a body would go, is the C symbol (default: the
+Goose name). The older spelling with the string after `extern`,
+`extern "sqrtf" fn sqrt(x: f32) -> f32;`, is deprecated: it binds the
+same way and draws a warning naming the `= "sqrtf"` form (except in a
+package fetched from a git source, whose authors change it), and a
+declaration giving both strings is an error. It is top-level
 only, fully typed, not generic, and joins overload resolution like any
 function. A call compiles to a direct C call with no calling-convention
 extras, and a prototype is emitted from the declaration unless the runtime
@@ -2907,12 +2912,12 @@ extern "SDL2" {
     fn SDL_Init(flags: u32) -> i32;
     fn SDL_Quit();
     fn SDL_GetTicks64() -> u64;
-    "SDL_Delay" fn delay(ms: u32);
+    fn delay(ms: u32) = "SDL_Delay";
 }
 ```
 
 A member is an `extern fn` in every respect above: fully typed, not
-generic, no body, the same shapes crossing, a leading string its C symbol
+generic, no body, the same shapes crossing, a string after `=` its C symbol
 and its Goose leaf name otherwise, a `declname` so a namespaced member is
 written as it would be outside the block. A member is written without
 `extern`, since the block's covers it; `export`, `thread_fn` and the
@@ -4442,11 +4447,14 @@ generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
 fndecl      := "checkfree"? ("export" strlit? | "extern" strlit?)? "checkfree"? "simd"?
                "inline"? "recursive"? ("fn" | "thread_fn")
-               declname generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
+               declname generics? "(" params? ")" ("->" rettypes)?
+               (blockexpr | ("=" strlit)? ";")
+                                                 // "=" strlit: extern only, its C symbol
+                                                 // "extern" strlit: deprecated, the same
                                                  // checkfree at most once (§7.14)
                                                  // nested: ident only
 externblock := "extern" strlit "{" externmember* "}"   // §7.10: the library, then its functions
-externmember := strlit? "fn" declname "(" params? ")" ("->" rettypes)? ";"
+externmember := "fn" declname "(" params? ")" ("->" rettypes)? ("=" strlit)? ";"
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type ("=" expr)?)?
                                                  // untyped => generic; defaults

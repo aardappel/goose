@@ -11,10 +11,10 @@ def check_extern_types(exe, cc, base, *, jit, runtime, extra=()):
     tc.write_text(base / "adapter.goose", '''
 struct Input { values: i16[2] }
 struct Result { value: i32 }
-extern "native_sum" fn sum(values: const f32[:]) -> f32;
-extern "native_input" fn input(value: const Input&) -> i32;
-extern "native_result" fn result() -> Result;
-extern "native_missing" fn missing(values: const f64[:]);
+extern fn sum(values: const f32[:]) -> f32 = "native_sum";
+extern fn input(value: const Input&) -> i32 = "native_input";
+extern fn result() -> Result = "native_result";
+extern fn missing(values: const f64[:]) = "native_missing";
 ''')
     header = base / "adapter.h"
     tc.write_text(header, '''

@@ -1476,8 +1476,8 @@ fn bug_fixes() {
 }
 
 extern fn sqrt(x: f64) -> f64;
-extern "fabs" fn abs_ex(x: f64) -> f64;
-extern "gs_os_getenv" fn getenv_ex(name: const u8[:], out: u8[>..]&) -> bool;
+extern fn abs_ex(x: f64) -> f64 = "fabs";
+extern fn getenv_ex(name: const u8[:], out: u8[>..]&) -> bool = "gs_os_getenv";
 
 // extern fns (§7.10): libm through the emitted prototypes, and a
 // runtime-defined one taking a slice and a builder reference.

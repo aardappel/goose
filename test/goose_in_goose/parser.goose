@@ -433,7 +433,10 @@ recursive fn function_decl(ctx: Compiler&, nested: bool) -> i64 {
         let results = node(ctx, N_BLOCK, ctx.cursor); ctx.nodes[n].b = results;
         loop { child(ctx, results, parse_type(ctx)); if !take(ctx, ",") { break; } }
     }
-    if flags & 2 != 0 { expect(ctx, ";"); } else { ctx.nodes[n].c = parse_block(ctx); }
+    if flags & 2 != 0 {
+        if take(ctx, "=") && ctx.tokens[ctx.cursor].kind == TK_STRING { ctx.nodes[n].symbol = ctx.cursor; ctx.cursor++; }
+        expect(ctx, ";");
+    } else { ctx.nodes[n].c = parse_block(ctx); }
     ctx.current_namespace = old_namespace;
     return n;
 }

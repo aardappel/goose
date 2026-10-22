@@ -1443,7 +1443,7 @@ An `extern fn` binds a Goose signature to a C symbol. The `math` and `os`
 modules use this foreign-function interface.
 
 ```goose
-extern "cbrt" fn cube_root(x: f64) -> f64;
+extern fn cube_root(x: f64) -> f64 = "cbrt";
 extern fn hypot(x: f64, y: f64) -> f64;
 
 extern fn crc32_bytes(s: const u8[:]) -> u32;   // a slice in, a scalar out

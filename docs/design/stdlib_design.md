@@ -662,7 +662,7 @@ named like a type.
 `math` is libm, declared once per function and float width:
 
 ```goose
-extern fn sqrt(x: f64) -> f64;        extern "sqrtf" fn sqrt(x: f32) -> f32;
+extern fn sqrt(x: f64) -> f64;        extern fn sqrt(x: f32) -> f32 = "sqrtf";
 // sin cos tan asin acos atan atan2 exp log log2 log10 pow floor ceil round trunc, likewise
 let PI = 3.141592653589793;  let TAU = 6.283185307179586;
 fn radians(deg: f64) -> f64
@@ -766,8 +766,8 @@ that are not plain `assert`s (an unknown base in `format_int`).
 
 ```goose
 extern fn sqrt(x: f64) -> f64;
-extern "sqrtf" fn sqrt(x: f32) -> f32;
-extern "gs_os_read_file" fn read_file(path: u8[:], out: u8[>..]&) -> bool;
+extern fn sqrt(x: f32) -> f32 = "sqrtf";
+extern fn read_file(path: u8[:], out: u8[>..]&) -> bool = "gs_os_read_file";
 extern fn gl_vertex3(v: float3&);
 ```
 

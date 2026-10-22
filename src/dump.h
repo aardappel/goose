@@ -643,7 +643,6 @@ inline void FnDecl::Dump(string &s, int ind) const {
         // A block's member is written without `extern`, inside the block
         // Ast::Dump prints around the run of them.
         if (sf->dylib.empty()) s += "extern ";
-        if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
     }
     // A nested function takes its enclosing function's checkfree.
     if (sf->checkfree && !(sf->isnested && sf->outer && sf->outer->checkfree))
@@ -674,6 +673,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
         }
     }
     if (sf->isextern) {
+        if (sf->cname != sf->name) { s += " = \""; s += sf->cname; s += "\""; }
         s += ";";
         return;
     }

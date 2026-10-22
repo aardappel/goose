@@ -617,14 +617,23 @@ struct Parser {
         ast.topdecls.push_back(Finish(New<EnumDecl>(line, en)));
     }
 
+    // Whether this file is a package fetched into GOOSE_HOME/pkg, whose
+    // deprecated spellings are its authors' to change, not the program's:
+    // a published version keeps working on older compilers without warning.
+    bool InFetchedPackage() const {
+        if (fileidx < 0 || fileidx >= (int)ast.filepkg.size()) return false;
+        auto pkg = ast.filepkg[fileidx];
+        return pkg >= 0 && pkg < (int)ast.packages.size() && !ast.packages[pkg].cachekey.empty();
+    }
+
     // An `extern` a caller consumed before ParseFnDecl, with its string: a
-    // declaration's own (ParseTopDecl), or the library of the extern block
-    // the declaration is a member of (ParseExternBlock), where the member
-    // is written without `extern` and its own string is its symbol.
+    // declaration's own in the deprecated spelling (ParseTopDecl), or the
+    // library of the extern block the declaration is a member of
+    // (ParseExternBlock), where the member is written without `extern`.
     struct ExternPrefix {
         Line line;
         string_view doc;    // The documentation above the declaration (Lexer::doc).
-        string cname;       // The symbol, or empty for the Goose name.
+        string cname;       // The deprecated `extern "sym" fn`'s symbol, or empty.
         string dylib;       // The block's library; empty outside a block.
     };
 
@@ -669,12 +678,14 @@ struct Parser {
             sf->isextern = true;
             sf->cname = pre->cname;
             sf->dylib = pre->dylib;
-            // A member's symbol comes first: `"SDL_Delay" fn delay(ms: u32);`.
-            if (inblock && lex.tok == T_STRLIT) {
-                sf->cname = lex.sval;
-                lex.Next();
-            }
+            if (inblock && lex.tok == T_STRLIT)
+                Error(cat("a member's symbol follows its signature: fn name(...) = \"", lex.sval,
+                          "\"; (§7.10)"));
         }
+        // `extern "sym" fn`, the symbol before the signature: deprecated
+        // for the `= "sym"` after it, and warned of once the name is known.
+        auto oldcname = pre && !inblock && !pre->cname.empty();
+        auto oldline = line;
         auto checkfree = false;
         if (AtCheckfree()) {
             checkfree = true;
@@ -698,9 +709,11 @@ struct Parser {
             if (sf->isextern) Error("extern repeated in a function declaration");
             sf->isextern = true;
             if (nested) Error("extern fn must be declared at top level");
+            oldline = CurLine();
             lex.Next();
             if (lex.tok == T_STRLIT) {
                 sf->cname = lex.sval;
+                oldcname = true;
                 lex.Next();
             }
         }
@@ -786,8 +799,25 @@ struct Parser {
                 }
             }
             if (sf->isextern) {
+                // The symbol where a body would go: `fn delay(ms: u32) = "SDL_Delay";`.
+                if (IsNext(T_ASSIGN)) {
+                    if (lex.tok != T_STRLIT)
+                        Error("an extern fn's symbol is a string: fn name(...) = \"symbol\"; (§7.10)");
+                    if (oldcname)
+                        Error(cat("extern fn ", sf->name, " names its symbol twice, as \"", sf->cname,
+                                  "\" and \"", lex.sval, "\": write only = \"", lex.sval, "\""));
+                    sf->cname = lex.sval;
+                    lex.Next();
+                } else if (oldcname && !InFetchedPackage()) {
+                    ast.Warn(LocOf(oldline),
+                             cat("extern \"", sf->cname, "\" fn is deprecated: write the symbol after "
+                                 "the signature, extern fn ", sf->name, "(...) = \"", sf->cname,
+                                 "\"; (§7.10)"));
+                }
                 if (sf->cname.empty()) sf->cname = string(sf->name);
                 Expect(T_SEMI, "extern declaration");
+            } else if (lex.tok == T_ASSIGN) {
+                Error("only an extern fn takes a symbol after its signature: = \"symbol\" (§7.10)");
             } else if (kept && lex.tok != T_LCURLY) {
                 // A missing body is the header's error.
                 Expect(T_LCURLY, "function body");

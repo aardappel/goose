@@ -11,7 +11,7 @@ recursive fn pick_twin(dist: i32[:], i: i64) -> i32 {
 }
 
 // The wrapper, called the way C calls it.
-extern "c_pick" fn c_pick(dist: i32[:], i: i64) -> i32;
+extern fn c_pick(dist: i32[:], i: i64) -> i32 = "c_pick";
 
 fn main() {
     var d: i32[>..] = [];

@@ -150,12 +150,32 @@ checkfree export "c_name" inline recursive fn geo::f(var a: i64, b = 0) -> i64, 
     (primitive_type)))
 
 ========================================
+Extern symbol after the signature
+========================================
+
+extern fn cube_root(x: f64) -> f64 = "cbrt";
+
+---
+
+(source_file
+  (function_declaration
+    (function_modifier)
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (primitive_type)))
+    (primitive_type)
+    (string_literal
+      (string_content))))
+
+========================================
 Extern block
 ========================================
 
 extern "SDL2" {
     fn SDL_Init(flags: u32) -> i32;
-    "SDL_Delay" fn delay(ms: u32);
+    fn delay(ms: u32) = "SDL_Delay";
 }
 
 ---
@@ -172,13 +192,13 @@ extern "SDL2" {
           (primitive_type)))
       (primitive_type))
     (extern_member
-      (string_literal
-        (string_content))
       (identifier)
       (parameters
         (parameter
           (identifier)
-          (primitive_type))))))
+          (primitive_type)))
+      (string_literal
+        (string_content)))))
 
 ========================================
 Thread function

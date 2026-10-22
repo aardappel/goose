@@ -6,8 +6,8 @@ import std;
 import os;
 import json;
 
-extern "goose_notify_start" fn notify_start(variant: const u8[:]);
-extern "goose_notify_stop" fn notify_stop();
+extern fn notify_start(variant: const u8[:]) = "goose_notify_start";
+extern fn notify_stop() = "goose_notify_stop";
 
 struct Coordinate { x: f64, y: f64, z: f64 }
 
