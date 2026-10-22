@@ -571,7 +571,18 @@ GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *bin
 #ifdef _WIN32
         sl_u8 utf8 = { (uint8_t *)spelling, (int64_t)strlen(spelling) };
         wchar_t wide[GS_OS_PATH_MAX];
-        HMODULE h = gs_os_native(utf8, wide) < 0 ? NULL : LoadLibraryW(wide);
+        HMODULE h = NULL;
+        if (gs_os_native(utf8, wide) >= 0) {
+            /* A path, the resource directory's or an absolute one: the
+               libraries it depends on are looked for beside it first, as
+               a library shipped with its dependencies under lib/ needs.
+               That search wants backslashes. A bare name keeps the
+               loader's own search. */
+            int path = 0;
+            for (wchar_t *c = wide; *c; c++)
+                if (*c == L'/' || *c == L'\\') { *c = L'\\'; path = 1; }
+            h = path ? LoadLibraryExW(wide, NULL, LOAD_WITH_ALTERED_SEARCH_PATH) : LoadLibraryW(wide);
+        }
         if (!h) {
             snprintf(msg, sizeof msg, "cannot load %s (%s): Windows error %u", libs[l].name,
                      spelling, (unsigned)GetLastError());
