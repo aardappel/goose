@@ -637,7 +637,7 @@ inline void DumpFields(string &s, const vector<Field> &fields, int ind) {
 inline void FnDecl::Dump(string &s, int ind) const {
     if (sf->isexport) {
         s += "export ";
-        if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
+        if (sf->cname != sf->name) { EscapeString(s, sf->cname, '"'); s += " "; }
     }
     if (sf->isextern) {
         // A block's member is written without `extern`, inside the block
@@ -673,7 +673,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
         }
     }
     if (sf->isextern) {
-        if (sf->cname != sf->name) { s += " = \""; s += sf->cname; s += "\""; }
+        if (sf->cname != sf->name) { s += " = "; EscapeString(s, sf->cname, '"'); }
         s += ";";
         return;
     }
@@ -728,7 +728,9 @@ inline void Ast::Dump(string &s) const {
             openlib.clear();
         }
         if (!lib.empty() && openlib.empty()) {
-            Append(s, "extern \"", lib, "\" {\n");
+            s += "extern ";
+            EscapeString(s, lib, '"');
+            s += " {\n";
             openlib = lib;
         }
         if (!openlib.empty()) s += "    ";
