@@ -301,10 +301,12 @@ class CC:
             argv += [f"/Fe:{out}", f"/Fo:{obj}"]
         else:
             argv += ["-o", str(out)]
-            # The runtime uses threads and libm; on Windows both live in the
-            # CRT the driver links anyway, and asking for them by name fails.
+            # The runtime uses threads and libm, and dlopen for dynamic
+            # externs, in libdl on Linux before glibc 2.34 (Builder::SystemLibs);
+            # on Windows all live in the CRT the driver links anyway, and
+            # asking for them by name fails.
             if not IS_WINDOWS:
-                argv += ["-pthread", "-lm"]
+                argv += ["-pthread", "-lm"] + (["-ldl"] if sys.platform.startswith("linux") else [])
         r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         output = (r.stdout or "") + (r.stderr or "")
         if log:

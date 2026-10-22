@@ -43,6 +43,9 @@ sys.path.insert(0, str(REPO / "scripts"))
 import toolchain as tc  # noqa: E402
 
 IS_WINDOWS = os.name == "nt"
+# What a program's runtime links besides libm and threads: dlopen, in libdl on
+# Linux before glibc 2.34.
+GOOSE_LIBS = ["-ldl"] if sys.platform.startswith("linux") else []
 EXE = ".exe" if IS_WINDOWS else ""
 LANGS = ["goose", "rust", "c", "cpp"]
 
@@ -157,7 +160,7 @@ def build_goose(problem, src, args):
     if not ok:
         return False, out
     return run([cc, *GOOSE_CFLAGS, *args.cflags.split(), cfile, "-o", exe] +
-               ([] if IS_WINDOWS else ["-lm", "-pthread"]))
+               ([] if IS_WINDOWS else ["-lm", "-pthread"] + GOOSE_LIBS))
 
 
 def build_c(lang, problem, src, args):

@@ -41,6 +41,9 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 BUILD = HERE / "build"
 IS_WINDOWS = os.name == "nt"
+# What a program's runtime links besides libm and threads: dlopen, in libdl on
+# Linux before glibc 2.34.
+GOOSE_LIBS = ["-ldl"] if sys.platform.startswith("linux") else []
 EXE = ".exe" if IS_WINDOWS else ""
 
 LANGS = ["goose", "c", "cpp", "rust"]
@@ -146,7 +149,7 @@ def build_goose(bench, native, compiler=None, tag=None, goose_flags=("-O2",)):
     cfile = out / f"{bench}.c"
     run([compiler or goose_exe(), *goose_flags, "--standalone", "-o", cfile, HERE / bench / "goose" / "run.goose"])
     flags = C_FLAGS + (["-march=native"] if native else [])
-    run([cc, *flags, cfile, "-o", out / (bench + EXE)] + ([] if IS_WINDOWS else ["-lm", "-pthread"]))
+    run([cc, *flags, cfile, "-o", out / (bench + EXE)] + ([] if IS_WINDOWS else ["-lm", "-pthread"] + GOOSE_LIBS))
 
 
 def build_c(bench, native):

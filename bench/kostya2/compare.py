@@ -46,6 +46,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 IS_WINDOWS = os.name == "nt"
+# What a program's runtime links besides libm and threads: dlopen, in libdl on
+# Linux before glibc 2.34.
+GOOSE_LIBS = ["-ldl"] if sys.platform.startswith("linux") else []
 EXE = ".exe" if IS_WINDOWS else ""
 
 
@@ -173,7 +176,7 @@ def build_goose(args):
         c = out / f"{name}.c"
         sh([goose, "-O2", "--standalone", "--include", HERE / "common" / "notify.h", "-o", c, HERE / src], env=env)
         sh([tool("clang"), *cflags(), "-std=c23", "-o", out / (name + EXE), c, *notify] +
-           ([] if IS_WINDOWS else ["-lm", "-pthread"]))
+           ([] if IS_WINDOWS else ["-lm", "-pthread"] + GOOSE_LIBS))
         print(f"goose: {name}")
 
 

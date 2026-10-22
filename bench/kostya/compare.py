@@ -39,6 +39,9 @@ REPO = HERE.parent.parent
 BUILD = HERE / "build"
 GOOSE_SRC = HERE / "goose"
 IS_WINDOWS = os.name == "nt"
+# What a program's runtime links besides libm and threads: dlopen, in libdl on
+# Linux before glibc 2.34.
+GOOSE_LIBS = ["-ldl"] if sys.platform.startswith("linux") else []
 EXE = ".exe" if IS_WINDOWS else ""
 
 LANGS = ["goose", "rust", "cpp"]
@@ -117,7 +120,7 @@ def build_goose(extra_goose=(), extra_cflags=(), tag="goose", entry="main.goose"
     run([compiler or goose_exe(), *GOOSE_FLAGS, *extra_goose, "--standalone", "-o", cfile, Path(src or GOOSE_SRC / "src") / entry])
     t1 = time.time()
     exe = out / ("benchmark" + EXE)
-    run([cc, *GOOSE_CFLAGS, *extra_cflags, cfile, "-o", exe] + ([] if IS_WINDOWS else ["-lm", "-pthread"]))
+    run([cc, *GOOSE_CFLAGS, *extra_cflags, cfile, "-o", exe] + ([] if IS_WINDOWS else ["-lm", "-pthread"] + GOOSE_LIBS))
     print(f"goose: {exe} (goose {t1 - t0:.1f}s, clang {time.time() - t1:.1f}s)")
     return exe
 
