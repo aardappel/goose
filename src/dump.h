@@ -84,6 +84,7 @@ inline void TypeExpr::Dump(string &s, size_t limit) const {
             break;
         case TY_FLT:  s += FltStorageName(fltstorage); break;
         case TY_BOOL: s += "bool"; break;
+        case TY_NATIVE: s += NativeName(nativekind); break;
         case TY_STRUCT: s += struc->st->qname; ArgsDump(struc->args); break;
         case TY_ENUM:
             s += enu->en->qname;

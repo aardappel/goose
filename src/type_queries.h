@@ -31,7 +31,7 @@ private:
             return true;
         };
         switch (t->kind) {
-            case TY_INT: case TY_FLT: case TY_BOOL: case TY_VOID: return true;
+            case TY_INT: case TY_FLT: case TY_BOOL: case TY_VOID: case TY_NATIVE: return true;
             case TY_SLICE: return Visit(t->sub, seen);
             case TY_REF:
                 return (t->ref->poolname.empty() || t->ref->pool) && Visit(t->ref->sub, seen);

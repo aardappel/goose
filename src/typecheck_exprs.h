@@ -1871,6 +1871,9 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
     if (b->op == T_EQ || b->op == T_NEQ) {
         Val v;
         v.type = ast.booltype;
+        if (Reaches(lt, [](TypeExpr *t) { return t->kind == TY_NATIVE; }) ||
+            Reaches(rt, [](TypeExpr *t) { return t->kind == TY_NATIVE; }))
+            Error(b, "native capabilities cannot be compared");
         // null tests: the other side must be an optional (an already
         // narrowed optional variable still counts).
         if (lv.isnull || rv.isnull) {

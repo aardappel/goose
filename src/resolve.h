@@ -62,7 +62,15 @@ inline void ResolveTypeNames(Ast &ast) {
     for (auto t : ast.alltypes) {
         if (t->kind != TY_UNRESOLVED) continue;
         auto nm = t->named;
-        if (auto s = ast.LookupStruct(nm->name, nm->ns)) {
+        int native = -1;
+        for (int k = NK_OWNER; k <= NK_ATOMIC_U64; k++)
+            if (nm->name == NativeName(k)) native = k;
+        if (native >= 0) {
+            if (!nm->args.empty() || nm->varmode)
+                ErrorAt(t, nm, "native capabilities take no type arguments or variable mode");
+            t->kind = TY_NATIVE;
+            t->nativekind = (NativeKind)native;
+        } else if (auto s = ast.LookupStruct(nm->name, nm->ns)) {
             if (nm->varmode)
                 ErrorAt(t, nm, cat("struct ", nm->name,
                                    " has no variable mode (.. applies to enums)"));

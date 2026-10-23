@@ -3749,7 +3749,7 @@ inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
             Error(l, cat("thread_fn ", sf->name, " needs fully typed parameters"));
         auto t = Subst(p.type);
         ValidateType(t, sf->line, VT_PARAM);
-        if (!IsFlat(t))
+        if (!IsFlat(t) && !IsSharedSendable(t))
             Error(l, cat("thread_fn parameters must be flat (§11.2), not ", TypeStr(t)));
         spec->argtypes.push_back(t);
     }
