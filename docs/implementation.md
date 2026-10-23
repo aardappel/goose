@@ -4936,6 +4936,18 @@ that key reads the locals (`UseFieldView`), whichever alias spells it. For
 a `for` over an array with `fixedlen`, the elements pointer and length are
 likewise read once when the length is a memory load.
 
+**Fields.** A scalar field that a loop reads through a reference it does
+not rebind, and never stores to, is read into a local before the loop
+(`CacheFieldReads`). The C compiler cannot do this itself: a call anywhere
+in the loop, however rarely it runs, or a store of the field's type might
+change the field, so it loads the field at every use. A Goose store changes
+only memory of its own type (spec §0), so only three kinds of store can
+change the field: one to that field by any path, one of a whole value
+holding the struct, and one of the field's type through a reference. The
+local is read again after a call whose callee, or anything it calls, may
+make such a store (`SpecStores`), and after a call into code Goose cannot
+see, such as an extern. A field the loop stores to stays in memory.
+
 **Tops.** A stack the function can name keeps its top in a local where the
 function grows it, synchronized with memory only where something else can
 observe it: flushed before and reloaded after calls that can reach the stack,

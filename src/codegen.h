@@ -1138,10 +1138,18 @@ struct CodeGen {
     // the watermarks of declarations it ran past, so the continue label
     // sits after the fallthrough restores rather than sharing them.
 
+    // A field path from a reference variable: the variable it stands for
+    // (FieldReadRoot) and the field indices.
+    using FieldKey = pair<const VarDef *, vector<int>>;
+
     // A Goose loop's scope, open around the C loop or loops that run its body
-    // (OpenLoop to CloseLoop): its index and top-caching region, and the
-    // divisors fixed for it.
-    struct OpenedLoop { int si = -1, loopid = -1; vector<string> divisors; };
+    // (OpenLoop to CloseLoop): its index and top-caching region, the
+    // divisors fixed for it and the fields it reads into locals.
+    struct OpenedLoop {
+        int si = -1, loopid = -1;
+        vector<string> divisors;
+        vector<FieldKey> fieldreads;
+    };
     OpenedLoop OpenLoop(Block *bodyb, Node *cond, const vector<const VarDef *> &binders,
                         const Dst &d);
     void CloseLoop(const OpenedLoop &lp);
@@ -1177,6 +1185,44 @@ struct CodeGen {
     string DivisorValue(Node *n, string &ok);
     const set<const VarDef *> &RefdLocals();
     vector<string> HoistDivisors(Block *loopbody, Node *cond, const vector<const VarDef *> &binders);
+
+    // The fields loops being emitted keep in locals (CacheFieldReads): the
+    // local, the field's location and type for reading it again, and the
+    // struct holding each field on its path. `fieldbound` maps a reference
+    // bound to another variable, such as an inlined callee's parameter, to it.
+    struct FieldRead {
+        string local;
+        Loc lv;
+        TypeExpr *t;
+        Line line;
+        vector<SStruct *> structs;
+    };
+    map<FieldKey, FieldRead> fieldreads;
+    unordered_map<const VarDef *, const VarDef *> fieldbound;
+    // The stores some code may make (NoteStore): the variables and struct
+    // fields stored to, the types stored, and those stored through a
+    // reference; `all` when unknown. SpecStores keeps them per callee,
+    // including what it calls.
+    struct FieldStores {
+        set<const VarDef *> vars;
+        set<pair<const SStruct *, int>> fields;
+        set<TypeExpr *> types, pointees;
+        bool all = false;
+    };
+    map<FnSpec *, FieldStores> specstores;
+    static bool SyncsThreads(int builtin);
+    void NoteStore(Node *n, FieldStores &st);
+    void NoteStores(Node *n, FieldStores &st, bool callees);
+    const FieldStores &SpecStores(FnSpec *sp);
+    bool StoresTo(const FieldStores &st, const FieldKey &key, const vector<SStruct *> &sts,
+                  TypeExpr *ft);
+    const VarDef *FieldReadRoot(const VarDef *vd);
+    bool FieldReadKey(Dot *d, FieldKey &key, vector<SStruct *> *structs = nullptr);
+    static bool HoldsStruct(TypeExpr *t, const SStruct *st, int depth = 0);
+    vector<FieldKey> CacheFieldReads(Block *loopbody, Node *cond,
+                                     const vector<const VarDef *> &binders);
+    string CachedFieldRead(Dot *d);
+    void ReloadFieldReads(FnSpec *callee = nullptr);
     void GenBreakPath(Node *val);
 
     // Loops run in blocks of iterations (ForLoop::stripk, ForLoop::sumred):

@@ -282,6 +282,8 @@ inline string Dot::CgX(CodeGen &cg) {
         auto v = cg.ArrayView(lv);
         return cat("(", v.len, ")");
     }
+    if (!cg.fieldreads.empty())
+        if (auto x = cg.CachedFieldRead(this); !x.empty()) return x;
     auto lv = cg.GenLoc(this);
     return cg.LoadLoc(lv, exprtype, line);
 }

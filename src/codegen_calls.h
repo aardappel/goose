@@ -59,7 +59,11 @@ inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
             return rets;
         }
     }
-    if (c->builtin >= 0) return EmitBuiltin(c, d0);
+    if (c->builtin >= 0) {
+        auto rets = EmitBuiltin(c, d0);
+        if (SyncsThreads(c->builtin)) ReloadFieldReads();
+        return rets;
+    }
     if (c->fvbody) return EmitFvCall(c, d0);
     if (!c->dispatch.empty()) return EmitDispatch(c, d0, alldst);
     assert(c->spec);
@@ -123,6 +127,7 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
         rets.push_back(r0);
     }
     if (grows) MarkReload();
+    ReloadFieldReads();
     return rets;
 }
 
@@ -370,6 +375,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
         L(callee, "(", argstr, ");");
     }
     MarkReload(reach);
+    ReloadFieldReads(sp);
     // Checked before the result is fixed up: a call that unwound left none,
     // and a value in flight to a target may sit behind its reserved prefix,
     // where a fixup would move it from where the target's catch finds it.
@@ -743,6 +749,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         if (ki.cret >= 0) L(retex[ki.cret], " = ", ki.cname, "(", argstr, ");");
         else L(ki.cname, "(", argstr, ");");
         MarkReload(reach);
+        ReloadFieldReads(sp);
         if (ki.hasrf) EmitRfCheck(sp);
         PopSc();
         ind--;

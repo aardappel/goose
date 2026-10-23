@@ -1754,6 +1754,29 @@ def main():
         else:
             r.ok(f"member stores {f.name}")
     r.show_task(member_stores)
+    # A field a loop reads through a reference and never stores to is read
+    # into a local ahead of it, and again only after the call that stores to
+    # it (CacheFieldReads, SpecStores).
+    def field_reads():
+        f = HERE / "codegen" / "field_reads.goose"
+        cfile = gendir / "field_reads-c.c"
+        code, out, err = r.goose("-O0", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"field reads {f.name}", out + err)
+            return
+        body = re.search(r"^static int64_t rare_call_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
+                         cfile.read_text(), re.MULTILINE | re.DOTALL)
+        lines = body[1].splitlines() if body else []
+        reads = [i for i, l in enumerate(lines) if "(*c_g).limit_g" in l]
+        steps = [l for l in lines if "(*c_g).step_g" in l]
+        ok = (len(reads) > 1 and re.fullmatch(r"\s*int64_t t\d+ = \(\*c_g\)\.limit_g;",
+                                               lines[reads[0]])
+              and all("bump_g(" in lines[i - 1] for i in reads[1:]) and len(steps) == 1)
+        if not ok:
+            r.fail(f"field reads {f.name}", body[1] if body else "no rare_call in the C")
+        else:
+            r.ok(f"field reads {f.name}")
+    r.show_task(field_reads)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.

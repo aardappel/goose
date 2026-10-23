@@ -63,6 +63,7 @@ inline CodeGen::OpenedLoop CodeGen::OpenLoop(Block *bodyb, Node *cond,
                                              const Dst &d) {
     OpenedLoop lp;
     lp.divisors = HoistDivisors(bodyb, cond, binders);
+    lp.fieldreads = CacheFieldReads(bodyb, cond, binders);
     PushSc(SC_LOOP);
     lp.si = (int)cscopes.size() - 1;
     cscopes[lp.si].brklbl = Lbl();
@@ -83,6 +84,7 @@ inline void CodeGen::CloseLoop(const OpenedLoop &lp) {
     if (usedbrk) L(brklbl, ":;");
     MarkLoopEnd(lp.loopid);
     for (auto &k : lp.divisors) divmagic.erase(k);
+    for (auto &k : lp.fieldreads) fieldreads.erase(k);
     termjump = false;
 }
 
@@ -410,6 +412,284 @@ inline vector<string> CodeGen::HoistDivisors(Block *loopbody, Node *cond,
         added.push_back(key);
     }
     return added;
+}
+
+// The variable a reference names the storage of: one bound to just another
+// variable stands for it (fieldbound), an alias for its target (refalias).
+inline const VarDef *CodeGen::FieldReadRoot(const VarDef *vd) {
+    for (auto guard = 0; guard < 16; guard++) {
+        if (auto it = fieldbound.find(vd); it != fieldbound.end()) vd = it->second;
+        else if (auto at = refalias.find(vd); at != refalias.end() && !aliaspath.count(vd))
+            vd = at->second;
+        else break;
+    }
+    return vd;
+}
+
+// Whether d reads a scalar field through a plain reference variable, by
+// fields held by value. Sets `key`, and `structs` to the struct holding each
+// field on the path.
+inline bool CodeGen::FieldReadKey(Dot *d, FieldKey &key, vector<SStruct *> *structs) {
+    auto declared = [](Dot *dd) -> TypeExpr * {
+        auto t = dd->obj->exprtype;
+        if (t && t->kind == TY_REF) t = t->ref->sub;
+        if (!t || t->kind != TY_STRUCT || dd->fieldidx < 0) return nullptr;
+        auto inst = t->struc->inst;
+        return inst ? inst->ftypes[dd->fieldidx] : t->struc->st->fields[dd->fieldidx].type;
+    };
+    auto ft = declared(d);
+    if (!d->IsField() || !ft || fillvalues.count(d)) return false;
+    if (!(ft->kind == TY_INT && ft->intstorage != IS_VARINT) && ft->kind != TY_FLT &&
+        ft->kind != TY_BOOL)
+        return false;
+    vector<int> path;
+    vector<SStruct *> sts;
+    Node *cur = d;
+    while (auto dd = Is<Dot>(cur)) {
+        auto ot = dd->obj->exprtype;
+        if (!dd->IsField() || !ot) return false;
+        auto st = ot->kind == TY_REF ? ot->ref->sub : ot;
+        if (st->kind != TY_STRUCT) return false;
+        // A field on the way holds a struct by value, not a reference to one.
+        if (dd != d && (!declared(dd) || declared(dd)->kind != TY_STRUCT)) return false;
+        path.push_back(dd->fieldidx);
+        sts.push_back(st->struc->st);
+        cur = dd->obj;
+        if (ot->kind == TY_REF) break;
+    }
+    auto id = Is<Ident>(cur);
+    if (!id || !id->vdef) return false;
+    auto root = FieldReadRoot(id->vdef);
+    if (!root->type || !IsPlainRef(root->type) || root->type->ref->sub->kind != TY_STRUCT)
+        return false;
+    std::reverse(path.begin(), path.end());
+    std::reverse(sts.begin(), sts.end());
+    key = { root, path };
+    if (structs) *structs = sts;
+    return true;
+}
+
+// Whether a store of a t can overwrite fields of struct st. An ADT's payload
+// or a generic type may.
+inline bool CodeGen::HoldsStruct(TypeExpr *t, const SStruct *st, int depth) {
+    if (!t || depth > 16) return true;
+    switch (t->kind) {
+        case TY_INT: case TY_FLT: case TY_BOOL: case TY_FN: case TY_REF: case TY_SLICE:
+            return false;
+        case TY_ARRAY:
+            return HoldsStruct(t->arr->sub, st, depth + 1);
+        case TY_STRUCT: {
+            if (t->struc->st == st) return true;
+            auto inst = t->struc->inst;
+            auto &fields = t->struc->st->fields;
+            for (size_t i = 0; i < fields.size(); i++) {
+                auto ft = inst ? inst->ftypes[i] : fields[i].type;
+                if (ft && HoldsStruct(ft, st, depth + 1)) return true;
+            }
+            return false;
+        }
+        case TY_ENUM:
+            for (auto &v : t->enu->en->variants)
+                if (!v.fields.empty()) return true;
+            return false;
+        default:
+            return true;
+    }
+}
+
+// Notes what a store to the place n may change: its variable, the field it
+// names, and its declared type (the pointee, for a reference).
+inline void CodeGen::NoteStore(Node *n, FieldStores &st) {
+    TypeExpr *t = nullptr;
+    if (auto id = Is<Ident>(n); id && id->vdef) {
+        st.vars.insert(id->vdef);
+        t = id->vdef->type;
+    } else if (auto d = Is<Dot>(n); d && d->IsField()) {
+        auto ot = d->obj->exprtype;
+        if (ot && ot->kind == TY_REF) ot = ot->ref->sub;
+        if (ot && ot->kind == TY_STRUCT) {
+            st.fields.insert({ ot->struc->st, d->fieldidx });
+            auto inst = ot->struc->inst;
+            t = inst ? inst->ftypes[d->fieldidx] : ot->struc->st->fields[d->fieldidx].type;
+        }
+    } else if (Is<Index>(n) || Is<SliceExpr>(n)) {
+        auto ot = (Is<Index>(n) ? Is<Index>(n)->obj : Is<SliceExpr>(n)->obj)->exprtype;
+        if (ot && ot->kind == TY_REF) ot = ot->ref->sub;
+        if (ot && ot->kind == TY_ARRAY) t = ot->arr->sub;
+        else if (ot && ot->kind == TY_SLICE) t = ot->sub;
+    }
+    if (!t) {
+        st.all = true;
+        return;
+    }
+    if (t->kind == TY_REF) {
+        t = t->ref->sub;
+        st.pointees.insert(t);
+    }
+    st.types.insert(t);
+}
+
+// Whether a builtin synchronizes with another thread, which may have stored
+// to anything.
+inline bool CodeGen::SyncsThreads(int builtin) {
+    switch (builtin) {
+        case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: case B_THREAD_WAIT:
+        case B_QPUT: case B_QGET: case B_QPOLL: case B_QLIMIT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Notes the stores n makes: assignments, builtins writing an argument, and,
+// with `callees`, what the calls it makes may store.
+inline void CodeGen::NoteStores(Node *n, FieldStores &st, bool callees) {
+    if (auto a = Is<Assign>(n)) NoteStore(a->lval, st);
+    if (auto a = Is<IncDec>(n)) NoteStore(a->lval, st);
+    auto c = Is<Call>(n);
+    if (!c) return;
+    if (c->builtin >= 0) {
+        auto fl = BuiltinByKind(c->builtin).flags;
+        if (fl & BF_WRITE) NoteStore(c->FirstArg(), st);
+        if ((fl & BF_OUTARG) && c->args.size() > 1) NoteStore(c->args[1], st);
+    }
+    if (!callees) return;
+    auto merge = [&](FnSpec *sp) {
+        auto &o = SpecStores(sp);
+        st.all = st.all || o.all;
+        st.vars.insert(o.vars.begin(), o.vars.end());
+        st.fields.insert(o.fields.begin(), o.fields.end());
+        st.types.insert(o.types.begin(), o.types.end());
+        st.pointees.insert(o.pointees.begin(), o.pointees.end());
+    };
+    for (auto &[t, sp] : c->fmtspecs) merge(sp);
+    if (c->builtin >= 0) {
+        st.all = st.all || SyncsThreads(c->builtin);
+    } else if (!c->dispatch.empty()) {
+        for (auto sp : c->dispatch) if (sp) merge(sp);
+    } else if (c->spec) {
+        merge(c->spec);
+    } else if (!c->fvbody) {   // A function value's body is the call's child.
+        st.all = true;
+    }
+}
+
+// What a call to sp may store, through its callees too. An extern, a nested
+// function with free variables, and a call back into a function still being
+// summarized may store anything.
+inline const CodeGen::FieldStores &CodeGen::SpecStores(FnSpec *sp) {
+    if (auto it = specstores.find(sp); it != specstores.end()) return it->second;
+    specstores[sp].all = true;
+    FieldStores st;
+    auto si = sinfo.find(sp);
+    if (!sp->body || sp->sf->isextern || (si != sinfo.end() && !si->second.freevars.empty())) {
+        st.all = true;
+    } else {
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n || Is<FnDecl>(n) || Is<FunVal>(n) || st.all) return;
+            NoteStores(n, st, true);
+            RunChildren(n, walk);
+        };
+        walk(sp->body);
+    }
+    return specstores[sp] = std::move(st);
+}
+
+// Whether st may change the field at key, of type ft, whose path runs
+// through the structs `sts`: a store to the key's variable, to one of those
+// fields of its struct type, of a value that can hold one of the structs, or
+// of an ft through a reference (§6.10).
+inline bool CodeGen::StoresTo(const FieldStores &st, const FieldKey &key,
+                              const vector<SStruct *> &sts, TypeExpr *ft) {
+    if (st.all || st.vars.count(key.first)) return true;
+    for (size_t k = 0; k < sts.size(); k++) {
+        if (st.fields.count({ sts[k], key.second[k] })) return true;
+        for (auto t : st.types) if (HoldsStruct(t, sts[k])) return true;
+    }
+    for (auto t : st.pointees) if (TEq(t, ft)) return true;
+    return false;
+}
+
+// Reads into locals, ahead of a loop, the scalar fields it reads through a
+// reference bound before it and never stores to, its condition included
+// (§6.10). Reads in the loop take the local (Dot::CgX), and a call that may
+// store to the field reads it again (ReloadFieldReads). Nothing is written
+// back. Returns the fields added, for the loop to retire.
+inline vector<CodeGen::FieldKey> CodeGen::CacheFieldReads(Block *loopbody, Node *cond,
+                                                         const vector<const VarDef *> &binders) {
+    vector<FieldKey> added;
+    set<const VarDef *> inner(binders.begin(), binders.end());
+    FieldStores st;
+    vector<Dot *> reads;
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || Is<FnDecl>(n) || Is<FunVal>(n)) return;
+        if (auto vd = Is<VarDecl>(n)) {
+            for (auto d : vd->defs) inner.insert(d);
+            // A reference bound to another variable stands for it, unless
+            // either is a `var`, whose rebinding would part them.
+            auto d = vd->defs.size() == 1 && vd->inits.size() == 1 ? vd->defs[0] : nullptr;
+            auto init = d ? vd->inits[0] : nullptr;
+            if (auto u = Is<Unary>(init); u && u->op == T_BITAND) init = u->child;
+            auto id = Is<Ident>(init);
+            auto it = id && id->vdef ? id->vdef->type : nullptr;
+            if (it && it->kind == TY_REF) it = it->ref->sub;
+            if (it && !d->isvar && !id->vdef->isvar && d->type && IsPlainRef(d->type) &&
+                id->vdef != d && TEq(d->type->ref->sub, it))
+                fieldbound[d] = id->vdef;
+        }
+        NoteStores(n, st, false);
+        if (auto fl = Is<ForLoop>(n)) { inner.insert(fl->vdef); inner.insert(fl->idxdef); }
+        if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) inner.insert(arm.binder);
+        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) inner.insert(p);
+        if (auto d = Is<Dot>(n)) {
+            FieldKey k;
+            if (FieldReadKey(d, k)) reads.push_back(d);
+        }
+        RunChildren(n, walk);
+    };
+    walk(loopbody);
+    walk(cond);
+    if (st.all) return added;
+    for (auto d : reads) {
+        FieldKey key;
+        vector<SStruct *> sts;
+        if (!FieldReadKey(d, key, &sts) || fieldreads.count(key)) continue;
+        auto root = const_cast<VarDef *>(key.first);
+        if (inner.count(root)) continue;
+        if (!vnames.count(root) && !gnames.count(root) && !aliasbound.count(root)) continue;
+        auto ft = d->exprtype;
+        if (StoresTo(st, key, sts, ft)) continue;
+        auto lv = VarLoc(root);
+        if (lv.t->kind == TY_REF) DerefLoc(lv);
+        for (auto f : key.second) {
+            if (lv.t->kind != TY_STRUCT || !lv.val) break;
+            lv = FieldLocAt(lv, f);
+        }
+        if (!TEq(lv.t, ft)) continue;
+        auto local = T();
+        L(CT(ft), " ", local, " = ", LoadLoc(lv, ft, d->line), ";");
+        fieldreads[key] = { local, lv, ft, d->line, sts };
+        added.push_back(key);
+    }
+    return added;
+}
+
+// The local holding d's field (CacheFieldReads), or "" if none does.
+inline string CodeGen::CachedFieldRead(Dot *d) {
+    FieldKey key;
+    if (!FieldReadKey(d, key)) return "";
+    auto it = fieldreads.find(key);
+    return it == fieldreads.end() ? "" : it->second.local;
+}
+
+// Reads again the cached fields `callee` may store to (SpecStores), or all
+// of them when there is no callee to summarize.
+inline void CodeGen::ReloadFieldReads(FnSpec *callee) {
+    if (fieldreads.empty()) return;
+    auto st = callee ? &SpecStores(callee) : nullptr;
+    for (auto &[k, fr] : fieldreads)
+        if (!st || StoresTo(*st, k, fr.structs, fr.t))
+            L(fr.local, " = ", LoadLoc(fr.lv, fr.t, fr.line), ";");
 }
 
 inline void CodeGen::GenBreakPath(Node *val) {

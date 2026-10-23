@@ -361,6 +361,7 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     for (auto &a : args) Append(argstr, argstr.empty() ? "" : ", ", a);
     L(ki.cname, "(", argstr, ");");
     MarkReload();   // The callee grew the builder's stack.
+    ReloadFieldReads(sp);
     PopSc();
 }
 
@@ -389,6 +390,7 @@ inline void CodeGen::EmitRenderCall(Loc &out, const Loc &lv, TypeExpr *t, Line l
     auto arg = RefArg(lv, t, ln);
     L(fn, "(", r, ", ", arg, ");");
     MarkReload();
+    ReloadFieldReads();
 }
 
 // A render function's body (RenderFn): the value gs_v refers to, rendered

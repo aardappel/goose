@@ -340,6 +340,8 @@ inline void CodeGen::ResetFnState() {
     aliasbound.clear();
     views.clear();
     fieldviews.clear();
+    fieldreads.clear();
+    fieldbound.clear();
     vstk.clear();
     vpool.clear();
     poolbases.clear();
