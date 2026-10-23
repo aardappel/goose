@@ -935,6 +935,7 @@ struct TypeCheck {
         switch (a->kind) {
             case TY_INT:  return a->intstorage == b->intstorage && SameIndex(a, b);
             case TY_FLT:  return a->fltstorage == b->fltstorage;
+            case TY_NATIVE: return a->nativekind == b->nativekind;
             case TY_BOOL: case TY_VOID: case TY_FN: return true;
             case TY_STRUCT: {
                 if (a->struc->st != b->struc->st) return false;
@@ -3356,7 +3357,7 @@ struct TypeCheck {
     // bytes, which no program can tell from a copy of its own (§11.2).
     bool StaticViewsOnly(VarDef *g) {
         if (g->isvar) return false;
-        if (Reaches(g->type, [](TypeExpr *t) { return IsRelRef(t); }))
+        if (Reaches(g->type, [](TypeExpr *t) { return IsRelRef(t) || t->kind == TY_NATIVE; }))
             return false;
         auto statics = [](const Roots &r) {
             return !r.unknown && r.All([](const RootAlt &a) { return !a.root && a.exact; });

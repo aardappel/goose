@@ -22,6 +22,57 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         Error(c, cat(d.name, " takes ", (int64_t)d.minargs,
                      d.minargs == d.maxargs ? string() : cat("-", (int64_t)d.maxargs),
                      " argument(s), ", (int64_t)args.size(), " given"));
+    if (d.kind >= B_SHARED_ALLOC && d.kind <= B_MEMORY_COPY) {
+        auto captype = [&](NativeKind k) {
+            auto t = ast.NewType(TY_NATIVE, c->line); t->nativekind = k; return t;
+        };
+        auto cap = [&](size_t i, NativeKind k) {
+            auto v = CheckValue(args[i], nullptr);
+            if (v.type->kind != TY_NATIVE || v.type->nativekind != k)
+                Error(c, cat(d.name, " requires ", NativeName(k), " for argument ", i + 1));
+        };
+        auto number = [&](size_t i) { CheckArg(args[i], ast.inttypes[IS_U64]); };
+        auto result = [&](TypeExpr *t, bool ok = false) {
+            Val v; v.type = t; c->rettypes.push_back(t);
+            if (ok) {
+                Val b; b.type = ast.booltype;
+                c->rettypes.push_back(b.type); lastcallrets = {v, b};
+            }
+            return v;
+        };
+        switch (d.kind) {
+            case B_SHARED_ALLOC:
+                number(0); return result(captype(NK_OWNER), true);
+            case B_SHARED_VIEW:
+                cap(0, NK_OWNER); number(1); number(2); return result(captype(NK_VIEW));
+            case B_SHARED_CLOSE:
+                cap(0, NK_OWNER); return result(ast.booltype);
+            case B_SHARED_SIZE: {
+                auto v = CheckValue(args[0], nullptr);
+                if (v.type->kind != TY_NATIVE || v.type->nativekind > NK_ACCESS)
+                    Error(c, "shared_size requires an owner, view, or access");
+                return result(ast.inttypes[IS_U64]);
+            }
+            case B_SHARED_BORROW:
+                cap(0, NK_VIEW); return result(captype(NK_ACCESS));
+            case B_SHARED_RELEASE:
+                cap(0, NK_ACCESS); return VoidVal();
+            case B_MEMORY_READ: case B_MEMORY_WRITE: {
+                if (c->tyargs.size() != 1) Error(c, "memory scalar access needs exactly one type argument");
+                auto t = Subst(c->tyargs[0]);
+                if (!IsIntT(t) || t->ix) Error(c, "memory scalar type must be i/u8/16/32/64");
+                c->qtype = t;
+                cap(0, NK_ACCESS); number(1);
+                if (d.kind == B_MEMORY_WRITE) CheckArg(args[2], t);
+                CheckArg(args[d.kind == B_MEMORY_READ ? 2 : 3], ast.booltype);
+                return d.kind == B_MEMORY_READ ? result(t) : VoidVal();
+            }
+            case B_MEMORY_COPY:
+                cap(0, NK_ACCESS); number(1); cap(2, NK_ACCESS); number(3); number(4);
+                return VoidVal();
+            default: assert(false);
+        }
+    }
     // The fully custom builtins first.
     switch (d.kind) {
         case B_PRINT:

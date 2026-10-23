@@ -51,6 +51,40 @@ inline string CodeGen::LenCast(const Loc &lv) {
 inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
     auto an = c->ArgNodes();
     auto ln = c->line;
+    if (c->builtin >= B_SHARED_ALLOC && c->builtin <= B_MEMORY_COPY) {
+        usesthreads = true;
+        vector<string> a;
+        for (auto n : an) a.push_back(Snapshot(n->exprtype, GenPure(n)));
+        auto call = [&](const string &name, const string &params) {
+            auto t = T(); L(CT(c->rettypes[0]), " ", t, " = ", name, "(", params,
+                           ", ", LocArgs(ln), ");"); return vector<string>{t};
+        };
+        switch (c->builtin) {
+            case B_SHARED_ALLOC: {
+                auto out = T(), ok = T(); L("uint8_t ", ok, ";");
+                L("gs_shared_cap ", out, " = gs_shared_alloc(", a[0], ", &", ok, ");");
+                return {out, ok};
+            }
+            case B_SHARED_VIEW: return call("gs_shared_view", cat(a[0], ", ", a[1], ", ", a[2]));
+            case B_SHARED_CLOSE: return call("gs_shared_close", a[0]);
+            case B_SHARED_SIZE: return call("gs_shared_size", a[0]);
+            case B_SHARED_BORROW: return call("gs_shared_borrow", a[0]);
+            case B_SHARED_RELEASE:
+                L("gs_shared_release(", a[0], ", ", LocArgs(ln), ");"); return {};
+            case B_MEMORY_READ: {
+                auto t = T(); L(CT(c->qtype), " ", t, ";");
+                L("gs_shared_read(", a[0], ", ", a[1], ", &", t, ", sizeof ", t,
+                  ", ", a[2], ", ", LocArgs(ln), ");"); return {t};
+            }
+            case B_MEMORY_WRITE:
+                L("gs_shared_write(", a[0], ", ", a[1], ", &", a[2], ", sizeof ", a[2],
+                  ", ", a[3], ", ", LocArgs(ln), ");"); return {};
+            case B_MEMORY_COPY:
+                L("gs_shared_copy(", a[0], ", ", a[1], ", ", a[2], ", ", a[3], ", ", a[4],
+                  ", ", LocArgs(ln), ");"); return {};
+            default: assert(false);
+        }
+    }
     switch ((BuiltinKind)c->builtin) {
         case B_PRINT: {
             // The whole line, newline included, is rendered before any of
@@ -1128,8 +1162,15 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
     auto thunk = EnsureThreadThunk(sp);
     string stk;
     auto base = BytesTemp(stk);
+    vector<string> sharedcaps;
     for (size_t i = 0; i < sp->argtypes.size(); i++) {
         auto pt = sp->argtypes[i];
+        if (IsSharedSendable(pt)) {
+            auto cap = Snapshot(pt, GenPure(an[1 + i]));
+            sharedcaps.push_back(cap);
+            EmitValStore(stk, pt, cap);
+            continue;
+        }
         if (!IsResz(pt)) {
             GenConstruct(an[1 + i], stk, pt);
             continue;
@@ -1185,6 +1226,8 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
         L("*", szp, " = ", Top(stk), " - (uint8_t *)(", szp, " + 1);");
     }
     // Emitted here, not returned as text: a discarded result would drop the spawn.
+    for (auto &cap : sharedcaps)
+        L("gs_shared_handoff(", cap, ", ", LocArgs(c->line), ");");
     auto id = T();
     L("int64_t ", id, " = gs_thread_spawn(", thunk, ", ", base, ", ", Top(stk), " - ", base,
       c->builtin == B_THREAD_SPAWN_CONTAINED ? ", 1);" : ", 0);");

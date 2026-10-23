@@ -977,6 +977,38 @@ GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
                                const char *file, int line);
 GS_API void gs_free_msg(uint8_t *msg);
 
+/* Opaque capabilities have no user-visible fields or byte image. Stable
+   metadata slabs retain tombstones so stale values never dereference freed
+   metadata. Only live allocation leases authorize worker atomic access. */
+typedef struct { uint64_t slot, generation; } gs_shared_cap;
+#define GS_SHARED_SLAB_SIZE 256
+#define GS_SHARED_SLABS 4096
+#define GS_SHARED_MAX (GS_SHARED_SLAB_SIZE * GS_SHARED_SLABS)
+typedef struct gs_shared_record {
+    uint64_t generation, allocation, offset, size, identity;
+    uint8_t *data;
+    int64_t actor;
+    uint64_t workers;
+    int kind, readonly, filemap, orphan;
+} gs_shared_record;
+GS_API gs_shared_record *gs_shared_slabs[GS_SHARED_SLABS];
+GS_API gs_shared_cap gs_shared_alloc(uint64_t size, uint8_t *ok);
+GS_API gs_shared_cap gs_shared_view(gs_shared_cap owner, uint64_t offset, uint64_t size,
+                                    const char *file, int line);
+GS_API uint8_t gs_shared_close(gs_shared_cap owner, const char *file, int line);
+GS_API uint64_t gs_shared_size(gs_shared_cap cap, const char *file, int line);
+GS_API gs_shared_cap gs_shared_borrow(gs_shared_cap view, const char *file, int line);
+GS_API void gs_shared_release(gs_shared_cap access, const char *file, int line);
+GS_API void gs_shared_read(gs_shared_cap access, uint64_t offset, void *out, size_t size,
+                            int big, const char *file, int line);
+GS_API void gs_shared_write(gs_shared_cap access, uint64_t offset, const void *value, size_t size,
+                             int big, const char *file, int line);
+GS_API void gs_shared_copy(gs_shared_cap dst, uint64_t doff, gs_shared_cap src, uint64_t soff,
+                            uint64_t size, const char *file, int line);
+GS_API void gs_shared_handoff(gs_shared_cap cap, const char *file, int line);
+GS_API void *gs_shared_pending_take(void);
+GS_API void gs_shared_worker_cleanup(void *leases, int64_t actor);
+
 /* One queue per flat element type the program uses (the compiler emits a
    gs_queue global per type, which main sets up before anything can use it).
    Values are contiguous byte images: gs_qget, gs_qwait and gs_qpoll return a
