@@ -5730,6 +5730,12 @@ and one handed a reference to a named array syncs only that array's stack;
 one handed a struct holding a reference, or an array of them, syncs every
 cached stack.
 
+A loop loads a scalar field it reads through a reference once, before the
+loop, unless it also stores to the field (§6.10); then it loads and stores
+the field at every use. To keep such a field in a register, copy it into a
+local before the loop, store it back before any call that can reach the
+struct and after the loop, and read it again after that call.
+
 ### 9.3 Construction and copies
 
 * A nonfixed value is built at its destination (§4.3): `let x = f()`,
