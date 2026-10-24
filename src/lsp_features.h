@@ -1561,8 +1561,27 @@ inline bool InlayHints(Workspace &ws, const Json &params, JsonOut &j) {
             unknown = unknown || (IsOpaque(t) && t->named->name == "?");
             types.insert(TypeText(t));
         };
+        // An initializer the checker bound by reference, not written `&x`
+        // or `.=` (AutoRef, §4.1), in every specialization.
+        auto implicit = 0, decls = 0;
+        auto byref = [&](const Node *n) {
+            auto x = Is<VarDecl>(n);
+            if (!x || x->byref || x->inits.size() != x->names.size()) return;
+            decls++;
+            if (auto u = Is<Unary>(x->inits[i]); u && u->synth) implicit++;
+        };
         consider(occ.node);
-        if (auto it = an.clones.find(occ.node); it != an.clones.end()) for (auto c : it->second) consider(c);
+        if (auto it = an.clones.find(occ.node); it != an.clones.end())
+            for (auto c : it->second) {
+                consider(c);
+                if (!an.FromExemplar(c)) byref(c);
+            }
+        if (!decls) byref(occ.node);
+        if (decls && implicit == decls) {
+            auto start = StartOf(f, vd->inits[i]);
+            if (start >= 0 && (size_t)start >= from && (size_t)start <= to)
+                WriteInlayHint(j, f.text, (size_t)start, "ref", IH_TYPE, true);
+        }
         if (types.size() != 1 || unknown) continue;
         WriteInlayHint(j, f.text, occ.start + occ.len, cat(": ", *types.begin()), IH_TYPE, false);
     }
