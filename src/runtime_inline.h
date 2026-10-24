@@ -235,7 +235,8 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
    BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4); both take
+   PCLMULQDQ too, which every CPU with AVX2 has. The versions
    are built by clang on x86-64, through its target attribute and inline
    assembly for cpuid; the contraction pragma above keeps their float
    results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
@@ -249,10 +250,14 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #undef GS_SIMD
 #define GS_SIMD 0
 #endif
+/* The level of the version being compiled: each version's body sets it
+   (EmitSimdVersions), so that a runtime function can take an instruction
+   only that version's target allows (std's clmul). */
+#define GS_SIMD_CUR 0
 #if GS_SIMD >= 1
-#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt,pclmul")))
 #define GS_SIMD_TARGET2 \
-    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt,pclmul")))
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -265,8 +270,9 @@ static inline int gs_simd_detect(void) {
     gs_cpuid(0, r);
     if (r[0] < 7) return 0;
     gs_cpuid(1, r);
-    /* OSXSAVE, AVX, POPCNT. */
-    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    /* OSXSAVE, AVX, POPCNT, PCLMULQDQ. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23 | 1u << 1)) != (1u << 27 | 1u << 28 | 1u << 23 | 1u << 1))
+        return 0;
     __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
     (void)xhi;
     if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
@@ -349,15 +355,15 @@ static uint32_t gs_ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v;
 static uint64_t gs_ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v; }
 #endif
 
-/* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
+)GSRT"
+R"GSRT(/* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
    bytes of a little-endian load lie within a length. */
 static uint64_t gs_bytemask(int64_t k) {
     return k >= 8 ? ~(uint64_t)0 : k <= 0 ? 0 : ((uint64_t)1 << (k * 8)) - 1;
 }
 
 /* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
-)GSRT"
-R"GSRT(   pointer is NULL where the slice was zero-filled (default<T>(), a default
+   pointer is NULL where the slice was zero-filled (default<T>(), a default
    element), and C leaves all three undefined on a null pointer even for
    zero bytes. A copy of up to 16 bytes loads both overlapping halves before
    it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
@@ -516,15 +522,15 @@ static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a * (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
+)GSRT"
+R"GSRT(    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_neg_##SFX(T a, const char *file, int line) { \
     int64_t r = -(int64_t)a; \
     if (r < MIN || r > MAX) gs_ovf_neg(a, #SFX, file, line); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
-)GSRT"
-R"GSRT(    return (T)((uint64_t)a << (n & (BITS - 1))); } \
+    return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
     return (T)((int64_t)a >> (n & (BITS - 1))); }
 
@@ -702,7 +708,8 @@ static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
 #endif
 }
 
-static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
+)GSRT"
+R"GSRT(static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
 #if GS_HAVE_U128
     uint64_t q;
     if (!magic) return x >> more;
@@ -711,8 +718,7 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
     return q >> more;
 #else
     (void)magic;
-)GSRT"
-R"GSRT(    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
+    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
 #endif
 }
 
@@ -881,13 +887,13 @@ GS_API int64_t gs_hardware_threads(void);
    abort ends run early. */
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
-                               const void *args, int64_t argsize, int contained);
+)GSRT"
+R"GSRT(                               const void *args, int64_t argsize, int contained);
 /* Whether the worker returned rather than aborted, once it has ended. Where
    `msg` is not NULL, the first such wait for a worker that aborted takes its
    message: `msg` and `len` are set to it, which the caller frees with
    gs_free_msg, or to NULL and no bytes. */
-)GSRT"
-R"GSRT(GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
                                const char *file, int line);
 GS_API void gs_free_msg(uint8_t *msg);
 
@@ -1077,7 +1083,8 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
-static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+)GSRT"
+R"GSRT(static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
@@ -1087,8 +1094,7 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
         v |= (uint64_t)(b & 0x7f) << shift;
-)GSRT"
-R"GSRT(        if (!(b & 0x80)) {
+        if (!(b & 0x80)) {
             if (shift && !b) return 0;  /* Redundant high zero group. */
             break;
         }
@@ -3599,6 +3605,130 @@ static int64_t gs_ctz(uint64_t x) {
 #endif
 }
 
+/* std's crc32_u8, crc32_u64 and crc32_hardware: steps of gzip's CRC-32
+   (RFC 1952: reflected, polynomial 0xedb88320, no inversion), as arm64's
+   crc32b and crc32x take them, a byte and eight bytes little-endian. The
+   instructions where the C compiler targets them (__ARM_FEATURE_CRC32, as
+   on every Apple arm64), else a table a byte at a time. x86's crc32
+   instruction is CRC-32C, another polynomial: there, clmul below is the
+   fast way. */
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__ARM_FEATURE_CRC32) && !defined(__TINYC__)
+#include <arm_acle.h>
+#define GS_CRC32_HW 1
+#else
+#define GS_CRC32_HW 0
+static const uint32_t gs_crc32_table[256] = {
+    0x00000000u, 0x77073096u, 0xee0e612cu, 0x990951bau, 0x076dc419u, 0x706af48fu,
+    0xe963a535u, 0x9e6495a3u, 0x0edb8832u, 0x79dcb8a4u, 0xe0d5e91eu, 0x97d2d988u,
+    0x09b64c2bu, 0x7eb17cbdu, 0xe7b82d07u, 0x90bf1d91u, 0x1db71064u, 0x6ab020f2u,
+    0xf3b97148u, 0x84be41deu, 0x1adad47du, 0x6ddde4ebu, 0xf4d4b551u, 0x83d385c7u,
+    0x136c9856u, 0x646ba8c0u, 0xfd62f97au, 0x8a65c9ecu, 0x14015c4fu, 0x63066cd9u,
+    0xfa0f3d63u, 0x8d080df5u, 0x3b6e20c8u, 0x4c69105eu, 0xd56041e4u, 0xa2677172u,
+    0x3c03e4d1u, 0x4b04d447u, 0xd20d85fdu, 0xa50ab56bu, 0x35b5a8fau, 0x42b2986cu,
+    0xdbbbc9d6u, 0xacbcf940u, 0x32d86ce3u, 0x45df5c75u, 0xdcd60dcfu, 0xabd13d59u,
+)GSRT"
+R"GSRT(    0x26d930acu, 0x51de003au, 0xc8d75180u, 0xbfd06116u, 0x21b4f4b5u, 0x56b3c423u,
+    0xcfba9599u, 0xb8bda50fu, 0x2802b89eu, 0x5f058808u, 0xc60cd9b2u, 0xb10be924u,
+    0x2f6f7c87u, 0x58684c11u, 0xc1611dabu, 0xb6662d3du, 0x76dc4190u, 0x01db7106u,
+    0x98d220bcu, 0xefd5102au, 0x71b18589u, 0x06b6b51fu, 0x9fbfe4a5u, 0xe8b8d433u,
+    0x7807c9a2u, 0x0f00f934u, 0x9609a88eu, 0xe10e9818u, 0x7f6a0dbbu, 0x086d3d2du,
+    0x91646c97u, 0xe6635c01u, 0x6b6b51f4u, 0x1c6c6162u, 0x856530d8u, 0xf262004eu,
+    0x6c0695edu, 0x1b01a57bu, 0x8208f4c1u, 0xf50fc457u, 0x65b0d9c6u, 0x12b7e950u,
+    0x8bbeb8eau, 0xfcb9887cu, 0x62dd1ddfu, 0x15da2d49u, 0x8cd37cf3u, 0xfbd44c65u,
+    0x4db26158u, 0x3ab551ceu, 0xa3bc0074u, 0xd4bb30e2u, 0x4adfa541u, 0x3dd895d7u,
+    0xa4d1c46du, 0xd3d6f4fbu, 0x4369e96au, 0x346ed9fcu, 0xad678846u, 0xda60b8d0u,
+    0x44042d73u, 0x33031de5u, 0xaa0a4c5fu, 0xdd0d7cc9u, 0x5005713cu, 0x270241aau,
+    0xbe0b1010u, 0xc90c2086u, 0x5768b525u, 0x206f85b3u, 0xb966d409u, 0xce61e49fu,
+    0x5edef90eu, 0x29d9c998u, 0xb0d09822u, 0xc7d7a8b4u, 0x59b33d17u, 0x2eb40d81u,
+    0xb7bd5c3bu, 0xc0ba6cadu, 0xedb88320u, 0x9abfb3b6u, 0x03b6e20cu, 0x74b1d29au,
+    0xead54739u, 0x9dd277afu, 0x04db2615u, 0x73dc1683u, 0xe3630b12u, 0x94643b84u,
+    0x0d6d6a3eu, 0x7a6a5aa8u, 0xe40ecf0bu, 0x9309ff9du, 0x0a00ae27u, 0x7d079eb1u,
+    0xf00f9344u, 0x8708a3d2u, 0x1e01f268u, 0x6906c2feu, 0xf762575du, 0x806567cbu,
+    0x196c3671u, 0x6e6b06e7u, 0xfed41b76u, 0x89d32be0u, 0x10da7a5au, 0x67dd4accu,
+    0xf9b9df6fu, 0x8ebeeff9u, 0x17b7be43u, 0x60b08ed5u, 0xd6d6a3e8u, 0xa1d1937eu,
+    0x38d8c2c4u, 0x4fdff252u, 0xd1bb67f1u, 0xa6bc5767u, 0x3fb506ddu, 0x48b2364bu,
+    0xd80d2bdau, 0xaf0a1b4cu, 0x36034af6u, 0x41047a60u, 0xdf60efc3u, 0xa867df55u,
+    0x316e8eefu, 0x4669be79u, 0xcb61b38cu, 0xbc66831au, 0x256fd2a0u, 0x5268e236u,
+    0xcc0c7795u, 0xbb0b4703u, 0x220216b9u, 0x5505262fu, 0xc5ba3bbeu, 0xb2bd0b28u,
+    0x2bb45a92u, 0x5cb36a04u, 0xc2d7ffa7u, 0xb5d0cf31u, 0x2cd99e8bu, 0x5bdeae1du,
+    0x9b64c2b0u, 0xec63f226u, 0x756aa39cu, 0x026d930au, 0x9c0906a9u, 0xeb0e363fu,
+    0x72076785u, 0x05005713u, 0x95bf4a82u, 0xe2b87a14u, 0x7bb12baeu, 0x0cb61b38u,
+    0x92d28e9bu, 0xe5d5be0du, 0x7cdcefb7u, 0x0bdbdf21u, 0x86d3d2d4u, 0xf1d4e242u,
+    0x68ddb3f8u, 0x1fda836eu, 0x81be16cdu, 0xf6b9265bu, 0x6fb077e1u, 0x18b74777u,
+    0x88085ae6u, 0xff0f6a70u, 0x66063bcau, 0x11010b5cu, 0x8f659effu, 0xf862ae69u,
+    0x616bffd3u, 0x166ccf45u, 0xa00ae278u, 0xd70dd2eeu, 0x4e048354u, 0x3903b3c2u,
+    0xa7672661u, 0xd06016f7u, 0x4969474du, 0x3e6e77dbu, 0xaed16a4au, 0xd9d65adcu,
+    0x40df0b66u, 0x37d83bf0u, 0xa9bcae53u, 0xdebb9ec5u, 0x47b2cf7fu, 0x30b5ffe9u,
+    0xbdbdf21cu, 0xcabac28au, 0x53b39330u, 0x24b4a3a6u, 0xbad03605u, 0xcdd70693u,
+    0x54de5729u, 0x23d967bfu, 0xb3667a2eu, 0xc4614ab8u, 0x5d681b02u, 0x2a6f2b94u,
+    0xb40bbe37u, 0xc30c8ea1u, 0x5a05df1bu, 0x2d02ef8du
+};
+#endif
+static uint32_t gs_crc32_u8(uint32_t c, uint8_t v) {
+#if GS_CRC32_HW
+    return __crc32b(c, v);
+#else
+    return gs_crc32_table[(c ^ v) & 0xff] ^ (c >> 8);
+#endif
+}
+static uint32_t gs_crc32_u64(uint32_t c, uint64_t v) {
+#if GS_CRC32_HW
+    return __crc32d(c, v);
+#else
+    for (int k = 0; k < 8; k++, v >>= 8) c = gs_crc32_table[(c ^ v) & 0xff] ^ (c >> 8);
+    return c;
+#endif
+}
+static uint8_t gs_crc32_hardware(void) { return GS_CRC32_HW; }
+
+/* std's clmul_lo, clmul_hi and clmul_hardware: the low and high 64 bits of
+   the carry-less product of two u64s. arm64's PMULL where the C compiler
+   targets it (__ARM_FEATURE_AES, as on every Apple arm64). On x86-64,
+   PCLMULQDQ inside the versions of a simd fn above the baseline
+   (GS_SIMD_CUR, set around each version's body), whose targets include it;
+   everywhere else, and under TinyCC, 64 shifts and exclusive ors. So on
+   x86-64 clmul_hardware means the instruction is there for a simd fn. */
+static uint64_t gs_clmul_soft(uint64_t a, uint64_t b, uint64_t *hi) {
+    uint64_t lo = 0, h = 0;
+    for (int k = 0; k < 64; k++) {
+        uint64_t m = (uint64_t)0 - ((b >> k) & 1);
+        lo ^= (a << k) & m;
+        if (k) h ^= (a >> (64 - k)) & m;
+    }
+    *hi = h;
+    return lo;
+}
+static uint64_t gs_clmul_lo_soft(uint64_t a, uint64_t b) { uint64_t h; return gs_clmul_soft(a, b, &h); }
+static uint64_t gs_clmul_hi_soft(uint64_t a, uint64_t b) {
+    uint64_t h;
+    gs_clmul_soft(a, b, &h);
+    return h;
+}
+#if (defined(__GNUC__) || defined(__clang__)) && defined(__aarch64__) && defined(__ARM_FEATURE_AES) && \
+    !defined(__TINYC__)
+#include <arm_neon.h>
+static uint64_t gs_clmul_lo(uint64_t a, uint64_t b) { return (uint64_t)vmull_p64(a, b); }
+static uint64_t gs_clmul_hi(uint64_t a, uint64_t b) { return (uint64_t)(vmull_p64(a, b) >> 64); }
+static uint8_t gs_clmul_hardware(void) { return 1; }
+#elif GS_SIMD >= 1
+#include <immintrin.h>
+__attribute__((target("pclmul"))) static inline uint64_t gs_clmul_lo_x86(uint64_t a, uint64_t b) {
+    return (uint64_t)_mm_cvtsi128_si64(
+        _mm_clmulepi64_si128(_mm_cvtsi64_si128((long long)a), _mm_cvtsi64_si128((long long)b), 0));
+}
+__attribute__((target("pclmul"))) static inline uint64_t gs_clmul_hi_x86(uint64_t a, uint64_t b) {
+    __m128i r = _mm_clmulepi64_si128(_mm_cvtsi64_si128((long long)a), _mm_cvtsi64_si128((long long)b), 0);
+    return (uint64_t)_mm_cvtsi128_si64(_mm_unpackhi_epi64(r, r));
+}
+#define gs_clmul_lo(a, b) (GS_SIMD_CUR >= 1 ? gs_clmul_lo_x86(a, b) : gs_clmul_lo_soft(a, b))
+#define gs_clmul_hi(a, b) (GS_SIMD_CUR >= 1 ? gs_clmul_hi_x86(a, b) : gs_clmul_hi_soft(a, b))
+static uint8_t gs_clmul_hardware(void) { return gs_simd_level() >= 1; }
+#else
+static uint64_t gs_clmul_lo(uint64_t a, uint64_t b) { return gs_clmul_lo_soft(a, b); }
+static uint64_t gs_clmul_hi(uint64_t a, uint64_t b) { return gs_clmul_hi_soft(a, b); }
+static uint8_t gs_clmul_hardware(void) { return 0; }
+#endif
+
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);
@@ -3626,8 +3756,7 @@ GS_API uint64_t gs_os_random_u64(void);
 /* os.trim_memory: discards unused complete pages of this thread program's
    data stacks. Defined with the region registry it walks (runtime_impl.h),
    but declared here like the other os primitives, so that no prototype is
-)GSRT"
-R"GSRT(   emitted for it. For generated code only, whose callers write back their
+   emitted for it. For generated code only, whose callers write back their
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);

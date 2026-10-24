@@ -5244,8 +5244,13 @@ the runtime (`runtime.h`) sets `GS_SIMD` to 2 under clang on x86-64 and to
 MSVC, TinyCC and other targets pay nothing. A build can lower it with
 `-DGS_SIMD=1` (no AVX-512 version) or `0`.
 
-* **Levels.** 1 is AVX2 with BMI1, BMI2, LZCNT and POPCNT; 2 adds AVX-512
-  F, BW, CD, DQ and VL (x86-64-v4). Neither includes FMA. Clang inlines a
+* **Levels.** 1 is AVX2 with BMI1, BMI2, LZCNT, POPCNT and PCLMULQDQ,
+  which every CPU with AVX2 has; 2 adds AVX-512 F, BW, CD, DQ and VL
+  (x86-64-v4). Neither includes FMA. Each version's body is compiled with
+  `GS_SIMD_CUR` defined as its level (0 elsewhere), so that a runtime
+  function can take an instruction only the versions' targets allow:
+  `std`'s `clmul_lo` and `clmul_hi` are `PCLMULQDQ` there and shifts in
+  the baseline. Clang inlines a
   baseline callee into a version (a callee whose target features are a
   subset of the caller's), so a small helper the loop calls is vectorized
   with it; it never inlines a version into the baseline.

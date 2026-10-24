@@ -222,7 +222,8 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
    BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4); both take
+   PCLMULQDQ too, which every CPU with AVX2 has. The versions
    are built by clang on x86-64, through its target attribute and inline
    assembly for cpuid; the contraction pragma above keeps their float
    results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
@@ -236,10 +237,14 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #undef GS_SIMD
 #define GS_SIMD 0
 #endif
+/* The level of the version being compiled: each version's body sets it
+   (EmitSimdVersions), so that a runtime function can take an instruction
+   only that version's target allows (std's clmul). */
+#define GS_SIMD_CUR 0
 #if GS_SIMD >= 1
-#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt,pclmul")))
 #define GS_SIMD_TARGET2 \
-    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt,pclmul")))
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -252,8 +257,9 @@ static inline int gs_simd_detect(void) {
     gs_cpuid(0, r);
     if (r[0] < 7) return 0;
     gs_cpuid(1, r);
-    /* OSXSAVE, AVX, POPCNT. */
-    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    /* OSXSAVE, AVX, POPCNT, PCLMULQDQ. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23 | 1u << 1)) != (1u << 27 | 1u << 28 | 1u << 23 | 1u << 1))
+        return 0;
     __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
     (void)xhi;
     if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
