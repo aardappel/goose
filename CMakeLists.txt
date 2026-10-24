@@ -133,7 +133,10 @@ target_link_libraries(goose PRIVATE goose_shaderc)
 include(cmake/libtcc.cmake)
 target_link_libraries(goose PRIVATE libtcc)
 add_dependencies(goose tcc_runtime)
-target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${TCC_STAGE}")
+# A packager sets this to where it installs tcclib/, so the binary names no
+# build directory. A tcclib/ beside the compiler still wins (src/jit.h).
+set(GOOSE_TCC_LIB_PATH "${TCC_STAGE}" CACHE PATH "TinyCC's runtime directory")
+target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${GOOSE_TCC_LIB_PATH}")
 
 # The blessed packages GOOSE_BUILTIN_LIBS names (src/blessed.txt; `all`, or
 # a list of their names), compiled into the compiler (cmake/package.cmake),
