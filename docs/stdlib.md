@@ -29,8 +29,9 @@ for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
 (`src/runtime/runtime_os.h`), the byte search behind `std`'s `find_any` and
-`find_pair` (`src/runtime/runtime_impl.h`), `std`'s `popcount`, `clz` and
-`ctz` and `ffi`'s two copies (`src/runtime/runtime_ext.h`), libm behind `math`, the graphics layer behind
+`find_pair` (`src/runtime/runtime_impl.h`), `std`'s `popcount`, `clz`,
+`ctz`, CRC-32 steps and carry-less products and `ffi`'s two copies
+(`src/runtime/runtime_ext.h`), libm behind `math`, the graphics layer behind
 `gfx`, the ui layer behind `ui` and the PCM mixer behind `audio` (the
 [goose_gfx](https://github.com/aardappel/goose_gfx) package) and the physics layer
 behind `physics` (the [goose_physics](https://github.com/aardappel/goose_physics)
@@ -116,11 +117,37 @@ fn popcount(x: u64) -> i64
 fn clz(x: u64) -> i64               // 64 for 0
 fn ctz(x: u64) -> i64               // 64 for 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
+fn crc32_u8(crc: u32, v: u8) -> u32     // a step of gzip's CRC-32
+fn crc32_u64(crc: u32, v: u64) -> u32   // eight steps, v's bytes little-endian
+fn crc32_hardware() -> bool
+fn clmul_lo(a: u64, b: u64) -> u64      // the carry-less product's low 64 bits
+fn clmul_hi(a: u64, b: u64) -> u64      // and its high 64
+fn clmul_hardware() -> bool
 ```
 
 `popcount`, `clz` and `ctz` are the runtime's, one instruction each where
 the C compiler has one (MSVC's `popcount` needs `/arch:AVX` or up for that),
 a loop under TinyCC.
+
+`crc32_u8` and `crc32_u64` take the register of gzip's CRC-32 (RFC 1952:
+reflected, polynomial 0xedb88320) a byte or eight bytes on, with no
+inversion before or after, as arm64's `crc32b` and `crc32x` do: those
+instructions where the C compiler targets them (every Apple arm64), and a
+table otherwise, which `crc32_hardware` tells apart. x86-64's `crc32`
+instruction is CRC-32C, another polynomial, so there they are the table.
+`clmul_lo` and `clmul_hi` are the halves of the carry-less product of two
+`u64`s: arm64's `PMULL` where the C compiler targets it, x86-64's
+`PCLMULQDQ` inside a [`simd fn`](reference.md#function-qualifiers) on a CPU
+with AVX2 (whose versions take it), and shifts and exclusive ors anywhere
+else, TinyCC included. `clmul_hardware` says whether they are the
+instruction, on x86-64 within a `simd fn`. Each gives the same results on
+every path; the hardware flags only let a library choose a method.
+
+```goose
+var c: u32 = 0xffffffff;
+for b in "123456789" { c = crc32_u8(c, b); }
+print(~c == 0xcbf43926, " ", clmul_lo(3, 3), " ", clmul_hi(0x8000000000000000, 2));   // true 5 1
+```
 
 `rem` is the remainder of truncating division: `rem(-7, 3) == -1`, paired
 with `-7 / 3 == -2`. `div_euclid` is the quotient paired with Euclidean `%`:

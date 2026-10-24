@@ -530,8 +530,9 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
     vector<string> versions(SIMD_LEVELS + 1);
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         versions[lv] = Unique(cat(name, "_simd", lv));
-        Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
-               versions[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
+        Append(code, "#if GS_SIMD >= ", lv, "\n#undef GS_SIMD_CUR\n#define GS_SIMD_CUR ", lv,
+               "\nGS_SIMD_TARGET", lv, " static ", ret, " ", versions[lv], "(", params, ") {\n", fnbody,
+               "}\n#undef GS_SIMD_CUR\n#define GS_SIMD_CUR 0\n#endif\n");
     }
     Append(code, "static ", ret, " ", name, "(", params, ") {\n",
            "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
