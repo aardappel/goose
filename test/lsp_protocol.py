@@ -416,6 +416,10 @@ def check_lsp_protocol(exe, base):
     sindex = fixtures / "source_index.goose"
     stext = sindex.read_text(encoding="utf-8")
     queries(sindex, stext, open_fixture(sindex, stext))
+    # The `ref` hint on declarations that bind by reference without `&`.
+    refs = fixtures / "ref_hints.goose"
+    rtext = refs.read_text(encoding="utf-8")
+    queries(refs, rtext, open_fixture(refs, rtext))
 
     # Statements with errors inside the braces of a struct literal or a
     # match they opened: each published where it is, and nothing after
