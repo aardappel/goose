@@ -1985,8 +1985,8 @@ def main():
 
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
-        stand for: `goose run`, `goose check` and `goose version`, the help,
-        a mistyped command and --color."""
+        stand for: `goose run`, `goose check` and `goose version`, the help, a
+        mistyped command, --color and -q."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -2029,6 +2029,9 @@ def main():
         code, out, err = tc.run_capture([exe, "check", "--color", "sometimes", probe])
         checks.append(("--color sometimes (refused)", code == 1 and "auto, always or never" in err,
                        out + err))
+        # -q leaves only what the program prints.
+        code, out, err = tc.run_capture([exe, "check", "-q", probe])
+        checks.append(("check -q", code == 0 and not out and not err, out + err))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",

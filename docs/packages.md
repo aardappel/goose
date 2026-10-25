@@ -61,6 +61,10 @@ Errors and warnings are in color on a terminal. `--color never` or a set
 `NO_COLOR` turns that off, and `--color always` or `CLICOLOR_FORCE=1` turns
 it on wherever the output goes.
 
+A run, build or check that succeeds prints a line or two about what it did
+(`parsed ok`, `typechecked ok`, `wrote`). `-q` leaves them out, so that only
+what the program prints is printed.
+
 ## 2. Using a package
 
 A *package* is a library in a directory of its own: a module named after it,
