@@ -103,6 +103,53 @@ inline string RenderDiagnostic(const Diagnostic &d, string_view filename, string
     return s;
 }
 
+// Whether diagnostics printed on stderr are colored (StderrColor, --color).
+inline bool stderrcolor = false;
+
+// Diagnostic text as a terminal shows it in color: on each line that starts
+// with a place and `error:` or `warning:`, the place in bold, the word in
+// red or magenta and the message in bold; a caret line in green.
+inline string ColorDiagnostics(string_view text) {
+    const char *bold = "\x1b[1m", *red = "\x1b[1;31m", *magenta = "\x1b[1;35m",
+               *green = "\x1b[1;32m", *reset = "\x1b[0m";
+    string s;
+    for (size_t pos = 0; pos <= text.size();) {
+        auto e = text.find('\n', pos);
+        if (e == string_view::npos) e = text.size();
+        auto line = text.substr(pos, e - pos);
+        auto kind = string_view();
+        size_t at = string_view::npos;
+        for (auto k : { string_view("error: "), string_view("warning: ") }) {
+            auto p = line.find(k);
+            // At the start, or after the place's `: `.
+            if (p != string_view::npos && (p == 0 || line.substr(p - 2, 2) == ": ") && p < at) {
+                at = p;
+                kind = k;
+            }
+        }
+        auto caret = line.find_first_not_of(" \t");
+        if (at != string_view::npos) {
+            if (at) Append(s, bold, line.substr(0, at), reset);
+            Append(s, kind[0] == 'e' ? red : magenta, kind, reset, bold, line.substr(at + kind.size()), reset);
+        } else if (caret != string_view::npos && line[caret] == '^' &&
+                   line.find_first_not_of("^~", caret) == string_view::npos) {
+            Append(s, line.substr(0, caret), green, line.substr(caret), reset);
+        } else {
+            s += line;
+        }
+        if (e < text.size()) s += '\n';
+        pos = e + 1;
+    }
+    return s;
+}
+
+// Prints diagnostic text on stderr, with a line break, colored where it is
+// to be.
+inline void PrintDiagnosticText(string_view text) {
+    auto s = stderrcolor ? ColorDiagnostics(text) : string(text);
+    fprintf(stderr, "%s\n", s.c_str());
+}
+
 // Thrown by the parser and the checker where Ast::cancel is set: the analysis
 // a language server abandons for a newer one. Not a CompileError, so no
 // tentative parse or recovery takes it for an error of the program.

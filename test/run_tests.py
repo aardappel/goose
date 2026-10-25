@@ -77,6 +77,7 @@ import json
 import concurrent.futures
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1909,8 +1910,9 @@ def main():
 
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
-        stand for: `goose run`, `goose check` and `goose version`, and the
-        help."""
+        stand for: `goose run`, `goose check` and `goose version`, the
+        help, a mistyped command, -q, --color, the completion scripts and the
+        man page."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -1922,9 +1924,78 @@ def main():
                        "verbs" not in out, out + err))
         code, out, err = tc.run_capture([exe, "run", "-o", str(gendir / "verbs.c"), probe])
         checks.append(("run -o (refused)", code != 0 and "takes no -o" in err, out + err))
+        version = re.compile(r"goose \S+ \(runtime [0-9a-f]{12}\)\s*$")
         code, out, err = tc.run_capture([exe, "version"])
-        checks.append(("version", code == 0 and
-                       re.match(r"goose runtime [0-9a-f]{12}\s*$", out) is not None, out + err))
+        checks.append(("version", code == 0 and version.match(out) is not None, out + err))
+        code, out2, err = tc.run_capture([exe, "--version"])
+        checks.append(("--version", code == 0 and out2 == out, out2 + err))
+        # A word that is no command, option or file is a mistyped command.
+        code, out, err = tc.run_capture([exe, "biuld", str(probe)])
+        checks.append(("a mistyped command", code == 1 and "unknown command biuld" in err and
+                       "did you mean build?" in err, out + err))
+        code, out, err = tc.run_capture([exe, "nosuch.goose"])
+        checks.append(("a missing file", code == 1 and "cannot open file" in err, out + err))
+        # -q leaves what the program prints; --color always colors an error,
+        # and NO_COLOR, or output that is no terminal, colors nothing.
+        code, out, err = tc.run_capture([exe, "check", "-q", probe])
+        checks.append(("check -q", code == 0 and not out and not err, out + err))
+        bad = gendir / "verbs_bad.goose"
+        tc.write_text(bad, "fn main() {\n    let y = (;\n}\n")
+        code, out, err = tc.run_capture([exe, "check", "--color", "always", bad])
+        checks.append(("--color always", code == 1 and "\x1b[1;31merror: \x1b[0m" in err and
+                       "\x1b[1;32m^\x1b[0m" in err, repr(err)))
+        code, out, err = tc.run_capture([exe, "check", bad])
+        checks.append(("no color off a terminal", code == 1 and "\x1b" not in err and
+                       "error: expression expected" in err, repr(err)))
+        nocolor = subprocess.run([str(exe), "check", bad], capture_output=True,
+                                 env=dict(os.environ, NO_COLOR="1", CLICOLOR_FORCE="1"))
+        checks.append(("NO_COLOR", b"\x1b" not in nocolor.stderr, repr(nocolor.stderr)))
+        forced = subprocess.run([str(exe), "check", bad], capture_output=True,
+                                env={k: v for k, v in dict(os.environ, CLICOLOR_FORCE="1").items()
+                                     if k != "NO_COLOR"})
+        checks.append(("CLICOLOR_FORCE", b"\x1b[1;31m" in forced.stderr, repr(forced.stderr)))
+        code, out, err = tc.run_capture([exe, "check", "--color", "sometimes", probe])
+        checks.append(("--color sometimes (refused)", code == 1 and "auto, always or never" in err,
+                       out + err))
+        # The completion scripts, from the help: each names every command,
+        # and bash's, run, completes a command, an option and a file.
+        for shell in ["bash", "zsh", "fish", "powershell"]:
+            code, out, err = tc.run_capture([exe, "completion", shell])
+            # fish names a long option without its dashes.
+            names = ["-l debug", "-l check"] if shell == "fish" else ["--debug", "--check"]
+            checks.append((f"completion {shell}", code == 0 and
+                           all(v in out for v in ["build", "format", ".goose", *names]),
+                           out[:400] + err))
+            if shell in ("bash", "zsh") and shutil.which(shell) and os.name != "nt":
+                script = gendir / f"completion.{shell}"
+                tc.write_text(script, out)
+                if shell == "bash":
+                    tc.write_text(gendir / "complete_me.goose", "fn main() {}\n")
+                    probe_sh = (f"source '{script}'; t() {{ COMP_WORDS=(\"$@\"); "
+                                "COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMPREPLY=(); _goose; "
+                                "echo \"${COMPREPLY[*]}\"; }; t goose bu; t goose build --dr; t goose complete_m")
+                    r2 = subprocess.run(["bash", "-c", probe_sh], capture_output=True, text=True,
+                                        cwd=gendir)
+                    lines = r2.stdout.splitlines()
+                    checks.append(("completion bash, run", lines == ["build", "--dry-run", "complete_me.goose"],
+                                   r2.stdout + r2.stderr))
+                else:
+                    r2 = subprocess.run(["zsh", "-n", str(script)], capture_output=True, text=True)
+                    checks.append(("completion zsh parses", r2.returncode == 0, r2.stderr))
+        code, out, err = tc.run_capture([exe, "completion", "tcsh"])
+        checks.append(("completion tcsh (refused)", code == 1 and "bash, zsh, fish or powershell" in err,
+                       out + err))
+        # The man page holds every command's help.
+        code, man, err = tc.run_capture([exe, "help", "--man"])
+        checks.append(("help --man", code == 0 and man.startswith(".TH GOOSE 1") and
+                       all(f".SS {v}\n" in man for v in ["run", "build", "format", "completion"]),
+                       man[:400] + err))
+        if shutil.which("groff") and os.name != "nt":
+            page = gendir / "goose.1"
+            tc.write_text(page, man)
+            r2 = subprocess.run(["groff", "-man", "-ww", "-z", str(page)], capture_output=True, text=True)
+            checks.append(("help --man is a man page groff reads without warnings",
+                           r2.returncode == 0 and not r2.stderr, r2.stderr))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",
@@ -1936,7 +2007,8 @@ def main():
         checks.append(("--help", code == 0 and "build" in overview and
                        "--multi-test" not in overview, overview + err))
         pages = overview
-        for cmd in ["run", "build", "check", "fetch", "format", "toolchain", "version", "lsp"]:
+        for cmd in ["run", "build", "check", "fetch", "format", "toolchain", "version", "lsp",
+                    "completion"]:
             code, out, err = tc.run_capture([exe, cmd, "--help"])
             checks.append((f"{cmd} --help", code == 0 and
                            out.startswith(f"usage: goose {cmd}"), out + err))

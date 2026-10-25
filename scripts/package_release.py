@@ -17,6 +17,7 @@ directory:
                        link-cc.rsp naming them relative to themselves
   docs/, samples/      as in this tree (less the samples' test harness)
   vscode/              the prebuilt VS Code extension
+  man/goose.1          the help as a man page (goose help --man)
   licenses/            the licenses of what the compiler and the packages'
                        libraries are built from
   README.md, LICENSE
@@ -196,6 +197,11 @@ def main():
                 "vscode/LICENSE"):
         copy_file(REPO_ROOT / rel, out / rel)
     collect_licenses(REPO_ROOT / "third_party", out / "licenses")
+    man = subprocess.run([str(out / exe_name), "help", "--man"], capture_output=True)
+    if man.returncode != 0 or not man.stdout.startswith(b".TH GOOSE 1"):
+        fail(f"goose help --man failed:\n{man.stderr.decode(errors='replace')}")
+    (out / "man").mkdir()
+    (out / "man" / "goose.1").write_bytes(man.stdout)
     print(f"wrote {out}")
 
 

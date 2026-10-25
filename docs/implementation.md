@@ -127,7 +127,11 @@ tags and branches again), `goose toolchain` prints the C
 compiler, cmake and git a build would use (`toolchain.h`: `--cc`,
 `GOOSE_CC`, `cc` in `GOOSE_HOME/config`, else discovery; `--json` for
 scripts, which also lists the modules whose packages are compiled in), and
-`goose version` prints the runtime hash, `goose lsp` serves an
+`goose version` prints the compiler's version (`version.cpp`, from the
+header `cmake/version.cmake` writes at each build: `git describe`, or the
+`GOOSE_VERSION` a release configures with) and the runtime hash, `goose
+completion` prints a shell's completion script and `goose help --man` the
+help as a man page, both made from the help's text, `goose lsp` serves an
 editor over the Language Server Protocol (§12), and `goose format`
 rewrites files in the standard layout (below). A first argument
 that is no verb is read as the flags below,

@@ -36,6 +36,12 @@ void ProgressOutput(const char *data, size_t size);
 // progress to (git's --progress).
 bool ProgressLive();
 
+// Whether errors and warnings on stderr may be colored: `force` (--color
+// always), else stderr a terminal and NO_COLOR unset (or CLICOLOR_FORCE
+// set). On Windows the console is switched to take the escape sequences;
+// false where it cannot be.
+bool StderrColor(bool force);
+
 // No live line from here on: for -v and --dry-run, which print the commands
 // and what they print as they go.
 void ProgressPlain();
