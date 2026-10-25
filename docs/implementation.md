@@ -118,6 +118,7 @@ which nothing in the executable sets.
   packages are compiled in).
 * `goose version` prints the runtime hash.
 * `goose lsp` serves an editor over the Language Server Protocol (§12).
+* `goose format` rewrites files in the standard layout (below).
 
 `run` and `build` both build the native part that a program's sidecar
 `foo.build` names (`packages.h`: `LoadSidecar`; `native.h`: the C compiled
@@ -145,6 +146,32 @@ are started through `process.h`, a translation unit of its own over
 `third_party/subprocess/subprocess.h`. `progress.h`, another translation
 unit, reports the slow steps (a line each, and on a terminal a live line
 below them).
+
+**Formatter** (`format.h`). `Format` takes a file's text and returns it
+formatted, or the file's parse errors, or, for a result that failed its
+own check, an internal error; it writes nothing, so the language server can
+call it as well as `RunFormat`. It parses the file alone (no imports
+resolved) with `Parser::roles` set, which records what a token's kind
+alone does not say: a `<` or `>` of a generic list (`R_ANGLE_OPEN`,
+`R_ANGLE_CLOSE`, twice for a `>>`), a unary operator, a type's suffix, the
+`>..<` of an array type, the `!` of `as!`, a trailing block's `{`, and a
+bracket whose list may end in a comma (`R_LIST`; not a match whose last arm
+ends in a `return` without `from` or a bare `break`, which a comma would
+continue). A backtrack drops the roles of what it backtracks over; with
+`roles` null, as in every compile, nothing is recorded. The formatter then
+lexes the file again, keeping the gap between each two tokens (from
+`Lexer::prevend` to the token), whose comments and line breaks it keeps,
+and prints the tokens line by line as the input breaks them: each line
+indented from the brackets open at its start (a level inside a bracket that
+ends its line or a block's `{`, or its offset from a bracket it is aligned
+in), or, continuing a statement, kept at its offset from the statement's
+first line while it stays to the right of it; and the tokens on a line
+spaced by `format::Space`, with a space wherever two tokens written
+together would lex as something else. Trailing comments keep their column,
+moved with their line; a run of them that shared a column shares one still.
+Before the result is used, `CheckSame` lexes both texts (the same tokens,
+but for a comma before a closing bracket, and the same comments but for
+their whitespace) and parses both (the same `Ast::Dump` and `DumpDocs`).
 
 **Driver flags** (`Main` in `main.cpp`):
 

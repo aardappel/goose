@@ -54,6 +54,7 @@
 #include "lsp_workspace.h"
 #include "lsp_features.h"
 #include "lsp.h"
+#include "format.h"
 
 namespace goose {
 
@@ -532,52 +533,6 @@ void DumpTokens(const string &path) {
     fputs(s.c_str(), stdout);
 }
 
-// What --dump-docs prints: the documentation comments (Lexer::doc) of the
-// top-level declarations, in source order, and of their fields and
-// variants: a line naming each one that has one (`fn add`, `field
-// Point.x`, `variant Shape.Circle`), then the comment's lines, each less
-// its indentation and indented by four spaces.
-void DumpDocs(Ast &ast, string &s) {
-    auto doc = [&](const string &head, string_view text) {
-        if (text.empty()) return;
-        Append(s, head, "\n");
-        for (size_t pos = 0; pos <= text.size();) {
-            auto end = text.find('\n', pos);
-            if (end == string_view::npos) end = text.size();
-            auto line = text.substr(pos, end - pos);
-            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-            auto first = line.find_first_not_of(" \t");
-            Append(s, "    ", first == string_view::npos ? string_view() : line.substr(first),
-                   "\n");
-            pos = end + 1;
-        }
-    };
-    auto fields = [&](const string &owner, const vector<Field> &fs) {
-        for (auto &f : fs)
-            if (!f.ispad) doc(cat("field ", owner, ".", f.name), f.doc);
-    };
-    for (auto d : ast.topdecls) {
-        if (auto fd = Is<FnDecl>(d)) {
-            doc(cat("fn ", fd->sf->qname), fd->sf->doc);
-        } else if (auto sd = Is<StructDecl>(d)) {
-            doc(cat("struct ", sd->st->qname), sd->st->doc);
-            fields(string(sd->st->qname), sd->st->fields);
-        } else if (auto ed = Is<EnumDecl>(d)) {
-            doc(cat("enum ", ed->en->qname), ed->en->doc);
-            for (auto &v : ed->en->variants) {
-                auto name = cat(ed->en->qname, ".", v.name);
-                doc(cat("variant ", name), v.doc);
-                fields(name, v.fields);
-            }
-        } else if (auto ad = Is<AliasDecl>(d)) {
-            doc(cat("type ", ad->al->qname), ad->al->doc);
-        } else if (auto vd = Is<VarDecl>(d)) {
-            doc(cat(vd->isconst ? "const " : vd->isvar ? "var " : "let ",
-                    ast.QualifiedName(vd->ns, vd->names[0])), vd->doc);
-        }
-    }
-}
-
 // The runtime C sources embedded into the compiler (runtime_inline.h), in the
 // order a standalone program holds them (runtime.h has how they divide), and
 // goose.h, the header native parts compile against (native.h).
@@ -723,6 +678,7 @@ Commands:
   build      Build an executable with a C compiler on this machine.
   check      Parse and typecheck a program, and run nothing.
   fetch      Fetch the packages a program declares.
+  format     Rewrite Goose files in the standard layout.
   toolchain  Report the C compiler, cmake and git found, and GOOSE_HOME.
   version    Print the runtime version.
   lsp        Serve an editor over the Language Server Protocol.
@@ -799,6 +755,26 @@ compiles nothing. A run or a build fetches what is missing as well.
 Options:
   --update              Fetch packages at a tag or branch again (a commit is
                         never fetched again).
+)";
+    if (topic == "format") return
+R"(usage: goose format [--check] file.goose|dir...
+       goose format [-]
+
+Rewrites each file in the standard layout, in place: indentation, the
+spaces between tokens, blank lines and trailing commas. Line breaks stay
+where they are. A directory stands for the .goose files under it, less
+those in directories whose names start with a dot and in build trees. With
+no files, or -, it formats standard input to standard output. A file that
+does not parse is left as it is, with its errors.
+
+Options:
+  --check               Write nothing: list the files that are not formatted.
+
+Exit status:
+  0                     Every file is formatted (or now is).
+  1                     --check found a file that is not.
+  2                     A file does not parse or cannot be read or written,
+                        or an option is wrong.
 )";
     if (topic == "lsp") return
 R"(usage: goose lsp [--stdio] [--stdlib dir]
@@ -884,6 +860,10 @@ Options:
   --unsafe-no-rf-check  Leave out the checks after calls that a `return ...
                         from` can pass through: unsound, for pricing them only.
   --gen-runtime-header  Regenerate src/runtime_inline.h from src/runtime/.
+
+goose format --verify file.goose|dir... formats each file in memory and
+writes nothing: it checks the result as a format does, and that formatting
+it again changes nothing, and skips a file that does not parse.
 )");
     return "";
 }
@@ -1014,7 +994,7 @@ CodeGen::StackConfig StackConfigOf(const vector<string> &cdefines) {
 
 int Main(int argc, char **argv) {
     auto exe = ExePath(argv[0]);
-    // The verb forms, `goose run|build|check|fetch|toolchain|version|help ...`.
+    // The verb forms, `goose run|build|check|fetch|format|toolchain|version|help ...`.
     // A first argument that is none of them is read as an option or a file,
     // as it always was, so `goose foo.goose` is `goose run foo.goose`.
     string verb;
@@ -1022,7 +1002,7 @@ int Main(int argc, char **argv) {
     if (argc > 1) {
         string v = argv[1];
         if (v == "run" || v == "build" || v == "check" || v == "fetch" || v == "toolchain" ||
-            v == "version" || v == "help" || v == "lsp") {
+            v == "version" || v == "help" || v == "lsp" || v == "format") {
             verb = v;
             firstarg = 2;
         }
@@ -1052,6 +1032,7 @@ int Main(int argc, char **argv) {
         return 0;
     }
     if (verb == "lsp") return RunLsp(exe, vector<string>(argv + firstarg, argv + argc));
+    if (verb == "format") return RunFormat(vector<string>(argv + firstarg, argv + argc));
     string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, dumpdocs = false, tokens = false, parseonly = false, specs = false;
     auto nocgen = false;

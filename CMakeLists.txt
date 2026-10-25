@@ -27,6 +27,7 @@ add_executable(goose
     src/lsp_workspace.h
     src/lsp_features.h
     src/lsp.h
+    src/format.h
     src/builtin.h
     src/includes.h
     src/utils.h

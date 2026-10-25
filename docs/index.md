@@ -30,7 +30,7 @@ specification. The other documents cover the library, tools, and compiler.
 * [VS Code extension](../vscode/README.md): highlighting, checks on save,
   and one-key runs.
 * [Other editors](editors.md): the language server in Neovim, Helix and
-  Emacs.
+  Emacs, and `goose format`, the formatter, on save.
 
 ## Benchmarks
 

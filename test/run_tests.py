@@ -1936,7 +1936,7 @@ def main():
         checks.append(("--help", code == 0 and "build" in overview and
                        "--multi-test" not in overview, overview + err))
         pages = overview
-        for cmd in ["run", "build", "check", "fetch", "toolchain", "version", "lsp"]:
+        for cmd in ["run", "build", "check", "fetch", "format", "toolchain", "version", "lsp"]:
             code, out, err = tc.run_capture([exe, cmd, "--help"])
             checks.append((f"{cmd} --help", code == 0 and
                            out.startswith(f"usage: goose {cmd}"), out + err))
@@ -2083,6 +2083,26 @@ def main():
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("documentation comments", str(e))
     r.show_task(doc_comments)
+
+    def format_layout():
+        from format import check_format
+        try:
+            check_format(exe, gendir)
+            r.ok("format: the layout of the golden cases, each a fixed point, and the command "
+                 "line: in place, --check, the directory walk, errors and exit codes")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("format", str(e))
+    r.show_task(format_layout)
+
+    def format_sweep():
+        from format import check_format_sweep
+        try:
+            summary = check_format_sweep(exe, [HERE.parent / "samples", HERE.parent / "stdlib",
+                                               HERE.parent / "bench", HERE])
+            r.ok(f"format --verify over samples, stdlib, bench and test: {summary}")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("format --verify", str(e))
+    r.show_task(format_sweep)
 
     def lsp_protocol():
         from lsp_protocol import check_lsp_protocol
