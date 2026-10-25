@@ -188,6 +188,9 @@ struct TailRecursion {
     bool Rebinds(Call *c, vector<pair<VarDef *, Node *>> &out) {
         auto an = c->ValueArgNodes();
         if (an.size() != sp->params.size()) return false;
+        // An argument return abandons the call before its accumulator or
+        // parameter updates can take effect.
+        if (ReturnsTo(c, sp->sf)) return false;
         for (size_t i = 0; i < an.size(); i++) {
             auto p = sp->params[i];
             if (auto id = Is<Ident>(an[i]); id && id->vdef == p &&
