@@ -70,6 +70,23 @@ extern fn popcount(x: u64) -> i64 = "gs_popcount";
 extern fn clz(x: u64) -> i64 = "gs_clz";
 extern fn ctz(x: u64) -> i64 = "gs_ctz";
 
+// Steps of gzip's CRC-32 (RFC 1952: reflected, polynomial 0xedb88320, with
+// no inversion before or after), a byte and eight bytes little-endian:
+// arm64's crc32b and crc32x where the C compiler targets them, which
+// crc32_hardware says, and a table otherwise, with the same results.
+extern fn crc32_u8(crc: u32, v: u8) -> u32 = "gs_crc32_u8";
+extern fn crc32_u64(crc: u32, v: u64) -> u32 = "gs_crc32_u64";
+extern fn crc32_hardware() -> bool = "gs_crc32_hardware";
+
+// The low and high 64 bits of the carry-less product of a and b: arm64's
+// PMULL where the C compiler targets it, x86-64's PCLMULQDQ inside a simd
+// fn on a CPU with AVX2, and shifts and exclusive ors otherwise, with the
+// same results. clmul_hardware says whether it is an instruction here, in a
+// simd fn on x86-64.
+extern fn clmul_lo(a: u64, b: u64) -> u64 = "gs_clmul_lo";
+extern fn clmul_hi(a: u64, b: u64) -> u64 = "gs_clmul_hi";
+extern fn clmul_hardware() -> bool = "gs_clmul_hardware";
+
 // The values a and b refer to. `T&` of a reference type is that reference
 // (spec §3.8), so for two elements of an array of references this swaps
 // what they point to; swap_at swaps the elements themselves.
