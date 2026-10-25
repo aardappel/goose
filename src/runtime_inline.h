@@ -251,6 +251,47 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    results the baseline's, though both have FMA: only math's mul_add uses
    it (GS_MUL_ADD_MODE, below). Elsewhere the versions are left out, and so
    is the choice. -DGS_SIMD=0 or 1 lowers the level; nothing raises it. */
+/* Whole-vector elementwise arithmetic (spec §6.1). Where the C compiler has
+   GCC's vector extensions, an elementwise operation on a struct or fixed
+   array of 2 to 16 floats of one width, 16, 32 or 64 bytes with no padding,
+   is one operation on a vector type of the same layout, which the code
+   generator moves in and out with memcpy (so the value's own alignment
+   doesn't matter). Lane by lane it computes what the members do. Elsewhere
+   (MSVC, TinyCC, or -DGS_VEC=0) the operation stays member by member. */
+#if !defined(GS_VEC) && (defined(__clang__) || defined(__GNUC__)) && !defined(__TINYC__)
+#define GS_VEC 1
+#endif
+#if GS_VEC
+typedef double gs_vf64_2 __attribute__((vector_size(16), aligned(8)));
+typedef double gs_vf64_4 __attribute__((vector_size(32), aligned(8)));
+typedef double gs_vf64_8 __attribute__((vector_size(64), aligned(8)));
+typedef float gs_vf32_4 __attribute__((vector_size(16), aligned(4)));
+typedef float gs_vf32_8 __attribute__((vector_size(32), aligned(4)));
+typedef float gs_vf32_16 __attribute__((vector_size(64), aligned(4)));
+/* Loads, stores and scalar broadcasts, so the generated code declares no
+   locals of a vector type (it gathers declarations at the top of a
+   function, outside the GS_VEC test). */
+#define GS_VEC_OPS(V, E, N)                                                    \
+    static inline __attribute__((always_inline)) V gs_vld_##V(const void *p) { \
+        V v;                                                                   \
+        __builtin_memcpy(&v, p, sizeof(V));                                    \
+        return v;                                                              \
+    }                                                                          \
+    static inline __attribute__((always_inline)) void gs_vst_##V(void *p, V v) { \
+        __builtin_memcpy(p, &v, sizeof(V));                                    \
+    }                                                                          \
+    static inline __attribute__((always_inline)) V gs_vsplat_##V(E x) {                V v;                                                                           for (int i = 0; i < N; i++) v[i] = x;                                          return v;                                                                  }
+GS_VEC_OPS(gs_vf64_2, double, 2)
+GS_VEC_OPS(gs_vf64_4, double, 4)
+GS_VEC_OPS(gs_vf64_8, double, 8)
+GS_VEC_OPS(gs_vf32_4, float, 4)
+GS_VEC_OPS(gs_vf32_8, float, 8)
+GS_VEC_OPS(gs_vf32_16, float, 16)
+#else
+#undef GS_VEC
+#define GS_VEC 0
+#endif
+
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
@@ -319,7 +360,8 @@ static inline int gs_simd_level(void) {
    under TinyCC. A simd function's AVX2 and AVX-512 versions have FMA
    whatever the target, so the compiler sets GS_MUL_ADD_MODE to fused around
    them, and back to the base after (EmitSimdVersions). */
-#if !defined(__TINYC__) && (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64) || \
+)GSRT"
+R"GSRT(#if !defined(__TINYC__) && (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64) || \
                             (defined(_MSC_VER) && defined(__AVX2__)))
 #define GS_MUL_ADD_BASE fused
 #else
@@ -478,7 +520,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
    narrow signed division, which also checks that the quotient fits (-128 /
    -1 in i8), is a function. */
 #define GS_DIVU(T, a, b, f, l) \
-    ((T)(b) ? (T)((T)(a) / (T)(b)) : (gs_divfail((f), (l)), (T)0))
+)GSRT"
+R"GSRT(    ((T)(b) ? (T)((T)(a) / (T)(b)) : (gs_divfail((f), (l)), (T)0))
 #define GS_MODU(T, a, b, f, l) \
     ((T)(b) ? (T)((T)(a) % (T)(b)) : (gs_divfail((f), (l)), (T)0))
 #define GS_DIVS(T, a, b, f, l) \
@@ -643,7 +686,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 #define gs_add_u32(a, b) ((uint32_t)((a) + (b)))
 #define gs_sub_u32(a, b) ((uint32_t)((a) - (b)))
-#define gs_mul_u32(a, b) ((uint32_t)((uint64_t)(a) * (uint64_t)(b)))
+)GSRT"
+R"GSRT(#define gs_mul_u32(a, b) ((uint32_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_shl_u32(a, n) ((uint32_t)((uint64_t)(a) << ((n) & 31)))
 #define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
 
@@ -846,7 +890,8 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
 /* ---------------------------------------------------------------------------
    Data stacks (§1.2, Appendix C.1/C.4): large reserved regions, committed on
    use, bump-pointer allocation, watermark restore on scope exit. Emitted code
-   holds them per thread program via gs_stks (index = the hidden gs_sp
+)GSRT"
+R"GSRT(   holds them per thread program via gs_stks (index = the hidden gs_sp
    argument plus a per-function constant); globals own dedicated stacks. The
    regions themselves, and what tells a fault in one from a crash, are the
    runtime's (runtime_impl.h). */
@@ -1027,7 +1072,8 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 /* Where a run of cnt elements goes in a pool of len elements, taken off the
    freelist: for alloc_slice, and for a slice realloc_slice moves. */
 GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
-                              int64_t cnt);
+)GSRT"
+R"GSRT(                              int64_t cnt);
 /* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
    end the array, to cnt elements: where it starts now. The caller copies
    the elements where that moved. */

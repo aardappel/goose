@@ -238,6 +238,47 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    results the baseline's, though both have FMA: only math's mul_add uses
    it (GS_MUL_ADD_MODE, below). Elsewhere the versions are left out, and so
    is the choice. -DGS_SIMD=0 or 1 lowers the level; nothing raises it. */
+/* Whole-vector elementwise arithmetic (spec §6.1). Where the C compiler has
+   GCC's vector extensions, an elementwise operation on a struct or fixed
+   array of 2 to 16 floats of one width, 16, 32 or 64 bytes with no padding,
+   is one operation on a vector type of the same layout, which the code
+   generator moves in and out with memcpy (so the value's own alignment
+   doesn't matter). Lane by lane it computes what the members do. Elsewhere
+   (MSVC, TinyCC, or -DGS_VEC=0) the operation stays member by member. */
+#if !defined(GS_VEC) && (defined(__clang__) || defined(__GNUC__)) && !defined(__TINYC__)
+#define GS_VEC 1
+#endif
+#if GS_VEC
+typedef double gs_vf64_2 __attribute__((vector_size(16), aligned(8)));
+typedef double gs_vf64_4 __attribute__((vector_size(32), aligned(8)));
+typedef double gs_vf64_8 __attribute__((vector_size(64), aligned(8)));
+typedef float gs_vf32_4 __attribute__((vector_size(16), aligned(4)));
+typedef float gs_vf32_8 __attribute__((vector_size(32), aligned(4)));
+typedef float gs_vf32_16 __attribute__((vector_size(64), aligned(4)));
+/* Loads, stores and scalar broadcasts, so the generated code declares no
+   locals of a vector type (it gathers declarations at the top of a
+   function, outside the GS_VEC test). */
+#define GS_VEC_OPS(V, E, N)                                                    \
+    static inline __attribute__((always_inline)) V gs_vld_##V(const void *p) { \
+        V v;                                                                   \
+        __builtin_memcpy(&v, p, sizeof(V));                                    \
+        return v;                                                              \
+    }                                                                          \
+    static inline __attribute__((always_inline)) void gs_vst_##V(void *p, V v) { \
+        __builtin_memcpy(p, &v, sizeof(V));                                    \
+    }                                                                          \
+    static inline __attribute__((always_inline)) V gs_vsplat_##V(E x) {                V v;                                                                           for (int i = 0; i < N; i++) v[i] = x;                                          return v;                                                                  }
+GS_VEC_OPS(gs_vf64_2, double, 2)
+GS_VEC_OPS(gs_vf64_4, double, 4)
+GS_VEC_OPS(gs_vf64_8, double, 8)
+GS_VEC_OPS(gs_vf32_4, float, 4)
+GS_VEC_OPS(gs_vf32_8, float, 8)
+GS_VEC_OPS(gs_vf32_16, float, 16)
+#else
+#undef GS_VEC
+#define GS_VEC 0
+#endif
+
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
