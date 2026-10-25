@@ -123,6 +123,8 @@ which nothing in the executable sets.
 * `goose lsp` serves an editor over the Language Server Protocol (§12).
 * `goose completion` prints a shell's completion script, made from the
   help's text.
+* `goose help --man` prints the help as a man page, made from the help's
+  text.
 * `goose format` rewrites files in the standard layout (below).
 
 `run` and `build` both build the native part that a program's sidecar

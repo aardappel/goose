@@ -1987,7 +1987,8 @@ def main():
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
         stand for: `goose run`, `goose check` and `goose version`, the help, a
-        mistyped command, --color, -q and the completion scripts."""
+        mistyped command, --color, -q, the completion scripts and the man
+        page."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -2061,6 +2062,17 @@ def main():
         code, out, err = tc.run_capture([exe, "completion", "tcsh"])
         checks.append(("completion tcsh (refused)", code == 1 and "bash, zsh, fish or powershell" in err,
                        out + err))
+        # The man page holds every command's help.
+        code, man, err = tc.run_capture([exe, "help", "--man"])
+        checks.append(("help --man", code == 0 and man.startswith(".TH GOOSE 1") and
+                       all(f".SS {v}\n" in man for v in ["run", "build", "format", "completion"]),
+                       man[:400] + err))
+        if shutil.which("groff") and os.name != "nt":
+            page = gendir / "goose.1"
+            tc.write_text(page, man)
+            r2 = subprocess.run(["groff", "-man", "-ww", "-z", str(page)], capture_output=True, text=True)
+            checks.append(("help --man is a man page groff reads without warnings",
+                           r2.returncode == 0 and not r2.stderr, r2.stderr))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",

@@ -710,7 +710,8 @@ Environment:
 
 goose <command> --help, or goose help <command>, lists a command's options.
 goose help c covers writing the C yourself (goose -o out.c), and goose help
-internals the options for looking into the compiler and testing it.
+internals the options for looking into the compiler and testing it. goose
+help --man prints all of the help as a man page.
 )";
     if (topic == "run") return cat(
 R"(usage: goose run file.goose [options] [-- program args...]
@@ -1215,6 +1216,43 @@ static string CompletionScript(const string &shell) {
     return s;
 }
 
+// What `goose help --man` prints: the help of every command and topic as a
+// man page, each kept as the terminal shows it.
+static string ManPage() {
+    auto roff = [](const string &text) {
+        string s = ".nf\n";
+        for (size_t pos = 0; pos < text.size();) {
+            auto e = text.find('\n', pos);
+            if (e == string::npos) e = text.size();
+            auto line = string_view(text).substr(pos, e - pos);
+            pos = e + 1;
+            if (!line.empty() && (line[0] == '.' || line[0] == '\'')) s += "\\&";
+            for (auto c : line) {
+                if (c == '\\') s += "\\e";
+                else if (c == '-') s += "\\-";
+                else s += c;
+            }
+            s += '\n';
+        }
+        return s + ".fi\n";
+    };
+    auto overview = HelpText("");
+    auto body = overview.substr(overview.find("\n\n") + 2);
+    string s;
+    Append(s, ".TH GOOSE 1 \"\" \"goose ", CompilerVersion(), "\" \"Goose Manual\"\n"
+              ".SH NAME\n"
+              "goose \\- the Goose compiler, its build tool and its language server\n"
+              ".SH SYNOPSIS\n", roff(overview.substr(0, overview.find("\n\n"))),
+              ".SH DESCRIPTION\n", roff(body), ".SH COMMANDS\n");
+    for (auto v : VERBS) {
+        if (string_view(v) == "help") continue;
+        Append(s, ".SS ", v, "\n", roff(HelpText(v)));
+    }
+    Append(s, ".SH WRITING THE C\n", roff(HelpText("c")),
+              ".SH INTERNALS\n", roff(HelpText("internals")));
+    return s;
+}
+
 int Main(int argc, char **argv) {
     auto exe = ExePath(argv[0]);
     // The verb forms, `goose run|build|check|fetch|format|toolchain|version|help ...`.
@@ -1269,6 +1307,10 @@ int Main(int argc, char **argv) {
     }
     if (verb == "help") {
         auto topic = argc > 2 ? string(argv[2]) : string();
+        if (topic == "--man") {
+            fputs(ManPage().c_str(), stdout);
+            return 0;
+        }
         auto help = HelpText(topic);
         if (help.empty()) {
             fprintf(stderr, "no help on %s: goose help lists the commands\n", topic.c_str());
