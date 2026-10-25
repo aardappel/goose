@@ -13,6 +13,9 @@
 
 namespace goose {
 
+// In main.cpp: stdin and stdout as byte streams.
+void SetBinaryStdio();
+
 struct FormatResult {
     bool ok = false;
     string text;                 // The formatted file, where ok.
@@ -698,6 +701,105 @@ inline FormatResult Format(string_view input, const string &filename, bool verif
     }
     r.ok = true;
     return r;
+}
+
+// A change that turns one text into another: bytes [start, end) of the old
+// text replaced by `text`.
+struct TextChange {
+    size_t start, end;
+    string text;
+};
+
+// The changes that turn `from` into `to`, line by line, as few as a diff of
+// their lines finds (Myers' algorithm), each a run of changed lines: what
+// an editor applies to keep its cursor and marks on the lines that stay.
+// A line ending in \r\n is the same line ending in \n. Where the texts
+// differ in more lines than `limit`, one change covers everything between
+// the lines they begin and end with in common.
+inline vector<TextChange> LineChanges(string_view from, string_view to, int limit = 2000) {
+    auto split = [](string_view t, vector<string_view> &lines, vector<size_t> &starts) {
+        for (size_t pos = 0; pos < t.size();) {
+            auto e = t.find('\n', pos);
+            e = e == string_view::npos ? t.size() : e + 1;
+            starts.push_back(pos);
+            lines.push_back(t.substr(pos, e - pos));
+            pos = e;
+        }
+        starts.push_back(t.size());
+    };
+    vector<string_view> a, b;
+    vector<size_t> as, bs;
+    split(from, a, as);
+    split(to, b, bs);
+    auto content = [](string_view l) {
+        if (!l.empty() && l.back() == '\n') {
+            l.remove_suffix(1);
+            if (!l.empty() && l.back() == '\r') l.remove_suffix(1);
+            return pair<string_view, bool>(l, true);
+        }
+        return pair<string_view, bool>(l, false);
+    };
+    auto eq = [&](int x, int y) { return content(a[(size_t)x]) == content(b[(size_t)y]); };
+    int n = (int)a.size(), m = (int)b.size();
+    // The furthest x reached on each diagonal k = x - y, kept for every d
+    // as the slice [-d, d], to walk back from the end.
+    vector<vector<int>> trace;
+    vector<int> v(2 * (size_t)(n + m) + 3, 0);
+    auto off = n + m + 1;
+    auto found = -1;
+    for (int d = 0; d <= n + m && d <= limit && found < 0; d++) {
+        trace.emplace_back(v.begin() + (off - d), v.begin() + (off + d + 1));
+        for (int k = -d; k <= d; k += 2) {
+            auto x = k == -d || (k != d && v[(size_t)(off + k - 1)] < v[(size_t)(off + k + 1)])
+                         ? v[(size_t)(off + k + 1)] : v[(size_t)(off + k - 1)] + 1;
+            auto y = x - k;
+            while (x < n && y < m && eq(x, y)) x++, y++;
+            v[(size_t)(off + k)] = x;
+            if (x >= n && y >= m) { found = d; break; }
+        }
+    }
+    // Runs of changed lines, as (old first, old end, new first, new end).
+    vector<array<int, 4>> runs;
+    if (found < 0) {
+        int p = 0, q = 0;
+        while (p < n && p < m && eq(p, p)) p++;
+        while (q < n - p && q < m - p && eq(n - 1 - q, m - 1 - q)) q++;
+        runs.push_back({ p, n - q, p, m - q });
+    } else {
+        // Walk back, each step one inserted or deleted line after a run of
+        // equal ones.
+        vector<pair<int, int>> steps;   // (x, y) before each edit, last first, and its kind
+        vector<bool> inserts;
+        int x = n, y = m;
+        for (int d = found; d > 0; d--) {
+            auto &tv = trace[(size_t)d];
+            auto at = [&](int k) { return tv[(size_t)(k + d)]; };
+            auto k = x - y;
+            auto prevk = k == -d || (k != d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
+            auto prevx = at(prevk), prevy = prevx - prevk;
+            while (x > prevx && y > prevy) x--, y--;
+            steps.push_back({ prevx, prevy });
+            inserts.push_back(x == prevx);
+            x = prevx, y = prevy;
+        }
+        for (auto i = steps.size(); i-- > 0;) {
+            auto [px, py] = steps[i];
+            auto r = array<int, 4> { px, px + !inserts[i], py, py + (int)inserts[i] };
+            if (!runs.empty() && runs.back()[1] == r[0] && runs.back()[3] == r[2]) {
+                runs.back()[1] = r[1];
+                runs.back()[3] = r[3];
+            } else {
+                runs.push_back(r);
+            }
+        }
+    }
+    vector<TextChange> changes;
+    for (auto &r : runs) {
+        if (r[0] == r[1] && r[2] == r[3]) continue;
+        changes.push_back(TextChange { as[(size_t)r[0]], as[(size_t)r[1]],
+                                       string(to.substr(bs[(size_t)r[2]], bs[(size_t)r[3]] - bs[(size_t)r[2]])) });
+    }
+    return changes;
 }
 
 // Writes the formatted text over `path`, the file a link names included, as

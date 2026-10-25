@@ -64,6 +64,7 @@ struct Server {
         j.Member("inlayHintProvider", true);
         j.Member("foldingRangeProvider", true);
         j.Member("selectionRangeProvider", true);
+        j.Member("documentFormattingProvider", true);
         j.Key("codeLensProvider");
         j.BeginObject();
         j.Member("resolveProvider", false);
@@ -115,6 +116,8 @@ struct Server {
     // from the analysis there is and asked for again once the next is done.
     bool AsksAboutDocuments(const string &method) {
         if (method.rfind("textDocument/", 0) != 0 && method != "workspace/symbol") return false;
+        // Formatting reads the editor's text, not an analysis.
+        if (method == "textDocument/formatting") return false;
         for (auto feature : { "codeLens", "semanticTokens", "inlayHint" })
             if (method.rfind(cat("textDocument/", feature), 0) == 0)
                 return find(ws.refreshes.begin(), ws.refreshes.end(), cat("workspace/", feature, "/refresh")) ==
@@ -210,6 +213,12 @@ struct Server {
             Respond(m, [&](JsonOut &j) { return SelectionRanges(ws, p, j); });
         } else if (method == "textDocument/codeLens") {
             Respond(m, [&](JsonOut &j) { return CodeLenses(ws, p, j); });
+        } else if (method == "textDocument/formatting") {
+            JsonOut edits;
+            string error;
+            auto r = FormatDocument(ws, p, edits, error);
+            if (r == 2) RespondError(m, -32603, error);
+            else Respond(m, [&](JsonOut &j) { if (r) j.Raw(edits.s); return r == 1; });
         } else if (!m.id.empty()) {
             RespondError(m, -32601, cat("goose lsp does not handle ", method));
         }

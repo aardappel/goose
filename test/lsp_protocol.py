@@ -10,7 +10,10 @@ errors_tc/recovery/inside_braces.goose and exemplar_unchecked.goose, waiting
 for their diagnostics and asking their queries; opens and closes
 roots_lib.goose and the roots_app fixtures importing it as roots come and
 go; and closes the entry file while helper.goose, which only it reached,
-stays open. A second client, with two_a.goose and two_b.goose as its entry
+stays open. It formats documents that are open and not saved: the edits
+must turn the text into what `goose format` writes, change only the lines
+that change, and be none for a formatted document; a document that does
+not parse, or one not open, gets null. A second client, with two_a.goose and two_b.goose as its entry
 files, renames a function both import and finds its references and callers
 in both programs. Each server is seen out. The row of docs/testing.md on
 this file has the details."""
@@ -494,6 +497,44 @@ def check_lsp_protocol(exe, base):
     close_doc(main)
     client.send("workspace/didChangeConfiguration", {"settings": {"goose": {"entryFiles": []}}}, request=False)
     hover_has(helper, "4:4", "fn helper::twice", "once basics.goose is no entry file")
+
+    # Formatting, of the editor's text, which is not on disk.
+    def apply(text, edits):
+        lines = text.split("\n")
+        starts = [0]
+        for line in lines:
+            starts.append(starts[-1] + len(line) + 1)
+        offset = lambda pos: min(starts[pos["line"]] + pos["character"], len(text))
+        for e in sorted(edits, key=lambda e: offset(e["range"]["start"]), reverse=True):
+            text = text[:offset(e["range"]["start"])] + e["newText"] + text[offset(e["range"]["end"]):]
+        return text
+
+    unsaved = fixtures / "format_unsaved.goose"
+    messy = ("fn  f(a:i64)->i64 {\r\n    a+1\r\n}\r\n\r\n\r\n\r\nfn g() {}\r\n"
+             "fn h() {\r\n    let x = 1;\r\n    x\r\n}\r\nfn  k() {}")
+    formatted = subprocess.run([str(exe), "format", "-"], input=messy.encode(), capture_output=True).stdout.decode()
+    open_fixture(unsaved, messy)
+    fmt = lambda: client.request("textDocument/formatting", {"textDocument": {"uri": uri_of(unsaved)},
+                                                             "options": {"tabSize": 4, "insertSpaces": True}})
+    edits = fmt()
+    if not edits or apply(messy, edits).replace("\r\n", "\n") != formatted:
+        fail("formatting a document", edits)
+    # Only the lines that change: the first two, the blank lines, the last.
+    touched = {line for e in edits
+               for line in range(e["range"]["start"]["line"],
+                                 e["range"]["end"]["line"] + (e["range"]["end"]["character"] > 0))}
+    if any(line in touched for line in (2, 6, 7, 8, 9, 10)):
+        fail("formatting changes only the lines that change", edits)
+    change_doc(unsaved, formatted)
+    if fmt() != []:
+        fail("formatting a formatted document", fmt())
+    change_doc(unsaved, "fn f( {\n")
+    if fmt() is not None:
+        fail("formatting a document that does not parse", fmt())
+    close_doc(unsaved)
+    if fmt() is not None:
+        fail("formatting a document that is not open", fmt())
+
     client.request("shutdown", None)
     client.send("exit", request=False)
     code = client.p.wait(timeout=30)

@@ -1984,4 +1984,52 @@ inline bool CodeLenses(Workspace &ws, const Json &params, JsonOut &j) {
     return true;
 }
 
+// --- formatting --------------------------------------------------------------
+
+// `textDocument/formatting`: the open document's text as `goose format`
+// writes it, as the changes to its lines (LineChanges), none where it is
+// formatted. The editor's text is formatted, not the analysis's, so no
+// analysis is waited for. 0 for null: a document not open, or one that does
+// not parse, whose errors the diagnostics show already; 1 for the edits in
+// `j`; 2 for a result that failed the formatter's check, `error` saying why.
+inline int FormatDocument(Workspace &ws, const Json &params, JsonOut &j, string &error) {
+    auto td = params.Get("textDocument");
+    auto uri = JsonStr(td ? td->Get("uri") : nullptr);
+    auto it = ws.open.find(PathKey(PathOfUri(uri)));
+    if (uri.empty() || it == ws.open.end()) return 0;
+    auto &text = it->second.text;
+    auto res = Format(text, it->second.path);
+    if (!res.ok) {
+        if (res.internal.empty()) return 0;
+        error = cat("internal error formatting ", it->second.path, ": ", res.internal);
+        return 2;
+    }
+    TextIndex t;
+    t.Index(text);
+    // A byte-order mark the editor kept in the text is no line's.
+    auto bom = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? (size_t)3 : 0;
+    auto changes = LineChanges(string_view(text).substr(bom), res.text);
+    j.BeginArray();
+    auto place = [&](const char *key, size_t offset) {
+        auto [line, character] = t.PositionOf(offset);
+        j.Key(key);
+        j.BeginObject();
+        j.Member("line", (int64_t)line);
+        j.Member("character", (int64_t)character);
+        j.EndObject();
+    };
+    for (auto &c : changes) {
+        j.BeginObject();
+        j.Key("range");
+        j.BeginObject();
+        place("start", c.start ? c.start + bom : 0);
+        place("end", c.end + bom);
+        j.EndObject();
+        j.Member("newText", c.text);
+        j.EndObject();
+    }
+    j.EndArray();
+    return 1;
+}
+
 }  // namespace goose

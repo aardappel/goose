@@ -140,8 +140,10 @@ the slow steps (a line each, and on a terminal a live line below).
 
 **Formatter** (`format.h`). `Format` takes a file's text and returns it
 formatted, or the file's parse errors, or, for a result that failed its
-own check, an internal error; it writes nothing, so the language server can
-call it as well as `RunFormat`. It parses the file alone (no imports
+own check, an internal error; it writes nothing, and both `RunFormat` and
+the language server's `textDocument/formatting` (`FormatDocument`, which
+turns the result into edits to the lines that change with `LineChanges`,
+a line diff) call it. It parses the file alone (no imports
 resolved) with `Parser::roles` set, which records what a token's kind
 alone does not say: a `<` or `>` of a generic list (`R_ANGLE_OPEN`,
 `R_ANGLE_CLOSE`, twice for a `>>`), a unary operator, a type's suffix, the

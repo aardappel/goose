@@ -49,12 +49,12 @@
 #include "build.h"
 #include "packages.h"
 #include "native.h"
+#include "format.h"
 #include "lsp_rpc.h"
 #include "lsp_analysis.h"
 #include "lsp_workspace.h"
 #include "lsp_features.h"
 #include "lsp.h"
-#include "format.h"
 
 namespace goose {
 
@@ -783,8 +783,8 @@ R"(usage: goose lsp [--stdio] [--stdlib dir]
 Serves an editor over the Language Server Protocol, on stdin and stdout:
 diagnostics as files change, hover, go to definition, references and
 rename, document and workspace symbols, semantic highlighting, signature
-help, completion, inlay hints, folding and selection ranges, and code
-lenses. It analyzes the programs whose entry files the editor configures
+help, completion, inlay hints, folding and selection ranges, code
+lenses, and formatting as goose format does. It analyzes the programs whose entry files the editor configures
 (the initializationOptions' entryFiles, with the standard library's
 directory as stdlib) and every open file none of them imports; the
 initializationOptions' commands are the client's own commands a code lens
