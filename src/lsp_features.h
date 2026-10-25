@@ -1762,16 +1762,16 @@ inline string_view NamespaceOfFile(const Ast &ast, int fileidx) {
 inline void NamespaceCompletions(string_view nsname, const Namespace &ns, bool qualify, Completions &out) {
     auto name = [&](string_view leaf) { return qualify ? cat(nsname, "::", leaf) : string(leaf); };
     for (auto &[leaf, fns] : ns.functionmap)
-        if (!fns.empty()) out.Add(name(leaf), CK_FUNCTION, 1, FnHeader(fns[0]), fns[0]->doc, leaf);
-    for (auto &[leaf, st] : ns.structmap) out.Add(name(leaf), CK_STRUCT, 1, DeclDetail(st), st->doc, leaf);
-    for (auto &[leaf, en] : ns.enummap) out.Add(name(leaf), CK_ENUM, 1, DeclDetail(en), en->doc, leaf);
+        if (!fns.empty()) out.Add(name(leaf), CK_FUNCTION, 1, FnHeader(fns[0]), fns[0]->doc);
+    for (auto &[leaf, st] : ns.structmap) out.Add(name(leaf), CK_STRUCT, 1, DeclDetail(st), st->doc);
+    for (auto &[leaf, en] : ns.enummap) out.Add(name(leaf), CK_ENUM, 1, DeclDetail(en), en->doc);
     for (auto &[leaf, al] : ns.aliasmap)
-        out.Add(name(leaf), CK_TYPEPARAMETER, 1, DeclDetail(al), al->doc, leaf);
+        out.Add(name(leaf), CK_TYPEPARAMETER, 1, DeclDetail(al), al->doc);
     for (auto &[leaf, vd] : ns.globalmap) {
         auto def = vd->defs.empty() ? nullptr : vd->defs[0];
         out.Add(name(leaf), vd->isvar ? CK_VARIABLE : CK_CONSTANT, 1,
                 cat(VarKeyword(vd), leaf, def && def->type ? cat(": ", TypeText(def->type)) : string()),
-                vd->doc, leaf);
+                vd->doc);
     }
 }
 
