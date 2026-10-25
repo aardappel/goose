@@ -1985,8 +1985,8 @@ def main():
 
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
-        stand for: `goose run`, `goose check` and `goose version`, the help
-        and a mistyped command."""
+        stand for: `goose run`, `goose check` and `goose version`, the help,
+        a mistyped command and --color."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -2009,6 +2009,26 @@ def main():
                        "did you mean build?" in err, out + err))
         code, out, err = tc.run_capture([exe, "nosuch.goose"])
         checks.append(("a missing file", code == 1 and "cannot open file" in err, out + err))
+        # --color always colors an error, and NO_COLOR, or output that is no
+        # terminal, colors nothing.
+        bad = gendir / "verbs_bad.goose"
+        tc.write_text(bad, "fn main() {\n    let y = (;\n}\n")
+        code, out, err = tc.run_capture([exe, "check", "--color", "always", bad])
+        checks.append(("--color always", code == 1 and "\x1b[1;31merror: \x1b[0m" in err and
+                       "\x1b[1;32m^\x1b[0m" in err, repr(err)))
+        code, out, err = tc.run_capture([exe, "check", bad])
+        checks.append(("no color off a terminal", code == 1 and "\x1b" not in err and
+                       "error: expression expected" in err, repr(err)))
+        nocolor = subprocess.run([str(exe), "check", bad], capture_output=True,
+                                 env=dict(os.environ, NO_COLOR="1", CLICOLOR_FORCE="1"))
+        checks.append(("NO_COLOR", b"\x1b" not in nocolor.stderr, repr(nocolor.stderr)))
+        forced = subprocess.run([str(exe), "check", bad], capture_output=True,
+                                env={k: v for k, v in dict(os.environ, CLICOLOR_FORCE="1").items()
+                                     if k != "NO_COLOR"})
+        checks.append(("CLICOLOR_FORCE", b"\x1b[1;31m" in forced.stderr, repr(forced.stderr)))
+        code, out, err = tc.run_capture([exe, "check", "--color", "sometimes", probe])
+        checks.append(("--color sometimes (refused)", code == 1 and "auto, always or never" in err,
+                       out + err))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",

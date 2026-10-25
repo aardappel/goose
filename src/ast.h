@@ -2437,7 +2437,7 @@ struct Ast {
 
     void Emit(const Diagnostic &d) {
         if (sink) sink(d);
-        else fprintf(stderr, "%s\n", d.text.c_str());
+        else PrintDiagnosticText(d.text);
     }
 
     // A warning about a place, as the checker and the driver give them.

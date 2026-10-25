@@ -57,6 +57,10 @@ and `--dry-run` always use plain output.
 `goose version` (or `goose --version`) prints the compiler's version and
 the runtime's hash.
 
+Errors and warnings are in color on a terminal. `--color never` or a set
+`NO_COLOR` turns that off, and `--color always` or `CLICOLOR_FORCE=1` turns
+it on wherever the output goes.
+
 ## 2. Using a package
 
 A *package* is a library in a directory of its own: a module named after it,

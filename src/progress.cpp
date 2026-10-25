@@ -218,6 +218,29 @@ void ProgressOutput(const char *data, size_t size) {
     }
 }
 
+bool StderrColor(bool force) {
+    auto env = [](const char *name) {
+        auto v = getenv(name);
+        return v && *v ? string(v) : string();
+    };
+    if (!force) {
+        if (!env("NO_COLOR").empty()) return false;
+        auto forced = env("CLICOLOR_FORCE");
+        force = !forced.empty() && forced != "0";
+    }
+    if (!force && !StderrIsTerminal()) return false;
+    #ifdef _WIN32
+        // A console takes the sequences once asked; where stderr is no
+        // console (a file, a pipe), they are bytes like any.
+        auto h = GetStdHandle(STD_ERROR_HANDLE);
+        DWORD mode;
+        if (GetConsoleMode(h, &mode) &&
+            !SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+            return false;
+    #endif
+    return true;
+}
+
 bool ProgressLive() {
     auto &s = State();
     lock_guard lock(s.m);

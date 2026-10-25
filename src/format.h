@@ -879,7 +879,7 @@ inline int RunFormat(const vector<string> &args) {
     }
     auto report = [](const string &name, const FormatResult &res) {
         if (!res.diags.empty()) {
-            for (auto &d : res.diags) fprintf(stderr, "%s\n", d.text.c_str());
+            for (auto &d : res.diags) PrintDiagnosticText(d.text);
         } else {
             fprintf(stderr, "internal error formatting %s: %s; file left unchanged\n", name.c_str(),
                     res.internal.c_str());

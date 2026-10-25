@@ -644,7 +644,9 @@ constexpr const char *MULTIMARK = "==== goose --multi-test: exit";
 
 // The options run, build and check share, for their help.
 constexpr const char *COMPILEOPTIONS =
-R"(  --diagnostics json    Print the errors and warnings as JSON on stdout, and
+R"(  --color when          Color errors and warnings: auto (on a terminal, unless
+                        NO_COLOR is set), always or never.
+  --diagnostics json    Print the errors and warnings as JSON on stdout, and
                         the progress lines on stderr.
   --offline             Fetch nothing: a package that is not fetched is an
                         error at its import, which goose fetch resolves.
@@ -691,6 +693,8 @@ Common options:
   -O0, -O1, -O2   Inlining level (default -O2).
   --debug         Overflow, range and tag checks that name the source line
                   they fail on.
+  --color when    Color errors and warnings: auto (on a terminal, unless
+                  NO_COLOR is set), always or never.
   -- args...      What follows is the program's arguments.
 
 Environment:
@@ -1031,6 +1035,8 @@ int Main(int argc, char **argv) {
                 firstarg = 2;
             }
     }
+    // Errors and warnings in color on a terminal (--color changes it).
+    stderrcolor = StderrColor(false);
     // --help anywhere before a `--` is the help on the command given, or on
     // all of them when none is; --version likewise prints the version.
     for (int i = firstarg; i < argc; i++) {
@@ -1132,7 +1138,7 @@ int Main(int argc, char **argv) {
             try {
                 GenRuntimeHeader(exe.c_str());
             } catch (CompileError &e) {
-                fprintf(stderr, "%s\n", e.msg.c_str());
+                PrintDiagnosticText(e.msg);
                 return 1;
             }
             return 0;
@@ -1162,7 +1168,7 @@ int Main(int argc, char **argv) {
                 auto path = BuiltinLinkFile(arg.substr(2, arg.size() - 7), style, DirOf(exe));
                 printf("%s\n", path.c_str());
             } catch (CompileError &e) {
-                fprintf(stderr, "%s\n", e.msg.c_str());
+                PrintDiagnosticText(e.msg);
                 return 1;
             }
             return 0;
@@ -1182,6 +1188,14 @@ int Main(int argc, char **argv) {
             cdefines.push_back("GS_DEBUG=1");
         }
         else if (arg == "-v") verbose = true;
+        else if (arg == "--color" && i + 1 < argc) {
+            string when = argv[++i];
+            if (when != "auto" && when != "always" && when != "never") {
+                fprintf(stderr, "--color takes auto, always or never, not %s\n", when.c_str());
+                return 1;
+            }
+            stderrcolor = when == "always" ? StderrColor(true) : when == "auto" && StderrColor(false);
+        }
         else if (arg == "--dry-run") dryrun = true;
         else if (arg == "--update") package_update = true;
         else if (arg == "--offline") package_nofetch = true;
@@ -1208,7 +1222,7 @@ int Main(int argc, char **argv) {
             fputs(ToolsReport(tools, json, builtin).c_str(), stdout);
             return tools.havecc ? 0 : 1;
         } catch (CompileError &e) {
-            fprintf(stderr, "%s\n", e.msg.c_str());
+            PrintDiagnosticText(e.msg);
             return 1;
         }
     }
@@ -1246,7 +1260,7 @@ int Main(int argc, char **argv) {
         try {
             DumpShader(shaderfile, shadersource);
         } catch (CompileError &e) {
-            fprintf(stderr, "%s\n", e.msg.c_str());
+            PrintDiagnosticText(e.msg);
             return 1;
         }
         return 0;
@@ -1574,7 +1588,7 @@ int Main(int argc, char **argv) {
         try {
             code = attempt();
         } catch (CompileError &e) {
-            if (!jsondiag) fprintf(stderr, "%s\n", e.msg.c_str());
+            if (!jsondiag) PrintDiagnosticText(e.msg);
             // A driver's error has no place in the program: its text is all
             // there is to report.
             if (e.diags.empty()) {
