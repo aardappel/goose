@@ -421,7 +421,7 @@ GS_API uint8_t gs_os_read_line(gs_rref out) {
         gs_bld_append(out, &b, 1);
         c = fgetc(stdin);
     }
-    if (out.hdr->len > start && out.hdr->base[out.hdr->len - 1] == '\r') {
+    if (c == '\n' && out.hdr->len > start && out.hdr->base[out.hdr->len - 1] == '\r') {
         out.hdr->len--;
         out.stk->top--;
     }
