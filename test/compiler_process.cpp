@@ -15,7 +15,7 @@ int main(int argc, char **argv) {
         // reap it. This is a test timeout, not a performance measurement.
         std::thread([] {
             std::this_thread::sleep_for(std::chrono::seconds(10));
-            fputs("stdin EOF was not received\n", stderr);
+            // The output pipe may be full. Exit without writing to it.
             _Exit(124);
         }).detach();
         if (!strcmp(argv[1], "--output-first")) {
