@@ -410,9 +410,11 @@ struct TailRecursion {
 
     // Candidate tail returns. Only those the loop's own `continue` can reach:
     // inside an existing loop the jump would restart that one instead, and a
-    // function value's spliced body is a return path of its own. Anything
-    // skipped stays an ordinary return and folds the accumulator in, which is
-    // still correct — the call it keeps returns the whole remaining fold.
+    // break in an argument could leave an early-out block after the step
+    // changed the accumulator. A function value's spliced body is a return
+    // path of its own. Anything skipped stays an ordinary return and folds
+    // the accumulator in, which is still correct — the call it keeps returns
+    // the whole remaining fold.
     void Collect(Node *n, bool tailok, vector<pair<Return *, Tail>> &found) {
         if (!n) return;
         if (tailok) {
@@ -427,7 +429,8 @@ struct TailRecursion {
             Collect(c->fvbody, false, found);
             return;
         }
-        auto inner = tailok && !Is<While>(n) && !Is<LoopExpr>(n) && !Is<ForLoop>(n);
+        auto inner = tailok && !Is<While>(n) && !Is<LoopExpr>(n) && !Is<ForLoop>(n) &&
+                     !Is<EarlyBlock>(n);
         n->Children([&](Node *ch) { Collect(ch, inner, found); });
     }
 
