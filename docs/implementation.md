@@ -116,7 +116,10 @@ which nothing in the executable sets.
   (`toolchain.h`: `--cc`, `GOOSE_CC`, `cc` in `GOOSE_HOME/config`, else
   discovery; `--json` for scripts, which also lists the modules whose
   packages are compiled in).
-* `goose version` prints the runtime hash.
+* `goose version` (or `goose --version`) prints the compiler's version and
+  the runtime hash. The version comes from `version.cpp`, which includes the
+  header that `cmake/version.cmake` writes at each build: `git describe`, or
+  the `GOOSE_VERSION` that a release configures with.
 * `goose lsp` serves an editor over the Language Server Protocol (§12).
 * `goose format` rewrites files in the standard layout (below).
 

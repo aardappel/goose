@@ -54,6 +54,9 @@ command), there is no live line, only those one-line notes.
 `GOOSE_PROGRESS=plain` or `GOOSE_PROGRESS=live` overrides the choice; `-v`
 and `--dry-run` always use plain output.
 
+`goose version` (or `goose --version`) prints the compiler's version and
+the runtime's hash.
+
 ## 2. Using a package
 
 A *package* is a library in a directory of its own: a module named after it,

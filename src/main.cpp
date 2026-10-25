@@ -58,6 +58,9 @@
 
 namespace goose {
 
+// In version.cpp: the compiler's version, as the build found it.
+const char *CompilerVersion();
+
 string DirOf(const string &path) {
     auto pos = path.find_last_of("/\\");
     return pos == string::npos ? "" : path.substr(0, pos + 1);
@@ -680,7 +683,7 @@ Commands:
   fetch      Fetch the packages a program declares.
   format     Rewrite Goose files in the standard layout.
   toolchain  Report the C compiler, cmake and git found, and GOOSE_HOME.
-  version    Print the runtime version.
+  version    Print the compiler's version (or --version).
   lsp        Serve an editor over the Language Server Protocol.
   help       Print this (or --help, -h); with a command, that command's help.
 
@@ -811,9 +814,10 @@ Options:
 )";
     if (topic == "version") return
 R"(usage: goose version
+       goose --version
 
-Prints the runtime version, which the runtime that goose --emit-runtime
-writes has to match.
+Prints the compiler's version and the runtime's: a hash of the runtime's
+text, which the runtime that goose --emit-runtime writes has to match.
 )";
     if (topic == "c") return cat(
 R"(usage: goose -o out.c file.goose [options]
@@ -1028,7 +1032,7 @@ int Main(int argc, char **argv) {
             }
     }
     // --help anywhere before a `--` is the help on the command given, or on
-    // all of them when none is.
+    // all of them when none is; --version likewise prints the version.
     for (int i = firstarg; i < argc; i++) {
         string arg = argv[i];
         if (arg == "--") break;
@@ -1036,6 +1040,7 @@ int Main(int argc, char **argv) {
             fputs(HelpText(verb).c_str(), stdout);
             return 0;
         }
+        if (arg == "--version" && (verb.empty() || verb == "version")) verb = "version";
     }
     // A first word that is no command, no option and no file is a command
     // mistyped, not a program: `goose biuld x.goose`.
@@ -1061,7 +1066,7 @@ int Main(int argc, char **argv) {
         return 0;
     }
     if (verb == "version") {
-        printf("goose runtime %s\n", RuntimeVersion().c_str());
+        printf("goose %s (runtime %s)\n", CompilerVersion(), RuntimeVersion().c_str());
         return 0;
     }
     if (verb == "lsp") return RunLsp(exe, vector<string>(argv + firstarg, argv + argc));

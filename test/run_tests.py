@@ -1998,9 +1998,11 @@ def main():
                        "verbs" not in out, out + err))
         code, out, err = tc.run_capture([exe, "run", "-o", str(gendir / "verbs.c"), probe])
         checks.append(("run -o (refused)", code != 0 and "takes no -o" in err, out + err))
+        version = re.compile(r"goose \S+ \(runtime [0-9a-f]{12}\)\s*$")
         code, out, err = tc.run_capture([exe, "version"])
-        checks.append(("version", code == 0 and
-                       re.match(r"goose runtime [0-9a-f]{12}\s*$", out) is not None, out + err))
+        checks.append(("version", code == 0 and version.match(out) is not None, out + err))
+        code, out2, err = tc.run_capture([exe, "--version"])
+        checks.append(("--version", code == 0 and out2 == out, out2 + err))
         # A word that is no command, option or file is a mistyped command.
         code, out, err = tc.run_capture([exe, "biuld", str(probe)])
         checks.append(("a mistyped command", code == 1 and "unknown command biuld" in err and
