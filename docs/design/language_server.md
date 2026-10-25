@@ -376,8 +376,10 @@ once the features of §6 are in, and little of it compiler-specific beyond
 `lsp_analysis.h`.
 
 Not needed: an incremental parser, a separate symbol database, a change
-to how specializations are keyed or cloned, or a formatter (`Dump` drops
-comments and prints a `guard` as the `if` it became, so it is not one).
+to how specializations are keyed or cloned, or a formatter of its own
+(`Dump` drops comments and prints a `guard` as the `if` it became, so it
+is not one; `goose format` is, built on the tokens rather than the tree,
+and its `Format` in `format.h` is pure, so formatting is a request away).
 
 ## 6. Features, and what each needs
 
@@ -397,7 +399,7 @@ comments and prints a `guard` as the `if` it became, so it is not one).
 | Inlay hints | a `let` without a type: its `VarDef::type` in the clone (the first specialization's, where they differ); parameter names at calls from `Call::spec->sf` | A |
 | Folding, selection ranges | node ends | A (ends) |
 | Code lens | the specializations of a generic function (`sf->specs`), "run" above `main` through the existing task | |
-| Formatting | not offered (§5) | |
+| Formatting | not offered yet: `Format` (`format.h`) gives the whole file's text, which a `textDocument/formatting` reply would carry as one edit | |
 
 Inside a generic function nothing instantiates, the features answer from
 an exemplar instantiation (§11): the function checked with each type

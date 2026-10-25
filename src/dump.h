@@ -741,4 +741,50 @@ inline void Ast::Dump(string &s) const {
     if (!openlib.empty()) s += "}\n";
 }
 
+// What --dump-docs prints: the documentation comments (Lexer::doc) of the
+// top-level declarations, in source order, and of their fields and
+// variants: a line naming each one that has one (`fn add`, `field
+// Point.x`, `variant Shape.Circle`), then the comment's lines, each less
+// its indentation and indented by four spaces.
+inline void DumpDocs(Ast &ast, string &s) {
+    auto doc = [&](const string &head, string_view text) {
+        if (text.empty()) return;
+        Append(s, head, "\n");
+        for (size_t pos = 0; pos <= text.size();) {
+            auto end = text.find('\n', pos);
+            if (end == string_view::npos) end = text.size();
+            auto line = text.substr(pos, end - pos);
+            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            auto first = line.find_first_not_of(" \t");
+            Append(s, "    ", first == string_view::npos ? string_view() : line.substr(first),
+                   "\n");
+            pos = end + 1;
+        }
+    };
+    auto fields = [&](const string &owner, const vector<Field> &fs) {
+        for (auto &f : fs)
+            if (!f.ispad) doc(cat("field ", owner, ".", f.name), f.doc);
+    };
+    for (auto d : ast.topdecls) {
+        if (auto fd = Is<FnDecl>(d)) {
+            doc(cat("fn ", fd->sf->qname), fd->sf->doc);
+        } else if (auto sd = Is<StructDecl>(d)) {
+            doc(cat("struct ", sd->st->qname), sd->st->doc);
+            fields(string(sd->st->qname), sd->st->fields);
+        } else if (auto ed = Is<EnumDecl>(d)) {
+            doc(cat("enum ", ed->en->qname), ed->en->doc);
+            for (auto &v : ed->en->variants) {
+                auto name = cat(ed->en->qname, ".", v.name);
+                doc(cat("variant ", name), v.doc);
+                fields(name, v.fields);
+            }
+        } else if (auto ad = Is<AliasDecl>(d)) {
+            doc(cat("type ", ad->al->qname), ad->al->doc);
+        } else if (auto vd = Is<VarDecl>(d)) {
+            doc(cat(vd->isconst ? "const " : vd->isvar ? "var " : "let ",
+                    ast.QualifiedName(vd->ns, vd->names[0])), vd->doc);
+        }
+    }
+}
+
 }  // namespace goose

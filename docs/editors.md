@@ -122,3 +122,41 @@ ElDoc, go to definition (`M-.`), references (`M-?`), rename
 (`xref-find-apropos`), completion (`completion-at-point`) and inlay hints;
 the newest Eglot, from GNU ELPA, highlights with semantic tokens too
 (`eglot-semantic-tokens-mode`). Eglot has no folding or code lenses.
+
+## Formatting
+
+`goose format` rewrites files in the standard layout: indentation, the
+spaces between tokens, blank lines and trailing commas, with the line
+breaks left where they are. It takes files and directories (a directory
+stands for the `.goose` files under it), and with none, or `-`, formats
+standard input to standard output, which is what an editor wants. A file
+that does not parse is left as it is and its errors printed, with exit
+status 2; `goose format --check` writes nothing and lists the files that
+are not formatted, with exit status 1, for a CI step or a commit hook. The
+language server does not format yet, so an editor runs the command.
+
+In Neovim, with [conform.nvim](https://github.com/stevearc/conform.nvim):
+
+```lua
+require('conform').setup({
+  formatters = { goose = { command = 'goose', args = { 'format', '-' }, stdin = true } },
+  formatters_by_ft = { goose = { 'goose' } },
+  format_on_save = { timeout_ms = 2000 },
+})
+```
+
+In Helix, in the `[[language]]` entry above:
+
+```toml
+formatter = { command = "goose", args = ["format", "-"] }
+auto-format = true
+```
+
+In Emacs, with [Apheleia](https://github.com/radian-software/apheleia),
+which formats on save once `apheleia-global-mode` is on:
+
+```elisp
+(with-eval-after-load 'apheleia
+  (push '(goose-format . ("goose" "format" "-")) apheleia-formatters)
+  (push '(goose-mode . goose-format) apheleia-mode-alist))
+```
