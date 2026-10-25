@@ -1736,13 +1736,15 @@ inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const str
     // Where the C compiler has vector extensions, one vector operation
     // (GS_VEC, runtime.h); the members below otherwise.
     if (vec) {
-        // The operands go to temps of their own type first: both are read
-        // before dst, which may be one of them, is written.
+        // The operands go to temps of their own type first, inside the test
+        // so that the member-by-member form doesn't pay for them; both are
+        // read before dst, which may be one of them, is written.
+        L("#if GS_VEC");
         auto a = VecOperand(t, fs, l, lscalar);
         auto b = VecOperand(t, fs, r, rscalar);
         auto vt = VecType(fs, n);
-        L("#if GS_VEC");
-        L("gs_vst_", vt, "(&(", dst, "), ", VecLoad(vt, a, lscalar), o, VecLoad(vt, b, rscalar), ");");
+        L("GS_VST(", vt, ", &(", dst, "), ", VecLoad(vt, n, a, lscalar), o,
+          VecLoad(vt, n, b, rscalar), ");");
         L("#else");
     }
     GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
@@ -1761,10 +1763,10 @@ inline void CodeGen::GenElemwiseNegInto(TypeExpr *t, Line line, const string &x,
     int64_t n = 0;
     bool vec = VecShape(t, fs, n);
     if (vec) {
+        L("#if GS_VEC");
         auto a = VecOperand(t, fs, x, false);
         auto vt = VecType(fs, n);
-        L("#if GS_VEC");
-        L("gs_vst_", vt, "(&(", dst, "), -", VecLoad(vt, a, false), ");");
+        L("GS_VST(", vt, ", &(", dst, "), -", VecLoad(vt, n, a, false), ");");
         L("#else");
     }
     GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
@@ -1780,6 +1782,9 @@ inline void CodeGen::GenElemwiseNegInto(TypeExpr *t, Line line, const string &x,
 // 64 bytes with no padding: a value GS_VEC can compute on as one vector.
 inline bool CodeGen::VecShape(TypeExpr *t, FltStorage &fs, int64_t &n) {
     n = 0;
+    // Anything past 64 bytes is too big for a vector, however it nests:
+    // reject it before visiting its leaves.
+    if (FixedSize(t) > 64) return false;
     int sto = -1;
     bool ok = true;
     function<void(TypeExpr *)> rec = [&](TypeExpr *tt) {
@@ -1788,7 +1793,7 @@ inline bool CodeGen::VecShape(TypeExpr *t, FltStorage &fs, int64_t &n) {
             case TY_FLT:
                 if (sto < 0) sto = tt->fltstorage;
                 else if (sto != tt->fltstorage) ok = false;
-                n++;
+                if (++n > 16) ok = false;
                 return;
             case TY_STRUCT: {
                 auto si = SI(tt);
@@ -1827,9 +1832,13 @@ inline string CodeGen::VecOperand(TypeExpr *t, FltStorage fs, const string &x, b
     return v;
 }
 
-// The vector of type vt that the temp v holds, or that it fills every lane of.
-inline string CodeGen::VecLoad(const string &vt, const string &v, bool scalar) {
-    return scalar ? cat("gs_vsplat_", vt, "(", v, ")") : cat("gs_vld_", vt, "(&", v, ")");
+// The vector of type vt (n lanes) that the temp v holds, or that it fills
+// every lane of.
+inline string CodeGen::VecLoad(const string &vt, int64_t n, const string &v, bool scalar) {
+    if (!scalar) return cat("GS_VLD(", vt, ", &", v, ")");
+    string lanes;
+    for (int64_t i = 0; i < n; i++) lanes += cat(i ? ", " : "", v);
+    return cat("((", vt, "){ ", lanes, " })");
 }
 
 // Stores leaf(type, path) into dst's member at each numeric leaf path of the

@@ -241,39 +241,30 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 /* Whole-vector elementwise arithmetic (spec §6.1). Where the C compiler has
    GCC's vector extensions, an elementwise operation on a struct or fixed
    array of 2 to 16 floats of one width, 16, 32 or 64 bytes with no padding,
-   is one operation on a vector type of the same layout, which the code
-   generator moves in and out with memcpy (so the value's own alignment
-   doesn't matter). Lane by lane it computes what the members do. Elsewhere
-   (MSVC, TinyCC, or -DGS_VEC=0) the operation stays member by member. */
+   is one operation on a vector type of the same layout. Lane by lane it
+   computes what the members do. Elsewhere (MSVC, TinyCC, or -DGS_VEC=0) the
+   operation stays member by member.
+
+   The vector types are aligned(1), since such a value may sit at any
+   address (structs are packed), and may_alias, since the generated code
+   reads and writes the value's memory through them. It uses them only
+   inside expressions: GS_VLD, GS_VST and vector literals, never as a local
+   (the generated code gathers declarations at the top of a function,
+   outside the GS_VEC test) and never as a parameter or result, so code
+   built for one instruction set never hands a vector to code built for
+   another, which the x86-64 ABI forbids for wide vectors. */
 #if !defined(GS_VEC) && (defined(__clang__) || defined(__GNUC__)) && !defined(__TINYC__)
 #define GS_VEC 1
 #endif
 #if GS_VEC
-typedef double gs_vf64_2 __attribute__((vector_size(16), aligned(8)));
-typedef double gs_vf64_4 __attribute__((vector_size(32), aligned(8)));
-typedef double gs_vf64_8 __attribute__((vector_size(64), aligned(8)));
-typedef float gs_vf32_4 __attribute__((vector_size(16), aligned(4)));
-typedef float gs_vf32_8 __attribute__((vector_size(32), aligned(4)));
-typedef float gs_vf32_16 __attribute__((vector_size(64), aligned(4)));
-/* Loads, stores and scalar broadcasts, so the generated code declares no
-   locals of a vector type (it gathers declarations at the top of a
-   function, outside the GS_VEC test). */
-#define GS_VEC_OPS(V, E, N)                                                    \
-    static inline __attribute__((always_inline)) V gs_vld_##V(const void *p) { \
-        V v;                                                                   \
-        __builtin_memcpy(&v, p, sizeof(V));                                    \
-        return v;                                                              \
-    }                                                                          \
-    static inline __attribute__((always_inline)) void gs_vst_##V(void *p, V v) { \
-        __builtin_memcpy(p, &v, sizeof(V));                                    \
-    }                                                                          \
-    static inline __attribute__((always_inline)) V gs_vsplat_##V(E x) {                V v;                                                                           for (int i = 0; i < N; i++) v[i] = x;                                          return v;                                                                  }
-GS_VEC_OPS(gs_vf64_2, double, 2)
-GS_VEC_OPS(gs_vf64_4, double, 4)
-GS_VEC_OPS(gs_vf64_8, double, 8)
-GS_VEC_OPS(gs_vf32_4, float, 4)
-GS_VEC_OPS(gs_vf32_8, float, 8)
-GS_VEC_OPS(gs_vf32_16, float, 16)
+typedef double gs_vf64_2 __attribute__((vector_size(16), aligned(1), may_alias));
+typedef double gs_vf64_4 __attribute__((vector_size(32), aligned(1), may_alias));
+typedef double gs_vf64_8 __attribute__((vector_size(64), aligned(1), may_alias));
+typedef float gs_vf32_4 __attribute__((vector_size(16), aligned(1), may_alias));
+typedef float gs_vf32_8 __attribute__((vector_size(32), aligned(1), may_alias));
+typedef float gs_vf32_16 __attribute__((vector_size(64), aligned(1), may_alias));
+#define GS_VLD(V, p) (*(const V *)(const void *)(p))
+#define GS_VST(V, p, x) ((void)(*(V *)(void *)(p) = (x)))
 #else
 #undef GS_VEC
 #define GS_VEC 0

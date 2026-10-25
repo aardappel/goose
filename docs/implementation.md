@@ -6016,42 +6016,54 @@ TinyCC and other targets get no overhead from it. A build can lower it with
 
 Elementwise arithmetic (spec §6.1) is emitted member by member
 (`GenElemwiseInto`, `GenElemwiseNegInto`), and clang's SLP vectorizer then
-has to find the vectors again, which it does only in part. In goose-fft's
+has to find the vectors again, which it only partly does. In goose-fft's
 radix-8 pass, whose butterflies are arithmetic on structs of four `f64`, the
-AVX2 version held 208 two-lane operations next to 175 four-lane ones, and
+AVX2 version had 208 two-lane operations next to 175 four-lane ones, and
 spilled. So where the C compiler has GCC's vector extensions, a `+`, `-`,
 `*`, `/` or negation of a value whose leaves are all floats of one width,
-2, 4, 8 or 16 of them in 16, 32 or 64 bytes with nothing else in it
-(`VecShape`: structs, nested ones and fixed arrays alike), is one operation
-on a vector type of the same size (`gs_vf64_4` and its kin in `runtime.h`).
+2, 4, 8 or 16 of them in 16, 32 or 64 bytes with nothing else in it, is one
+operation on a vector type of the same size (`gs_vf64_4` and the others in
+`runtime.h`). `VecShape` decides which values qualify: structs, nested
+structs and fixed arrays alike. It rejects a type over 64 bytes before
+looking at its leaves, and stops at the seventeenth, so a large nested array
+costs nothing to check.
 
 * **Same results.** The vector type's lanes are the members in order, and
   each lane rounds as the member's own operation would: IEEE operations
   don't depend on how many happen at once, and contraction is off (§6.13).
-  A scalar operand of `*` or `/` goes to every lane (`gs_vsplat_*`).
-* **Same layout.** The value stays its struct; the operands are copied in
-  and the result out with `memcpy` (`gs_vld_*`, `gs_vst_*`), which clang
-  turns into register moves, so the struct's alignment (often 1, packed)
-  doesn't matter. Both operands are read into temps first, so a destination
-  that is one of them, or whose member a scalar operand reads, works as it
-  does member by member.
-* **Where.** The vector form is under `#if GS_VEC` with the member-by-member
-  form under `#else`. `runtime.h` sets `GS_VEC` under clang and gcc, not
-  MSVC or TinyCC, which have no vector extensions; `-DGS_VEC=0` turns it
-  off. The vector code declares no local of a vector type (the generated
-  code gathers declarations at the top of a function, outside the `#if`):
-  it calls the load, store and splat helpers on temps of the struct's own
-  type.
+  A scalar operand of `*` or `/` goes to every lane through a vector
+  literal.
+* **Same layout.** The value stays its struct. Both operands are first
+  copied to temps of the struct's own type, so a destination that is one of
+  them, or whose member a scalar operand reads, works as it does member by
+  member. The temps are read and the destination written through the vector
+  type (`GS_VLD`, `GS_VST`), which is `aligned(1)`, since a struct of
+  floats may sit anywhere (structs are packed), and `may_alias`, since it
+  reads memory written as floats.
+* **Only in expressions.** The vector code uses the vector types only
+  inside expressions, never for a local (the generated code gathers
+  declarations at the top of a function, outside the `#if`) and never as a
+  parameter or result. A first version loaded and stored through inline
+  functions: inside a `simd fn`'s AVX2 version that passed a 32-byte vector
+  between code built for AVX and code that wasn't, which the x86-64 ABI
+  forbids, and clang rejected it for Linux and macOS (Windows accepted it).
+* **Where.** The vector form is under `#if GS_VEC`, temps included, with
+  the member-by-member form under `#else`, so TinyCC pays nothing for it.
+  `runtime.h` sets `GS_VEC` under clang and gcc, not MSVC or TinyCC, which
+  have no vector extensions; `-DGS_VEC=0` turns it off.
 * **Effect.** In goose-fft the radix-8 pass's AVX2 version came to 12
   two-lane operations next to 261 four-lane ones, a third fewer spills and
   no shuffles, and transforms of 16 to 16,384 points ran 1.25-1.6x faster
   (memory-bound lengths about even). Code that computes a whole struct and
   then takes it apart member by member can pay instead: computing a vector
   and extracting every lane costs more than the scalars did. goose-fft had
-  one such loop, 10% slower until its multiplies were written per lane.
-  `test/codegen/vec_elemwise.goose` covers each vector type and shapes
-  that don't qualify, built by clang with `GS_VEC` on and off (`clang_vec`
-  in the runner).
+  one such loop, which was 10% slower until its multiplies were written per
+  lane.
+* **Tests.** `test/codegen/vec_elemwise.goose` covers each vector type, in
+  plain functions and in a `simd fn`, and shapes that don't qualify. The
+  runner's `clang_vec` builds it with `GS_VEC` on and off. The `simd fn`
+  cases are the ones that failed on x86-64 Linux and macOS (above), whose CI
+  runs that task.
 
 ---
 

@@ -1025,7 +1025,7 @@ struct CodeGen {
     bool VecShape(TypeExpr *t, FltStorage &fs, int64_t &n);
     string VecType(FltStorage fs, int64_t n);
     string VecOperand(TypeExpr *t, FltStorage fs, const string &x, bool scalar);
-    string VecLoad(const string &vt, const string &v, bool scalar);
+    string VecLoad(const string &vt, int64_t n, const string &v, bool scalar);
     void GenElemwiseLeaves(TypeExpr *t, const string &dst,
                            const function<string(TypeExpr *, const string &)> &leaf);
     void ElemwiseOperands(Binary *b, string &l, string &r);

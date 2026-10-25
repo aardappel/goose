@@ -1983,7 +1983,7 @@ def main():
                 return
             ctext = src.read_text(encoding="utf-8")
             missing = [v for v in ("gs_vf64_2", "gs_vf64_4", "gs_vf64_8", "gs_vf32_4", "gs_vf32_8", "gs_vf32_16")
-                       if f"gs_vst_{v}(" not in ctext]
+                       if f"GS_VST({v}," not in ctext]
             if missing:
                 r.fail(f"vec-clang {name}.goose", f"no vector operations on {', '.join(missing)}")
                 return

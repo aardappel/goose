@@ -5,8 +5,11 @@
 // the member-by-member code gives, so every build prints the same: clang and
 // gcc with and without GS_VEC, MSVC and the JIT, which never vectorize. The
 // shapes next to them that don't qualify (three doubles, mixed widths,
-// integers) run member by member everywhere. The runner's clang_vec also
-// checks which shapes the generated C vectorizes.
+// integers) run member by member everywhere. Simd functions do the same
+// arithmetic in their AVX2 and AVX-512 versions. The runner's clang_vec also
+// checks which shapes the generated C vectorizes and builds it with GS_VEC
+// on and off; the simd functions are what failed to compile on x86-64 Linux
+// and macOS when vectors crossed a call.
 
 import std;
 
@@ -21,6 +24,21 @@ struct I4 { a: i32, b: i32, c: i32, d: i32 } // integers: not a vector
 struct Body { pos: D4, vel: D4, mass: f64 }
 
 fn d4(a: f64, b: f64, c: f64, d: f64) -> D4 { D4 { a, b, c, d } }
+
+// The same arithmetic inside simd functions, whose AVX2 and AVX-512 versions
+// are built for wider vectors than the code around them.
+simd fn add(a: D4, b: D4) -> D4 { a + b }
+
+simd fn mix(xs: D4[:], ys: D4[:], out: D4[:]) {
+    assert(xs.len == ys.len && out.len == xs.len);
+    for x, i in xs { out[i] = x * ys[i] + x / 2.0 - -ys[i]; }
+}
+
+simd fn mix_wide(c: C4, h: F8) -> C4 {
+    let g = h * h - h;
+    let k = g.lo.a * 1.0;
+    return c * c + c / (k + 1.0);
+}
 
 fn main() {
     let u = d4(1.5, -2.0, 0.1, 1.0e300);
@@ -76,6 +94,16 @@ fn main() {
     print(a4 * b4 + a4, " ", -(a4 / b4));
     let a16: f32[16] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0];
     print(a16 * a16 - a16 / 2.0);
+
+    // Inside simd functions.
+    print(add(u, v), " ", add(w, w));
+    var ys: D4[>..] = [];
+    var outs: D4[>..] = [];
+    for e in arr { ys.push(e / 3.0); outs.push(d4(0.0, 0.0, 0.0, 0.0)); }
+    mix(arr, ys, outs);
+    print(outs);
+    let mw = mix_wide(c, h);
+    print(mw.re, " ", mw.im);
 
     // Shapes that stay member by member.
     let d3 = D3 { 1.0, 2.0, 3.0 };
