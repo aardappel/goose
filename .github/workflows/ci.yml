@@ -64,6 +64,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Debug
 
+      # The samples and the standard library are kept as goose format
+      # writes them. On Linux only: a Windows checkout may have \r\n line
+      # breaks, which the formatter would report in every file.
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: build/goose format --check samples stdlib
+
       - name: Test
         run: python test/run_tests.py --exe build/${{ runner.os == 'Windows' && 'Debug/goose.exe' || 'goose' }} --profile baseline --cc native --require-clang
 
