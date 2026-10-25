@@ -10,7 +10,14 @@ fn main() {
     print((x as f64) == 16777216.0);
     print((x as! f64) == 16777216.0);
 
+    // Implicit widening must preserve the constant's source precision.
+    let widened: f64 = x;
+    print(widened == 16777216.0);
     print(global as! i64);
+
+    // A conditional can fold to an f32 literal without cloning a constant.
+    print((if true { 16777217.0 } else { x }) as! i64);
+    print(((if true { 16777217.0 } else { x }) as f64) == 16777216.0);
 
     let negative: f32 = -16777217.0;
     print(negative as! i64);
