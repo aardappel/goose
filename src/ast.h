@@ -2410,19 +2410,18 @@ struct Ast {
     vector<ImportSite> imports;
 
     // The text the terminal shows for d (RenderDiagnostic), the source line
-    // it is on included where `withsource`: an error echoes its line, a
-    // warning does not.
-    string DiagnosticText(const Diagnostic &d, bool withsource) const {
+    // it is on included where `withsource`, with a caret where asked.
+    string DiagnosticText(const Diagnostic &d, bool withsource, bool caret = false) const {
         auto known = d.where.fileidx >= 0 && d.where.fileidx < (int)sources.size();
         return RenderDiagnostic(d, known ? sources[d.where.fileidx].first : string(),
                                 known && withsource ? string_view(*sources[d.where.fileidx].second)
                                                     : string_view(),
-                                false);
+                                caret);
     }
 
-    void Warn(Diagnostic d) {
+    void Warn(Diagnostic d, bool withsource = false) {
         d.warning = true;
-        d.text = DiagnosticText(d, false);
+        d.text = DiagnosticText(d, withsource, withsource);
         Emit(d);
     }
 
