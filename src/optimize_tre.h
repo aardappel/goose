@@ -173,6 +173,21 @@ struct TailRecursion {
         return Locate(it->second) == LOC_ANY ? LOC_ANY : LOC_HOLDSOUT;
     }
 
+    // An argument can abandon the call before its step commits. A nested
+    // block or loop catches its own breaks, but returns still leave us.
+    bool Abandons(Node *n, bool breaks = true) {
+        if (!n) return false;
+        if (auto r = Is<Return>(n); r && r->target == sp->sf) return true;
+        if (breaks && Is<Break>(n)) return true;
+        if (auto fl = Is<ForLoop>(n))
+            return Abandons(fl->iter, breaks) || Abandons(fl->body, false);
+        if (Is<EarlyBlock>(n) || Is<While>(n) || Is<LoopExpr>(n))
+            breaks = false;
+        auto found = false;
+        RunChildren(n, [&](Node *ch) { found = found || Abandons(ch, breaks); });
+        return found;
+    }
+
     // The parameter rebindings one tail call needs; arguments that are
     // already the parameter itself need none only if its value cannot change
     // while later arguments run. Storing into a reference
@@ -188,9 +203,7 @@ struct TailRecursion {
     bool Rebinds(Call *c, vector<pair<VarDef *, Node *>> &out) {
         auto an = c->ValueArgNodes();
         if (an.size() != sp->params.size()) return false;
-        // An argument return abandons the call before its accumulator or
-        // parameter updates can take effect.
-        if (ReturnsTo(c, sp->sf)) return false;
+        if (Abandons(c)) return false;
         for (size_t i = 0; i < an.size(); i++) {
             auto p = sp->params[i];
             if (auto id = Is<Ident>(an[i]); id && id->vdef == p &&
@@ -410,11 +423,9 @@ struct TailRecursion {
 
     // Candidate tail returns. Only those the loop's own `continue` can reach:
     // inside an existing loop the jump would restart that one instead, and a
-    // break in an argument could leave an early-out block after the step
-    // changed the accumulator. A function value's spliced body is a return
-    // path of its own. Anything skipped stays an ordinary return and folds
-    // the accumulator in, which is still correct — the call it keeps returns
-    // the whole remaining fold.
+    // function value's spliced body is a return path of its own. Anything
+    // skipped stays an ordinary return and folds the accumulator in, which is
+    // still correct — the call it keeps returns the whole remaining fold.
     void Collect(Node *n, bool tailok, vector<pair<Return *, Tail>> &found) {
         if (!n) return;
         if (tailok) {
@@ -429,8 +440,7 @@ struct TailRecursion {
             Collect(c->fvbody, false, found);
             return;
         }
-        auto inner = tailok && !Is<While>(n) && !Is<LoopExpr>(n) && !Is<ForLoop>(n) &&
-                     !Is<EarlyBlock>(n);
+        auto inner = tailok && !Is<While>(n) && !Is<LoopExpr>(n) && !Is<ForLoop>(n);
         n->Children([&](Node *ch) { Collect(ch, inner, found); });
     }
 
