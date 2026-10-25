@@ -76,6 +76,7 @@ import argparse
 import json
 import concurrent.futures
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -1894,6 +1895,71 @@ def main():
                 out = r.run_expected([out_exe], name, f"clang-{label} {name}.goose")
                 if out is not None and r.check_stdout(name, f"clang-{label}", out):
                     r.ok(f"{label}-clang {name}.goose")
+        # math's mul_add is the one result a simd function's versions may give
+        # differently from its baseline (spec §7.12): rounded once where the
+        # code is built for FMA. Built by clang at each level, a plain
+        # function rounds as the target does (once on arm64, twice on a plain
+        # x86-64 build) and the simd function's versions round once, which on
+        # x86-64 a CPU with AVX2 and FMA runs at levels 1 and 2. Where the CPU
+        # can't be asked, levels 1 and 2 may give either.
+        def host_fma():
+            if tc.IS_WINDOWS:
+                try:
+                    import ctypes
+                    # PF_AVX2_INSTRUCTIONS_AVAILABLE; every CPU with AVX2
+                    # this runs on has FMA.
+                    return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))
+                except (AttributeError, OSError):
+                    return None
+            if sys.platform.startswith("linux"):
+                try:
+                    flags = set()
+                    for line in open("/proc/cpuinfo", encoding="utf-8"):
+                        if line.startswith("flags"):
+                            flags.update(line.split(":", 1)[1].split())
+                            break
+                    return "avx2" in flags and "fma" in flags
+                except OSError:
+                    return None
+            return None
+
+        def clang_mul_add():
+            name = "simd_mul_add"
+            src = gendir / "muladdclang.c"
+            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen" / f"{name}.goose")
+            if code != 0:
+                r.fail(f"mul_add-clang {name}.goose", out + err)
+                return
+            ctext = src.read_text(encoding="utf-8")
+            if not re.search(r"#define GS_MUL_ADD_MODE fused\nGS_SIMD_TARGET1 static [^\n]*"
+                             r"\bresiduals_g\w*_simd1\(", ctext):
+                r.fail(f"mul_add-clang {name}.goose", "no fused mode around the AVX2 version")
+                return
+            arm = platform.machine().lower() in ("arm64", "aarch64")
+            fma = host_fma()
+            for level in ("2", "1", "0"):
+                label = f"mul_add-simd{level}-clang {name}.goose"
+                out_exe = gendir / f"muladdclang-{level}{tc.EXE_SUFFIX}"
+                ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
+                                        defines=[f"GS_SIMD={level}"], runtime=r.runtime,
+                                        log=gendir / f"muladdclang-{level}.log")
+                if not ok:
+                    r.fail(label, "\n".join(log.splitlines()[:8]))
+                    continue
+                out = r.check_run(name, label, *tc.run_capture([out_exe, "modes"]))
+                if out is None:
+                    continue
+                lines = out.splitlines()
+                got = lines[-1].split() if lines else []
+                plain = "fused" if arm else "separate"
+                simd = ({"fused"} if arm else {"separate"} if level == "0" else
+                        {"fused", "separate"} if fma is None else {"fused" if fma else "separate"})
+                if len(lines) != 2 or lines[0] != "true true true" or len(got) != 2 or \
+                        got[0] != plain or got[1] not in simd:
+                    r.fail(label, f"got {out!r}; want plain {plain}, simd {' or '.join(sorted(simd))}")
+                else:
+                    r.ok(label)
+
         if args.profile == "sanitize":
             pass  # The full generated-C suite already ran through Clang.
         elif not clang:
@@ -1904,6 +1970,7 @@ def main():
                         clang_simd_versions)
             r.show_task(clang_simd, "stdlib_base64", HERE / "stdlib" / "stdlib_base64.goose",
                         clang_simd_named("base64_encode", "base64_decode"))
+            r.show_task(clang_mul_add)
 
     r.section("driver, diagnostics and language server")
 

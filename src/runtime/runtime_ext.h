@@ -61,6 +61,39 @@ static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
+/* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
+   where the code is built for FMA, as two roundings elsewhere
+   (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the
+   mode where the call is written: a simd function's AVX2 and AVX-512
+   versions fuse whatever the target. A function value is resolved at
+   compile time, so its calls name the macro too. The function of the same
+   name, in the target's mode, is only for C that names it without the
+   macro. The fused form is inlined into its caller, so that it is built
+   with the caller's FMA. */
+static inline double gs_mul_add_separate(double x, double y, double z) { return x * y + z; }
+static inline float gs_mul_addf_separate(float x, float y, float z) { return x * y + z; }
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+static inline __attribute__((always_inline)) double gs_mul_add_fused(double x, double y, double z) {
+    return __builtin_fma(x, y, z);
+}
+static inline __attribute__((always_inline)) float gs_mul_addf_fused(float x, float y, float z) {
+    return __builtin_fmaf(x, y, z);
+}
+#else
+static inline double gs_mul_add_fused(double x, double y, double z) { return fma(x, y, z); }
+static inline float gs_mul_addf_fused(float x, float y, float z) { return fmaf(x, y, z); }
+#endif
+#define GS_MUL_ADD_CAT2(a, b) a##b
+#define GS_MUL_ADD_CAT(a, b) GS_MUL_ADD_CAT2(a, b)
+static double gs_mul_add(double x, double y, double z) {
+    return GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_BASE)(x, y, z);
+}
+static float gs_mul_addf(float x, float y, float z) {
+    return GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_BASE)(x, y, z);
+}
+#define gs_mul_add(x, y, z) GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_MODE)(x, y, z)
+#define gs_mul_addf(x, y, z) GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_MODE)(x, y, z)
+
 /* math's other libm functions (stdlib/math.goose). C has them set errno on a
    domain or range error, so a C compiler takes each call for a write to
    memory: a loop around one loads again after it whatever it had hoisted

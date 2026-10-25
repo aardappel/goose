@@ -231,13 +231,13 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    instruction-set level, the baseline under the function's name, and the
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
-   BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
-   are built by clang on x86-64, through its target attribute and inline
-   assembly for cpuid; the contraction pragma above keeps their float
-   results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
-   the versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers
-   the level; nothing raises it. */
+   FMA, BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by
+   one), 2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The
+   versions are built by clang on x86-64, through its target attribute and
+   inline assembly for cpuid; the contraction pragma above keeps their float
+   results the baseline's, though both have FMA: only math's mul_add uses
+   it (GS_MUL_ADD_MODE, below). Elsewhere the versions are left out, and so
+   is the choice. -DGS_SIMD=0 or 1 lowers the level; nothing raises it. */
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
@@ -247,9 +247,9 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_SIMD 0
 #endif
 #if GS_SIMD >= 1
-#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,fma,bmi,bmi2,lzcnt,popcnt")))
 #define GS_SIMD_TARGET2 \
-    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,fma,bmi,bmi2,lzcnt,popcnt")))
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -262,8 +262,10 @@ static inline int gs_simd_detect(void) {
     gs_cpuid(0, r);
     if (r[0] < 7) return 0;
     gs_cpuid(1, r);
-    /* OSXSAVE, AVX, POPCNT. */
-    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    /* OSXSAVE, AVX, POPCNT, FMA. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23 | 1u << 12)) !=
+        (1u << 27 | 1u << 28 | 1u << 23 | 1u << 12))
+        return 0;
     __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
     (void)xhi;
     if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
@@ -295,6 +297,22 @@ static inline int gs_simd_level(void) {
     return l;
 }
 #endif
+
+/* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
+   is built for FMA and twice where it is not, so its results are the
+   implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
+   the target as a whole: fused on arm64 and on x86-64 built for AVX2 or
+   past it (-march=x86-64-v3, /arch:AVX2), separate everywhere else and
+   under TinyCC. A simd function's AVX2 and AVX-512 versions have FMA
+   whatever the target, so the compiler sets GS_MUL_ADD_MODE to fused around
+   them, and back to the base after (EmitSimdVersions). */
+#if !defined(__TINYC__) && (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64) || \
+                            (defined(_MSC_VER) && defined(__AVX2__)))
+#define GS_MUL_ADD_BASE fused
+#else
+#define GS_MUL_ADD_BASE separate
+#endif
+#define GS_MUL_ADD_MODE GS_MUL_ADD_BASE
 
 /* The generated code's memcpy and memset of zeros. Most move or clear the
    1 to 32 bytes of a field, an element or a reference, a constant size the

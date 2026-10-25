@@ -3020,6 +3020,9 @@ vectorize: byte transforms, codecs, kernels over arrays. Every version
 computes exactly what the baseline does, so nothing about a program's
 output depends on it. A backend may ignore it, as the C backend does under
 compilers other than clang and under the in-process TinyCC backend.
+The exception is `math`'s `mul_add(x, y, z)`: `x * y + z` rounded once
+where the code is built for FMA and twice where it is not. The AVX2 and
+AVX-512 versions round once, and the baseline rounds as its target does.
 Spec §7.12, §7.13.
 
 ```goose

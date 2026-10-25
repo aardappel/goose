@@ -244,13 +244,13 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    instruction-set level, the baseline under the function's name, and the
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
-   BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
-   are built by clang on x86-64, through its target attribute and inline
-   assembly for cpuid; the contraction pragma above keeps their float
-   results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
-   the versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers
-   the level; nothing raises it. */
+   FMA, BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by
+   one), 2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The
+   versions are built by clang on x86-64, through its target attribute and
+   inline assembly for cpuid; the contraction pragma above keeps their float
+   results the baseline's, though both have FMA: only math's mul_add uses
+   it (GS_MUL_ADD_MODE, below). Elsewhere the versions are left out, and so
+   is the choice. -DGS_SIMD=0 or 1 lowers the level; nothing raises it. */
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
@@ -260,9 +260,9 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_SIMD 0
 #endif
 #if GS_SIMD >= 1
-#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,fma,bmi,bmi2,lzcnt,popcnt")))
 #define GS_SIMD_TARGET2 \
-    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,fma,bmi,bmi2,lzcnt,popcnt")))
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -275,8 +275,10 @@ static inline int gs_simd_detect(void) {
     gs_cpuid(0, r);
     if (r[0] < 7) return 0;
     gs_cpuid(1, r);
-    /* OSXSAVE, AVX, POPCNT. */
-    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    /* OSXSAVE, AVX, POPCNT, FMA. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23 | 1u << 12)) !=
+        (1u << 27 | 1u << 28 | 1u << 23 | 1u << 12))
+        return 0;
     __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
     (void)xhi;
     if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
@@ -308,6 +310,22 @@ static inline int gs_simd_level(void) {
     return l;
 }
 #endif
+
+/* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
+   is built for FMA and twice where it is not, so its results are the
+   implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
+   the target as a whole: fused on arm64 and on x86-64 built for AVX2 or
+   past it (-march=x86-64-v3, /arch:AVX2), separate everywhere else and
+   under TinyCC. A simd function's AVX2 and AVX-512 versions have FMA
+   whatever the target, so the compiler sets GS_MUL_ADD_MODE to fused around
+   them, and back to the base after (EmitSimdVersions). */
+#if !defined(__TINYC__) && (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64) || \
+                            (defined(_MSC_VER) && defined(__AVX2__)))
+#define GS_MUL_ADD_BASE fused
+#else
+#define GS_MUL_ADD_BASE separate
+#endif
+#define GS_MUL_ADD_MODE GS_MUL_ADD_BASE
 
 /* The generated code's memcpy and memset of zeros. Most move or clear the
    1 to 32 bytes of a field, an element or a reference, a constant size the
@@ -342,7 +360,8 @@ static inline int gs_simd_level(void) {
      : GS_KSZ(n, 3, 3) ? (void)(GS_AT(uint16_t, d, 0) = 0, GS_AT(uint8_t, d, 2) = 0) \
      : GS_KSZ(n, 5, 7) ? (void)(GS_AT(uint32_t, d, 0) = 0, GS_AT(uint32_t, d, (n) - 4) = 0) \
      : GS_KSZ(n, 9, 16) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
-     : GS_KSZ(n, 17, 32) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, 8) = 0, \
+)GSRT"
+R"GSRT(     : GS_KSZ(n, 17, 32) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, 8) = 0, \
                                   GS_AT(uint64_t, d, (n) - 16) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
      : (void)memset((d), 0, (n)))
 #else
@@ -510,7 +529,8 @@ GS_DIVOPS_S(i32, int32_t, INT32_MIN, INT32_MAX)
 #define gs_div_i16(a, b, f, l) GS_DIVS(int16_t, a, b, f, l)
 #define gs_div_i32(a, b, f, l) GS_DIVS(int32_t, a, b, f, l)
 #endif
-
+)GSRT"
+R"GSRT(
 #if GS_DEBUG
 
 /* Signed narrow types (8/16/32 bits): 64-bit signed math covers every
@@ -690,7 +710,8 @@ static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
 #if GS_HAVE_U128
     int k = 63;
     uint64_t rem, m;
-    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
+)GSRT"
+R"GSRT(    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
     while (!(d >> k)) k--;
     if (!(d & (d - 1))) { *more = (uint8_t)k; return 0; }
     /* floor(2^(64+k) / d), which fits since d > 2^k; then the smallest
@@ -879,7 +900,8 @@ typedef struct gs_dlbind {
 /* Opens each library once and fills every slot, on the main thread before
    the globals are initialized. A library that does not load, or a symbol it
    does not have, is a runtime error naming both. */
-GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
+)GSRT"
+R"GSRT(GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
                        int64_t nbinds);
 
 /* ---------------------------------------------------------------------------
@@ -1075,7 +1097,8 @@ static int64_t gs_zig_read(const uint8_t *p) {
     return (int64_t)((u >> 1) ^ (0u - (u & 1)));
 }
 
-static int64_t gs_zig_write(uint8_t *p, int64_t v) {
+)GSRT"
+R"GSRT(static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
 
@@ -3506,6 +3529,37 @@ static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
+/* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
+   where the code is built for FMA, as two roundings elsewhere
+   (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the
+   mode where the call is written: a simd function's AVX2 and AVX-512
+   versions fuse whatever the target. The function of the same name, which
+   a function value reaches, has the target's mode. The fused form is
+   inlined into its caller, so that it is built with the caller's FMA. */
+static inline double gs_mul_add_separate(double x, double y, double z) { return x * y + z; }
+static inline float gs_mul_addf_separate(float x, float y, float z) { return x * y + z; }
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+static inline __attribute__((always_inline)) double gs_mul_add_fused(double x, double y, double z) {
+    return __builtin_fma(x, y, z);
+}
+static inline __attribute__((always_inline)) float gs_mul_addf_fused(float x, float y, float z) {
+    return __builtin_fmaf(x, y, z);
+}
+#else
+static inline double gs_mul_add_fused(double x, double y, double z) { return fma(x, y, z); }
+static inline float gs_mul_addf_fused(float x, float y, float z) { return fmaf(x, y, z); }
+#endif
+#define GS_MUL_ADD_CAT2(a, b) a##b
+#define GS_MUL_ADD_CAT(a, b) GS_MUL_ADD_CAT2(a, b)
+static double gs_mul_add(double x, double y, double z) {
+    return GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_BASE)(x, y, z);
+}
+static float gs_mul_addf(float x, float y, float z) {
+    return GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_BASE)(x, y, z);
+}
+#define gs_mul_add(x, y, z) GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_MODE)(x, y, z)
+#define gs_mul_addf(x, y, z) GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_MODE)(x, y, z)
+
 /* math's other libm functions (stdlib/math.goose). C has them set errno on a
    domain or range error, so a C compiler takes each call for a write to
    memory: a loop around one loads again after it whatever it had hoisted
@@ -3593,7 +3647,8 @@ static int64_t gs_clz(uint64_t x) {
 #endif
 }
 static int64_t gs_ctz(uint64_t x) {
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+)GSRT"
+R"GSRT(#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
     return x ? __builtin_ctzll(x) : 64;
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
     unsigned long i;
@@ -3636,8 +3691,7 @@ GS_API uint64_t gs_os_random_u64(void);
 /* os.trim_memory: discards unused complete pages of this thread program's
    data stacks. Defined with the region registry it walks (runtime_impl.h),
    but declared here like the other os primitives, so that no prototype is
-)GSRT"
-R"GSRT(   emitted for it. For generated code only, whose callers write back their
+   emitted for it. For generated code only, whose callers write back their
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);

@@ -570,8 +570,38 @@ gcc and clang are told depend only on their arguments. Since Goose has no
 errno, a call does not make the C compiler reload values that a loop
 around the call holds in registers. An integer argument converts to both
 widths equally well, so the call has to name one (`sqrt(n as f64)`);
-`sqrt(n * 0.5)` calls the `f64` version, as `sqrt(0.5)` does. The module
-also has:
+`sqrt(n * 0.5)` calls the `f64` version, as `sqrt(0.5)` does.
+
+`mul_add(x, y, z)`, at both widths, is `x * y + z` rounded once where the
+code is built for FMA and twice where it is not. Which one a call gets is
+up to the implementation (spec §7.12). The C backend rounds once on arm64,
+on x86-64 built for AVX2 or later (`-march=x86-64-v3`, `/arch:AVX2`), and
+in a `simd fn`'s AVX2 and AVX-512 versions. It rounds twice elsewhere and
+under the JIT. `x * y + z` written out always rounds twice.
+
+The two roundings can give very different results, not just a different
+last bit:
+
+- **Cancellation.** Where `x * y` and `z` nearly cancel, the fused result
+  keeps the product's low bits and the unfused one loses them, so one can
+  be zero where the other isn't. `mul_add(x, x, -(1.0 + 2.0 * (x - 1.0)))`
+  with `x = 1 + 2^-30` is `2^-60` fused and `0.0` unfused, and a branch on
+  it goes either way.
+- **Overflow.** `mul_add(1.0e308, 2.0, -1.0e308)` is `1.0e308` fused, but
+  `inf` unfused, because the product overflows before the add.
+
+Inside a `simd fn`, only the calls Goose emits in that function's own body
+fuse: its own code, and the functions Goose inlines into it. A call in a
+plain helper that the `simd fn` calls keeps the helper's rounding, even if
+the C compiler inlines the helper later. Whether Goose inlines a small
+helper depends on the optimization level, so moving a `mul_add` into a
+helper can change both the result and the speed between `-O0` and `-O2`.
+Mark such a helper `inline fn` to keep its calls fused in every `simd`
+caller. A function value is resolved at compile time, so a `simd fn`
+given `mul_add` as one (`F(x, y, z)` with `F` = `mul_add`) fuses like a
+direct call.
+
+The module also has:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;

@@ -528,10 +528,14 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
     }
     auto ret = SigRet(sp);
     vector<string> versions(SIMD_LEVELS + 1);
+    // Every version above the baseline has FMA, so math's mul_add fuses in
+    // it whatever the target's mode (runtime.h).
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         versions[lv] = Unique(cat(name, "_simd", lv));
-        Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
-               versions[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
+        Append(code, "#if GS_SIMD >= ", lv,
+               "\n#undef GS_MUL_ADD_MODE\n#define GS_MUL_ADD_MODE fused\nGS_SIMD_TARGET", lv,
+               " static ", ret, " ", versions[lv], "(", params, ") {\n", fnbody,
+               "}\n#undef GS_MUL_ADD_MODE\n#define GS_MUL_ADD_MODE GS_MUL_ADD_BASE\n#endif\n");
     }
     Append(code, "static ", ret, " ", name, "(", params, ") {\n",
            "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");

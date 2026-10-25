@@ -22,4 +22,15 @@ fn main() {
     var sqf: f32[>..] = [2.0, -4.0];
     print(sqrt(sq[0]), " ", sqrt(sq[1]), " ", is_nan(sqrt(sq[2])), " ", sqrt(sq[3]), " ", sqrt(sqf[0]),
           " ", is_nan(sqrt(sqf[1])));   // 1.4142135623730951 -0.0 true 1e+154 1.4142135 true
+    // mul_add rounds x * y + z once where the code is built for FMA and twice
+    // where it is not (§7.12), so only what both give is printed. Exact
+    // products agree; (1 + e)^2 - (1 + 2e) is e^2 rounded once, and 0 when
+    // the square is rounded first (e = 2^-30, and 2^-12 for f32).
+    var ma: f64[>..] = [2.0, 3.0, 4.0, 1.0 + 1.0 / 1073741824.0];
+    var maf: f32[>..] = [2.0, 3.0, 4.0, 1.0 + 1.0 / 4096.0];
+    let d = mul_add(ma[3], ma[3], -(1.0 + 2.0 / 1073741824.0));
+    let one_e: f32 = 1.0;
+    let df = mul_add(maf[3], maf[3], -(one_e + 2.0 / 4096.0));
+    print(mul_add(ma[0], ma[1], ma[2]), " ", d == 0.0 || d == 1.0 / (1073741824.0 * 1073741824.0), " ",
+          mul_add(maf[0], maf[1], maf[2]), " ", df == 0.0 || df == 1.0 / (4096.0 * 4096.0));   // 10.0 true 10.0 true
 }

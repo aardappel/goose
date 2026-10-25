@@ -20,6 +20,11 @@ extern fn log(x: f64) -> f64 = "gs_log";              extern fn log(x: f32) -> f
 extern fn log2(x: f64) -> f64 = "gs_log2";            extern fn log2(x: f32) -> f32 = "gs_log2f";
 extern fn log10(x: f64) -> f64 = "gs_log10";          extern fn log10(x: f32) -> f32 = "gs_log10f";
 extern fn pow(x: f64, y: f64) -> f64 = "gs_pow";      extern fn pow(x: f32, y: f32) -> f32 = "gs_powf";
+// x * y + z, rounded once where the code is built for FMA and twice where it
+// is not: which is the implementation's, so results may differ between
+// machines (§7.12). A simd fn's versions past the baseline round once.
+extern fn mul_add(x: f64, y: f64, z: f64) -> f64 = "gs_mul_add";
+extern fn mul_add(x: f32, y: f32, z: f32) -> f32 = "gs_mul_addf";
 extern fn floor(x: f64) -> f64;                       extern fn floor(x: f32) -> f32 = "floorf";
 extern fn ceil(x: f64) -> f64;                        extern fn ceil(x: f32) -> f32 = "ceilf";
 extern fn round(x: f64) -> f64;                       extern fn round(x: f32) -> f32 = "roundf";

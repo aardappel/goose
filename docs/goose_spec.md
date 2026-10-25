@@ -3294,6 +3294,18 @@ the baseline would not. An implementation may ignore `simd` entirely, as
 the C backend does under compilers other than clang on x86-64 and under
 the JIT.
 
+The one exception is the standard library's `mul_add(x, y, z)` (`math`),
+which asks for `x * y + z` rounded once where the hardware can do so and
+accepts it rounded twice where it cannot. Which one a call gets is up to
+the implementation. It may differ between targets, between builds for one
+target, and between a function's versions. Because the product is not
+rounded on its own, the two can differ by much more than the last bit:
+where `x * y` and `z` nearly cancel, including a zero against a nonzero,
+and where `x * y` overflows but the sum does not. The C backend rounds once
+on arm64, in x86-64 code built for AVX2 or later, and in a `simd`
+function's AVX2 and AVX-512 versions. It rounds twice everywhere else and
+under the JIT. A `*` followed by a `+` is never fused, `mul_add` or not.
+
 Versions are per function: each version contains everything the function
 contains, including the callees inlined into it. The function itself stays
 out of line, since a caller it was inlined into would run the baseline's

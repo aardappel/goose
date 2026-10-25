@@ -5934,8 +5934,8 @@ everywhere else, where the C compiler sees one ordinary function, so MSVC,
 TinyCC and other targets get no overhead from it. A build can lower it with
 `-DGS_SIMD=1` (no AVX-512 version) or `0`.
 
-* **Levels.** 1 is AVX2 with BMI1, BMI2, LZCNT and POPCNT; 2 adds AVX-512
-  F, BW, CD, DQ and VL (x86-64-v4). Neither includes FMA. Clang inlines a
+* **Levels.** 1 is AVX2 with FMA, BMI1, BMI2, LZCNT and POPCNT; 2 adds
+  AVX-512 F, BW, CD, DQ and VL (x86-64-v4). Clang inlines a
   baseline callee into a version (a callee whose target features are a
   subset of the caller's), so a small helper the loop calls is vectorized
   with it; it never inlines a version into the baseline.
@@ -5962,6 +5962,40 @@ TinyCC and other targets get no overhead from it. A build can lower it with
   and MSVC's `fp_contract(off)`. The same contraction measured 2x slower
   on a matrix multiply under AVX-512, because an FMA's latency lengthens
   the dot product's dependency chain.
+* **`mul_add`.** `math`'s `mul_add` is the program saying where to fuse,
+  and the one result a version may give differently from its baseline
+  (spec §7.12). It is an extern bound to `gs_mul_add` (`gs_mul_addf`).
+  `runtime_ext.h` defines that name twice: as a function, and then as a
+  macro of the same name, which every call in the generated code names. The
+  macro pastes `GS_MUL_ADD_MODE` into `gs_mul_add_fused` (`__builtin_fma`,
+  always inlined so that it is built with its caller's FMA) or
+  `gs_mul_add_separate` (`x * y + z`, two roundings under the contraction
+  pragma), so a call gets the mode in force where it is emitted.
+  `runtime.h` sets the mode to `GS_MUL_ADD_BASE`: fused where the whole
+  translation unit has FMA (`__FMA__`, arm64, MSVC's `/arch:AVX2`), and
+  separate elsewhere and under TinyCC. `EmitSimdVersions` sets it to fused
+  before each version past the baseline, whose target attribute includes
+  FMA, and back to the base after, so the baseline's copy of the body keeps
+  the target's mode.
+  * **Function values** are resolved at compile time (spec §7.6): a call through
+    one names the macro like a direct call, so a `simd fn` given `mul_add`
+    as a function value fuses in its versions, at `-O0` too. The function
+    definition, in the base mode, is only for C that names it without the
+    macro; the generated code never does.
+  * **Helpers.** A callee stays in the mode it was emitted in, even where
+    clang inlines it into a version later. Only the version's own body
+    fuses, together with the functions Goose inlined into it. So a
+    `mul_add` moved into a plain helper fuses in a `simd` caller at `-O2`,
+    where Goose inlines a small helper, and not at `-O0`. An `inline fn`
+    helper fuses at every level. The stdlib documentation says so.
+  * **Tests.** `test/codegen/simd_mul_add.goose` checks each kind of call
+    (plain, direct in a `simd fn`, through an `inline fn` helper, through a
+    function value) built by clang at each level (`clang_mul_add` in the
+    runner). `stdlib_math.goose` checks a cancellation and an overflow case
+    accept either rounding and nothing else.
+  * **Effect.** Making `gemm_block`'s multiply-add in goose-linalg a
+    `mul_add` made its matrix multiply 1.3x faster on an i5-12600K, at 68
+    GFLOP/s at n = 400.
 * **Annotated, not automatic.** Building a suite of 50 benchmark programs,
   as written, for AVX2 or for AVX-512 without contraction measured 1-4%
   faster in total. That is inside the run-to-run noise, and no program
