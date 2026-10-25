@@ -1,6 +1,6 @@
 // lsp: fixture for test/lsp_protocol.py: completion. The `lsp:` lines at
 // the end ask for completions at places and name labels the answer must
-// have or lack; lines and columns are 1-based.
+// have or lack, or the spelling an item inserts; lines and columns are 1-based.
 import std;
 import helper;
 
@@ -68,3 +68,18 @@ fn main() {
 // lsp: complete 37:14 has x
 // lsp: complete 36:21 has twice
 // lsp: complete 36:21 lacks total
+// lsp: complete 36:21 inserts twice
+// lsp: complete 33:9 inserts helper::twice
+// lsp: complete 33:9 inserts total
+// lsp: complete 33:9 inserts Point
+// lsp: complete 33:9 inserts helper::Box
+// lsp: complete 33:9 inserts helper::Choice
+// lsp: complete 33:9 inserts helper::Number
+// lsp: complete 33:9 inserts helper::answer
+// lsp: complete 33:9 inserts helper::counter
+// lsp: complete 36:21 inserts Box
+// lsp: complete 36:21 inserts Choice
+// lsp: complete 36:21 inserts Number
+// lsp: complete 36:21 inserts answer
+// lsp: complete 36:21 inserts counter
+// lsp: complete 36:23 inserts twice

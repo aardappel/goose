@@ -235,12 +235,17 @@ def check_lsp_protocol(exe, base):
                         got["activeParameter"] != int(active)):
                     fail(f"signature {pos}", got)
             elif kind == "complete":
-                # `complete L:C has NAME` / `lacks NAME`: the labels offered;
-                # `has NAME "detail"`: one whose detail holds that text.
-                pos, mode, name, detail = re.match(r'(\S+) (has|lacks) (\S+)(?: "(.*)")?$', rest).groups()
+                # `has NAME` / `lacks NAME`: labels; optional text checks detail.
+                # `inserts NAME`: the item inserts that spelling, as a client would.
+                pos, mode, name, detail = re.match(r'(\S+) (has|lacks|inserts) (\S+)(?: "(.*)")?$', rest).groups()
                 got = client.request("textDocument/completion", {**doc, "position": position(pos)})
                 items = {item["label"]: item for item in (got or {}).get("items", [])}
-                if (name in items) != (mode == "has"):
+                if mode == "inserts":
+                    item = items.get(name, {})
+                    insert = item.get("textEdit", {}).get("newText", item.get("insertText", item.get("label")))
+                    if insert != name:
+                        fail(f"completion {pos} inserts {name}", item)
+                elif (name in items) != (mode == "has"):
                     fail(f"completion {pos} {mode} {name}", sorted(items))
                 if detail and detail not in items[name].get("detail", ""):
                     fail(f"completion {pos} {name}'s detail lacks {detail}", items[name])
