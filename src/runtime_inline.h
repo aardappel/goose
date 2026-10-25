@@ -356,12 +356,12 @@ static inline int gs_simd_level(void) {
     (GS_KSZ(n, 8, 8) ? (void)(GS_AT(uint64_t, d, 0) = 0) \
      : GS_KSZ(n, 4, 4) ? (void)(GS_AT(uint32_t, d, 0) = 0) \
      : GS_KSZ(n, 1, 1) ? (void)(GS_AT(uint8_t, d, 0) = 0) \
-     : GS_KSZ(n, 2, 2) ? (void)(GS_AT(uint16_t, d, 0) = 0) \
+)GSRT"
+R"GSRT(     : GS_KSZ(n, 2, 2) ? (void)(GS_AT(uint16_t, d, 0) = 0) \
      : GS_KSZ(n, 3, 3) ? (void)(GS_AT(uint16_t, d, 0) = 0, GS_AT(uint8_t, d, 2) = 0) \
      : GS_KSZ(n, 5, 7) ? (void)(GS_AT(uint32_t, d, 0) = 0, GS_AT(uint32_t, d, (n) - 4) = 0) \
      : GS_KSZ(n, 9, 16) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
-)GSRT"
-R"GSRT(     : GS_KSZ(n, 17, 32) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, 8) = 0, \
+     : GS_KSZ(n, 17, 32) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, 8) = 0, \
                                   GS_AT(uint64_t, d, (n) - 16) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
      : (void)memset((d), 0, (n)))
 #else
@@ -378,8 +378,7 @@ static uint32_t gs_ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v;
 static uint64_t gs_ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v; }
 #endif
 
-)GSRT"
-R"GSRT(/* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
+/* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
    bytes of a little-endian load lie within a length. */
 static uint64_t gs_bytemask(int64_t k) {
     return k >= 8 ? ~(uint64_t)0 : k <= 0 ? 0 : ((uint64_t)1 << (k * 8)) - 1;
@@ -519,7 +518,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
 static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a / (int64_t)b; \
-    if (r < (MIN) || r > (MAX)) gs_ovf(a, "/", b, #SFX, file, line); \
+)GSRT"
+R"GSRT(    if (r < (MIN) || r > (MAX)) gs_ovf(a, "/", b, #SFX, file, line); \
     return (T)r; }
 GS_DIVOPS_S(i8, int8_t, -128, 127)
 GS_DIVOPS_S(i16, int16_t, -32768, 32767)
@@ -529,8 +529,7 @@ GS_DIVOPS_S(i32, int32_t, INT32_MIN, INT32_MAX)
 #define gs_div_i16(a, b, f, l) GS_DIVS(int16_t, a, b, f, l)
 #define gs_div_i32(a, b, f, l) GS_DIVS(int32_t, a, b, f, l)
 #endif
-)GSRT"
-R"GSRT(
+
 #if GS_DEBUG
 
 /* Signed narrow types (8/16/32 bits): 64-bit signed math covers every
@@ -546,8 +545,7 @@ static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a * (int64_t)b; \
-)GSRT"
-R"GSRT(    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
+    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_neg_##SFX(T a, const char *file, int line) { \
     int64_t r = -(int64_t)a; \
@@ -695,7 +693,8 @@ static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
     return (uint64_t)(n / d);
 #endif
 }
-#elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
+)GSRT"
+R"GSRT(#elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
 #include <intrin.h>
 #define GS_HAVE_U128 1
 static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
@@ -710,8 +709,7 @@ static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
 #if GS_HAVE_U128
     int k = 63;
     uint64_t rem, m;
-)GSRT"
-R"GSRT(    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
+    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
     while (!(d >> k)) k--;
     if (!(d & (d - 1))) { *more = (uint8_t)k; return 0; }
     /* floor(2^(64+k) / d), which fits since d > 2^k; then the smallest
@@ -733,8 +731,7 @@ R"GSRT(    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
 #endif
 }
 
-)GSRT"
-R"GSRT(static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
+static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
 #if GS_HAVE_U128
     uint64_t q;
     if (!magic) return x >> more;
@@ -891,7 +888,8 @@ typedef struct gs_dllib {
     const char *name, *onwindows, *onmacos, *onlinux;
 } gs_dllib;
 /* One function: its library's index in the table, the symbol the library
-   is asked for, and the pointer the generated code calls through. */
+)GSRT"
+R"GSRT(   is asked for, and the pointer the generated code calls through. */
 typedef struct gs_dlbind {
     int32_t lib;
     const char *sym;
@@ -900,8 +898,7 @@ typedef struct gs_dlbind {
 /* Opens each library once and fills every slot, on the main thread before
    the globals are initialized. A library that does not load, or a symbol it
    does not have, is a runtime error naming both. */
-)GSRT"
-R"GSRT(GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
+GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
                        int64_t nbinds);
 
 /* ---------------------------------------------------------------------------
@@ -913,8 +910,7 @@ GS_API int64_t gs_hardware_threads(void);
    abort ends run early. */
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
-)GSRT"
-R"GSRT(                               const void *args, int64_t argsize, int contained);
+                               const void *args, int64_t argsize, int contained);
 /* Whether the worker returned rather than aborted, once it has ended. Where
    `msg` is not NULL, the first such wait for a worker that aborted takes its
    message: `msg` and `len` are set to it, which the caller frees with
@@ -1082,7 +1078,8 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
 #define GS_ULEB_READ(p) ((*(p) & 0x80) ? gs_uleb_read_slow(p) : (int64_t)*(p))
 #define GS_ULEB_SIZE(p) ((*(p) & 0x80) ? gs_uleb_size_slow(p) : (int64_t)1)
 
-static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
+)GSRT"
+R"GSRT(static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;
     for (;;) {
         uint8_t b = v & 0x7f;
@@ -1097,8 +1094,7 @@ static int64_t gs_zig_read(const uint8_t *p) {
     return (int64_t)((u >> 1) ^ (0u - (u & 1)));
 }
 
-)GSRT"
-R"GSRT(static int64_t gs_zig_write(uint8_t *p, int64_t v) {
+static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
 
@@ -1110,8 +1106,7 @@ R"GSRT(static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
-)GSRT"
-R"GSRT(static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
@@ -3533,9 +3528,11 @@ static float gs_sqrtf(float x) { return sqrtf(x); }
    where the code is built for FMA, as two roundings elsewhere
    (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the
    mode where the call is written: a simd function's AVX2 and AVX-512
-   versions fuse whatever the target. The function of the same name, which
-   a function value reaches, has the target's mode. The fused form is
-   inlined into its caller, so that it is built with the caller's FMA. */
+   versions fuse whatever the target. A function value is resolved at
+   compile time, so its calls name the macro too. The function of the same
+   name, in the target's mode, is only for C that names it without the
+   macro. The fused form is inlined into its caller, so that it is built
+   with the caller's FMA. */
 static inline double gs_mul_add_separate(double x, double y, double z) { return x * y + z; }
 static inline float gs_mul_addf_separate(float x, float y, float z) { return x * y + z; }
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
@@ -3643,12 +3640,12 @@ static int64_t gs_clz(uint64_t x) {
         x <<= 1;
         n++;
     }
-    return n;
+)GSRT"
+R"GSRT(    return n;
 #endif
 }
 static int64_t gs_ctz(uint64_t x) {
-)GSRT"
-R"GSRT(#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
     return x ? __builtin_ctzll(x) : 64;
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
     unsigned long i;

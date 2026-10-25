@@ -596,8 +596,8 @@ plain helper that the `simd fn` calls keeps the helper's rounding, even if
 the C compiler inlines the helper later. Whether Goose inlines a small
 helper depends on the optimization level, so moving a `mul_add` into a
 helper can change both the result and the speed between `-O0` and `-O2`.
-Mark such a helper `inline fn` to keep its calls fused in every `simd`
-caller. A function value is resolved at compile time, so a `simd fn`
+Marking the helper `inline fn` keeps its calls fused in `simd` callers at
+every level except `-O0`, where Goose inlines nothing. A function value is resolved at compile time, so a `simd fn`
 given `mul_add` as one (`F(x, y, z)` with `F` = `mul_add`) fuses like a
 direct call.
 

@@ -5987,10 +5987,12 @@ TinyCC and other targets get no overhead from it. A build can lower it with
     fuses, together with the functions Goose inlined into it. So a
     `mul_add` moved into a plain helper fuses in a `simd` caller at `-O2`,
     where Goose inlines a small helper, and not at `-O0`. An `inline fn`
-    helper fuses at every level. The stdlib documentation says so.
+    helper fuses at every level except `-O0`, where Goose inlines nothing
+    (spec §7.13). The stdlib documentation says so.
   * **Tests.** `test/codegen/simd_mul_add.goose` checks each kind of call
-    (plain, direct in a `simd fn`, through an `inline fn` helper, through a
-    function value) built by clang at each level (`clang_mul_add` in the
+    (plain, and in a `simd fn` direct, through an `inline fn` helper,
+    through a plain helper and through a function value), generated at Goose
+    `-O2` and `-O0` and built by clang at each level (`clang_mul_add` in the
     runner). `stdlib_math.goose` checks a cancellation and an overflow case
     accept either rounding and nothing else.
   * **Effect.** Making `gemm_block`'s multiply-add in goose-linalg a

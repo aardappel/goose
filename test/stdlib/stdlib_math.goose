@@ -33,4 +33,12 @@ fn main() {
     let df = mul_add(maf[3], maf[3], -(one_e + 2.0 / 4096.0));
     print(mul_add(ma[0], ma[1], ma[2]), " ", d == 0.0 || d == 1.0 / (1073741824.0 * 1073741824.0), " ",
           mul_add(maf[0], maf[1], maf[2]), " ", df == 0.0 || df == 1.0 / (4096.0 * 4096.0));   // 10.0 true 10.0 true
+    // An intermediate overflow: 1e308 * 2 overflows unless it is kept for
+    // the add, so the result is 1e308 fused and inf unfused (3e38 and inf
+    // for f32), and nothing else.
+    var big: f64[>..] = [1.0e308, 2.0];
+    var bigf: f32[>..] = [3.0e38, 2.0];
+    let o = mul_add(big[0], big[1], -big[0]);
+    let of = mul_add(bigf[0], bigf[1], -bigf[0]);
+    print(o == 1.0e308 || is_inf(o), " ", of == bigf[0] || is_inf(of));   // true true
 }
