@@ -174,7 +174,8 @@ struct TailRecursion {
     }
 
     // The parameter rebindings one tail call needs; arguments that are
-    // already the parameter itself need none. Storing into a reference
+    // already the parameter itself need none only if its value cannot change
+    // while later arguments run. Storing into a reference
     // parameter is not something the source may write inside a cycle (§7.8),
     // but the value stored is one the call already passed to that same
     // parameter of this same specialization, whose root class is part of the
@@ -189,7 +190,9 @@ struct TailRecursion {
         if (an.size() != sp->params.size()) return false;
         for (size_t i = 0; i < an.size(); i++) {
             auto p = sp->params[i];
-            if (auto id = Is<Ident>(an[i]); id && id->vdef == p) continue;
+            if (auto id = Is<Ident>(an[i]); id && id->vdef == p &&
+                (Optimizer::Unwritten(facts, p) ||
+                 (p->type->kind == TY_REF && !p->isvar))) continue;
             if (!Rebindable(p)) return false;
             if (p->type->kind == TY_REF && Locate(an[i]) != LOC_OUT) return false;
             out.push_back({ p, an[i] });
