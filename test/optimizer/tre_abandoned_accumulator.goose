@@ -13,6 +13,7 @@ recursive fn leave_arg(n: i64) -> i64 {
 recursive fn leave_block(n: i64) -> i64 {
     let before_basecase = 0;
     if n == 0 { return 0; }
+    if n > 1 { return 10 + leave_block(n - 1); }
     let result = block {
         return 10 + leave_block({
             if n == 1 { break 100; }
@@ -32,6 +33,27 @@ recursive fn leave_mixed(n: i64) -> i64 {
         n - 1
     });
 }
+// Early-out blocks do not capture continue. Safe calls in them still loop,
+// including an argument break caught by its own block.
+recursive fn safe_block(n: i64) -> i64 {
+    let before_basecase = 0;
+    block {
+        if n <= 0 { break; }
+        return 1 + safe_block(block {
+            if n == 1 { break 0; }
+            n - 1
+        });
+    }
+    return 0;
+}
+recursive fn safe_plain_block(n: i64, k: i64) -> i64 {
+    let before_basecase = 0;
+    block {
+        if n <= 0 { break; }
+        return safe_plain_block(n - 1, k + 1);
+    }
+    return k;
+}
 fn main() {
     print(leave_arg(0));
     print(leave_arg(1));
@@ -45,4 +67,6 @@ fn main() {
     print(leave_mixed(1));
     print(leave_mixed(2));
     print(leave_mixed(3));
+    print(safe_block(4));
+    print(safe_plain_block(4, 0));
 }
