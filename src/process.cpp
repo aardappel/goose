@@ -56,6 +56,10 @@ ProcessResult RunProcess(const vector<string> &argv, const string &cwd, bool ech
         return r;
     }
     r.started = true;
+    // No input is sent. Give the child EOF before reading its output, since
+    // it may wait for input before it prints anything or exits.
+    fclose(p.stdin_file);
+    p.stdin_file = nullptr;
     char buf[4096];
     for (;;) {
         auto n = subprocess_read_stdout(&p, buf, sizeof buf);
