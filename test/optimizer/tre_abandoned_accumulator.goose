@@ -33,6 +33,22 @@ recursive fn leave_mixed(n: i64) -> i64 {
         n - 1
     });
 }
+// The input of a for loop is evaluated before the loop catches breaks.
+recursive fn leave_sequence(n: i64) -> i64 {
+    let before_basecase = 0;
+    if n == 0 { return 0; }
+    if n > 1 { return 10 + leave_sequence(n - 1); }
+    let result = block {
+        return 10 + leave_sequence({
+            for x in {
+                if n == 1 { break 100; }
+                n
+            } {}
+            n - 1
+        });
+    };
+    result
+}
 // Early-out blocks do not capture continue. Safe calls in them still loop,
 // including an argument break caught by its own block.
 recursive fn safe_block(n: i64) -> i64 {
@@ -67,6 +83,10 @@ fn main() {
     print(leave_mixed(1));
     print(leave_mixed(2));
     print(leave_mixed(3));
+    print(leave_sequence(0));
+    print(leave_sequence(1));
+    print(leave_sequence(2));
+    print(leave_sequence(3));
     print(safe_block(4));
     print(safe_plain_block(4, 0));
 }

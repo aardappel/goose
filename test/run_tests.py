@@ -1087,6 +1087,7 @@ class Runner:
             "leave_arg": (False, True),
             "leave_block": (optimized, True),
             "leave_mixed": (optimized, True),
+            "leave_sequence": (optimized, True),
             "safe_block": (optimized, not optimized),
             "safe_plain_block": (optimized, not optimized),
         }
