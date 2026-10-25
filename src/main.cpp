@@ -689,6 +689,7 @@ Commands:
   toolchain  Report the C compiler, cmake and git found, and GOOSE_HOME.
   version    Print the compiler's version (or --version).
   lsp        Serve an editor over the Language Server Protocol.
+  completion Print a shell's completion script for goose.
   help       Print this (or --help, -h); with a command, that command's help.
 
 Common options:
@@ -825,6 +826,19 @@ R"(usage: goose version
 
 Prints the compiler's version and the runtime's: a hash of the runtime's
 text, which the runtime that goose --emit-runtime writes has to match.
+)";
+    if (topic == "completion") return
+R"(usage: goose completion bash|zsh|fish|powershell
+
+Prints the script that completes goose's commands, options and .goose
+files in that shell. To have it in every shell:
+
+  bash        goose completion bash > ~/.local/share/bash-completion/completions/goose
+  zsh         goose completion zsh > "${fpath[1]}/_goose"
+  fish        goose completion fish > ~/.config/fish/completions/goose.fish
+  powershell  goose completion powershell >> $PROFILE
+
+or, for the shell at hand, source <(goose completion bash) (or zsh).
 )";
     if (topic == "c") return cat(
 R"(usage: goose -o out.c file.goose [options]
@@ -1005,7 +1019,7 @@ CodeGen::StackConfig StackConfigOf(const vector<string> &cdefines) {
 
 // The commands, in the order the help lists them.
 static const char *const VERBS[] = { "run", "build", "check", "fetch", "format", "toolchain",
-                                     "version", "lsp", "help" };
+                                     "version", "lsp", "completion", "help" };
 
 // The edit distance between two words, for the command a mistyped one meant.
 static size_t EditDistance(string_view a, string_view b) {
@@ -1021,6 +1035,184 @@ static size_t EditDistance(string_view a, string_view b) {
         }
     }
     return row[b.size()];
+}
+
+// The options a command's help names, for the completion scripts: the
+// first word of each spelling on the lines that start with an option.
+static vector<string> HelpOptions(const string &topic) {
+    vector<string> opts;
+    auto text = HelpText(topic);
+    for (size_t pos = 0; pos < text.size();) {
+        auto e = text.find('\n', pos);
+        if (e == string::npos) e = text.size();
+        auto line = string_view(text).substr(pos, e - pos);
+        pos = e + 1;
+        if (line.substr(0, 3) != "  -") continue;
+        auto head = line.substr(2, line.find("  ", 2) - 2);
+        for (size_t p = 0; p < head.size();) {
+            auto comma = head.find(", ", p);
+            auto spelling = head.substr(p, comma == string_view::npos ? string_view::npos : comma - p);
+            auto word = string(spelling.substr(0, spelling.find(' ')));
+            if (word != "--" && word.size() > 1 && find(opts.begin(), opts.end(), word) == opts.end())
+                opts.push_back(word);
+            if (comma == string_view::npos) break;
+            p = comma + 2;
+        }
+    }
+    return opts;
+}
+
+// What `goose completion <shell>` prints: completion of the commands, each
+// command's options as its help names them, the help's topics, and .goose
+// files and directories. "" for a shell it does not know.
+static string CompletionScript(const string &shell) {
+    vector<string> verbs(begin(VERBS), end(VERBS));
+    vector<string> topics = verbs;
+    topics.push_back("c");
+    topics.push_back("internals");
+    const vector<string> shells = { "bash", "zsh", "fish", "powershell" };
+    // Each command's one-line summary, from the overview.
+    map<string, string> summary;
+    auto overview = HelpText("");
+    for (auto &v : verbs) {
+        auto at = overview.find(cat("\n  ", v, " "));
+        if (at == string::npos) continue;
+        auto start = overview.find_first_not_of(' ', at + 3 + v.size());
+        auto end = overview.find('\n', start);
+        summary[v] = overview.substr(start, end - start);
+        // The lines it wraps onto, indented under it.
+        while (overview.compare(end, 6, "\n     ") == 0) {
+            auto next = overview.find_first_not_of(' ', end + 1);
+            end = overview.find('\n', next);
+            Append(summary[v], " ", overview.substr(next, end - next));
+        }
+    }
+    // The options of the commands that take some; a file alone is a run.
+    vector<pair<string, vector<string>>> optsof;
+    for (auto &v : verbs)
+        if (v != "help" && v != "completion" && v != "version") optsof.push_back({ v, HelpOptions(v) });
+    auto words = [](const vector<string> &ws) {
+        string s;
+        for (auto &w : ws) Append(s, s.empty() ? "" : " ", w);
+        return s;
+    };
+    auto runopts = words(HelpOptions("run"));
+    string s;
+    if (shell == "bash") {
+        Append(s, "# goose completion bash: source this, or install it as\n"
+                  "# ~/.local/share/bash-completion/completions/goose\n"
+                  "_goose() {\n"
+                  "    local cur=${COMP_WORDS[COMP_CWORD]} verb= i opts\n"
+                  "    for ((i = 1; i < COMP_CWORD; i++)); do\n"
+                  "        case ${COMP_WORDS[i]} in -*) ;; *) verb=${COMP_WORDS[i]}; break ;; esac\n"
+                  "    done\n"
+                  "    case $verb in\n");
+        for (auto &[v, opts] : optsof) Append(s, "        ", v, ") opts=\"", words(opts), "\" ;;\n");
+        Append(s, "        help) COMPREPLY=($(compgen -W \"", words(topics), "\" -- \"$cur\")); return ;;\n"
+                  "        completion) COMPREPLY=($(compgen -W \"", words(shells), "\" -- \"$cur\")); return ;;\n"
+                  "        version) return ;;\n"
+                  "        *) opts=\"", runopts, " --help --version\" ;;\n"
+                  "    esac\n"
+                  "    if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\")); return; fi\n"
+                  "    COMPREPLY=()\n"
+                  "    [[ -z $verb ]] && COMPREPLY=($(compgen -W \"", words(verbs), "\" -- \"$cur\"))\n"
+                  "    COMPREPLY+=($(compgen -f -X '!*.goose' -- \"$cur\") $(compgen -d -- \"$cur\"))\n"
+                  "}\n"
+                  "complete -o filenames -F _goose goose\n");
+    } else if (shell == "zsh") {
+        Append(s, "#compdef goose\n"
+                  "# goose completion zsh: source this, or install it as _goose in a\n"
+                  "# directory on $fpath\n"
+                  "_goose() {\n"
+                  "    local verb word\n"
+                  "    for word in ${words[2,CURRENT-1]}; do\n"
+                  "        [[ $word == -* ]] || { verb=$word; break }\n"
+                  "    done\n"
+                  "    local -a opts\n"
+                  "    case $verb in\n");
+        for (auto &[v, opts] : optsof) Append(s, "        ", v, ") opts=(", words(opts), ") ;;\n");
+        Append(s, "        help) compadd -- ", words(topics), "; return ;;\n"
+                  "        completion) compadd -- ", words(shells), "; return ;;\n"
+                  "        version) return ;;\n"
+                  "        *) opts=(", runopts, " --help --version) ;;\n"
+                  "    esac\n"
+                  "    if [[ $PREFIX == -* ]]; then compadd -- $opts; return; fi\n"
+                  "    if [[ -z $verb ]]; then\n"
+                  "        local -a commands\n"
+                  "        commands=(\n");
+        for (auto &v : verbs) {
+            string d;
+            for (auto c : summary[v]) { if (c == '\'') d += "'\\''"; else if (c == ':') d += "\\:"; else d += c; }
+            Append(s, "            '", v, ":", d, "'\n");
+        }
+        Append(s, "        )\n"
+                  "        _describe command commands\n"
+                  "    fi\n"
+                  "    _files -g '*.goose'\n"
+                  "}\n"
+                  "if [[ $zsh_eval_context[-1] == loadautofunc ]]; then _goose \"$@\"; else compdef _goose goose; fi\n");
+    } else if (shell == "fish") {
+        auto quote = [](const string &t) {
+            string q = "'";
+            for (auto c : t) { if (c == '\'' || c == '\\') q += '\\'; q += c; }
+            return q + "'";
+        };
+        Append(s, "# goose completion fish: install it as ~/.config/fish/completions/goose.fish\n"
+                  "complete -c goose -f\n");
+        for (auto &v : verbs)
+            Append(s, "complete -c goose -n __fish_use_subcommand -a ", v, " -d ", quote(summary[v]), "\n");
+        auto flag = [&](const string &cond, const string &o) {
+            Append(s, "complete -c goose -n ", quote(cond), " ");
+            if (o.rfind("--", 0) == 0) Append(s, "-l ", o.substr(2));
+            else if (o.size() == 2) Append(s, "-s ", o.substr(1));
+            else Append(s, "-o ", o.substr(1));
+            s += "\n";
+        };
+        for (auto &[v, opts] : optsof)
+            for (auto &o : opts) flag(cat("__fish_seen_subcommand_from ", v), o);
+        string verbset;
+        for (auto &v : verbs) Append(verbset, " ", v);
+        for (auto &o : HelpOptions("run")) flag(cat("not __fish_seen_subcommand_from", verbset), o);
+        Append(s, "complete -c goose -n '__fish_seen_subcommand_from help' -a ", quote(words(topics)), "\n"
+                  "complete -c goose -n '__fish_seen_subcommand_from completion' -a ", quote(words(shells)), "\n"
+                  "complete -c goose -n 'not __fish_seen_subcommand_from help completion version toolchain lsp' "
+                  "-a '(__fish_complete_suffix .goose)'\n");
+    } else if (shell == "powershell") {
+        auto list = [](const vector<string> &ws) {
+            string l = "@(";
+            for (size_t i = 0; i < ws.size(); i++) Append(l, i ? ", " : "", "'", ws[i], "'");
+            return l + ")";
+        };
+        Append(s, "# goose completion powershell: add this to $PROFILE\n"
+                  "Register-ArgumentCompleter -Native -CommandName goose, goose.exe -ScriptBlock {\n"
+                  "    param($wordToComplete, $commandAst, $cursorPosition)\n"
+                  "    $words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })\n"
+                  "    if ($wordToComplete -and $words.Count -gt 0) { $words = @($words | Select-Object -First ($words.Count - 1)) }\n"
+                  "    $verb = $words | Where-Object { $_ -notlike '-*' } | Select-Object -First 1\n"
+                  "    $opts = switch ($verb) {\n");
+        for (auto &[v, opts] : optsof) Append(s, "        '", v, "' { ", list(opts), " }\n");
+        auto runlist = HelpOptions("run");
+        runlist.push_back("--help");
+        runlist.push_back("--version");
+        Append(s, "        default { ", list(runlist), " }\n"
+                  "    }\n"
+                  "    $candidates = if ($verb -eq 'help') { ", list(topics), " }\n"
+                  "        elseif ($verb -eq 'completion') { ", list(shells), " }\n"
+                  "        elseif ($verb -eq 'version') { @() }\n"
+                  "        elseif ($wordToComplete -like '-*') { $opts }\n"
+                  "        else {\n"
+                  "            $dir = Split-Path $wordToComplete\n"
+                  "            $files = @(Get-ChildItem -Path \"$wordToComplete*\" -ErrorAction SilentlyContinue |\n"
+                  "                Where-Object { $_.PSIsContainer -or $_.Extension -eq '.goose' } |\n"
+                  "                ForEach-Object { if ($dir) { Join-Path $dir $_.Name } else { $_.Name } })\n"
+                  "            if ($verb) { $files } else { ", list(verbs), " + $files }\n"
+                  "        }\n"
+                  "    $candidates | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {\n"
+                  "        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)\n"
+                  "    }\n"
+                  "}\n");
+    }
+    return s;
 }
 
 int Main(int argc, char **argv) {
@@ -1063,6 +1255,17 @@ int Main(int argc, char **argv) {
                     near.empty() ? "" : cat(": did you mean ", near, "?").c_str());
             return 1;
         }
+    }
+    if (verb == "completion") {
+        auto shell = argc > 2 ? string(argv[2]) : string();
+        auto script = CompletionScript(shell);
+        if (script.empty() || argc > 3) {
+            fprintf(stderr, "goose completion takes bash, zsh, fish or powershell%s\n",
+                    shell.empty() ? "" : cat(", not ", shell).c_str());
+            return 1;
+        }
+        fputs(script.c_str(), stdout);
+        return 0;
     }
     if (verb == "help") {
         auto topic = argc > 2 ? string(argv[2]) : string();

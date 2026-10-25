@@ -78,6 +78,7 @@ import concurrent.futures
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1986,7 +1987,7 @@ def main():
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
         stand for: `goose run`, `goose check` and `goose version`, the help, a
-        mistyped command, --color and -q."""
+        mistyped command, --color, -q and the completion scripts."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -2032,6 +2033,34 @@ def main():
         # -q leaves only what the program prints.
         code, out, err = tc.run_capture([exe, "check", "-q", probe])
         checks.append(("check -q", code == 0 and not out and not err, out + err))
+        # The completion scripts, from the help: each names every command,
+        # and bash's, run, completes a command, an option and a file.
+        for shell in ["bash", "zsh", "fish", "powershell"]:
+            code, out, err = tc.run_capture([exe, "completion", shell])
+            # fish names a long option without its dashes.
+            names = ["-l debug", "-l check"] if shell == "fish" else ["--debug", "--check"]
+            checks.append((f"completion {shell}", code == 0 and
+                           all(v in out for v in ["build", "format", ".goose", *names]),
+                           out[:400] + err))
+            if shell in ("bash", "zsh") and shutil.which(shell) and os.name != "nt":
+                script = gendir / f"completion.{shell}"
+                tc.write_text(script, out)
+                if shell == "bash":
+                    tc.write_text(gendir / "complete_me.goose", "fn main() {}\n")
+                    probe_sh = (f"source '{script}'; t() {{ COMP_WORDS=(\"$@\"); "
+                                "COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMPREPLY=(); _goose; "
+                                "echo \"${COMPREPLY[*]}\"; }; t goose bu; t goose build --dr; t goose complete_m")
+                    r2 = subprocess.run(["bash", "-c", probe_sh], capture_output=True, text=True,
+                                        cwd=gendir)
+                    lines = r2.stdout.splitlines()
+                    checks.append(("completion bash, run", lines == ["build", "--dry-run", "complete_me.goose"],
+                                   r2.stdout + r2.stderr))
+                else:
+                    r2 = subprocess.run(["zsh", "-n", str(script)], capture_output=True, text=True)
+                    checks.append(("completion zsh parses", r2.returncode == 0, r2.stderr))
+        code, out, err = tc.run_capture([exe, "completion", "tcsh"])
+        checks.append(("completion tcsh (refused)", code == 1 and "bash, zsh, fish or powershell" in err,
+                       out + err))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",
@@ -2043,7 +2072,8 @@ def main():
         checks.append(("--help", code == 0 and "build" in overview and
                        "--multi-test" not in overview, overview + err))
         pages = overview
-        for cmd in ["run", "build", "check", "fetch", "format", "toolchain", "version", "lsp"]:
+        for cmd in ["run", "build", "check", "fetch", "format", "toolchain", "version", "lsp",
+                    "completion"]:
             code, out, err = tc.run_capture([exe, cmd, "--help"])
             checks.append((f"{cmd} --help", code == 0 and
                            out.startswith(f"usage: goose {cmd}"), out + err))

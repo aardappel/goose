@@ -65,6 +65,10 @@ A run, build or check that succeeds prints a line or two about what it did
 (`parsed ok`, `typechecked ok`, `wrote`). `-q` leaves them out, so that only
 what the program prints is printed.
 
+`goose completion bash` (or `zsh`, `fish`, `powershell`) prints a script
+that completes the commands, their options and `.goose` files. `goose help
+completion` says where to put it.
+
 ## 2. Using a package
 
 A *package* is a library in a directory of its own: a module named after it,

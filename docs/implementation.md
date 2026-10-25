@@ -121,6 +121,8 @@ which nothing in the executable sets.
   header that `cmake/version.cmake` writes at each build: `git describe`, or
   the `GOOSE_VERSION` that a release configures with.
 * `goose lsp` serves an editor over the Language Server Protocol (§12).
+* `goose completion` prints a shell's completion script, made from the
+  help's text.
 * `goose format` rewrites files in the standard layout (below).
 
 `run` and `build` both build the native part that a program's sidecar
