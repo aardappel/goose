@@ -114,6 +114,7 @@ struct Reassociator {
         else if (st.size() != 1 || !last) return false;
         auto ife = Is<IfExpr>(st[0]);
         if (!ife || ife->elseb || ife->thenb->stmts.size() != 1 || ife->thenb->tail) return false;
+        if (!Is<Return>(ife->thenb->stmts[0])) return false;
         auto cmp = Is<Binary>(ife->cond);
         if (!cmp || cmp->op != T_LT) return false;
         auto x = Returned(cmp->left), y = Returned(cmp->right);
