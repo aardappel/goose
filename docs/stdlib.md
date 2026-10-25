@@ -350,6 +350,8 @@ fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent
+fn format_grouped<B>(out: B&, v: i64, sep: u8[:])          // base 10, sep every 3 digits: 10,000,000
+fn parse_grouped_int(s: u8[:], sep: u8[:]) -> i64, bool    // groups of 3 checked; no sep in s: parse_int
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
@@ -382,6 +384,19 @@ each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
 let cmd = words(input);                   // "take  the sword": ["take", "the", "sword"]
 if cmd.len > 1 && cmd[0] == "take" { take(cmd[cmd.len - 1]); }
+```
+
+`format_grouped` and `parse_grouped_int` handle digit grouping. The
+separator has no default because conventions differ: `","` in English, `"."`
+in German, `"'"` in Switzerland, a narrow no-break space (U+202F) in French
+and SI style. It is a string, so a multi-byte separator fits. Parsing checks
+the groups: the first holds 1 to 3 digits and every later one exactly 3, so
+`1,0,0` and `1000,000` are refused. A string with no separator at all is
+read as `parse_int` reads it.
+
+```goose
+format_grouped(line, 10000000, "'");              // 10'000'000
+let n, ok = parse_grouped_int("1,234,567", ",");  // 1234567, true
 ```
 
 `format_uleb` and `parse_uleb` write and read the length prefix used by

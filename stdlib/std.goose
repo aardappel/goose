@@ -1017,6 +1017,54 @@ fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8) {
     }
 }
 
+// v in base ten with `sep` between groups of three digits: 10'000'000. The
+// separator is a string so that a multi-byte one such as U+2019 or U+202F
+// fits; the sign goes in front of the first group.
+fn format_grouped<B>(out: B&, v: i64, sep: u8[:]) {
+    var digits: u8[..20] = [];
+    if v < 0 {
+        out.push('-');
+        format_uint(digits, 0 - v as! u64, 10, 0, ' ');
+    } else {
+        format_uint(digits, v as u64, 10, 0, ' ');
+    }
+    var i = 0;
+    while i < digits.len {
+        if i > 0 && (digits.len - i) % 3 == 0 { out.append(sep); }
+        out.push(digits[i]);
+        i += 1;
+    }
+}
+
+// The reverse of format_grouped. Without any `sep` in s this is parse_int;
+// with one, the first group holds 1..3 digits and every later group exactly
+// 3, so 1'0'0 and 1000'000 are refused rather than read as 100 and 1000000.
+fn parse_grouped_int(s: u8[:], sep: u8[:]) -> i64, bool {
+    if sep.len == 0 || find(s, sep) < 0 { return parse_int(s); }
+    var i = 0;
+    if s.len > 0 && (s[0] == '-' || s[0] == '+') { i = 1; }
+    var digits: u8[>..] = [];
+    digits.append(s[..i]);
+    var run = 0;
+    var first = true;
+    while i < s.len {
+        if s.len - i >= sep.len && s[i..i + sep.len] == sep {
+            if run == 0 || run > 3 || (!first && run != 3) { return 0, false; }
+            first = false;
+            run = 0;
+            i += sep.len;
+        } else {
+            let c = s[i];
+            if c < '0' || c > '9' { return 0, false; }
+            digits.push(c);
+            run += 1;
+            i += 1;
+        }
+    }
+    if run != 3 { return 0, false; }
+    return parse_int(digits);
+}
+
 // ULEB128 (§3.6), the encoding an image's framing prefix uses
 // (docs/design/serialization.md): what to_bytes writes in front of an
 // array's bytes, so that a reader of a stream or a file can size its read
