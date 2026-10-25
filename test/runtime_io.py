@@ -2,8 +2,8 @@
 built by `goose build` and, where the JIT runs, run by `goose run`: stdin
 read as the bytes piped in, a carriage return before a line break and a
 Ctrl-Z among them, which Windows' text mode would translate and stop at;
-read_line taking off a carriage return it read itself, never one the
-builder held before; and on POSIX write_file_atomic keeping the
+read_line taking off a carriage return only before a newline, never one the
+builder held before or one at EOF; and on POSIX write_file_atomic keeping the
 permissions of the file it replaces."""
 import os
 from pathlib import Path
@@ -60,7 +60,13 @@ def check_runtime_io(exe, base, *, jit):
             raise RuntimeError(f"runtime io: goose build:\n{out}{err}")
         runners = [("built", [app])] + ([("JIT", [exe, "run", source, "--"])] if jit else [])
         cases = [("all", b"a\r\nb\x1ac", [6, 97, 13, 10, 98, 26, 99]),
-                 ("lines", b"\nab\r\n", [6, 120, 13, 124, 97, 98, 124])]
+                 ("lines", b"\nab\r\n", [6, 120, 13, 124, 97, 98, 124]),
+                 ("lines", b"ab\r", [6, 120, 13, 97, 98, 13, 124]),
+                 ("lines", b"\r", [4, 120, 13, 13, 124]),
+                 ("lines", b"ab", [5, 120, 13, 97, 98, 124]),
+                 ("lines", b"", [2, 120, 13]),
+                 ("lines", b"ab\r\ncd\r", [9, 120, 13, 97, 98, 124, 99, 100, 13, 124]),
+                 ("lines", b"ab\r\r\n", [6, 120, 13, 97, 98, 13, 124])]
         for how, argv in runners:
             for mode, data, want in cases:
                 code, out, err = run(argv + [mode], data)
