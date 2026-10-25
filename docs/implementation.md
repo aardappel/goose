@@ -5974,8 +5974,9 @@ TinyCC and other targets get no overhead from it. A build can lower it with
   `gs_mul_add_separate` (`x * y + z`, two roundings under the contraction
   pragma), so a call gets the mode in force where it is emitted.
   `runtime.h` sets the mode to `GS_MUL_ADD_BASE`: fused where the whole
-  translation unit has FMA (`__FMA__`, arm64, MSVC's `/arch:AVX2`), and
-  separate elsewhere and under TinyCC. `EmitSimdVersions` sets it to fused
+  translation unit has FMA (`__FMA__`, arm64), and separate elsewhere,
+  under TinyCC and under MSVC, whose `fma()` is a call into the C library
+  even with `/arch:AVX2` (a matrix multiply ran 2.7x slower fused). `EmitSimdVersions` sets it to fused
   before each version past the baseline, whose target attribute includes
   FMA, and back to the base after, so the baseline's copy of the body keeps
   the target's mode.

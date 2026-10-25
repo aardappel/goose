@@ -3305,8 +3305,8 @@ rounded on its own, the two can differ by much more than the last bit:
 where `x * y` and `z` nearly cancel, including a zero against a nonzero,
 and where `x * y` overflows but the sum does not. The C backend rounds once
 on arm64, in x86-64 code built for AVX2 or later, and in a `simd`
-function's AVX2 and AVX-512 versions. It rounds twice everywhere else and
-under the JIT. A `*` followed by a `+` is never fused, `mul_add` or not.
+function's AVX2 and AVX-512 versions. It rounds twice everywhere else,
+under MSVC and under the JIT. A `*` followed by a `+` is never fused, `mul_add` or not.
 
 Versions are per function: each version contains everything the function
 contains, including the callees inlined into it. The function itself stays

@@ -577,9 +577,9 @@ widths equally well, so the call has to name one (`sqrt(n as f64)`);
 `mul_add(x, y, z)`, at both widths, is `x * y + z` rounded once where the
 code is built for FMA and twice where it is not. Which one a call gets is
 up to the implementation (spec §7.12). The C backend rounds once on arm64,
-on x86-64 built for AVX2 or later (`-march=x86-64-v3`, `/arch:AVX2`), and
-in a `simd fn`'s AVX2 and AVX-512 versions. It rounds twice elsewhere and
-under the JIT. `x * y + z` written out always rounds twice.
+on x86-64 built for AVX2 or later (`-march=x86-64-v3`, clang-cl's
+`/arch:AVX2`), and in a `simd fn`'s AVX2 and AVX-512 versions. It rounds
+twice elsewhere, under MSVC and under the JIT. `x * y + z` written out always rounds twice.
 
 The two roundings can give very different results, not just a different
 last bit:

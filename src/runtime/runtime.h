@@ -302,12 +302,15 @@ static inline int gs_simd_level(void) {
    is built for FMA and twice where it is not, so its results are the
    implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
    the target as a whole: fused on arm64 and on x86-64 built for AVX2 or
-   past it (-march=x86-64-v3, /arch:AVX2), separate everywhere else and
-   under TinyCC. A simd function's AVX2 and AVX-512 versions have FMA
-   whatever the target, so the compiler sets GS_MUL_ADD_MODE to fused around
-   them, and back to the base after (EmitSimdVersions). */
-#if !defined(__TINYC__) && (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64) || \
-                            (defined(_MSC_VER) && defined(__AVX2__)))
+   past it (-march=x86-64-v3, clang-cl's /arch:AVX2), separate everywhere
+   else, under TinyCC and under MSVC. MSVC compiles fma() to a call into the
+   C library, even with /arch:AVX2, which also keeps a loop around it from
+   vectorizing: a matrix multiply ran 2.7x slower fused than separate. A
+   simd function's AVX2 and AVX-512 versions have FMA whatever the target,
+   so the compiler sets GS_MUL_ADD_MODE to fused around them, and back to
+   the base after (EmitSimdVersions). */
+#if !defined(__TINYC__) && !(defined(_MSC_VER) && !defined(__clang__)) && \
+    (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64))
 #define GS_MUL_ADD_BASE fused
 #else
 #define GS_MUL_ADD_BASE separate
