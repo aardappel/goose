@@ -73,8 +73,10 @@ has the configuration for Neovim, Helix and Emacs.
   custom tasks with absolute paths or paths relative to the workspace folder.
 
 The language server also completes names in scope and members after a `.`,
-finds references and calls, renames, shows inlay hints, and folds. It does not provide
-formatting or debugging (`docs/design/language_server.md` has the plan). A
+finds references and calls, renames, shows inlay hints, folds, and formats:
+**Format Document** (Shift+Alt+F) lays the file out as `goose format` does,
+and `"editor.formatOnSave": true` does it on every save. It does not provide
+debugging (`docs/design/language_server.md` has the plan). A
 function body that no instantiation reaches has no types: hover says so, and
 member completion there offers every field and function.
 

@@ -131,13 +131,39 @@ the newest Eglot, from GNU ELPA, highlights with semantic tokens too
 spaces between tokens, blank lines and trailing commas, with the line
 breaks left where they are. It takes files and directories (a directory
 stands for the `.goose` files under it), and with none, or `-`, formats
-standard input to standard output, which is what an editor wants. A file
-that does not parse is left as it is and its errors printed, with exit
-status 2; `goose format --check` writes nothing and lists the files that
-are not formatted, with exit status 1, for a CI step or a commit hook. The
-language server does not format yet, so an editor runs the command.
+standard input to standard output. A file that does not parse is left as
+it is and its errors printed, with exit status 2; `goose format --check`
+writes nothing and lists the files that are not formatted, with exit
+status 1, for a CI step or a commit hook.
 
-In Neovim, with [conform.nvim](https://github.com/stevearc/conform.nvim):
+The language server formats too (`textDocument/formatting`), the editor's
+text rather than the file on disk, with edits to the lines that change
+only, so the cursor and marks on the others stay. A document that does not
+parse gets no edits; its diagnostics say why.
+
+In Neovim, `vim.lsp.buf.format()` formats; to format on save, in the
+configuration above:
+
+```lua
+vim.api.nvim_create_autocmd('BufWritePre', {
+  pattern = '*.goose',
+  callback = function() vim.lsp.buf.format() end,
+})
+```
+
+In Helix, `:format` formats, and `auto-format = true` in the `[[language]]`
+entry above formats on save.
+
+In Emacs, `eglot-format-buffer` formats; to format on save:
+
+```elisp
+(add-hook 'goose-mode-hook
+          (lambda () (add-hook 'before-save-hook #'eglot-format-buffer nil t)))
+```
+
+Without the language server, an editor can run `goose format -` on the
+buffer instead: with [conform.nvim](https://github.com/stevearc/conform.nvim)
+in Neovim, say,
 
 ```lua
 require('conform').setup({
@@ -147,18 +173,5 @@ require('conform').setup({
 })
 ```
 
-In Helix, in the `[[language]]` entry above:
-
-```toml
-formatter = { command = "goose", args = ["format", "-"] }
-auto-format = true
-```
-
-In Emacs, with [Apheleia](https://github.com/radian-software/apheleia),
-which formats on save once `apheleia-global-mode` is on:
-
-```elisp
-(with-eval-after-load 'apheleia
-  (push '(goose-format . ("goose" "format" "-")) apheleia-formatters)
-  (push '(goose-mode . goose-format) apheleia-mode-alist))
-```
+or `formatter = { command = "goose", args = ["format", "-"] }` in Helix's
+`[[language]]` entry.
