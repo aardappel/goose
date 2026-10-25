@@ -1969,6 +1969,43 @@ def main():
                     else:
                         r.ok(label)
 
+        # Elementwise float arithmetic as one vector operation (GS_VEC,
+        # runtime.h): vec_elemwise's struct and array shapes are computed
+        # through each of the six vector types where the compiler has vector
+        # extensions, and nothing else is. Built by clang with GS_VEC on and
+        # off, both print the member-by-member results.
+        def clang_vec():
+            name = "vec_elemwise"
+            src = gendir / "vecclang.c"
+            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen" / f"{name}.goose")
+            if code != 0:
+                r.fail(f"vec-clang {name}.goose", out + err)
+                return
+            ctext = src.read_text(encoding="utf-8")
+            missing = [v for v in ("gs_vf64_2", "gs_vf64_4", "gs_vf64_8", "gs_vf32_4", "gs_vf32_8", "gs_vf32_16")
+                       if f"gs_vst_{v}(" not in ctext]
+            if missing:
+                r.fail(f"vec-clang {name}.goose", f"no vector operations on {', '.join(missing)}")
+                return
+            # The generated code's tests are indented; runtime.h's are not.
+            opens = len(re.findall(r"^\s+#if GS_VEC$", ctext, re.M))
+            elses = len(re.findall(r"^\s+#else$", ctext, re.M))
+            if opens == 0 or opens > elses:
+                r.fail(f"vec-clang {name}.goose", f"{opens} vector operations, {elses} member-by-member ones")
+                return
+            for on in ("1", "0"):
+                label = f"vec{on}"
+                out_exe = gendir / f"vecclang-{on}{tc.EXE_SUFFIX}"
+                ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
+                                        defines=[f"GS_VEC={on}"], runtime=r.runtime,
+                                        log=gendir / f"vecclang-{on}.log")
+                if not ok:
+                    r.fail(f"{label}-clang {name}.goose", "\n".join(log.splitlines()[:8]))
+                    continue
+                out = r.run_expected([out_exe], name, f"clang-{label} {name}.goose")
+                if out is not None and r.check_stdout(name, f"clang-{label}", out):
+                    r.ok(f"{label}-clang {name}.goose")
+
         if args.profile == "sanitize":
             pass  # The full generated-C suite already ran through Clang.
         elif not clang:
@@ -1980,6 +2017,7 @@ def main():
             r.show_task(clang_simd, "stdlib_base64", HERE / "stdlib" / "stdlib_base64.goose",
                         clang_simd_named("base64_encode", "base64_decode"))
             r.show_task(clang_mul_add)
+            r.show_task(clang_vec)
 
     r.section("driver, diagnostics and language server")
 

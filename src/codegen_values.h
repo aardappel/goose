@@ -1716,7 +1716,9 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
 
 // Elementwise arithmetic (§6.1), expanded member by member with direct
 // loads and stores — no whole-struct temporaries, which backends fail to
-// scalarize. Member i of the result depends only on member i of each
+// scalarize — except that floats GS_VEC can hold go through one vector
+// operation where the C compiler has vector extensions (VecShape,
+// implementation §6.14). Member i of the result depends only on member i of each
 // operand, so writing members straight into `dst` is exact even when it
 // aliases an operand (the p.vel = p.vel + g shape). Scalar operands are
 // snapshotted by the caller because they may alias any destination member.
