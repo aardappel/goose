@@ -353,8 +353,8 @@ fn forward() -> float3 {
 }
 fn overlaps(feet: float3, c: Cell) -> bool {
     feet.x + RADIUS > c.x && feet.x - RADIUS < c.x + 1 &&
-    feet.y + BODY_HEIGHT > c.y && feet.y < c.y + 1 &&
-    feet.z + RADIUS > c.z && feet.z - RADIUS < c.z + 1
+        feet.y + BODY_HEIGHT > c.y && feet.y < c.y + 1 &&
+        feet.z + RADIUS > c.z && feet.z - RADIUS < c.z + 1
 }
 fn blocked(feet: float3) -> bool {
     // The finite map's edges are walls, while its sky is open.
@@ -671,7 +671,7 @@ let TILE_COLOR: int3[TILES] = [
     int3 { 173, 137, 81 }, int3 { 65, 120, 48 }, int3 { 177, 135, 79 },
     int3 { 126, 131, 133 }, int3 { 121, 126, 128 }, int3 { 52, 126, 176 },
     int3 { 61, 64, 74 }, int3 { 244, 198, 94 }, int3 { 255, 255, 255 },
-    int3 { 255, 255, 255 } ];
+    int3 { 255, 255, 255 }];
 
 fn tile_for(b: u8, face: i64) -> i64 {
     if b == GRASS { return if face == 2 { 0 } else if face == 3 { 2 } else { 1 }; }
@@ -1100,7 +1100,7 @@ fn hud(out: HudVertex[>..]&, size: float2, hit: Hit, progress: f32,
             "MOUSE LOOK  /  LEFT HOLD MINE", "RIGHT OR E PLACE - HOLD TO BUILD",
             "MIDDLE CLICK PICKS MATERIAL",
             "1-8 OR WHEEL SELECT  /  C CRAFT", "F5 SAVE  /  F9 LOAD  /  F12 PHOTO",
-            "ESC PAUSE  /  H HIDE HELP" ];
+            "ESC PAUSE  /  H HIDE HELP"];
         for i in lines.len { text(out, x + 14.0, 58.0 + i * 16.0, lines[i], INK, 1.0); }
     } else if !crafting && !paused { text(out, size.x - 132.0, 26.0, "H - HELP", INK, 1.5); }
 
@@ -1284,7 +1284,7 @@ fn gameplay_tests() {
         float2 { 1.0, 0.0 }, float2 { -1.0, 0.0 },
         float2 { 0.0, 1.0 }, float2 { 0.0, -1.0 },
         float2 { 1.0, 1.0 }, float2 { -1.0, 1.0 },
-        float2 { 1.0, -1.0 }, float2 { -1.0, -1.0 } ];
+        float2 { 1.0, -1.0 }, float2 { -1.0, -1.0 }];
     for direction in directions {
         game.player = Player { feet: float3 { 60.5, 4.001, 60.5 }, grounded: true, .. };
         for i in 240 { walk(direction, false, true, true); }
