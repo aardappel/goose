@@ -20,6 +20,16 @@
 
 ## Running the suite
 
+The deterministic language server test sends saved call hierarchy items
+through `Server::Handle` directly after a document change. No background
+analysis runs between the messages. Build and run it with:
+
+```sh
+cmake -S . -B build-lsp -DGOOSE_BUILD_LSP_TESTS=ON
+cmake --build build-lsp --target goose_lsp_test --config Debug
+ctest --test-dir build-lsp -C Debug -R lsp_call_hierarchy --output-on-failure
+```
+
 Run `python test/run_tests.py --profile baseline --cc native --require-clang`
 after a normal compiler build. CI runs this on Windows, macOS and Linux.
 
