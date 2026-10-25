@@ -758,13 +758,14 @@ inline vector<TextChange> LineChanges(string_view from, string_view to, int limi
             if (x >= n && y >= m) { found = d; break; }
         }
     }
-    // Runs of changed lines, as (old first, old end, new first, new end).
-    vector<array<int, 4>> runs;
+    // Runs of changed lines: old lines [a0, a1) become new lines [b0, b1).
+    struct Run { int a0, a1, b0, b1; };
+    vector<Run> runs;
     if (found < 0) {
         int p = 0, q = 0;
         while (p < n && p < m && eq(p, p)) p++;
         while (q < n - p && q < m - p && eq(n - 1 - q, m - 1 - q)) q++;
-        runs.push_back({ p, n - q, p, m - q });
+        runs.push_back(Run { p, n - q, p, m - q });
     } else {
         // Walk back, each step one inserted or deleted line after a run of
         // equal ones.
@@ -784,10 +785,10 @@ inline vector<TextChange> LineChanges(string_view from, string_view to, int limi
         }
         for (auto i = steps.size(); i-- > 0;) {
             auto [px, py] = steps[i];
-            auto r = array<int, 4> { px, px + !inserts[i], py, py + (int)inserts[i] };
-            if (!runs.empty() && runs.back()[1] == r[0] && runs.back()[3] == r[2]) {
-                runs.back()[1] = r[1];
-                runs.back()[3] = r[3];
+            auto r = Run { px, px + !inserts[i], py, py + (int)inserts[i] };
+            if (!runs.empty() && runs.back().a1 == r.a0 && runs.back().b1 == r.b0) {
+                runs.back().a1 = r.a1;
+                runs.back().b1 = r.b1;
             } else {
                 runs.push_back(r);
             }
@@ -795,9 +796,9 @@ inline vector<TextChange> LineChanges(string_view from, string_view to, int limi
     }
     vector<TextChange> changes;
     for (auto &r : runs) {
-        if (r[0] == r[1] && r[2] == r[3]) continue;
-        changes.push_back(TextChange { as[(size_t)r[0]], as[(size_t)r[1]],
-                                       string(to.substr(bs[(size_t)r[2]], bs[(size_t)r[3]] - bs[(size_t)r[2]])) });
+        if (r.a0 == r.a1 && r.b0 == r.b1) continue;
+        changes.push_back(TextChange { as[(size_t)r.a0], as[(size_t)r.a1],
+                                       string(to.substr(bs[(size_t)r.b0], bs[(size_t)r.b1] - bs[(size_t)r.b0])) });
     }
     return changes;
 }

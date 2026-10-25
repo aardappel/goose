@@ -285,7 +285,8 @@ def check_format_sweep(exe, dirs):
     for line in out.splitlines():
         if not line.startswith("skip "):
             continue
-        path = Path(line[5:].split(":", 1)[0]).resolve().relative_to(repo).as_posix()
+        # The path may hold a drive's colon: what ends it is the message.
+        path = Path(line[5:].rsplit(": does not parse", 1)[0]).resolve().relative_to(repo).as_posix()
         if "/errors/" not in path and "/errors_tc/" not in path and path not in broken:
             raise RuntimeError(f"format --verify skipped a file that should parse: {line}")
     return out.splitlines()[-1] if out else ""
