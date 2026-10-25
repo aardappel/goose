@@ -1985,8 +1985,8 @@ def main():
 
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
-        stand for: `goose run`, `goose check` and `goose version`, and the
-        help."""
+        stand for: `goose run`, `goose check` and `goose version`, the help
+        and a mistyped command."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -2001,6 +2001,12 @@ def main():
         code, out, err = tc.run_capture([exe, "version"])
         checks.append(("version", code == 0 and
                        re.match(r"goose runtime [0-9a-f]{12}\s*$", out) is not None, out + err))
+        # A word that is no command, option or file is a mistyped command.
+        code, out, err = tc.run_capture([exe, "biuld", str(probe)])
+        checks.append(("a mistyped command", code == 1 and "unknown command biuld" in err and
+                       "did you mean build?" in err, out + err))
+        code, out, err = tc.run_capture([exe, "nosuch.goose"])
+        checks.append(("a missing file", code == 1 and "cannot open file" in err, out + err))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",

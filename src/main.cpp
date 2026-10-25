@@ -992,6 +992,26 @@ CodeGen::StackConfig StackConfigOf(const vector<string> &cdefines) {
     return cfg;
 }
 
+// The commands, in the order the help lists them.
+static const char *const VERBS[] = { "run", "build", "check", "fetch", "format", "toolchain",
+                                     "version", "lsp", "help" };
+
+// The edit distance between two words, for the command a mistyped one meant.
+static size_t EditDistance(string_view a, string_view b) {
+    vector<size_t> row(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); j++) row[j] = j;
+    for (size_t i = 1; i <= a.size(); i++) {
+        auto diag = row[0];
+        row[0] = i;
+        for (size_t j = 1; j <= b.size(); j++) {
+            auto up = row[j];
+            row[j] = min({ row[j] + 1, row[j - 1] + 1, diag + (a[i - 1] != b[j - 1]) });
+            diag = up;
+        }
+    }
+    return row[b.size()];
+}
+
 int Main(int argc, char **argv) {
     auto exe = ExePath(argv[0]);
     // The verb forms, `goose run|build|check|fetch|format|toolchain|version|help ...`.
@@ -1001,11 +1021,11 @@ int Main(int argc, char **argv) {
     auto firstarg = 1;
     if (argc > 1) {
         string v = argv[1];
-        if (v == "run" || v == "build" || v == "check" || v == "fetch" || v == "toolchain" ||
-            v == "version" || v == "help" || v == "lsp" || v == "format") {
-            verb = v;
-            firstarg = 2;
-        }
+        for (auto known : VERBS)
+            if (v == known) {
+                verb = v;
+                firstarg = 2;
+            }
     }
     // --help anywhere before a `--` is the help on the command given, or on
     // all of them when none is.
@@ -1015,6 +1035,19 @@ int Main(int argc, char **argv) {
         if (arg == "--help" || arg == "-h") {
             fputs(HelpText(verb).c_str(), stdout);
             return 0;
+        }
+    }
+    // A first word that is no command, no option and no file is a command
+    // mistyped, not a program: `goose biuld x.goose`.
+    if (verb.empty() && argc > 1 && argv[1][0] != '-') {
+        string v = argv[1];
+        if (v.find_first_of("/\\.") == string::npos && !PathExists(v)) {
+            string near;
+            for (auto known : VERBS)
+                if (EditDistance(v, known) <= 2 && near.empty()) near = known;
+            fprintf(stderr, "goose: unknown command %s%s (goose help lists the commands)\n", v.c_str(),
+                    near.empty() ? "" : cat(": did you mean ", near, "?").c_str());
+            return 1;
         }
     }
     if (verb == "help") {
