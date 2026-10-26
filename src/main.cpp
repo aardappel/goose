@@ -775,7 +775,8 @@ R"(usage: goose format [--check] file.goose|dir...
        goose format [-]
 
 Rewrites each file in the standard layout, in place: indentation, the
-spaces between tokens, blank lines and trailing commas. Line breaks stay
+spaces between tokens, blank lines and trailing commas, with the types
+and =s of a run of declarations lined up in columns. Line breaks stay
 where they are. A directory stands for the .goose files under it, less
 those in directories whose names start with a dot and in build trees. With
 no files, or -, it formats standard input to standard output. A file that

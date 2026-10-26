@@ -129,7 +129,8 @@ the newest Eglot, from GNU ELPA, highlights with semantic tokens too
 
 `goose format` rewrites files in the standard layout: indentation, the
 spaces between tokens, blank lines and trailing commas, with the line
-breaks left where they are. It takes files and directories (a directory
+breaks left where they are. As with gofmt, the types and `=`s of a run of
+declarations (consecutive `const`s, a struct's fields) line up in columns. It takes files and directories (a directory
 stands for the `.goose` files under it), and with none, or `-`, formats
 standard input to standard output. A file that does not parse is left as
 it is and its errors printed, with exit status 2; `goose format --check`

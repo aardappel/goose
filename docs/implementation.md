@@ -179,6 +179,12 @@ operators can line up under its first operand; and the tokens on a line
 spaced by `format::Space`, with a space wherever two tokens written
 together would lex as something else. Trailing comments keep their column,
 moved with their line; a run of them that shared a column shares one still.
+A table is lined up as gofmt lines one up: on consecutive lines at one depth
+and indentation that each declare a name with its type (`[const|let|var|...]
+name: type [= value]`, a struct's fields, a literal's `name: value`s) after
+the same keywords, the types start one space past the longest name, and a
+run of `=`s one space past the longest type. `Layout` finds these cells in
+a first pass of `Lines` and pads them in a second.
 Before the result is used, `CheckSame` lexes both texts (the same tokens,
 but for a comma before a closing bracket, and the same comments but for
 their whitespace) and parses both (the same `Ast::Dump` and `DumpDocs`).

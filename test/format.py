@@ -123,6 +123,19 @@ GOLDEN = [
     ("multi-line string moves with its line",
      'fn f() {\n  let s = """\n    text\n      \n    more\n    """;\n}\n',
      'fn f() {\n    let s = """\n      text\n        \n      more\n      """;\n}\n'),
+    ("a table of declarations lines up",
+     "const QUIC_FRAME_PADDING: u64 = 0x00;\nconst QUIC_FRAME_PING: u64 = 0x01;\n"
+     "const QUIC_FRAME_ACK:  u64 = 0x02;\nconst QUIC_FRAME_ACK_ECN: u64 = 0x03;\n"
+     "\nconst A: u8 = 1; // a\nconst BBBB: u64 = 2; // b\nconst C: Foo<i64> = 3;\n"
+     "struct P {\n    x: i64,\n    longer: u8, // c\n    z: Foo<T>,\n}\n"
+     "fn f() {\n    let p = P {\n        x: 1,\n        longer: 2,\n    };\n"
+     "    let a: i64 = 1;\n    let bbb: i64 = 1;\n    var c: i64 = 1;\n}\n",
+     "const QUIC_FRAME_PADDING: u64 = 0x00;\nconst QUIC_FRAME_PING:    u64 = 0x01;\n"
+     "const QUIC_FRAME_ACK:     u64 = 0x02;\nconst QUIC_FRAME_ACK_ECN: u64 = 0x03;\n"
+     "\nconst A:    u8       = 1; // a\nconst BBBB: u64      = 2; // b\nconst C:    Foo<i64> = 3;\n"
+     "struct P {\n    x:      i64,\n    longer: u8, // c\n    z:      Foo<T>,\n}\n"
+     "fn f() {\n    let p = P {\n        x:      1,\n        longer: 2,\n    };\n"
+     "    let a:   i64 = 1;\n    let bbb: i64 = 1;\n    var c: i64 = 1;\n}\n"),
     ("a table of statements after semicolons",
      "let a = 1;      let b = 2;\nlet cc = 3;     let d = 4;\n",
      None),
