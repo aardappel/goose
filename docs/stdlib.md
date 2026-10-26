@@ -367,7 +367,7 @@ fn each_word<F>(s: u8[:])                                  // F(word)
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])
 fn each_utf8<F>(s: u8[:])                                  // F(codepoint); malformed bytes give 0xFFFD
-fn push_utf8(out: u8[>..]&, cp: i64)
+fn push_utf8(out: u8[>..]&, cp: i64)                       // 0xFFFD's bytes for cp outside 0..0x10FFFF
 ```
 
 The builtins `format`/`str`/`print` do the plain rendering of scalars and
@@ -378,6 +378,13 @@ the decimal, as C's `strtod` does, so a float's text from `print` or
 `format` reads back as the same value. Strings are `u8` arrays: input is a
 `u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
 `u8[..k]`.
+
+`each_utf8` decodes as the WHATWG decoder does. A sequence cut short, an
+overlong form, a surrogate or a code point past 0x10FFFF gives one 0xFFFD
+for each maximal subpart (Unicode §3.9), and the byte that broke a sequence
+starts the next one: `[0xC3, 'A']` gives 0xFFFD and then `A`. `push_utf8`
+writes a surrogate as the three bytes of its own code, which is how `json`
+keeps a lone `\u` escape.
 
 ```goose
 var line: u8[>..] = [];

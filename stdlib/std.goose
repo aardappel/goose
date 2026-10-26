@@ -1340,48 +1340,73 @@ fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:]) {
     out.append(s[start..]);
 }
 
-// F(codepoint) for each UTF-8 sequence; malformed bytes yield 0xFFFD.
+// F(codepoint) for each UTF-8 sequence. Malformed bytes yield 0xFFFD, one
+// for each maximal subpart, as Unicode (§3.9) and the WHATWG decoder count
+// them: a lead byte and the continuation bytes that fit it, up to the first
+// that does not, which then starts the next sequence.
 fn each_utf8<F>(s: u8[:]) {
     var i = 0;
     while i < s.len {
         let b = s[i] as i64;
-        var cp = 0xFFFD;
-        var n = 1;
         if b < 0x80 {
-            cp = b;
-        } else if b >= 0xC0 && b < 0xE0 && i + 1 < s.len {
-            cp = ((b & 0x1F) << 6) | ((s[i + 1] as i64) & 0x3F);
-            n = 2;
-        } else if b >= 0xE0 && b < 0xF0 && i + 2 < s.len {
-            cp = ((b & 0x0F) << 12) | (((s[i + 1] as i64) & 0x3F) << 6) |
-                 ((s[i + 2] as i64) & 0x3F);
-            n = 3;
-        } else if b >= 0xF0 && b < 0xF8 && i + 3 < s.len {
-            cp = ((b & 0x07) << 18) | (((s[i + 1] as i64) & 0x3F) << 12) |
-                 (((s[i + 2] as i64) & 0x3F) << 6) | ((s[i + 3] as i64) & 0x3F);
-            n = 4;
+            F(b);
+            i += 1;
+            continue;
         }
-        F(cp);
-        i += n;
+        // The length the lead byte announces, its payload bits, and the
+        // range of its second byte, which rules out overlong forms,
+        // surrogates and code points past 0x10FFFF (Unicode Table 3-7). A
+        // byte that cannot lead has n = 0 and is malformed alone.
+        var n = 0;
+        var cp = 0;
+        var lo = 0x80;
+        var hi = 0xBF;
+        if b >= 0xC2 && b <= 0xDF {
+            n = 2;
+            cp = b & 0x1F;
+        } else if b >= 0xE0 && b <= 0xEF {
+            n = 3;
+            cp = b & 0x0F;
+            if b == 0xE0 { lo = 0xA0; } else if b == 0xED { hi = 0x9F; }
+        } else if b >= 0xF0 && b <= 0xF4 {
+            n = 4;
+            cp = b & 0x07;
+            if b == 0xF0 { lo = 0x90; } else if b == 0xF4 { hi = 0x8F; }
+        }
+        var k = 1;
+        while k < n && i + k < s.len {
+            let c = s[i + k] as i64;
+            if c < lo || c > hi { break; }
+            cp = (cp << 6) | (c & 0x3F);
+            lo = 0x80;
+            hi = 0xBF;
+            k += 1;
+        }
+        if k == n { F(cp); } else { F(0xFFFD); }
+        i += k;
     }
 }
 
-// The UTF-8 bytes of a code point.
+// The UTF-8 bytes of a code point; 0xFFFD's for one below zero or past
+// 0x10FFFF. A surrogate is written as the three bytes of its own code,
+// which json keeps a lone \u escape as.
 fn push_utf8(out: u8[>..]&, cp: i64) {
-    if cp < 0x80 {
-        out.push(cp as u8);
-    } else if cp < 0x800 {
-        out.push((0xC0 | (cp >> 6)) as u8);
-        out.push((0x80 | (cp & 0x3F)) as u8);
-    } else if cp < 0x10000 {
-        out.push((0xE0 | (cp >> 12)) as u8);
-        out.push((0x80 | ((cp >> 6) & 0x3F)) as u8);
-        out.push((0x80 | (cp & 0x3F)) as u8);
+    var c = cp;
+    if c < 0 || c > 0x10FFFF { c = 0xFFFD; }
+    if c < 0x80 {
+        out.push(c as u8);
+    } else if c < 0x800 {
+        out.push((0xC0 | (c >> 6)) as u8);
+        out.push((0x80 | (c & 0x3F)) as u8);
+    } else if c < 0x10000 {
+        out.push((0xE0 | (c >> 12)) as u8);
+        out.push((0x80 | ((c >> 6) & 0x3F)) as u8);
+        out.push((0x80 | (c & 0x3F)) as u8);
     } else {
-        out.push((0xF0 | (cp >> 18)) as u8);
-        out.push((0x80 | ((cp >> 12) & 0x3F)) as u8);
-        out.push((0x80 | ((cp >> 6) & 0x3F)) as u8);
-        out.push((0x80 | (cp & 0x3F)) as u8);
+        out.push((0xF0 | (c >> 18)) as u8);
+        out.push((0x80 | ((c >> 12) & 0x3F)) as u8);
+        out.push((0x80 | ((c >> 6) & 0x3F)) as u8);
+        out.push((0x80 | (c & 0x3F)) as u8);
     }
 }
 
