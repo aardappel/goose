@@ -52,32 +52,32 @@ let SLOTS = 8;
 let MAX_LAMPS = 16;
 let DAY_LENGTH: f32 = 600.0;
 
-let AIR: u8 = 0;
-let GRASS: u8 = 1;
-let DIRT: u8 = 2;
-let STONE: u8 = 3;
-let SAND: u8 = 4;
-let WOOD: u8 = 5;
-let LEAVES: u8 = 6;
-let PLANKS: u8 = 7;
-let COBBLE: u8 = 8;
-let COAL: u8 = 9;
-let WATER: u8 = 10;
+let AIR:     u8 = 0;
+let GRASS:   u8 = 1;
+let DIRT:    u8 = 2;
+let STONE:   u8 = 3;
+let SAND:    u8 = 4;
+let WOOD:    u8 = 5;
+let LEAVES:  u8 = 6;
+let PLANKS:  u8 = 7;
+let COBBLE:  u8 = 8;
+let COAL:    u8 = 9;
+let WATER:   u8 = 10;
 let BEDROCK: u8 = 11;
-let LAMP: u8 = 12;
+let LAMP:    u8 = 12;
 
 // Inventory slots are separate from block IDs: stone drops cobblestone,
 // grass drops dirt, and coal is a crafting ingredient rather than a block.
-let SLOT_BLOCK: u8[SLOTS] = [DIRT, COBBLE, WOOD, PLANKS, LEAVES, SAND, LAMP, AIR];
-let SLOT_NAME: const u8[:][SLOTS] =
+let SLOT_BLOCK: u8[SLOTS]          = [DIRT, COBBLE, WOOD, PLANKS, LEAVES, SAND, LAMP, AIR];
+let SLOT_NAME:  const u8[:][SLOTS] =
     ["DIRT", "STONE", "WOOD", "PLANKS", "LEAVES", "SAND", "LAMPS", "COAL"];
 
 struct Cell { x: i64, y: i64, z: i64 }
 struct Player {
-    feet: float3,
+    feet:     float3,
     velocity: f32,
-    yaw: f32,
-    pitch: f32,
+    yaw:      f32,
+    pitch:    f32,
     grounded: bool,
 }
 
@@ -85,15 +85,15 @@ struct Player {
 // stays in global storage: passing or copying Game never copies the world.
 // Transient input and GPU handles are kept outside the saved state.
 struct Game {
-    version: u32,
-    seed: u32,
-    player: Player,
-    bag: i32[SLOTS],
-    tool: i32,                 // 0: hands, 1: wooden pick, 2: stone pick
+    version:  u32,
+    seed:     u32,
+    player:   Player,
+    bag:      i32[SLOTS],
+    tool:     i32,             // 0: hands, 1: wooden pick, 2: stone pick
     selected: i32,
 }
-var game: Game;
-var blocks: u8[VOLUME];
+var game:     Game;
+var blocks:   u8[VOLUME];
 var day_time: f32 = 90.0;       // Morning; zero is sunrise.
 
 // Compute lighting once per frame, not once per block. The meshes contain
@@ -113,14 +113,14 @@ fn advance_time(dt: f32) { day_time = (day_time + dt) % DAY_LENGTH; }
 
 struct Mesh {
     vertices: gfx::Buffer,
-    indices: gfx::Buffer,
-    count: i64,
-    dirty: bool,
+    indices:  gfx::Buffer,
+    count:    i64,
+    dirty:    bool,
 }
 var meshes: Mesh[CHUNKS_X * CHUNKS_Z];
-var lamps: float4[MAX_LAMPS];
+var lamps:  float4[MAX_LAMPS];
 var lamp_count = 0;
-var message: u8[..100];
+var message:      u8[..100];
 var message_time: f32 = 0.0;
 
 // Cosmetic fragments are a fixed pool: breaking another block reuses the
@@ -341,10 +341,10 @@ fn generate(seed: u32) {
 
 // --- walking, swimming, and a grid ray ---------------------------------------
 
-let RADIUS: f32 = 0.29;
+let RADIUS:      f32 = 0.29;
 let BODY_HEIGHT: f32 = 1.8;
-let EYE_HEIGHT: f32 = 1.62;
-let STEP: f32 = 1.0 / 120.0;
+let EYE_HEIGHT:  f32 = 1.62;
+let STEP:        f32 = 1.0 / 120.0;
 
 fn eye() -> float3 { game.player.feet + float3 { 0.0, EYE_HEIGHT, 0.0 } }
 fn forward() -> float3 {
@@ -746,10 +746,10 @@ fn atlas_uv(tile: i64, x: f32, y: f32) -> float2 {
 // --- exposed faces, split into 16 x 40 x 16 chunks ----------------------------
 
 struct Vertex {
-    pos: float3,
-    normal: float3,
-    uv: float2,
-    shade: f32,
+    pos:      float3,
+    normal:   float3,
+    uv:       float2,
+    shade:    f32,
     material: f32,
 }
 let NORMAL: Cell[6] = [Cell { 1, 0, 0 }, Cell { -1, 0, 0 },
@@ -808,7 +808,7 @@ fn add_face(vertices: Vertex[>..]&, indices: u32[>..]&, c: Cell, b: u8, face: i6
 fn rebuild_chunk(cx: i64, cz: i64) {
     // Scratch lives only until this function returns. The GPU owns a copy.
     var vertices: Vertex[>..] = [];
-    var indices: u32[>..] = [];
+    var indices:  u32[>..]    = [];
     for y in HEIGHT {
         for z in cz * CHUNK..(cz + 1) * CHUNK {
             for x in cx * CHUNK..(cx + 1) * CHUNK {
@@ -874,11 +874,11 @@ fn debris_vertices(right: float3, up: float3) -> Vertex[>..] {
 // eye.w is time; target.w is mining progress, or -1 if nothing is targeted.
 struct Scene {
     view_proj: gfx::mat4,
-    eye: float4,
-    target: float4,
-    lights: float4[MAX_LAMPS],
-    haze: float4,
-    sun: float4,              // xyz: direction, w: daylight strength
+    eye:       float4,
+    target:    float4,
+    lights:    float4[MAX_LAMPS],
+    haze:      float4,
+    sun:       float4,        // xyz: direction, w: daylight strength
 }
 let scene_uniform = """
     layout(set = 3, binding = 0) uniform Scene {
@@ -1027,9 +1027,9 @@ fn glyph(c: u8) -> u8[7] {
     }
 }
 struct HudVertex { pos: float2, uv: float2, color: u8[4] }
-let INK: u8[4] = [235, 237, 223, 255];
+let INK:   u8[4] = [235, 237, 223, 255];
 let MUTED: u8[4] = [166, 183, 181, 255];
-let GOLD: u8[4] = [250, 209, 116, 255];
+let GOLD:  u8[4] = [250, 209, 116, 255];
 let PANEL: u8[4] = [22, 34, 40, 225];
 let WHITE: u8[4] = [255, 255, 255, 255];
 
@@ -1433,9 +1433,9 @@ fn main() {
     var paused = !gfx::focused();
     var help = true;
     var drawn = 0;
-    var elapsed: f32 = 0.0;
+    var elapsed:     f32 = 0.0;
     var accumulator: f32 = 0.0;
-    var progress: f32 = 0.0;
+    var progress:    f32 = 0.0;
     var mining_at = cell(-1, -1, -1);
     var place_delay: f32 = 0.0;
     var wait_for_buttons = false;

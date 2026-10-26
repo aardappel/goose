@@ -74,7 +74,7 @@ fn main() {
     let W = 64;
     let H = 32;
     var r = rng { 2024 };
-    var cur: u8[>..] = [];
+    var cur:  u8[>..] = [];
     var next: u8[>..] = [];
     for i in W * H { cur.push(if r.rand_int(4) == 0 { 1 } else { 0 }); }
     next.resize(W * H, 0);

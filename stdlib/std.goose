@@ -389,11 +389,11 @@ fn ends_with<T>(xs: T[:], p: T[:]) -> bool { p.len <= xs.len && xs[xs.len - p.le
 // 16 + j, which are all a set of kind 5 is tested by.
 struct ByteSet {
     members: bool[256],
-    kind: u8,
-    invert: bool,
-    bytes: u8[3],
-    lo: u8[16],
-    hi: u8[16],
+    kind:    u8,
+    invert:  bool,
+    bytes:   u8[3],
+    lo:      u8[16],
+    hi:      u8[16],
 }
 
 fn byte_set(members: bool[256]) -> ByteSet {
