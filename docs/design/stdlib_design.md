@@ -258,7 +258,10 @@ on `u8` arrays with these roles:
 | owned, stored | `u8[]`, `u8[varint]`, `u8[..k]` | fields and elements; a `u8[>..]` result can be stored in them |
 
 All functions are byte-oriented and ASCII by default (`to_lower`, `trim`);
-`each_utf8`/`push_utf8` are the only encoding-aware functions. Comparison is
+`each_utf8`/`push_utf8` are the only encoding-aware functions in `std`.
+The `utf8` module decodes strictly and indexes text by code point: `len`,
+`offset`, `slice` and `take` by rune index, with the slices never splitting
+a well-formed sequence. Comparison is
 `==` (structural, §4.5) and `compare`. A character literal is an integer
 constant (§2): `format(out, 'x')` appends `120`, and a byte is appended with
 `out.push('x')` or `format(out, "x")`.
@@ -274,6 +277,7 @@ constant (§2): `format(out, 'x')` appends `120`, and a byte is appended with
 | `stdlib/dictionary.goose` | `std` | `dictionary<K, V>` and its functions | `default<T>()` |
 | `stdlib/vec.goose` | `std`, `math` | `vec2/3/4<T>`, `float*`, `double*`, `int*`, vector functions | — |
 | `stdlib/os.goose` | `std` | files, stdio, arguments, environment, time, sleep, entropy | `extern fn`, runtime C in `src/runtime/runtime_os.h` |
+| `stdlib/utf8.goose` | `std` | namespace `utf8`: strict decoding (Höhrmann's automaton), validation, `len`/`offset`/`slice`/`take` by rune index, `encode` | — |
 
 `import std;` must be written explicitly; nothing is imported
 automatically. The compiler resolves `import std;` by looking in three
@@ -539,6 +543,10 @@ fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])   // `from`
 fn each_utf8<F>(s: u8[:])                        // F(cp: i64); malformed bytes yield 0xFFFD
 fn push_utf8(out: u8[>..]&, cp: i64)             // the UTF-8 bytes of a code point
 ```
+
+`each_utf8` is lenient (it does not check continuation bytes, overlong
+forms or surrogates) and `push_utf8` unchecked; the `utf8` module is the
+strict pair, with slicing by rune index on top of it.
 
 Plain rendering of scalars and strings is the builtin `format` (§8.1); the
 functions here add formatting control and parsing. `split`, which returns
