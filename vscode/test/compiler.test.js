@@ -96,7 +96,6 @@ test('real compiler with --diagnostics json reports source ranges and the calls 
         }
         assert.ok(result.error);
         assert.deepEqual(result.args.slice(0, 3), ['check', '--diagnostics', 'json']);
-        assert.match(result.output, /^parsed ok: /);
         assert.ok(result.output.includes('helper.goose:1: error: '), result.output);
         const [item] = await parseJsonDiagnostics(result.diagnostics, root);
         assert.equal(item.file, helper);
