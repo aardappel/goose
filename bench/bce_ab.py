@@ -77,7 +77,7 @@ def main():
             tc.write_text(gendir / f"{n}.goose", text)
             cfile = gendir / f"{n}-{mode}.c"
             cfile.unlink(missing_ok=True)
-            gargs = ["-O2", "--standalone"] + (["--no-bce"] if mode == "nobce" else [])
+            gargs = ["-O2", "--standalone", "--stats"] + (["--no-bce"] if mode == "nobce" else [])
             gargs += ["-o", str(cfile), str(gendir / f"{n}.goose")]
             code, out, err = tc.run_capture([goose] + gargs)
             if not cfile.exists():

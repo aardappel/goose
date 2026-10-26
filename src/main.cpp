@@ -644,12 +644,13 @@ constexpr const char *MULTIMARK = "==== goose --multi-test: exit";
 
 // The options run, build and check share, for their help.
 constexpr const char *COMPILEOPTIONS =
-R"(  -q, --quiet           Print nothing on success but what the program prints:
-                        no parsed ok, typechecked ok or wrote lines.
+R"(  --stats               Print what the compile did: the declarations parsed,
+                        the specializations, the optimizations, the bounds
+                        checks removed and the files written.
   --color when          Color errors and warnings: auto (on a terminal, unless
                         NO_COLOR is set), always or never.
   --diagnostics json    Print the errors and warnings as JSON on stdout, and
-                        the progress lines on stderr.
+                        the --stats lines on stderr.
   --offline             Fetch nothing: a package that is not fetched is an
                         error at its import, which goose fetch resolves.
   -D NAME[=VALUE]       Define a C macro in the generated program (or -DNAME).
@@ -696,7 +697,8 @@ Common options:
   -O0, -O1, -O2   Inlining level (default -O2).
   --debug         Overflow, range and tag checks that name the source line
                   they fail on.
-  -q, --quiet     Print nothing on success but what the program prints.
+  --stats         Print what the compile did (declarations, bounds checks
+                  removed, files written).
   --color when    Color errors and warnings: auto (on a terminal, unless
                   NO_COLOR is set), always or never.
   -- args...      What follows is the program's arguments.
@@ -1331,7 +1333,7 @@ int Main(int argc, char **argv) {
     auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
-    auto quiet = false;
+    auto stats = false;
     auto forcejit = false, standalone = false;
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     auto jsondiag = false;
@@ -1437,7 +1439,7 @@ int Main(int argc, char **argv) {
             cdefines.push_back("GS_DEBUG=1");
         }
         else if (arg == "-v") verbose = true;
-        else if (arg == "-q" || arg == "--quiet") quiet = true;
+        else if (arg == "--stats") stats = true;
         else if (arg == "--color" && i + 1 < argc) {
             string when = argv[++i];
             if (when != "auto" && when != "always" && when != "never") {
@@ -1597,16 +1599,17 @@ int Main(int argc, char **argv) {
         ResolveTypeNames(ast);
         // As after the parse, which an unknown type name is part of.
         if (!ast.errors.empty()) return 1;
-        // Printed by every run that gets this far, so that one which goes on
-        // to fail says by itself which side of resolution it failed on.
-        if (!quiet) fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
+        // With --stats, printed by every run that gets this far, so that one
+        // which goes on to fail says by itself which side of resolution it
+        // failed on.
+        if (stats) fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
                 (int)ast.topdecls.size(), (int)ast.sources.size());
         // After resolution, so that a program that does not resolve fails as
         // it would without --roundtrip.
         if (roundtrip) {
             CheckRoundtrip(dumped, dumpfile.empty() ? cat(filename, ".dump") : dumpfile,
                            stdlibdirs, DirOf(exe));
-            if (!quiet) fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
+            if (stats) fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
         }
         if (parseonly) return 0;
         TypeCheckProgram(ast, library, nocgen);
@@ -1618,7 +1621,7 @@ int Main(int argc, char **argv) {
             opt.DumpSpecs(s);
             fputs(s.c_str(), stdout);
         }
-        if (!quiet) fprintf(msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
+        if (stats) fprintf(msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
                 "optimized -O%d: %d inlined, %d base case(s), %d folded, %d propagated, "
                 "%d tail loop(s), %d reassociated\n",
                 (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
@@ -1627,7 +1630,7 @@ int Main(int argc, char **argv) {
         BCE bce(ast);
         if (!nobce) {
             bce.RunAll();
-            if (!quiet) fprintf(msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
+            if (stats) fprintf(msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
                     bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
             if (!bce.checkfreefails.empty()) throw bce.CheckfreeError();
         } else {
@@ -1713,13 +1716,13 @@ int Main(int argc, char **argv) {
             auto out = assemble(!standalone);
             if (!WriteFileMakingDirs(outfile, out))
                 throw CompileError { cat("cannot write output file: ", outfile) };
-            if (!quiet) fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
+            if (stats) fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
         }
         if (!headername.empty()) {
             auto header = cg.ExportHeader();
             if (!WriteFileMakingDirs(headername, header))
                 throw CompileError { cat("cannot write export header: ", headername) };
-            if (!quiet) fprintf(msgs, "wrote %s (%d bytes)\n", headername.c_str(), (int)header.size());
+            if (stats) fprintf(msgs, "wrote %s (%d bytes)\n", headername.c_str(), (int)header.size());
         }
         if (jit && !nocgen) {
             // TinyCC's in-memory runner rejects a thread-local section, and

@@ -501,7 +501,12 @@ class Runner:
     def goose_argv(self, args):
         # Resource-bound regressions use the same runtime configuration
         # through generated C and TinyCC, at every optimization level.
-        return [self.exe] + ["-D" + d for d in runtime_defines(args[-1])] + [str(a) for a in args]
+        # --stats for the parsed ok and typechecked ok lines the checks read,
+        # after the command where the arguments start with one.
+        args = [str(a) for a in args]
+        verb = args[:1] if args and not args[0].startswith("-") and len(args) > 1 else []
+        return ([self.exe] + verb + ["--stats"] + ["-D" + d for d in runtime_defines(args[-1])] +
+                args[len(verb):])
 
     def screened(self, what, result):
         """A compiler run's result, failing the current piece of work if the
@@ -540,7 +545,7 @@ class Runner:
         as theirs. A batch that exits with an error after every mark, or
         prints anything after the last one (a leak report), gets through
         none."""
-        argv = [self.exe, "--multi-test"] + [str(a) for a in args] + [str(f) for f in files]
+        argv = [self.exe, "--multi-test", "--stats"] + [str(a) for a in args] + [str(f) for f in files]
         code, out, err = tc.run_capture(argv)
         outs, outrest = split_multi(out, files)
         errs, errrest = split_multi(err, files)
@@ -1987,8 +1992,8 @@ def main():
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
         stand for: `goose run`, `goose check` and `goose version`, the help, a
-        mistyped command, --color, -q, the completion scripts and the man
-        page."""
+        mistyped command, --color, --stats, the completion scripts and the
+        man page."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -1996,7 +2001,9 @@ def main():
             code, out, err = tc.run_capture([exe, "run", probe])
             checks.append(("run", code == 0 and out.strip() == "verbs", out + err))
         code, out, err = tc.run_capture([exe, "check", probe])
-        checks.append(("check", code == 0 and "typechecked ok" in out + err and
+        checks.append(("check", code == 0 and not out and not err, out + err))
+        code, out, err = tc.run_capture([exe, "check", "--stats", probe])
+        checks.append(("check --stats", code == 0 and "typechecked ok" in out + err and
                        "verbs" not in out, out + err))
         code, out, err = tc.run_capture([exe, "run", "-o", str(gendir / "verbs.c"), probe])
         checks.append(("run -o (refused)", code != 0 and "takes no -o" in err, out + err))
@@ -2031,9 +2038,6 @@ def main():
         code, out, err = tc.run_capture([exe, "check", "--color", "sometimes", probe])
         checks.append(("--color sometimes (refused)", code == 1 and "auto, always or never" in err,
                        out + err))
-        # -q leaves only what the program prints.
-        code, out, err = tc.run_capture([exe, "check", "-q", probe])
-        checks.append(("check -q", code == 0 and not out and not err, out + err))
         # The completion scripts, from the help: each names every command,
         # and bash's, run, completes a command, an option and a file.
         for shell in ["bash", "zsh", "fish", "powershell"]:

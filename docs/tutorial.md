@@ -1507,6 +1507,8 @@ fn blur_row(above: u8[:], here: u8[:], below: u8[:], out: u8[:]) {
 }
 ```
 
+`goose check --stats` reports what it removed:
+
 ```
 bce: elided 11/11 index and 0/4 slice checks
 ```
