@@ -1048,8 +1048,8 @@ fn parse_uleb(s: u8[:]) -> i64, i64 {
     return 0, 0;
 }
 
-// v with a fixed number of decimals, rounded half up; infinities and NaN
-// in their text form (§3.7).
+// v with a fixed number of decimals, its exact value rounded half up;
+// infinities and NaN in their text form (§3.7).
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
     if v != v || v - v != 0.0 {
         format(out, v);
@@ -1060,16 +1060,122 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
         out.push('-');
         x = -x;
     }
-    var scale = 1.0;
-    for i in decimals { scale *= 10.0; }
-    // x is not negative, so truncation is floor and adding 0.5 first rounds
-    // half up: `as!`, since dropping the fraction is the point.
-    let scaled = (x * scale + 0.5) as! i64;
-    let iscale = scale as i64;
-    format_uint(out, (scaled / iscale) as u64, 10, 0, ' ');
-    if decimals > 0 {
+    let d = max(decimals, 0);
+    // x * 10^d, below 2^52, is x's scaled value rounded once, by at most
+    // y * 2^-53, and its fraction is exact. Only a fraction that close to
+    // a half can round the other way than the exact value would, and then
+    // the digits are worked out exactly. `as!`: the floor drops the
+    // fraction on purpose.
+    if d <= 18 {
+        let y = x * float_text::POW10[d];
+        if y < 4503599627370496.0 {
+            let n = y as! i64;
+            let frac = y - n;
+            if abs(frac - 0.5) > y * 2.3e-16 {
+                let scaled = if frac >= 0.5 { n + 1 } else { n };
+                let iscale = float_text::POW10_U64[d] as i64;
+                format_uint(out, (scaled / iscale) as u64, 10, 0, ' ');
+                if d > 0 {
+                    out.push('.');
+                    format_uint(out, (scaled % iscale) as u64, 10, d, '0');
+                }
+                return;
+            }
+        }
+    }
+    format_flt_exact(out, x, d);
+}
+
+// The decimal digits of x, finite and not negative, rounded half up at d
+// places. x is m * 2^e, which is the integer m * 2^e for e >= 0 and
+// m * 5^-e / 10^-e otherwise, so the product, worked out in limbs of nine
+// digits, holds every digit of x: up to 309 before the point and 767
+// significant ones after it.
+fn format_flt_exact(out: u8[>..]&, x: f64, d: i64) {
+    let b = float_text::bits_of(x);
+    let be = ((b >> 52) & 0x7FF) as i64;
+    var m = b & 0xFFFFFFFFFFFFF;
+    var e = -1074;
+    if be > 0 {
+        m |= 0x10000000000000;
+        e = be - 1075;
+    }
+    var limbs: u64[>..] = [m % 1000000000, (m / 1000000000) % 1000000000, m / 1000000000000000000];
+    var point = 0;
+    if e >= 0 {
+        while e > 0 {
+            let s = min(e, 29);
+            format_flt_mul(limbs, (1 as u64) << s);
+            e -= s;
+        }
+    } else {
+        point = -e;
+        var k = point;
+        while k > 0 {
+            let s = min(k, 13);
+            format_flt_mul(limbs, float_text::POW5[s]);
+            k -= s;
+        }
+    }
+    // The digits, most significant first, with at least one before the
+    // point.
+    var digits: u8[>..] = [];
+    var top = limbs.len - 1;
+    while top > 0 && limbs[top] == 0 { top -= 1; }
+    format_uint(digits, limbs[top], 10, 0, ' ');
+    var i = top;
+    while i > 0 {
+        i -= 1;
+        format_uint(digits, limbs[i], 10, 9, '0');
+    }
+    if digits.len <= point {
+        var lead: u8[>..] = [];
+        push_n(lead, '0', point + 1 - digits.len);
+        lead.append(digits);
+        digits.resize(0);
+        digits.append(lead);
+    }
+    // Keep d places; a dropped first digit of 5 or more rounds up, carrying
+    // through nines, and past the first digit as a new leading 1.
+    let whole = digits.len - point;
+    var keep = whole + min(d, point);
+    if d < point && digits[keep] >= '5' {
+        var j = keep;
+        loop {
+            if j == 0 {
+                insert_at(digits, 0, '1');
+                keep += 1;
+                break;
+            }
+            j -= 1;
+            if digits[j] != '9' {
+                digits[j] += 1;
+                break;
+            }
+            digits[j] = '0';
+        }
+    }
+    let int_end = keep - min(d, point);
+    out.append(digits[..int_end]);
+    if d > 0 {
         out.push('.');
-        format_uint(out, (scaled % iscale) as u64, 10, decimals, '0');
+        out.append(digits[int_end..keep]);
+        push_n(out, '0', d - min(d, point));
+    }
+}
+
+// limbs * f, for f below 2^31: each limb is below 10^9, so limb * f plus
+// the carry stays below 2^63.
+fn format_flt_mul(limbs: u64[>..]&, f: u64) {
+    var carry: u64 = 0;
+    for i in limbs.len {
+        let t = limbs[i] * f + carry;
+        limbs[i] = t % 1000000000;
+        carry = t / 1000000000;
+    }
+    while carry > 0 {
+        limbs.push(carry % 1000000000);
+        carry /= 1000000000;
     }
 }
 
