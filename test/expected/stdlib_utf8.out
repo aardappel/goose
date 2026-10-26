@@ -1,0 +1,151 @@
+16843520 strings of one to three bytes decode as the plain decoder says
+20000 random strings over the class edges, 160050 checks at every position
+4419 valid texts damaged in one byte, 109917 checks
+U+0000 valid_rune true width 1 -> 00 -> U+0000/1 last U+0000/1
+U+0001 valid_rune true width 1 -> 01 -> U+0001/1 last U+0001/1
+U+007e valid_rune true width 1 -> 7e -> U+007e/1 last U+007e/1
+U+007f valid_rune true width 1 -> 7f -> U+007f/1 last U+007f/1
+U+0080 valid_rune true width 2 -> c2 80 -> U+0080/2 last U+0080/2
+U+0081 valid_rune true width 2 -> c2 81 -> U+0081/2 last U+0081/2
+U+00bf valid_rune true width 2 -> c2 bf -> U+00bf/2 last U+00bf/2
+U+00c0 valid_rune true width 2 -> c3 80 -> U+00c0/2 last U+00c0/2
+U+00c1 valid_rune true width 2 -> c3 81 -> U+00c1/2 last U+00c1/2
+U+00c8 valid_rune true width 2 -> c3 88 -> U+00c8/2 last U+00c8/2
+U+00d0 valid_rune true width 2 -> c3 90 -> U+00d0/2 last U+00d0/2
+U+00e0 valid_rune true width 2 -> c3 a0 -> U+00e0/2 last U+00e0/2
+U+00f0 valid_rune true width 2 -> c3 b0 -> U+00f0/2 last U+00f0/2
+U+00f8 valid_rune true width 2 -> c3 b8 -> U+00f8/2 last U+00f8/2
+U+00ff valid_rune true width 2 -> c3 bf -> U+00ff/2 last U+00ff/2
+U+0100 valid_rune true width 2 -> c4 80 -> U+0100/2 last U+0100/2
+U+07ff valid_rune true width 2 -> df bf -> U+07ff/2 last U+07ff/2
+U+0800 valid_rune true width 3 -> e0 a0 80 -> U+0800/3 last U+0800/3
+U+0801 valid_rune true width 3 -> e0 a0 81 -> U+0801/3 last U+0801/3
+U+d7ff valid_rune true width 3 -> ed 9f bf -> U+d7ff/3 last U+d7ff/3
+U+d800 valid_rune false width 0 -> ef bf bd -> U+fffd/3 last U+fffd/3
+U+dfff valid_rune false width 0 -> ef bf bd -> U+fffd/3 last U+fffd/3
+U+e000 valid_rune true width 3 -> ee 80 80 -> U+e000/3 last U+e000/3
+U+fffd valid_rune true width 3 -> ef bf bd -> U+fffd/3 last U+fffd/3
+U+fffe valid_rune true width 3 -> ef bf be -> U+fffe/3 last U+fffe/3
+U+ffff valid_rune true width 3 -> ef bf bf -> U+ffff/3 last U+ffff/3
+U+10000 valid_rune true width 4 -> f0 90 80 80 -> U+10000/4 last U+10000/4
+U+10001 valid_rune true width 4 -> f0 90 80 81 -> U+10001/4 last U+10001/4
+U+10ffff valid_rune true width 4 -> f4 8f bf bf -> U+10ffff/4 last U+10ffff/4
+U+110000 valid_rune false width 0 -> ef bf bd -> U+fffd/3 last U+fffd/3
+U+-001 valid_rune false width 0 -> ef bf bd -> U+fffd/3 last U+fffd/3
+Go: invalid sequences, RuneCountTests and ValidTests
+ed a0 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed bf bf | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+f4 90 80 80 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+c0 80 | 2 false | U+fffd/1 U+fffd/1
+c1 bf | 2 false | U+fffd/1 U+fffd/1
+e0 80 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+e0 9f bf | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+f0 80 80 80 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+f0 8f bf bf | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+80 | 1 false | U+fffd/1
+bf | 1 false | U+fffd/1
+f5 80 80 80 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+f8 80 80 80 80 | 5 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+fe | 1 false | U+fffd/1
+ff | 1 false | U+fffd/1
+e2 82 | 2 false | U+fffd/1 U+fffd/1
+f0 9f 98 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+c2 | 1 false | U+fffd/1
+e2 82 41 | 3 false | U+fffd/1 U+fffd/1 U+0041/1
+61 62 63 64 | 4 true | U+0061/1 U+0062/1 U+0063/1 U+0064/1
+e2 98 ba e2 98 bb e2 98 b9 | 3 true | U+263a/3 U+263b/3 U+2639/3
+31 2c 32 2c 33 2c 34 | 7 true | U+0031/1 U+002c/1 U+0032/1 U+002c/1 U+0033/1 U+002c/1 U+0034/1
+e2 00 | 2 false | U+fffd/1 U+0000/1
+e2 80 | 2 false | U+fffd/1 U+fffd/1
+61 e2 80 | 3 false | U+0061/1 U+fffd/1 U+fffd/1
+ | 0 true |
+61 | 1 true | U+0061/1
+61 62 63 | 3 true | U+0061/1 U+0062/1 U+0063/1
+d0 96 | 1 true | U+0416/2
+d0 96 d0 96 | 2 true | U+0416/2 U+0416/2
+d0 b1 d1 80 d1 8d d0 b4 2d d0 9b d0 93 d0 a2 d0 9c | 9 true | U+0431/2 U+0440/2 U+044d/2 U+0434/2 U+002d/1 U+041b/2 U+0413/2 U+0422/2 U+041c/2
+61 61 e2 | 3 false | U+0061/1 U+0061/1 U+fffd/1
+36 36 e2 82 ac | 3 true | U+0036/1 U+0036/1 U+20ac/3
+f4 8f bf bf | 1 true | U+10ffff/4
+f4 90 80 80 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+ed 9f bf | 1 true | U+d7ff/3
+ee 80 80 | 1 true | U+e000/3
+utf8proc iterate: ASCII, each width, overlongs, surrogates, 5 and 6 bytes, truncation
+00 | 1 true | U+0000/1
+41 | 1 true | U+0041/1
+7f | 1 true | U+007f/1
+c2 80 | 1 true | U+0080/2
+df bf | 1 true | U+07ff/2
+e0 a0 80 | 1 true | U+0800/3
+ef bf bf | 1 true | U+ffff/3
+f0 90 80 80 | 1 true | U+10000/4
+f4 8f bf bf | 1 true | U+10ffff/4
+c0 af | 2 false | U+fffd/1 U+fffd/1
+e0 80 af | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+f0 80 80 af | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+ed a0 80 ed b0 80 | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+f8 88 80 80 80 | 5 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+fc 84 80 80 80 80 | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+c2 | 1 false | U+fffd/1
+e0 a0 | 2 false | U+fffd/1 U+fffd/1
+f0 90 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+c2 41 | 2 false | U+fffd/1 U+0041/1
+e0 a0 41 | 3 false | U+fffd/1 U+fffd/1 U+0041/1
+f0 90 80 41 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+0041/1
+80 80 | 2 false | U+fffd/1 U+fffd/1
+ef bf be | 1 true | U+fffe/3
+Kuhn: first and last of each length, boundaries, lonely starts, overlongs, surrogates
+c2 80 | 1 true | U+0080/2
+e0 a0 80 | 1 true | U+0800/3
+f0 90 80 80 | 1 true | U+10000/4
+f8 88 80 80 80 | 5 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+fc 84 80 80 80 80 | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+7f | 1 true | U+007f/1
+df bf | 1 true | U+07ff/2
+ef bf bf | 1 true | U+ffff/3
+f7 bf bf bf | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+fb bf bf bf bf | 5 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+fd bf bf bf bf bf | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+ed 9f bf | 1 true | U+d7ff/3
+ee 80 80 | 1 true | U+e000/3
+ef bf bd | 1 true | U+fffd/3
+f4 8f bf bf | 1 true | U+10ffff/4
+f4 90 80 80 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+c0 20 c1 20 df 20 | 6 false | U+fffd/1 U+0020/1 U+fffd/1 U+0020/1 U+fffd/1 U+0020/1
+e0 20 ef 20 | 4 false | U+fffd/1 U+0020/1 U+fffd/1 U+0020/1
+f0 20 f7 20 | 4 false | U+fffd/1 U+0020/1 U+fffd/1 U+0020/1
+f8 20 fb 20 | 4 false | U+fffd/1 U+0020/1 U+fffd/1 U+0020/1
+fc 20 fd 20 | 4 false | U+fffd/1 U+0020/1 U+fffd/1 U+0020/1
+fe | 1 false | U+fffd/1
+ff | 1 false | U+fffd/1
+fe fe ff ff | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+c0 af | 2 false | U+fffd/1 U+fffd/1
+e0 80 af | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+f0 80 80 af | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+f8 80 80 80 af | 5 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+fc 80 80 80 80 af | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+c1 bf | 2 false | U+fffd/1 U+fffd/1
+e0 9f bf | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+f0 8f bf bf | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+c0 80 | 2 false | U+fffd/1 U+fffd/1
+e0 80 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+f0 80 80 80 | 4 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+ed a0 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed ad bf | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed ae 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed af bf | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed b0 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed be 80 | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed bf bf | 3 false | U+fffd/1 U+fffd/1 U+fffd/1
+ed a0 80 ed b0 80 | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+ed af bf ed bf bf | 6 false | U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1 U+fffd/1
+ef bf be | 1 true | U+fffe/3
+ef bf bf | 1 true | U+ffff/3
+你好 世界 abc 7
+你好世 [] 你好世界abc []
+c 0 0
+0 3 6 9 12 13 14 15 15 
+6 😀 🇭🇺 a😀
+5 false € x 2
+20320@3 22909@6 19990@9 30028@12 97@13 98@14 99@15 
+67 ef bf bd ef bf bd ef bf bd f4 8f bf bf 5 true

@@ -950,7 +950,8 @@ elements, and which one you pick says what you want:
   static data.
 
 No encoding is enforced; UTF-8 is a library convention, and the library's
-`each_utf8` and `push_utf8` understand it.
+`each_utf8` and `push_utf8` understand it, as does the `utf8` module,
+which validates and indexes text by code point.
 
 ```goose
 fn main() {
