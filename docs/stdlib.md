@@ -161,6 +161,8 @@ fn hash_combine(seed: u64, h: u64) -> u64
 
 These hashes mix all of their input into the low 32 bits. `dictionary`
 masks those bits to find the home slot and keeps them as the slot's tag.
+A float hashes as its bits, `-0.0` as `0.0`, and an `f32` as the `f64` of
+its value.
 `dictionary` also picks up a `hash` overload for a user key type, declared
 globally or in the key type's namespace (it calls `key.hash()`, §11.1), and
 that overload should do the same, as `hash_combine` of the fields' hashes

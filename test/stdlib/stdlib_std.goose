@@ -32,6 +32,23 @@ fn hashing() {
     print(hash(0.1) == hash(0.1), " ", hash(-1.5) != hash(1.5));               // true true
     let q: f32 = 0.1;
     print(hash(q) == hash(q), " ", hash(q) != hash(-q));                       // true true
+    // Floats: -0.0 equals 0.0 and hashes so, an f32 hashes as the f64 of its
+    // value, and keys that only scaling by 65536 used to tell apart (tiny or
+    // huge ones) spread over the slots of a 16384-slot table as random
+    // values would, about 7490 of them for 10000 keys.
+    let z = 0.0;
+    let one: f32 = 1.0;
+    print(hash(z) == hash(-z), " ", hash(one) == hash(1.0), " ", hash(1e-6) != hash(2e-6));   // true true true
+    for scale in [1.0, 1e-9, 1e200] {
+        var seen: bool[>..] = [];
+        push_n(seen, false, 16384);
+        var slots = 0;
+        for i in 10000 {
+            let k = (hash(i * scale) & 16383) as i64;
+            if !seen[k] { seen[k] = true; slots += 1; }
+        }
+        print(slots > 7000);                                                    // true
+    }
     // Bytes: the same bytes hash the same wherever they lie, every prefix
     // of a text (each length the hash reads its own way) hashes differently,
     // and the low 12 bits, which a 4096-slot dictionary uses, spread 4096

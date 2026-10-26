@@ -83,9 +83,12 @@ fn swap<T>(a: T&, b: T&) {
 // One overload per scalar type: a u8 widens equally well into i64 and u64,
 // so a single generic would be ambiguous. Integers get a multiply-xorshift
 // mix (the low bits are what `dictionary` masks and keeps as slot tags). A
-// negative integer mixes as its two's-complement bits, and a float as its
-// count of 1/65536ths, truncated and wrapped to 64 bits: `as!`, since those
-// conversions change the value on purpose.
+// negative integer mixes as its two's-complement bits (`as!`, since that
+// conversion changes the value on purpose), and a float as its bits, with
+// their high half folded into the low half first: a double's low bits are
+// often zero (52 of them for 1.0), and the multiply carries bits only
+// upwards. The fold and the mix are invertible, so distinct floats hash
+// apart.
 
 fn hash_mix(x: u64) -> u64 {
     var h = x * 11400714819323198485;
@@ -102,8 +105,13 @@ fn hash(x: u16) -> u64 { hash_mix(x) }
 fn hash(x: u32) -> u64 { hash_mix(x) }
 fn hash(x: u64) -> u64 { hash_mix(x) }
 fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
-fn hash(x: f32) -> u64 { hash_mix((x * 65536.0) as! u64) }
-fn hash(x: f64) -> u64 { hash_mix((x * 65536.0) as! u64) }
+// -0.0 hashes as 0.0, which it equals; an f32 as the f64 of its value.
+fn hash(x: f32) -> u64 { hash(x as f64) }
+fn hash(x: f64) -> u64 {
+    if x == 0.0 { return hash_mix(0); }
+    let b = float_text::bits_of(x);
+    return hash_mix(b ^ (b >> 32));
+}
 
 // The 8 bytes of s from i, and the 4 bytes, little-endian; C compilers turn
 // each into one load.
