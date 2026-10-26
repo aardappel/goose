@@ -363,9 +363,9 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
         // line before ended.
         auto iselse = IsTok(first, T_ELSE);
         auto cont = havecode && (!ended || iselse);
-        // A line that keeps its offset from the one it continues, or from
-        // the bracket it is aligned in, does so while it stays to the right
-        // of that line's indentation; else it is indented a level past it.
+        // A line that keeps its offset from the bracket it is aligned in
+        // does so while it stays to the right of that line's indentation;
+        // else it is indented a level past it.
         auto keep = [](int col, int base) { return col > base ? col : base + 4; };
         if (closerfirst) {
             indent = oldindent;
@@ -378,7 +378,10 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
                 // where it was relative to its statement.
                 indent = max(0, oldindent + c.anew - c.aold);
             } else if (cont && c.anchored) {
-                indent = keep(oldindent + c.anew - c.aold, c.anew);
+                // A line that continues a statement keeps its offset from the
+                // statement's first line, but goes no further left than it:
+                // `a &&` over `b` stays as it is, as does `b` indented past it.
+                indent = max(oldindent + c.anew - c.aold, c.anew);
             } else if (!stack.empty()) {
                 indent = c.hanging ? c.lineindent + 4
                                    : keep(oldindent + c.newcol - c.oldcol, c.lineindent);

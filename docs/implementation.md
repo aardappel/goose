@@ -174,7 +174,8 @@ and prints the tokens line by line as the input breaks them: each line
 indented from the brackets open at its start (a level inside a bracket that
 ends its line or a block's `{`, or its offset from a bracket it is aligned
 in), or, continuing a statement, kept at its offset from the statement's
-first line while it stays to the right of it; and the tokens on a line
+first line but no further left than it, so that a chain broken after its
+operators can line up under its first operand; and the tokens on a line
 spaced by `format::Space`, with a space wherever two tokens written
 together would lex as something else. Trailing comments keep their column,
 moved with their line; a run of them that shared a column shares one still.

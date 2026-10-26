@@ -79,8 +79,11 @@ GOLDEN = [
     ("continuations",
      "fn f() -> bool {\n    if a ||\n       b {\n        return c &&\n    d;\n    }\n"
      "    let p = if a { 1 }\n            else { 2 };\n    true\n}\n",
-     "fn f() -> bool {\n    if a ||\n       b {\n        return c &&\n            d;\n    }\n"
+     "fn f() -> bool {\n    if a ||\n       b {\n        return c &&\n        d;\n    }\n"
      "    let p = if a { 1 }\n            else { 2 };\n    true\n}\n"),
+    ("a chain continued at its statement's indentation",
+     "fn f() -> bool {\n    let x = a +\n    b +\n    c;\n    x > 1 &&\n    x < 9 &&\n        x != 5\n}\n",
+     None),
     ("bodies after wrapped headers and conditions",
      "fn f(a: i64,\n     b: i64) {\n  a;\n}\n"
      "fn g() {\n    if a &&\n       b {\n            c;\n    }\n}\n"

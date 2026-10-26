@@ -353,8 +353,8 @@ fn forward() -> float3 {
 }
 fn overlaps(feet: float3, c: Cell) -> bool {
     feet.x + RADIUS > c.x && feet.x - RADIUS < c.x + 1 &&
-        feet.y + BODY_HEIGHT > c.y && feet.y < c.y + 1 &&
-        feet.z + RADIUS > c.z && feet.z - RADIUS < c.z + 1
+    feet.y + BODY_HEIGHT > c.y && feet.y < c.y + 1 &&
+    feet.z + RADIUS > c.z && feet.z - RADIUS < c.z + 1
 }
 fn blocked(feet: float3) -> bool {
     // The finite map's edges are walls, while its sky is open.
