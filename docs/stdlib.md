@@ -610,8 +610,9 @@ The module also has:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;
-fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64
-fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool
+fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
+fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
+fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
 ```
 
 ## os
