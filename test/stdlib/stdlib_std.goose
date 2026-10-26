@@ -109,6 +109,12 @@ fn random() {
     sort(xs);
     assert(xs == [1, 2, 3, 4, 5, 6, 7, 8]);  // Check the entire permutation.
     print(xs[0], " ", xs[7], " ", xs.len);            // 1 8 8
+    // n = 3 * 2^61: x % n gives each result below 2^62 from three values
+    // of x and the rest from two, 3/4 of all draws where 2/3 is fair.
+    let n = 3 * 2305843009213693952;
+    var low = 0;
+    for i in 30000 { if r.rand_int(n) < 4611686018427387904 { low += 1; } }
+    print(low > 19400 && low < 20600);                // true
 }
 
 fn searching() {

@@ -191,8 +191,20 @@ fn rand_u64(r: rng&) -> u64 {
     return z ^ (z >> 31);
 }
 
-// Uniform in [0, n).
-fn rand_int(r: rng&, n: i64) -> i64 { (rand_u64(r) % (n as u64)) as i64 }
+// Uniform in [0, n), n > 0. x % n alone favors the low results wherever n
+// does not divide 2^64; x is drawn again while it is below 2^64 % n, which
+// leaves an equal count of each result. That bound is under n, so it is
+// worked out only for an x below n, and every x kept gives x % n, as before.
+fn rand_int(r: rng&, n: i64) -> i64 {
+    assert(n > 0);
+    let m = n as u64;
+    var x = rand_u64(r);
+    if x < m {
+        let t = (~m + 1) % m;   // 2^64 % m
+        while x < t { x = rand_u64(r); }
+    }
+    return (x % m) as i64;
+}
 
 // Uniform in [0, 1).
 fn rand_flt(r: rng&) -> f64 { (rand_u64(r) >> 11) * (1.0 / 9007199254740992.0) }

@@ -176,7 +176,7 @@ fn hash(k: key) -> u64 { hash_combine(hash(k.a), hash(k.b)) }
 ```goose
 struct rng { s: u64 }                    // splitmix64; the seed is the state
 fn rand_u64(r: rng&) -> u64
-fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n)
+fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n), without modulo bias; asserts n > 0
 fn rand_flt(r: rng&) -> f64              // uniform in [0, 1)
 fn shuffle<T>(xs: T[:], r: rng&)         // Fisher-Yates
 ```
