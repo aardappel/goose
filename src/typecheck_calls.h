@@ -1393,9 +1393,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     if (sf->isnested && LexFrame(mi.env, sf) >= 0 && !declsiteof.count({ mi.env, sf }))
         Error(callnode, cat(sf->name, " (declared at ", Where(sf->line),
                             ") is called before its declaration is reached (§7.5)"));
-    vector<VarDef *> narrowedenv;
-    for (auto v : ExternalOptionals(mi))
-        if (v->narrowed) narrowedenv.push_back(v);
+    auto narrowedenv = NarrowedOptionals(mi);
     // Root classes: distinct roots of ref/slice args ordered by depth.
     vector<RootArg> roots(mi.paramtypes.size());
     vector<RootArg> views(mi.paramtypes.size());
@@ -1750,16 +1748,17 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
 
 // Only the callee's lexical environment is shared; ordinary caller locals
 // are separate from a non-nested function. Globals are always shared.
-inline vector<VarDef *> TypeCheck::ExternalOptionals(const MatchInfo &mi) {
+inline vector<VarDef *> TypeCheck::NarrowedOptionals(const MatchInfo &mi) {
     vector<VarDef *> out;
     set<VarDef *> seenvars;
     set<FnSpec *> seenenvs;
-    auto add = [&](VarDef *v) {
-        if (v->type && v->type->kind == TY_REF && v->type->ref->optional &&
-            seenvars.insert(v).second)
-            out.push_back(v);
+    auto optional = [](VarDef *v) {
+        return v->narrowed && v->type && v->type->kind == TY_REF && v->type->ref->optional;
     };
-    for (auto g : ast.globals) for (auto v : g->defs) add(v);
+    auto add = [&](VarDef *v) {
+        if (optional(v) && seenvars.insert(v).second) out.push_back(v);
+    };
+    for (auto v : narrowedglobals) add(v);
     // A function value reaches the environment it was written in, whichever
     // function it is handed to; fi is that environment's frame (LexFrame).
     function<void(FnSpec *, int)> addenv = [&](FnSpec *e, int fi) {

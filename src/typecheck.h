@@ -452,6 +452,11 @@ struct TypeCheck {
     // environment it is declared in: a call specializes it there.
     map<pair<FnSpec *, SFunction *>, DeclSite *> declsiteof;
     bool reachable = true;
+    // Every global ever narrowed (NoteNarrowed), in ast.globals order: the
+    // only globals whose narrowed can be set, which the flow snapshots and
+    // a call's environment walk instead of every global.
+    vector<VarDef *> narrowedglobals;
+    unordered_map<VarDef *, int> globalorder;
     // Checking what a return, or the body's tail, gives the caller: the
     // function's own locals move. The statements, conditions, scrutinees
     // and loops inside it are no part of that value; a valued block or loop
@@ -1448,6 +1453,17 @@ struct TypeCheck {
     void NarrowCond(Node *cond, bool sense);
 
     void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
+    // vd, about to be narrowed, joins narrowedglobals if it is a global.
+    void NoteNarrowed(VarDef *vd) {
+        if (!vd->isglobal) return;
+        if (globalorder.empty())
+            for (auto g : ast.globals)
+                for (auto v : g->defs) globalorder.emplace(v, (int)globalorder.size());
+        auto at = globalorder.at(vd);
+        auto it = std::lower_bound(narrowedglobals.begin(), narrowedglobals.end(), at,
+                                   [&](VarDef *v, int k) { return globalorder.at(v) < k; });
+        if (it == narrowedglobals.end() || *it != vd) narrowedglobals.insert(it, vd);
+    }
     // The join of two states over the variables in scope, without changing
     // the live checker state: a fact holds iff it
     // holds in every reachable one, and a variable may be assigned iff it
@@ -2306,7 +2322,7 @@ struct TypeCheck {
     void CheckExternSpec(FnSpec *spec);
     void CheckExport(SFunction *sf);
     int ClassDepth(VarDef *r);
-    vector<VarDef *> ExternalOptionals(const MatchInfo &mi);
+    vector<VarDef *> NarrowedOptionals(const MatchInfo &mi);
     int EnvReach(const MatchInfo &mi);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
