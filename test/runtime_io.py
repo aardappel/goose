@@ -3,7 +3,8 @@ built by `goose build` and, where the JIT runs, run by `goose run`: stdin
 read as the bytes piped in, a carriage return before a line break and a
 Ctrl-Z among them, which Windows' text mode would translate and stop at;
 read_line taking off a carriage return only before a newline, never one the
-builder held before or one at EOF; and on POSIX write_file_atomic keeping the
+builder held before or one at EOF, and keeping a NUL byte and a 70,000-byte
+line, longer than stdio's buffer; and on POSIX write_file_atomic keeping the
 permissions of the file it replaces."""
 import os
 from pathlib import Path
@@ -66,7 +67,9 @@ def check_runtime_io(exe, base, *, jit):
                  ("lines", b"ab", [5, 120, 13, 97, 98, 124]),
                  ("lines", b"", [2, 120, 13]),
                  ("lines", b"ab\r\ncd\r", [9, 120, 13, 97, 98, 124, 99, 100, 13, 124]),
-                 ("lines", b"ab\r\r\n", [6, 120, 13, 97, 98, 13, 124])]
+                 ("lines", b"ab\r\r\n", [6, 120, 13, 97, 98, 13, 124]),
+                 ("lines", b"a\x00b\n" + b"z" * 70000 + b"\r\n",
+                  [70007, 120, 13, 97, 0, 98, 124] + [122] * 70000 + [124])]
         for how, argv in runners:
             for mode, data, want in cases:
                 code, out, err = run(argv + [mode], data)

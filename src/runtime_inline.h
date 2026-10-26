@@ -4462,17 +4462,32 @@ R"GSRT(GS_API void gs_os_write_stderr(sl_u8 s) {
 R"GSRT(GS_API void gs_os_flush_stdout(void) { fflush(stdout); }
 
 )GSRT"
+R"GSRT(/* fgetc takes the stream's lock for every byte; read_line takes it once
+   per line and reads the bytes without it. */
+#ifdef _WIN32
+#define gs_os_lock_stdin() _lock_file(stdin)
+#define gs_os_unlock_stdin() _unlock_file(stdin)
+#define gs_os_getc_stdin() _getc_nolock(stdin)
+#else
+#define gs_os_lock_stdin() flockfile(stdin)
+#define gs_os_unlock_stdin() funlockfile(stdin)
+#define gs_os_getc_stdin() getc_unlocked(stdin)
+#endif
+
+)GSRT"
 R"GSRT(/* One line of stdin, without its newline or a carriage return before it;
    false at end of input. */
 GS_API uint8_t gs_os_read_line(gs_rref out) {
-    int c = fgetc(stdin);
-    if (c == EOF) return 0;
+    gs_os_lock_stdin();
+    int c = gs_os_getc_stdin();
+    if (c == EOF) { gs_os_unlock_stdin(); return 0; }
     int64_t start = out.hdr->len;
     while (c != EOF && c != '\n') {
         uint8_t b = (uint8_t)c;
         gs_bld_append(out, &b, 1);
-        c = fgetc(stdin);
+        c = gs_os_getc_stdin();
     }
+    gs_os_unlock_stdin();
     if (c == '\n' && out.hdr->len > start && out.hdr->base[out.hdr->len - 1] == '\r') {
         out.hdr->len--;
         out.stk->top--;
