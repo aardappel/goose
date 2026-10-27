@@ -4,8 +4,10 @@ read as the bytes piped in, a carriage return before a line break and a
 Ctrl-Z among them, which Windows' text mode would translate and stop at;
 read_line taking off a carriage return only before a newline, never one the
 builder held before or one at EOF, and keeping a NUL byte and a 70,000-byte
-line, longer than stdio's buffer; and on POSIX write_file_atomic keeping the
-permissions of the file it replaces."""
+line, longer than stdio's buffer; read_stdin(out, max) appending at most max
+bytes a call, past its 64 KB buffer too, and reading nothing for a max of 0;
+and on POSIX write_file_atomic keeping the permissions of the file it
+replaces."""
 import os
 from pathlib import Path
 import stat
@@ -20,8 +22,9 @@ import os;
 
 // Standard input as the program reads it: with `all`, read_stdin's bytes;
 // with `lines`, read_line's lines, each followed by a `|`, into a builder
-// that holds `x` and a carriage return already; with a path, nothing, but
-// write_file_atomic of `new` over that file.
+// that holds `x` and a carriage return already; with `pieces` and a max,
+// read_stdin(got, max) until it returns false, printing got.len after each
+// call; with a path, nothing, but write_file_atomic of `new` over that file.
 fn main() {
     let argv = args();
     var got: u8[>..] = [];
@@ -30,6 +33,9 @@ fn main() {
     } else if argv[1] == "lines" {
         got.append("x\\r");
         while read_line(got) { got.append("|"); }
+    } else if argv[1] == "pieces" {
+        let max, _ = parse_int(argv[2]);
+        while read_stdin(got, max) { print(got.len); }
     } else {
         print(write_file_atomic(argv[1], "new"));
         return;
@@ -69,10 +75,14 @@ def check_runtime_io(exe, base, *, jit):
                  ("lines", b"ab\r\ncd\r", [9, 120, 13, 97, 98, 124, 99, 100, 13, 124]),
                  ("lines", b"ab\r\r\n", [6, 120, 13, 97, 98, 13, 124]),
                  ("lines", b"a\x00b\n" + b"z" * 70000 + b"\r\n",
-                  [70007, 120, 13, 97, 0, 98, 124] + [122] * 70000 + [124])]
+                  [70007, 120, 13, 97, 0, 98, 124] + [122] * 70000 + [124]),
+                 ("pieces 3", b"abcdefg", [3, 6, 7, 7, 97, 98, 99, 100, 101, 102, 103]),
+                 ("pieces 3", b"", [0]),
+                 ("pieces 0", b"ab", [0]),
+                 ("pieces 100000", b"z" * 150000, [100000, 150000, 150000] + [122] * 150000)]
         for how, argv in runners:
             for mode, data, want in cases:
-                code, out, err = run(argv + [mode], data)
+                code, out, err = run(argv + mode.split(), data)
                 if code != 0 or out.split() != [str(n) for n in want]:
                     raise RuntimeError(f"runtime io: the {how} program reading {data!r} with "
                                        f"{mode}: wanted {want}, got exit {code}:\n{out}{err}")

@@ -4088,6 +4088,7 @@ GS_API void gs_os_write_stderr(sl_u8 s);
 GS_API void gs_os_flush_stdout(void);
 GS_API uint8_t gs_os_read_line(gs_rref out);
 GS_API void gs_os_read_stdin(gs_rref out);
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max);
 GS_API int64_t gs_os_arg_count(void);
 GS_API void gs_os_arg(int64_t i, gs_rref out);
 GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);
@@ -4600,6 +4601,21 @@ GS_API void gs_os_read_stdin(gs_rref out) {
         if (n == 0) break;
         gs_bld_append(out, buf, (int64_t)n);
     }
+}
+
+)GSRT"
+R"GSRT(/* Up to max bytes of stdin; false when none were left. */
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max) {
+    uint8_t buf[65536];
+    int64_t got = 0;
+    while (got < max) {
+        size_t want = max - got < (int64_t)sizeof buf ? (size_t)(max - got) : sizeof buf;
+        size_t n = fread(buf, 1, want, stdin);
+        if (n == 0) break;
+        gs_bld_append(out, buf, (int64_t)n);
+        got += (int64_t)n;
+    }
+    return got > 0;
 }
 
 )GSRT"
