@@ -898,10 +898,8 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
     if (auto id = Is<Ident>(cond)) {
         if (!id->vdef) return;
         auto t = id->vdef->type;
-        if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed) {
-            NoteNarrowed(id->vdef);
-            id->vdef->narrowed = NarrowedRef(t, cond->line);
-        }
+        if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed)
+            SetNarrowed(id->vdef, NarrowedRef(t, cond->line));
         return;
     }
     if (auto u = Is<Unary>(cond)) {
@@ -2834,8 +2832,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
             if (spec && lv.var->ownerspec != spec)
                 spec->record.reboundoptionals.insert(lv.var);
             if (!v.isnull && wasplain) {
-                NoteNarrowed(lv.var);
-                lv.var->narrowed = NarrowedRef(target, a->line);
+                SetNarrowed(lv.var, NarrowedRef(target, a->line));
             } else {
                 lv.var->narrowed = nullptr;
             }

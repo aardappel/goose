@@ -456,7 +456,6 @@ struct TypeCheck {
     // only globals whose narrowed can be set, which the flow snapshots and
     // a call's environment walk instead of every global.
     vector<VarDef *> narrowedglobals;
-    unordered_map<VarDef *, int> globalorder;
     // Checking what a return, or the body's tail, gives the caller: the
     // function's own locals move. The statements, conditions, scrutinees
     // and loops inside it are no part of that value; a valued block or loop
@@ -1456,13 +1455,16 @@ struct TypeCheck {
     // vd, about to be narrowed, joins narrowedglobals if it is a global.
     void NoteNarrowed(VarDef *vd) {
         if (!vd->isglobal) return;
-        if (globalorder.empty())
-            for (auto g : ast.globals)
-                for (auto v : g->defs) globalorder.emplace(v, (int)globalorder.size());
-        auto at = globalorder.at(vd);
-        auto it = std::lower_bound(narrowedglobals.begin(), narrowedglobals.end(), at,
-                                   [&](VarDef *v, int k) { return globalorder.at(v) < k; });
+        auto it = std::lower_bound(narrowedglobals.begin(), narrowedglobals.end(), vd,
+                                   [](VarDef *a, VarDef *b) { return a->globalindex < b->globalindex; });
         if (it == narrowedglobals.end() || *it != vd) narrowedglobals.insert(it, vd);
+    }
+    // The one way a variable is narrowed, so a global never escapes the
+    // snapshots; restoring a saved narrowing or clearing one writes narrowed
+    // directly.
+    void SetNarrowed(VarDef *vd, TypeExpr *t) {
+        NoteNarrowed(vd);
+        vd->narrowed = t;
     }
     // The join of two states over the variables in scope, without changing
     // the live checker state: a fact holds iff it
@@ -2955,6 +2957,7 @@ struct TypeCheck {
         frames.push_back(f);
         // Global VarDefs exist up front so names resolve in any order; reads
         // before their initializer ran are caught by the assigned flag.
+        int globalindex = 0;
         for (auto g : ast.globals) {
             for (auto name : g->names) {
                 auto vd = ast.NewVarDef();
@@ -2962,6 +2965,7 @@ struct TypeCheck {
                 vd->line = g->line;
                 vd->isvar = g->isvar;
                 vd->isglobal = true;
+                vd->globalindex = globalindex++;
                 vd->reusable = g->reusable;
                 g->defs.push_back(vd);
             }
