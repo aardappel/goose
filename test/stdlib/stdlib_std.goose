@@ -213,6 +213,23 @@ fn inplace() {
     print(lo);                                                                 // hello world
     to_upper(lo);
     print(lo);                                                                 // HELLO WORLD
+    // Every byte, including punctuation beside the ASCII letter ranges and
+    // non-ASCII bytes. Converting a slice must leave its neighbors alone.
+    var lower: u8[258] = [0; 258];
+    var upper: u8[258] = [0; 258];
+    for i in 256 { lower[i + 1] = i as u8; upper[i + 1] = i as u8; }
+    lower[0] = 'A'; lower[257] = 'Z';
+    upper[0] = 'a'; upper[257] = 'z';
+    to_lower(lower[1..257]);
+    to_upper(upper[1..257]);
+    for i in 256 {
+        assert(lower[i + 1] == (if i >= 65 && i <= 90 { i + 32 } else { i }) as u8);
+        assert(upper[i + 1] == (if i >= 97 && i <= 122 { i - 32 } else { i }) as u8);
+    }
+    assert(lower[0] == 'A' && lower[257] == 'Z');
+    assert(upper[0] == 'a' && upper[257] == 'z');
+    to_lower(lower[1..1]);
+    to_upper(upper[1..1]);
 }
 
 fn lengths() {

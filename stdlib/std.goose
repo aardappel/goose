@@ -530,8 +530,18 @@ fn reverse<T>(xs: T[:]) {
 }
 
 // ASCII, in place.
-fn to_lower(s: u8[:]) { for &c in s { if c >= 'A' && c <= 'Z' { c += 32; } } }
-fn to_upper(s: u8[:]) { for &c in s { if c >= 'a' && c <= 'z' { c -= 32; } } }
+fn to_lower(s: u8[:]) {
+    for &c in s {
+        let mask: u8 = if c >= 'A' && c <= 'Z' { 32 } else { 0 };
+        c |= mask;
+    }
+}
+fn to_upper(s: u8[:]) {
+    for &c in s {
+        let mask: u8 = if c >= 'a' && c <= 'z' { 32 } else { 0 };
+        c ^= mask;
+    }
+}
 
 // ---- arrays: sorting -----------------------------------------------------------
 // The sort_ helpers take the comparator as F, "a goes before b", and are
