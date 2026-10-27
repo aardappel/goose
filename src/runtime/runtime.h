@@ -124,6 +124,28 @@
 #define GS_NORETURN __attribute__((noreturn))
 #define GS_NOINLINE __attribute__((noinline))
 #endif
+/* A scalar read or written in place in packed memory: a data stack, the
+   bytes of a packed type. Values there start at any address, so the C
+   access says so, which C requires and UBSan's alignment check enforces.
+   On every target Goose supports it is the same single load or store as
+   the plain type. Without the attribute, the plain type, as before.
+   An exported header (--header) carries the same block, hence the guard. */
+#ifndef GS_UA_TYPES
+#define GS_UA_TYPES
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_UNALIGNED __attribute__((aligned(1)))
+#else
+#define GS_UNALIGNED
+#endif
+typedef int16_t gs_ua_i16 GS_UNALIGNED;
+typedef int32_t gs_ua_i32 GS_UNALIGNED;
+typedef int64_t gs_ua_i64 GS_UNALIGNED;
+typedef uint16_t gs_ua_u16 GS_UNALIGNED;
+typedef uint32_t gs_ua_u32 GS_UNALIGNED;
+typedef uint64_t gs_ua_u64 GS_UNALIGNED;
+typedef float gs_ua_f32 GS_UNALIGNED;
+typedef double gs_ua_f64 GS_UNALIGNED;
+#endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
    function Goose wanted to inline but could not (FnSpec::cinline). */
 #if defined(__GNUC__) || defined(__clang__)

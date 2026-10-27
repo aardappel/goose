@@ -310,6 +310,11 @@ struct CodeGen {
     static const char *IntSfx(IntStorage s);
     static const char *RelCT(IntStorage s, bool uns = false);
     static const char *RelCT(TypeExpr *rt);
+    // The same types for a value read or written in place in packed memory,
+    // where it may start at any address (runtime.h's gs_ua_* types).
+    static const char *UIntCT(IntStorage s);
+    static const char *URelCT(IntStorage s, bool uns = false);
+    static const char *URelCT(TypeExpr *rt);
 
     IntStorage TagStore(SEnum *en) { return en->variants.size() <= 256 ? IS_U8 : IS_U16; }
     int64_t TagSize(SEnum *en) { return IntSize(TagStore(en)); }
@@ -358,6 +363,8 @@ struct CodeGen {
 
     void EmitCoreTypes();
     string CT(TypeExpr *t);
+    string UCT(TypeExpr *t);
+    set<string> uacts;       // The unaligned pointer typedefs UCT emitted.
     static bool StructLike(TypeExpr *t);
     string NameCT(TypeExpr *t);
     set<string> cdefined;    // Mangled names whose C body has been emitted.
@@ -886,7 +893,7 @@ struct CodeGen {
     // A limited array's capacity: static for the C-typed form, read from
     // the header of the runtime-capacity byte form.
     string LimitedCap(const Loc &lv) {
-        return lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+        return lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(gs_ua_u32 *)(", lv.s, ")");
     }
 
     // ------------------------------------------------------------------

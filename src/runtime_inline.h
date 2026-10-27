@@ -136,6 +136,28 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #define GS_NORETURN __attribute__((noreturn))
 #define GS_NOINLINE __attribute__((noinline))
 #endif
+/* A scalar read or written in place in packed memory: a data stack, the
+   bytes of a packed type. Values there start at any address, so the C
+   access says so, which C requires and UBSan's alignment check enforces.
+   On every target Goose supports it is the same single load or store as
+   the plain type. Without the attribute, the plain type, as before.
+   An exported header (--header) carries the same block, hence the guard. */
+#ifndef GS_UA_TYPES
+#define GS_UA_TYPES
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_UNALIGNED __attribute__((aligned(1)))
+#else
+#define GS_UNALIGNED
+#endif
+typedef int16_t gs_ua_i16 GS_UNALIGNED;
+typedef int32_t gs_ua_i32 GS_UNALIGNED;
+typedef int64_t gs_ua_i64 GS_UNALIGNED;
+typedef uint16_t gs_ua_u16 GS_UNALIGNED;
+typedef uint32_t gs_ua_u32 GS_UNALIGNED;
+typedef uint64_t gs_ua_u64 GS_UNALIGNED;
+typedef float gs_ua_f32 GS_UNALIGNED;
+typedef double gs_ua_f64 GS_UNALIGNED;
+#endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
    function Goose wanted to inline but could not (FnSpec::cinline). */
 #if defined(__GNUC__) || defined(__clang__)
@@ -184,7 +206,8 @@ enum {
     GS_E_CAPRANGE,     /* invalid capacity */
     GS_E_RESIZEFILL,   /* resize growth requires a fill value */
     GS_E_RESIZENEG,    /* resize to a negative length */
-    GS_E_POP,          /* pop on empty array */
+)GSRT"
+R"GSRT(    GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
     GS_E_THREADSELF,   /* a worker cannot wait for itself */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
@@ -200,8 +223,7 @@ GS_API GS_NORETURN void gs_panic(const char *msg);
 GS_API GS_NORETURN void gs_abort(int err, const char *file, int line);
 /* The program's own abort(msg) (§9.3): the message is Goose bytes, not a C
    string, so it goes out with an explicit length. */
-)GSRT"
-R"GSRT(GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
                                      int line);
 GS_API GS_NORETURN void gs_exit(int64_t code);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
@@ -344,7 +366,8 @@ static inline int gs_simd_level(void) {
 #endif
 
 /* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
-   is built for FMA and twice where it is not, so its results are the
+)GSRT"
+R"GSRT(   is built for FMA and twice where it is not, so its results are the
    implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
    the target as a whole: fused on arm64 and on x86-64 built for AVX2 or
    past it (-march=x86-64-v3, clang-cl's /arch:AVX2), separate everywhere
@@ -364,8 +387,7 @@ static inline int gs_simd_level(void) {
 
 /* The generated code's memcpy and memset of zeros. Most move or clear the
    1 to 32 bytes of a field, an element or a reference, a constant size the
-)GSRT"
-R"GSRT(   optimizing backends turn into a few moves. TinyCC calls the C library for
+   optimizing backends turn into a few moves. TinyCC calls the C library for
    every memcpy and memset, so under it a constant size of up to 32 bytes
    is written out as loads and stores, overlapping where the size is not a
    power of two (which needs the runs not to overlap, as memcpy's do not).
@@ -389,8 +411,7 @@ R"GSRT(   optimizing backends turn into a few moves. TinyCC calls the C library 
                                   GS_CP(uint64_t, d, s, (n) - 16), GS_CP(uint64_t, d, s, (n) - 8)) \
      : (void)memcpy((d), (s), (n)))
 #define GS_MEMZERO(d, n) \
-)GSRT"
-R"GSRT(    (GS_KSZ(n, 8, 8) ? (void)(GS_AT(uint64_t, d, 0) = 0) \
+    (GS_KSZ(n, 8, 8) ? (void)(GS_AT(uint64_t, d, 0) = 0) \
      : GS_KSZ(n, 4, 4) ? (void)(GS_AT(uint32_t, d, 0) = 0) \
      : GS_KSZ(n, 1, 1) ? (void)(GS_AT(uint8_t, d, 0) = 0) \
      : GS_KSZ(n, 2, 2) ? (void)(GS_AT(uint16_t, d, 0) = 0) \
@@ -502,7 +523,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
 
    The signed types' add, sub, mul and neg also take the file and line of the
    operation, for the debug build's overflow message; the release macros
-   drop them unevaluated. */
+)GSRT"
+R"GSRT(   drop them unevaluated. */
 
 /* Division and modulo, both builds: the zero check is not optional, `%` is
    Euclidean, and i64.min / -1 aborts. They are macros for the reason the
@@ -522,8 +544,7 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
 #define GS_MODS(T, t, a, b, f, l) \
     ((T)(b) == 0 ? (gs_divfail((f), (l)), (T)0) \
      : (T)(((t) = (int64_t)(T)(a) % (int64_t)(T)(b)) < 0 \
-)GSRT"
-R"GSRT(               ? (t) + ((T)(b) < 0 ? -(int64_t)(T)(b) : (int64_t)(T)(b)) : (t)))
+               ? (t) + ((T)(b) < 0 ? -(int64_t)(T)(b) : (int64_t)(T)(b)) : (t)))
 
 #define gs_div_u8(a, b, f, l)  GS_DIVU(uint8_t, a, b, f, l)
 #define gs_div_u16(a, b, f, l) GS_DIVU(uint16_t, a, b, f, l)
@@ -552,8 +573,7 @@ R"GSRT(               ? (t) + ((T)(b) < 0 ? -(int64_t)(T)(b) : (int64_t)(T)(b)) 
 
 #if GS_DEBUG
 #define GS_DIVOPS_S(SFX, T, MIN, MAX) \
-)GSRT"
-R"GSRT(static T gs_div_##SFX(T a, T b, const char *file, int line) { \
+static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a / (int64_t)b; \
     if (r < (MIN) || r > (MAX)) gs_ovf(a, "/", b, #SFX, file, line); \
@@ -667,7 +687,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_shr_i32(a, n) ((int32_t)((int64_t)(a) >> ((n) & 31)))
 
 #define gs_add_u8(a, b)  ((uint8_t)((a) + (b)))
-#define gs_sub_u8(a, b)  ((uint8_t)((a) - (b)))
+)GSRT"
+R"GSRT(#define gs_sub_u8(a, b)  ((uint8_t)((a) - (b)))
 #define gs_mul_u8(a, b)  ((uint8_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_shl_u8(a, n)  ((uint8_t)((uint64_t)(a) << ((n) & 7)))
 #define gs_shr_u8(a, n)  ((uint8_t)((uint64_t)(a) >> ((n) & 7)))
@@ -687,8 +708,7 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_add_i64(a, b, f, l) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
 #define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
 #define gs_mul_i64(a, b, f, l) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
-)GSRT"
-R"GSRT(#define gs_neg_i64(a, f, l)    ((int64_t)(0u - (uint64_t)(a)))
+#define gs_neg_i64(a, f, l)    ((int64_t)(0u - (uint64_t)(a)))
 #define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
 #define gs_shr_i64(a, n) ((int64_t)((a) >> ((n) & 63)))
 
@@ -726,8 +746,7 @@ static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
     *rem = r;
     return q;
 #else
-)GSRT"
-R"GSRT(    unsigned __int128 n = (unsigned __int128)hi << 64;
+    unsigned __int128 n = (unsigned __int128)hi << 64;
     *rem = (uint64_t)(n % d);
     return (uint64_t)(n / d);
 #endif
@@ -868,7 +887,8 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
 }
 #define GS_RANGE(v, lo, hi, t, f, l) gs_rangechk((v), (lo), (hi), (t), (f), (l))
 #define GS_RANGE_U(v, hi, t, f, l)   gs_rangechk_u((v), (hi), (t), (f), (l))
-#define GS_F2I(d, s, lo, hi, t, f, l) gs_f2ichk((d), (s), (lo), (hi), (t), (f), (l))
+)GSRT"
+R"GSRT(#define GS_F2I(d, s, lo, hi, t, f, l) gs_f2ichk((d), (s), (lo), (hi), (t), (f), (l))
 #define GS_F2U(d, s, f, l)            gs_f2uchk((d), (s), (f), (l))
 
 #else
@@ -894,8 +914,7 @@ typedef struct {
 } gs_stack;
 
 /* The program defines what goose.h gives C compiled on its own (gs_stack
-)GSRT"
-R"GSRT(   here, gs_rhdr, gs_rref and gs_bld_append after the generated types), so
+   here, gs_rhdr, gs_rref and gs_bld_append after the generated types), so
    an --include header including it gets nothing more. */
 #define GOOSE_H 1
 
@@ -924,8 +943,7 @@ GS_API void gs_release_regions(void);
    a platform, that spelling; NULL where the platform derives its own
    (name.dll, libname.dylib, libname.so). */
 typedef struct gs_dllib {
-)GSRT"
-R"GSRT(    const char *name, *onwindows, *onmacos, *onlinux;
+    const char *name, *onwindows, *onmacos, *onlinux;
 } gs_dllib;
 /* One function: its library's index in the table, the symbol the library
    is asked for, and the pointer the generated code calls through. */
@@ -1054,7 +1072,8 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 #endif  /* GS_RUNTIME_OBJECT */
 
 /* ---------------------------------------------------------------------------
-   Slice pools (§5.4, `reusable[]`). A pool's freelist is a tree of its free
+)GSRT"
+R"GSRT(   Slice pools (§5.4, `reusable[]`). A pool's freelist is a tree of its free
    (index, count) spans, kept on a data stack of its own in nodes of
    GS_SPAN_NODE bytes (runtime_impl.h). The emitted code grows the element
    region and fills elements; these only keep the spans, and each takes the
@@ -1072,8 +1091,7 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
    the elements where that moved. */
 GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                                int64_t idx, int64_t ol, int64_t cnt);
-)GSRT"
-R"GSRT(/* free_slice, and what realloc_slice lets go of: [idx, idx + cnt) back on
+/* free_slice, and what realloc_slice lets go of: [idx, idx + cnt) back on
    the freelist. */
 GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt);
 
@@ -1115,8 +1133,7 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
     return gs_uleb_size(p);
 }
 
-)GSRT"
-R"GSRT(#define GS_ULEB_READ(p) ((*(p) & 0x80) ? gs_uleb_read_slow(p) : (int64_t)*(p))
+#define GS_ULEB_READ(p) ((*(p) & 0x80) ? gs_uleb_read_slow(p) : (int64_t)*(p))
 #define GS_ULEB_SIZE(p) ((*(p) & 0x80) ? gs_uleb_size_slow(p) : (int64_t)1)
 
 static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {

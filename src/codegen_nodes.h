@@ -549,8 +549,8 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
         } else {
             p = cg.GenPtr(scrutinee);
         }
-        tag = varmode ? cat("*(", cg.IntCT(cg.TagStore(ei->en)), " *)", p)
-                      : cat("((", cg.CT(enumtype), " *)", p, ")->tag");
+        tag = varmode ? cat("*(", cg.UIntCT(cg.TagStore(ei->en)), " *)", p)
+                      : cat("((", cg.UCT(enumtype), " *)", p, ")->tag");
     } else {
         // The value is read twice, for its tag and for an arm's binder, which
         // the arm copies first thing: a variable needs no copy of its own.
@@ -579,13 +579,13 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             auto bn = cg.LocalName(arm.binder);
             string payload = varmode
                 ? cat("(", p, " + ", ts, ")")
-                : (isref ? cat("((uint8_t *)&((", cg.CT(enumtype), " *)", p, ")->u.v_",
+                : (isref ? cat("((uint8_t *)&((", cg.UCT(enumtype), " *)", p, ")->u.v_",
                                cg.Sanitize(variant->name), ")")
                          : "");
             if (arm.pat.byref) {
                 // Variable-mode payloads only (§8.1).
                 if (cg.IsBytesT(vt)) cg.L("uint8_t *", bn, " = ", payload, ";");
-                else cg.L(cg.CT(vt), " *", bn, " = (", cg.CT(vt), " *)(", payload, ");");
+                else cg.L(cg.UCT(vt), " *", bn, " = (", cg.UCT(vt), " *)(", payload, ");");
             } else if (cg.IsBytesT(vt)) {
                 // By-value copy of a variable payload onto its own stack.
                 auto stk = cg.AllocStk(true);
@@ -599,7 +599,7 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             } else if (EmptyLayout(variant->fields)) {
                 cg.FixedLocal(vt, bn, "{0}");
             } else if (!payload.empty()) {
-                cg.FixedLocal(vt, bn, cat("*(", cg.CT(vt), " *)(", payload, ")"), true);
+                cg.FixedLocal(vt, bn, cat("*(", cg.UCT(vt), " *)(", payload, ")"), true);
             } else {
                 cg.FixedLocal(vt, bn, cat(sv, ".u.v_", cg.Sanitize(variant->name)), true);
             }
@@ -843,7 +843,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
     if (lv.val) {
         if (lv.viaref || lv.ispref || !cg.StableDest(lval)) {
             auto p = cg.T();
-            cg.L(lv.ispref ? string("gs_pref") : cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
+            cg.L(lv.ispref ? string("gs_pref") : cg.UCT(lv.t), " *", p, " = &(", lv.s, ");");
             lv.s = cat("(*", p, ")");
         }
     } else if (!cg.IsResz(lv.t)) {
@@ -852,7 +852,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
         lv.s = p;
     } else if (lv.viaref && !lv.lenlv.empty()) {
         auto p = cg.T();
-        cg.L("int64_t *", p, " = &(", lv.lenlv, ");");
+        cg.L("gs_ua_i64 *", p, " = &(", lv.lenlv, ");");
         lv.lenlv = cat("(*", p, ")");
     }
     if (lv.viaref && cg.IsResz(lv.t) && !lv.stk.empty() && !cg.CacheableStk(lv.stk)) {
@@ -914,10 +914,10 @@ inline void Assign::CgStmt(CodeGen &cg) {
         string srcstk;
         auto src = cg.GenPtr(rhs, &srcstk);
         auto nn = cg.T();
-        cg.L("int64_t ", nn, " = (int64_t)*(uint32_t *)(", src, " + 4);");
+        cg.L("int64_t ", nn, " = (int64_t)*(gs_ua_u32 *)(", src, " + 4);");
         cg.L("if (", nn, " > ", cg.LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
              cg.LocArgs(line), ");");
-        cg.L("*(uint32_t *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
+        cg.L("*(gs_ua_u32 *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
         cg.L("GS_MEMCPY((", lv.s, ") + 8, ", src, " + 8, (size_t)(", nn, " * ",
           cg.FixedSize(t->arr->sub), "));");
         return;
@@ -1025,7 +1025,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         auto nv = cg.T();
         cg.L("int64_t ", nv, " = ", v.len, ";");
         auto bv = cg.T();
-        if (v.typedelems) cg.L(cg.CT(v.elem), " *", bv, " = ", v.elems, ";");
+        if (v.typedelems) cg.L(cg.UCT(v.elem), " *", bv, " = ", v.elems, ";");
         else cg.L("uint8_t *", bv, " = (uint8_t *)(", v.elems, ");");
         v.len = nv;
         v.elems = bv;
@@ -1128,10 +1128,10 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         // statement's (RawArrayView), which runs again where they can move.
         auto elems = moves ? cg.ArrayView(lv).elems : v.elems;
         string elem = !at.empty() ? (v.typedelems ? cat("(*", at, ")")
-                                                  : cat("(*(", cg.CT(v.elem), " *)", at, ")"))
+                                                  : cat("(*(", cg.UCT(v.elem), " *)", at, ")"))
                       : v.typedelems
                           ? cat(elems, "[", gi, "]")
-                          : cat("(*(", cg.CT(v.elem), " *)((", elems, ") + ", gi, " * ",
+                          : cat("(*(", cg.UCT(v.elem), " *)((", elems, ") + ", gi, " * ",
                                 esz, "))");
         if (!vdef->copybind && !held) {
             cg.L(cg.CT(et), " ", iv, " = &", elem, ";");
@@ -1141,7 +1141,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             auto fa = cg.T();
             cg.L("uint8_t *", fa, " = (uint8_t *)&", elem, ";");
             auto off = cg.T();
-            cg.L("int64_t ", off, " = (int64_t)*(", cg.RelCT(v.elem), " *)(", fa, ");");
+            cg.L("int64_t ", off, " = (int64_t)*(", cg.URelCT(v.elem), " *)(", fa, ");");
             auto target = cat("(", cg.CT(et), ")(", cg.RelOrigin(v.elem, fa), " + ", off, ")");
             if (v.elem->ref->optional)
                 cg.L(cg.CT(et), " ", iv, " = ", off, " ? ", target, " : NULL;");
@@ -1186,7 +1186,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         cg.ind++;
         cg.GenLoopBody(bind, body, d,
             v.typedelems
-                ? cat("for (", cg.CT(v.elem), " *", endp, " = ", at, " + ", v.len, "; ", at,
+                ? cat("for (", cg.UCT(v.elem), " *", endp, " = ", at, " + ", v.len, "; ", at,
                       " < ", endp, "; ", at, "++) {")
                 : cat("for (uint8_t *", endp, " = ", at, " + ", v.len, " * ", esz, "; ", at,
                       " < ", endp, "; ", at, " += ", esz, ") {"),

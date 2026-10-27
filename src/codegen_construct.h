@@ -29,7 +29,7 @@ inline void CodeGen::StoreWhole(const string &p, TypeExpr *t, const string &x) {
     auto agg = t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ARRAY ||
                (t->kind == TY_ENUM && !t->enu->varmode);
     if (!agg || (sz != 2 && sz != 4 && sz != 8)) {
-        L("*(", CT(t), " *)", p, " = ", x, ";");
+        L("*(", UCT(t), " *)", p, " = ", x, ";");
         return;
     }
     auto v = x;
@@ -55,7 +55,7 @@ inline void CodeGen::EmitLenStore(const string &stk, IntStorage ls, const string
     if (ls == IS_VARINT) {
         Bump(stk, cat("gs_uleb_write(", Top(stk), ", (uint64_t)(", n, "))"));
     } else {
-        L("*(", IntCT(ls), " *)", Top(stk), " = (", IntCT(ls), ")(", n, ");");
+        L("*(", UIntCT(ls), " *)", Top(stk), " = (", IntCT(ls), ")(", n, ");");
         Bump(stk, cat(IntSize(ls)));
     }
 }
@@ -76,8 +76,8 @@ inline void CodeGen::EmitArrayCount(const string &stk, TypeExpr *at, const strin
         case A_LIMITED: {   // Runtime capacity: chosen as the initial length (v1).
             if (check) EmitLenCheck(IS_U32, n);
             auto x = check ? cat("(uint32_t)", n) : n;
-            L("*(uint32_t *)", Top(stk), " = ", x, ";");
-            L("*(uint32_t *)(", Top(stk), " + 4) = ", x, ";");
+            L("*(gs_ua_u32 *)", Top(stk), " = ", x, ";");
+            L("*(gs_ua_u32 *)(", Top(stk), " + 4) = ", x, ";");
             Bump(stk, "8");
             break;
         }
@@ -186,7 +186,7 @@ inline void CodeGen::EmitRelStoreAt(const string &fa, TypeExpr *rt, const string
     assert(!IsResz(rt->ref->sub));
     auto off = RelOffset(rt, RelOrigin(rt, fa), rv, ln, f);
     EmitRelRangeCheck(rt, off, ln, inroot);
-    L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
+    L("*(", URelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
 }
 
 inline void CodeGen::EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln,
@@ -226,13 +226,13 @@ inline void CodeGen::EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t field
         L("int64_t ", off, " = (int64_t)((", fa, ") - ", fieldoff, " - (",
           RelOrigin(rt, fa), "));");
         EmitRelRangeCheck(rt, off, ln, true);
-        L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
+        L("*(", URelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
         return;
     }
     if (bits < 64 && fieldoff > (1LL << (bits - 1)))
         Fail(ln, cat("self at byte offset ", fieldoff, " does not fit a ",
                      IntStorageName(w), "-width relative reference"));
-    L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", -fieldoff, ";");
+    L("*(", URelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", -fieldoff, ";");
 }
 
 inline void CodeGen::EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln) {
@@ -591,7 +591,7 @@ inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, Typ
     auto delivered = c->fvbody ? c->fvbody->exprtype : rt0;
     if (c->builtin < 0 && delivered && NeedsResultLocation(delivered) && TEq(delivered, et)) {
         auto p = T();
-        L(CT(et), " *", p, " = (", CT(et), " *)", Top(stk), ";");
+        L(UCT(et), " *", p, " = (", UCT(et), " *)", Top(stk), ";");
         Bump(stk, cat(FixedSize(et)));
         EmitCall(c, Dst { DK_LVALUE, cat("(*", p, ")"), et });
         return;
@@ -688,7 +688,7 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
         auto base = d.s;
         if (d.k == DK_STACK) {
             auto p = T();
-            L(CT(to), " *", p, " = (", CT(to), " *)", Top(d.s), ";");
+            L(UCT(to), " *", p, " = (", UCT(to), " *)", Top(d.s), ";");
             Bump(d.s, cat(FixedSize(to)));
             base = cat("(*", p, ")");
         }
@@ -811,8 +811,8 @@ inline void CodeGen::FoBytes(TypeExpr *t, const string &obj, const string &p, bo
             if (IsFrameObj(ft)) FoBytes(ft, flv, at, tobytes);
             return;
         }
-        if (tobytes) L("*(", CT(ft), " *)", at, " = ", flv, ";");
-        else L(flv, " = *(", CT(ft), " *)", at, ";");
+        if (tobytes) L("*(", UCT(ft), " *)", at, " = ", flv, ";");
+        else L(flv, " = *(", UCT(ft), " *)", at, ";");
         off += FixedSize(ft);
     }
 }
@@ -1064,7 +1064,7 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
 // indexed destination evaluates (and bounds-checks) once.
 inline void CodeGen::FixedLitAt(Node *n, const string &dst) {
     auto p = T();
-    L(CT(n->exprtype), " *", p, " = &", dst, ";");
+    L(UCT(n->exprtype), " *", p, " = &", dst, ";");
     FixedLitAtLv(n, cat("(*", p, ")"), true);
 }
 
@@ -1168,7 +1168,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
 }
 
 inline void CodeGen::EmitValStoreTag(const string &stk, IntStorage ts, const string &x) {
-    L("*(", IntCT(ts), " *)", Top(stk), " = (", IntCT(ts), ")(", x, ");");
+    L("*(", UIntCT(ts), " *)", Top(stk), " = (", IntCT(ts), ")(", x, ");");
     Bump(stk, cat(IntSize(ts)));
 }
 
@@ -1188,8 +1188,8 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
         L("int64_t ", t, " = ", cv, ";");
         L("if (", t, " < 0 || ", t, " > (int64_t)UINT32_MAX) "
           "gs_abort(GS_E_CAPRANGE, ", LocArgs(al->line), ");");
-        L("*(uint32_t *)", Top(stk), " = (uint32_t)", t, ";");
-        L("*(uint32_t *)(", Top(stk), " + 4) = 0;");
+        L("*(gs_ua_u32 *)", Top(stk), " = (uint32_t)", t, ";");
+        L("*(gs_ua_u32 *)(", Top(stk), " + 4) = 0;");
         Bump(stk, cat("8 + ", t, " * ", FixedSize(elem)));
         return;
     }

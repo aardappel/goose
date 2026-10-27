@@ -531,12 +531,12 @@ def test_cc(name=None):
     return cc
 
 
-# Packed Goose fields deliberately use unaligned scalar accesses. Keep the
-# remaining UBSan checks, and make every finding fatal, including in programs
-# which are themselves expected to abort. ASan still checks the compiler and
-# runtime's C allocations; it cannot see logical object boundaries inside a
-# Goose virtual-memory arena.
-SANITIZER_FLAGS = ("-fsanitize=address,undefined", "-fno-sanitize=alignment",
+# Every UBSan check, alignment included: packed Goose fields are accessed
+# through runtime.h's unaligned gs_ua_* types. Every finding is fatal,
+# including in programs which are themselves expected to abort. ASan still
+# checks the compiler and runtime's C allocations; it cannot see logical
+# object boundaries inside a Goose virtual-memory arena.
+SANITIZER_FLAGS = ("-fsanitize=address,undefined",
                    "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g")
 
 

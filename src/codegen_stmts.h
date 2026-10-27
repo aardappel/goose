@@ -1006,7 +1006,7 @@ inline void CodeGen::EmitPrefixPatch(const string &pref, IntStorage ls, const st
                                      const string &count, const string &elems) {
     if (ls != IS_VARINT) {
         EmitLenCheck(ls, count);
-        L("*(", IntCT(ls), " *)", pref, " = (", IntCT(ls), ")(", count, ");");
+        L("*(", UIntCT(ls), " *)", pref, " = (", IntCT(ls), ")(", count, ");");
         return;
     }
     L("if ((", count, ") < 128) {");

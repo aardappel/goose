@@ -319,7 +319,7 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
         } else if (IsLargeFixed(pt)) {
             // The caller makes an independent value copy on a data stack.
             // Passing its address avoids the C ABI's native-stack copy.
-            add(cat(CT(pt), " *", pn));
+            add(cat(UCT(pt), " *", pn));
             if (decls) fvptr.insert(vd);
         } else {
             addval(pt, false, CT(pt), pn);
@@ -355,13 +355,13 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
             // the whole frame object through its out-parameter.
             add(cat("gs_stack *gs_dst", i));
             if (IsResz(sp->rets[i]) && IsFrameObj(sp->rets[i]))
-                add(cat(CT(sp->rets[i]), " *gs_rl", i));
+                add(cat(UCT(sp->rets[i]), " *gs_rl", i));
             else
                 add(cat("int64_t *gs_rl", i));
         } else if (IsBytesT(sp->rets[i])) {
             add(cat("gs_stack *gs_dst", i));
         } else if ((int)i != si.cret) {
-            add(cat(CT(sp->rets[i]), " *gs_r", i));
+            add(cat(UCT(sp->rets[i]), " *gs_r", i));
         }
     }
     if (si.needssp) add("int64_t gs_sp");

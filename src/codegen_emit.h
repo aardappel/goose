@@ -584,7 +584,7 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
         for (size_t i = 0; i < sp->rets.size(); i++) {
             if (NeedsResultLocation(sp->rets[i])) {
                 auto sav = T(), chan = cat("gs_lret_", tid, "_", i);
-                L(CT(sp->rets[i]), " *", sav, " = ", chan, ";");
+                L(UCT(sp->rets[i]), " *", sav, " = ", chan, ";");
                 L(chan, " = gs_r", i, ";");
                 fdstsaves.push_back(cat(chan, " = ", sav, ";"));
                 continue;
@@ -968,8 +968,22 @@ inline void CodeGen::EmitExports() {
 }
 
 inline string CodeGen::ExportHeader() {
+    // runtime.h's unaligned types, which the typedefs below may name.
     string header = "#pragma once\n#include <stdint.h>\n"
                     "typedef struct gs_stack gs_stack;\n"
+                    "#ifndef GS_UA_TYPES\n#define GS_UA_TYPES\n"
+                    "#if defined(__GNUC__) || defined(__clang__)\n"
+                    "#define GS_UNALIGNED __attribute__((aligned(1)))\n"
+                    "#else\n#define GS_UNALIGNED\n#endif\n"
+                    "typedef int16_t gs_ua_i16 GS_UNALIGNED;\n"
+                    "typedef int32_t gs_ua_i32 GS_UNALIGNED;\n"
+                    "typedef int64_t gs_ua_i64 GS_UNALIGNED;\n"
+                    "typedef uint16_t gs_ua_u16 GS_UNALIGNED;\n"
+                    "typedef uint32_t gs_ua_u32 GS_UNALIGNED;\n"
+                    "typedef uint64_t gs_ua_u64 GS_UNALIGNED;\n"
+                    "typedef float gs_ua_f32 GS_UNALIGNED;\n"
+                    "typedef double gs_ua_f64 GS_UNALIGNED;\n"
+                    "#endif\n"
                     "#pragma pack(push, 1)\n";
     header += tdecls;
     header += "#pragma pack(pop)\n\n";

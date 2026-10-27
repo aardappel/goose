@@ -163,7 +163,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             // the rendering began with, which the checker holds meanwhile.
             // Variable-size elements are walked with this as the cursor.
             auto p = T();
-            if (v.typedelems) L(CT(elem), " *", p, " = ", v.elems, ";");
+            if (v.typedelems) L(UCT(elem), " *", p, " = ", v.elems, ";");
             else L("uint8_t *", p, " = ", v.elems, ";");
             L("for (int64_t ", i, " = 0; ", i, " < ", cnt, "; ", i, "++) {");
             ind++;
@@ -218,8 +218,8 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             auto ts = TagSize(ei->en);
             string tag;
             if (lv.val) tag = cat(lv.s, ".tag");
-            else if (varmode) tag = cat("*(", IntCT(TagStore(ei->en)), " *)(", lv.s, ")");
-            else tag = cat("((", CT(t), " *)(", lv.s, "))->tag");
+            else if (varmode) tag = cat("*(", UIntCT(TagStore(ei->en)), " *)(", lv.s, ")");
+            else tag = cat("((", UCT(t), " *)(", lv.s, "))->tag");
             L("switch (", tag, ") {");
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
                 L("case ", TagConst(ei, (int)vi), ": {");
@@ -235,7 +235,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                     } else if (varmode) {
                         pl = BytesLoc(cat("((", lv.s, ") + ", ts, ")"), vt, lv);
                     } else {
-                        pl = BytesLoc(cat("((uint8_t *)&((", CT(t), " *)(", lv.s, "))->u.v_",
+                        pl = BytesLoc(cat("((uint8_t *)&((", UCT(t), " *)(", lv.s, "))->u.v_",
                                           Sanitize(ei->en->variants[vi].name), ")"), vt, lv);
                     }
                     // An overload rendering one part of a fixed-mode value
@@ -312,7 +312,7 @@ inline string CodeGen::RefArg(const Loc &lv, TypeExpr *sub, Line ln) {
         L(CT(sub), " ", x, " = ", LoadLoc(lv, sub, ln), ";");
         return cat("&", x);
     }
-    return lv.val ? cat("&", lv.s) : cat("(", CT(sub), " *)(", lv.s, ")");
+    return lv.val ? cat("&", lv.s) : cat("(", UCT(sub), " *)(", lv.s, ")");
 }
 
 // A pool reference to the reusable pool at lv, for a parameter its
@@ -373,7 +373,7 @@ inline string CodeGen::RenderFn(TypeExpr *t, Line ln) {
     if (auto it = renderfns.find(m); it != renderfns.end()) return it->second;
     auto name = Unique(cat("gs_render_", m));
     renderfns[m] = name;
-    auto vt = IsResz(t) ? string("gs_rref") : IsBytesT(t) ? string("uint8_t *") : cat(CT(t), " *");
+    auto vt = IsResz(t) ? string("gs_rref") : IsBytesT(t) ? string("uint8_t *") : cat(UCT(t), " *");
     auto sig = cat("static void ", name, "(gs_rref gs_out, ", vt, " gs_v)");
     Append(protos, sig, ";\n");
     renderqueue.push_back({ t, ln, sig });

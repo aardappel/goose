@@ -24,7 +24,7 @@ inline void CodeGen::EmitSlidePrefix(const string &base, IntStorage ls, const st
         count = cat("GS_ULEB_READ(", base, ")");
     } else {
         metasz = cat(IntSize(ls));
-        count = cat("(int64_t)*(", IntCT(ls), " *)", base);
+        count = cat("(int64_t)*(", UIntCT(ls), " *)", base);
     }
     auto ms = T();
     L("int64_t ", ms, " = ", metasz, ";");
@@ -413,7 +413,7 @@ inline void CodeGen::EmitReprefix(FnSpec *sp, const Dst &dd, const string &base,
         L("int64_t ", count, " = GS_ULEB_READ(", base, ");");
         L("int64_t ", oms, " = GS_ULEB_SIZE(", base, ");");
     } else {
-        L("int64_t ", count, " = (int64_t)*(", IntCT(srcls), " *)", base, ";");
+        L("int64_t ", count, " = (int64_t)*(", UIntCT(srcls), " *)", base, ";");
         L("int64_t ", oms, " = ", IntSize(srcls), ";");
     }
     auto ms = T();
@@ -426,7 +426,7 @@ inline void CodeGen::EmitReprefix(FnSpec *sp, const Dst &dd, const string &base,
         writepref = cat("GS_MEMCPY(", base, ", ", tmp, ", (size_t)", ms, ");");
     } else {
         L("int64_t ", ms, " = ", IntSize(ls), ";");
-        writepref = cat("*(", IntCT(ls), " *)", base, " = (", IntCT(ls), ")", count, ";");
+        writepref = cat("*(", UIntCT(ls), " *)", base, " = (", IntCT(ls), ")", count, ";");
     }
     L("memmove(", base, " + ", ms, ", ", base, " + ", oms, ", (size_t)(", Top(dd.s), " - ",
       base, " - ", oms, "));");
@@ -593,7 +593,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             } else {
                 p = GenPtr(sn);
             }
-            tag = cat("*(", IntCT(TagStore(ei->en)), " *)", p);
+            tag = cat("*(", UIntCT(TagStore(ei->en)), " *)", p);
             // A reference input can also decay to a by-value case parameter.
             // Copy its value now; reference cases retain the original pointer.
             // Only a variable-size variant needs the whole value on a data
@@ -689,7 +689,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             if (IsBytesT(vt)) varg = payload;
             else {
                 auto tv = T();
-                L(CT(vt), " *", tv, " = (", CT(vt), " *)(", payload, ");");
+                L(UCT(vt), " *", tv, " = (", UCT(vt), " *)(", payload, ");");
                 varg = tv;
             }
         } else if (IsBytesT(vt)) {
@@ -704,7 +704,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             varg = snap[vi];
         } else if (!payload.empty()) {
             auto tv = T();
-            FixedLocal(vt, tv, cat("*(", CT(vt), " *)(", payload, ")"));
+            FixedLocal(vt, tv, cat("*(", UCT(vt), " *)(", payload, ")"));
             varg = tv;
         } else {
             auto tv = T();
