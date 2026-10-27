@@ -213,8 +213,6 @@ fn inplace() {
     print(lo);                                                                 // hello world
     to_upper(lo);
     print(lo);                                                                 // HELLO WORLD
-    // Every byte, including punctuation beside the ASCII letter ranges and
-    // non-ASCII bytes. Converting a slice must leave its neighbors alone.
     var lower: u8[258] = [0; 258];
     var upper: u8[258] = [0; 258];
     for i in 256 { lower[i + 1] = i as u8; upper[i + 1] = i as u8; }
