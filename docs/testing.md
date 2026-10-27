@@ -155,9 +155,9 @@ artifacts and logs go in `build/gen/<profile>/goose_in_goose/O<level>/`.
 The sanitizer job builds Goose with
 `-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all`,
 then runs `python test/run_tests.py --exe <instrumented-goose> --profile sanitize --cc clang`.
-Generated C uses native `-O1` and disables only UBSan's alignment check because
-the current C backend deliberately performs unaligned packed accesses. The C++
-compiler retains alignment checking. ASan observes C allocations, but does not
+Generated C uses native `-O1` with every UBSan check, alignment included:
+packed accesses go through `runtime.h`'s unaligned `gs_ua_*` types (§6.1 of
+`docs/implementation.md`). ASan observes C allocations, but does not
 know logical object boundaries inside Goose's custom virtual-memory arenas.
 
 Generated C is built as `goose -o` writes it, against the separate runtime

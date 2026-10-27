@@ -4885,7 +4885,12 @@ implementation.
 ### 6.1 Values
 
 The C backend targets 64-bit, little-endian hosts with unaligned packed
-accesses. Integer and floating widths are their declared widths; `bool`
+accesses. In C such an access goes through a type that says so: `runtime.h`'s
+`gs_ua_i16` to `gs_ua_f64`, scalars with `__attribute__((aligned(1)))`, and
+for a pointer an unaligned typedef that `CodeGen::UCT` emits on first use. A
+plain `int64_t *` to an odd address is undefined behaviour even where the
+hardware allows the access, and UBSan reports it. On x86-64 and arm64 the
+instructions are the same. Integer and floating widths are their declared widths; `bool`
 occupies one byte and valid values encode as 0 or 1. Array metadata is
 counted in elements, except the outer serialization frame, which counts
 payload bytes (section 6.9). A stored length must represent the actual
