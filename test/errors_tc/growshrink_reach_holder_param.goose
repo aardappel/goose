@@ -1,8 +1,11 @@
-// error: storing a reference into t, which holds a grow-shrink array: such a reference lives in a variable, is passed down or returned, and is never stored (§5.2)
-// A by-value holder parameter's references point into the caller's storage
-// behind its class (§9.2), which bounds t.a and an element of the array it
-// leads to: a grow-shrink array, whose slot the pop frees and the push
-// reuses (§5.2).
+// error: storing a reference that may point into a grow-shrink array reached through the caller's storage behind t
+// t's argument is an element of pass's parameter, and the Tops there lead
+// to mine or theirs, so what the by-value holder t holds is rooted at the
+// caller's storage behind its class only as a bound (§9.2, §9.5): so are
+// t.a and an element of the array it leads to, a grow-shrink array, whose
+// slot the pop frees and the push reuses (§5.2). With only a Top for mine
+// in tops (growshrink_exact_holder_param), or called from main with
+// tops[0], t's class holds the arrays themselves.
 struct Cell { v: i64 }
 struct Top { a: Cell[>..<]& }
 fn f(t: Top) {
@@ -15,7 +18,9 @@ fn f(t: Top) {
 fn pass(ts: Top[>..]&) { f(ts[0]); }
 fn main() {
     var mine: Cell[>..<] = [Cell { v: 1 }];
+    var theirs: Cell[>..<] = [Cell { v: 2 }];
     var tops: Top[>..] = [];
     tops.push(Top { a: mine });
+    tops.push(Top { a: theirs });
     pass(tops);
 }

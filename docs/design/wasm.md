@@ -14,10 +14,10 @@
 
 </details>
 
-A proposal, not implemented. Spec §10.4 says platforms without address-space
-reservation fall back to "index-based references + bounds-checked growth"
-and leaves the details open (open issue 15); this note works them out. The
-cost figures in it are estimates, not measurements.
+This is a proposal and is not implemented. Spec §10.4 says that platforms
+without address-space reservation fall back to "index-based references +
+bounds-checked growth", and leaves the details open (open issue 15). This
+note works them out. Its cost figures are estimates, not measurements.
 
 ## 1. The problem
 
@@ -31,8 +31,9 @@ stay valid across growth because a stack's base never moves, a property the
 language is built around ([tutorial](../tutorial.md#nothing-moves-so-references-survive-growth)).
 
 WebAssembly has none of this. A module's linear memory grows only at its end,
-has no unmapped pages inside it, and in wasm32 holds at most 4 GB. A port with
-a few stacks of a small fixed size each runs, but only toy programs fit.
+has no unmapped pages inside it, and in wasm32 holds at most 4 GB. A port that
+gives each of a few stacks a small fixed size works, but only toy programs
+fit.
 
 ## 2. What every option needs: growth checks
 
@@ -77,52 +78,54 @@ already uses to cap `hardware_threads()`.
   `12_huffman`, 10 for `18_json` (8 stacks and 2 globals' stacks), and 6
   for `23_mandelbrot_threads` plus 2 per worker. 4 GB over 10 regions is
   400 MB per stack. Workers multiply the count.
-* **Sizing from a profile.** Each stack index's high-water mark from a
-  representative run could size the partitions unevenly. A native run can
-  collect it cheaply: on Windows and macOS the fault handler commits on
-  demand and so knows each region's depth (its commit mark), and Linux can
-  record the highest top as a region is released. `GS_STACK_STATS` reports only counts today. Stack numbering is
-  specific to one build, and a profile fits one input; the inputs that
-  overflow are the large ones.
+* **Sizing from a profile.** The high-water mark of each stack index in a
+  representative run could be used to give the partitions different sizes.
+  On Windows the fault handler commits on demand and so can report each
+  region's depth (its commit mark). macOS and Linux would need explicit
+  instrumentation to track the highest top across stack rewinds.
+  `GS_STACK_STATS` reports only counts today. Stack numbering is
+  specific to one build, and a profile fits only the input it came from,
+  while the inputs that overflow are the large ones.
 * **The open end.** The partition at the end of linear memory can keep
-  growing with `memory.grow`. Put the stack most likely to hold the
-  program's large resizable there, and the common shape (one big growing
-  array) is bounded only by the memory's own limit.
-* **wasm64** lifts the 4 GB cap in principle. Browsers cap memory64 (V8 at
-  16 GB), and every access pays an explicit bounds check. wasmtime can
-  reserve far more and commit it lazily, which makes fixed partitions under
-  wasm64 essentially the native model: the pragmatic choice for WASI and
-  server-side targets.
+  growing with `memory.grow`. If the stack most likely to hold the
+  program's large resizable is placed there, the common case (one big
+  growing array) is limited only by the memory's own maximum.
+* **wasm64** removes the 4 GB address limit in principle, but browsers still cap
+  memory64 (V8 at 16 GB), and each access needs an explicit bounds check.
+  wasmtime can reserve much more and commit it lazily. Fixed partitions under
+  wasm64 therefore work much like the native model and are a practical choice
+  for WASI and server-side targets.
 
 ## 4. Relocating stacks
 
-Each stack is a heap block that moves to a larger one when a growth check
-fails, doubling its size. Since a stack can move, a reference cannot hold an
+Each stack is a heap block that moves to a block twice its size when a
+growth check fails. Since a stack can move, a reference cannot hold an
 address: it holds a handle.
 
 * **Encoding.** A handle is one `u64`: the stack's id in the high bits and the
-  offset in the low bits. Id 0 is a plain address, for static data, C memory
-  and clang's shadow stack (where address-taken fixed locals live). Its base
-  table entry is 0. References stay 8 bytes, so every layout stays as on the
-  64-bit hosts the C backend targets (implementation §6.1). The base table
-  belongs to the thread program, like `gs_stks`, and also covers the globals'
-  dedicated stacks.
+  offset in the low bits. A handle with id 0 holds a plain address, for
+  static data, C memory and clang's shadow stack (where address-taken fixed
+  locals live). Its base table entry is 0. References stay 8 bytes, so every
+  layout stays the same as on the 64-bit hosts the C backend targets
+  (implementation §6.1). The base table belongs to the thread program, like
+  `gs_stks`, and also covers the globals' dedicated stacks.
 * **Arithmetic is unchanged.** `base + i * size`, field offsets, the
   cursors that walk variable-size fields (`FieldPtr`), differences within a
   stack and a pool's range test all work on the integer. Only loads, stores
-  and the `mem*` calls decode: in wasm32, `bases[h >> 32] + (uint32_t)h`.
-* **Relative references and pools need nothing.** They are offsets within
-  one stack, and a stack moves whole.
-* **Decodes hoist.** A decoded pointer stays valid until its stack grows. Where
-  no growth of that stack and no call that can reach it come between, a
-  decode can be hoisted, and those are the extents top caching already
-  computes (`SyncReach`, `PlanTopCaches`). Array loops through hoisted views
+  and the `mem*` calls decode a handle; in wasm32 the decode is
+  `bases[h >> 32] + (uint32_t)h`.
+* **Relative references and pools need no change.** They are offsets within
+  one stack, and a stack moves as a whole.
+* **Decodes can be hoisted.** A decoded pointer stays valid until its stack
+  grows. A decode can be hoisted over an extent with no growth of that stack
+  and no call that can reach it, and top caching already computes those
+  extents (`SyncReach`, `PlanTopCaches`). Array loops through hoisted views
   (`AddView`) then run as they do natively. The cost falls on pointer chasing
   (a decode per hop through a `T&`) and on pushes, whose check fixed
-  partitions pay too. An estimate: 1.1 to 1.5 times the time under fixed
-  partitions, worst on tree and list code. Copying on relocation is
-  amortized by the doubling; peak memory is up to two to three times the
-  live data, with the old and new blocks and fragmentation.
+  partitions need too. The estimated time is 1.1 to 1.5 times that under
+  fixed partitions, worst on tree and list code. The doubling amortizes the
+  copying on relocation. Counting the old and new blocks and fragmentation,
+  peak memory is up to two to three times the live data.
 * **Threads.** Each thread program has its own base table, thread-local. A
   spawn copies flat images, so no handle crosses threads.
 
@@ -151,19 +154,20 @@ In order of risk, not size:
 2. **The assumption that the base never moves.** View hoisting relies on it
    (its safety argument is that growth writes only the length), and so do
    the top caches, reference aliases (`refalias`) and `let first .=
-   v.push(...)`. There are few lines here but most of the potential bugs. One
-   rule contains them: handles everywhere, and decoded pointers only over
-   extents the sync analysis proves.
+   v.push(...)`. Little code depends on this assumption, but that code holds
+   most of the potential bugs. The rule that contains them is to use handles
+   everywhere, and decoded pointers only over extents that the sync analysis
+   proves.
 3. **The C boundary**: the runtime, `extern fn`s, the blessed packages and
    `goose.h`. The C ABI can stay on plain pointers. Slices and references are
    decoded at the call, since a C callee can grow a Goose stack only through
    a builder. A builder parameter gets a staging stack whose contents are
    appended after the call returns. Packages then recompile unchanged, with
    `gs_bld_append` gaining its capacity check.
-4. **Access spellings in codegen**, which is mechanical work. A rough count
-   is 35 `*(T *)` dereferences, 140 emitted `->`, 26 `mem*` calls and 21 `->top`,
-   mostly through `LoadLoc`, `IndexLoc`, `DerefLoc`, `PointeeLv` and
-   `VarLoc`.
+4. **The way codegen writes memory accesses**, which is mechanical work to
+   change. A rough count is 35 `*(T *)` dereferences, 140 emitted `->`, 26
+   `mem*` calls and 21 `->top`, mostly through `LoadLoc`, `IndexLoc`,
+   `DerefLoc`, `PointeeLv` and `VarLoc`.
 5. **Unchanged**: the parser, the typechecker, the optimizer, BCE apart from
    view hoisting, and the standard library, which is Goose source the same
    codegen compiles. The library's only contact with C is its externs: math on
@@ -185,8 +189,8 @@ In order of risk, not size:
 
 1. Add the growth checks of §2 as a configuration of their own. Native
    builds can run with them, so the existing test suite covers them. Fixed
-   partitions are then configuration, and they make a working port for
-   programs whose stacks fit.
+   partitions are then only a matter of configuration, and they make a
+   working port for programs whose stacks fit.
 2. If that is not enough, add relocation as a native configuration first:
    stacks in heap blocks that move on growth. Give it a stress setting that
    moves a stack on every growth, so the test suite exposes every stale

@@ -1,5 +1,5 @@
-// The digit loops std parse_flt is built from keep no bounds checks: one
-// that binds the byte and breaks on a non-digit, and a second index reading
+// Digit loops keep no bounds checks: those std parse_flt is built from,
+// which bind the byte and break on a non-digit, and a second index reading
 // the same digits again. That one is a new variable: assigning the first
 // index anew would lose its facts in the loops before the assignment too.
 import std;

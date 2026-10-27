@@ -73,9 +73,12 @@ jobs:
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="snapshot-${GITHUB_SHA::7}"; fi
           echo "RELEASE_NAME=goose-$version-${{ matrix.platform }}" >> "$GITHUB_ENV"
+          echo "GOOSE_VERSION=$version" >> "$GITHUB_ENV"
 
+      # The version the compiler reports: the tag, as the shallow checkout
+      # may have no tags for git describe to find.
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOSE_BUILTIN_LIBS=all
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOSE_BUILTIN_LIBS=all "-DGOOSE_VERSION=${{ env.GOOSE_VERSION }}"
 
       - name: Build
         run: cmake --build build --config Release --parallel

@@ -1,7 +1,7 @@
-// error: cannot pop arr while d is still used
+// error: cannot call f: it may shrink mine while c is still used, and c may refer into mine
 // The grow-only form (§5.1): shrink pops the array it is given while its
 // copy of c is still used, and from f that array is t.a, bounded by the
-// caller's storage behind t, which leads to mine.
+// caller's storage behind t, which leads to mine or theirs.
 struct Cell { v: i64 }
 struct Top { a: Cell[>..]& }
 fn shrink(arr: Cell[>..]&, c: Cell&) {
@@ -13,7 +13,9 @@ fn shrink(arr: Cell[>..]&, c: Cell&) {
 fn f(t: Top&, c: Cell&) { shrink(t.a, c); }
 fn main() {
     var mine: Cell[>..] = [Cell { v: 1 }];
+    var theirs: Cell[>..] = [Cell { v: 2 }];
     var tops: Top[>..] = [];
     tops.push(Top { a: mine });
+    tops.push(Top { a: theirs });
     f(tops[0], mine[0]);
 }

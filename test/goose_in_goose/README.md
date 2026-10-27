@@ -35,8 +35,8 @@ selected native C compiler and profile:
 5. When TinyCC is available, the real compiler also executes the Goose-written
    compiler through its JIT. Its emitted C must match the native bootstrap.
 
-Baseline runs the entire chain with host/native O0 and O2 and requires the same
-self-compiled C at both settings. The sanitizer profile
+The baseline profile runs the entire chain with host/native O0 and O2 and
+requires the same self-compiled C at both settings. The sanitizer profile
 uses host O2 and native Clang O1 with the suite's ASan/UBSan flags on every native
 stage. `--no-jit` omits the JIT comparison; `--nocgen` retains host checking and
 JIT self-compilation when available, but explicitly skips the native chain.

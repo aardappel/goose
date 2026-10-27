@@ -1,4 +1,5 @@
 // error: no matching overload for call to set
+// error: argument 1: cannot pass varint as i64&
 // A reference parameter binds each branch as the storage it names (§4.1):
 // varint fields as a varint&, which an i64& parameter does not bind ("cannot
 // pass varint as i64&", §3.6), as it does not bind either field alone.

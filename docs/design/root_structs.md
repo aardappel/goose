@@ -17,7 +17,7 @@ known statically.
 Root structs group independently stored values under one owning lifetime. They
 do not put several growing arrays into one contiguous byte image, relocate
 fields on growth, or introduce a heap allocator. Every simultaneously live
-resizable component still tops its own data stack.
+resizable component is still on top of its own data stack.
 
 ```goose
 root struct ParserState {
@@ -52,19 +52,21 @@ this modifier.
 
 The modifier means that owning instances are storage roots. It does not mean
 that the declaration or instance must be at file scope. An explicitly declared
-root struct retains its restrictions with zero or one resizable field, including
-in generic specializations. Ordinary structs retain their current placement and
-layout rules; adding a second resizable field to one remains an error suggesting
-`root struct`.
+root struct keeps its restrictions even when it has zero or one resizable
+field, including in generic specializations. Ordinary structs keep their
+current placement and layout rules. Adding a second resizable field to an
+ordinary struct remains an error, and the error suggests `root struct`.
 
-Inference alone would make a field edit, or a generic specialization, change a
-type's placement, copying, and representation contract. A replacement for
-`struct` would obscure how much existing struct behavior remains. `local` would
-misdescribe globals, and `stack` would distinguish little in Goose.
+If the root modifier were inferred instead, editing a field or specializing a
+generic would change a type's placement, copying, and representation contract.
+A keyword that replaced `struct` would obscure how much of the existing struct
+behavior remains. The name `local` would misdescribe globals, and `stack`
+would distinguish little in Goose.
 
-For comparison, Rust infers dynamically sized struct restrictions from an
-unsized last field, still describing one object; C# explicitly marks its
-restricted `ref struct` category. Neither has the same rules as this proposal.
+For comparison, Rust infers the restrictions on a dynamically sized struct from
+an unsized last field, and such a struct still describes one object. C#
+explicitly marks its restricted `ref struct` category. Neither has the same
+rules as this proposal.
 References: [Rust dynamically sized types](https://doc.rust-lang.org/reference/dynamically-sized-types.html),
 [C# ref structs](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/ref-struct).
 
@@ -173,27 +175,29 @@ In particular:
 * Read-back, holder/store records, effect summaries, construction conflicts,
   and recursive specialization must propagate component identities consistently.
 
-Current code to audit includes `RootAlt`/`Roots` in `src/ast.h`,
+Code to audit includes `RootAlt`/`Roots` in `src/ast.h`,
 `RootedAtReceiver`/`OneArrayOf` in `src/typecheck_types.h`, and
-`SoleResizableIn`, growth logs and shrink summaries in
-`src/typecheck_builtins.h`. The present root-set join invariant merges entries
-by owning variable; adding paths requires revisiting join/equality/caching laws,
-not merely adding a field to the structure. Existing packed structs can still
-share one region: a field path is not automatically a new region everywhere.
+`SoleResizableIn`, growth logs, and shrink summaries in
+`src/typecheck_builtins.h`. Root-set joins currently merge entries by owning
+variable. Adding field paths therefore requires changes to the rules for joins,
+equality, and caching as well as a new field in the data structure. Existing
+packed structs can still share one region; a field path does not always identify
+a separate region.
 
 During investigation, small typecheck probes against the available compiler
 showed that a scalar allocator with separate data and freelist arguments accepts
-a retained reference across reuse. Grouping those arguments in a struct of
-references instead made the checker conservatively consider the result capable
-of pointing into the freelist and reject the next allocation. This is evidence
-of a current precision limit, not a test of root structs. Include this pattern,
-and two same-typed owned arrays, in the implementation's acceptance cases.
+a retained reference across reuse. When those arguments were grouped in a
+struct of references instead, the checker conservatively assumed that the
+result could point into the freelist and rejected the next allocation. This is
+evidence of a current precision limit, not a test of root structs. Include this
+pattern, and two same-typed owned arrays, in the implementation's acceptance
+cases.
 
 ## Code generation and performance
 
-Preserving efficient array access is an explicit requirement. A root reference
-must not become an unexplained permanent extra load inside hot loops or disable
-the existing array optimizations merely because arrays are grouped.
+Array access must remain efficient. Grouping arrays in a root struct must not
+disable existing array optimizations or add an unexplained load on every
+iteration of a hot loop.
 
 The current backend already has relevant machinery:
 
@@ -263,13 +267,14 @@ reusable slice pool from the spawning instance, preserving freelist state, and
 tests a worker spawning another worker. Current codegen explicitly copies the
 freelist beside the data. Preserve that behavior for existing `reusable`.
 
-Root v1 rejects passing an owning root to `thread_spawn` or a queue, sending a
-reference to it, and any worker's direct or transitive use of a root global
-which would require implicitly copying that owner. Diagnose the reachable
-global/call path. A root local constructed within a worker needs no transfer and
-is allowed. An unrelated root global unused by the worker must not reject the
-program. Existing rules still govern passing eligible components as copied data;
-never transfer descriptor pointers or infer transferability from flat contents.
+Root v1 rejects passing an owning root to `thread_spawn` or a queue, and
+sending a reference to an owning root. It also rejects any direct or
+transitive use of a root global by a worker, since that use would require
+implicitly copying the owner. Diagnose the reachable global/call path. A root
+local constructed within a worker needs no transfer and is allowed. An
+unrelated root global unused by the worker must not reject the program.
+Existing rules still govern passing eligible components as copied data; never
+transfer descriptor pointers or infer transferability from flat contents.
 
 Worker snapshot support can follow later by reconstructing independent storage
 for every component, copying the relevant metadata, and handling only reference
@@ -334,11 +339,12 @@ require a new global-index notation to be useful.
 
 ### Destination-aware library construction
 
-`EmitAlloc` currently selects a slot before constructing literals containing
-relative references there. An ordinary `value: T` parameter has already received
-its value elsewhere. Probes confirmed that a self-relative node linking to an
-existing node typechecks with built-in `alloc_ref`, but fails through both an
-ordinary value parameter and a current trailing builder block.
+`EmitAlloc` currently selects a slot first, and then constructs literals that
+contain relative references in that slot. An ordinary `value: T` parameter has
+already received its value elsewhere. Probes confirmed that a self-relative
+node linking to an existing node typechecks with built-in `alloc_ref`, but
+fails when passed through an ordinary value parameter or through a current
+trailing builder block.
 
 Keep `alloc_ref(value)` for normally copyable values and investigate a builder
 API such as `pool.alloc_with() { Node { value: 2, next: first } }`. Extend the
@@ -400,8 +406,8 @@ reviewed migration path. Root structs can ship independently of that decision.
 * **Known-owner specialization and field-by-field call lowering.** As above;
   preserve addressability and alias semantics while minimizing indirections.
 * **Owning factory results.** Construct directly into several caller-provided
-  destinations; no descriptor copy masquerading as a move. General copying,
-  reassignment and moving need separate semantics.
+  destinations, without copying a descriptor and presenting it as a move.
+  General copying, reassignment and moving need separate semantics.
 * **Worker snapshots and coordinated serialization.** Reconstruct independent
   components with an explicit format/lifecycle contract; never memcpy an owner.
 
@@ -430,13 +436,22 @@ reviewed migration path. Root structs can ship independently of that decision.
    code and timings, then address the separate construction/path/slice features
    above and evaluate slice pools and existing worker behavior.
 
-Required focused tests include independent same-typed fields; shrink rejection
-for the correct component and acceptance for unrelated components; stored,
-optional, returned and branch-selected owner references; const/writability;
-generic placement failures; recursion and nonlocal exits; partial initialization;
-component serialization; forbidden root serialization/FFI/thread use; allowed
-worker-local owners; and transitive worker-global rejection. Exercise aliases
-that refer to the same owner as well as distinct owners.
+Required focused tests include:
+
+* independent same-typed fields;
+* shrink rejection for the correct component and acceptance for unrelated
+  components;
+* stored, optional, returned and branch-selected owner references;
+* const/writability;
+* generic placement failures;
+* recursion and nonlocal exits;
+* partial initialization;
+* component serialization;
+* forbidden root serialization/FFI/thread use;
+* allowed worker-local owners;
+* transitive worker-global rejection.
+
+Exercise aliases that refer to the same owner as well as distinct owners.
 
 Run the appropriate focused tests during each implementation slice, then the
 repository's baseline compiler/runtime suite for the complete feature. Extend

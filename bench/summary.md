@@ -9,8 +9,9 @@ measurements.
 **The source improvement in this refresh is check-free graph traversal.**
 Both Goose graph rows store vertex IDs as `u32 in dist`; CSR also stores
 prefix offsets as `u32 upto out`. Validation happens during construction,
-and `checkfree fn bfs` verifies that none remains in traversal. The entries
-are still four bytes, and construction and validation are still timed.
+and `checkfree fn bfs` verifies that no bounds check remains in the
+traversal. The entries are still four bytes, and construction and validation
+are still timed.
 The fresh large CSR times are 699/617 ms, against C++ 784/761 and Rust 811:
 1.12x/1.23x ahead of matching C++, and 1.16x/1.32x ahead of Rust. Linked
 adjacency remains much slower than CSR in every language. Alternating
@@ -21,13 +22,13 @@ alone does not isolate a source change from other changes since the previous
 report.
 
 **Compact representation remains the clearest advantage.** `records` is
-2.02-2.26x faster than Rust on 3.98x less memory: variable-mode enums pay for
-each record's own payload, including inline text. `interp` is 1.29-1.41x
-faster on 2.04x less memory for the same distinction in a tree. `sexp` uses
-2.43x less memory than the Rust arena and 5.04x less than the C++ owning
-nodes. For `strlist`, distinguish Goose's owned inline strings from the
-borrowing `string_view`, flat-offset and `Vec<&str>` rows; those have
-different lifetime requirements.
+2.02-2.26x faster than Rust on 3.98x less memory: a variable-mode enum stores
+each record at the size of its own payload, including inline text. `interp`
+is 1.29-1.41x faster on 2.04x less memory for the same distinction in a
+tree. `sexp` uses 2.43x less memory than the Rust arena and 5.04x less than
+the C++ owning nodes. For `strlist`, distinguish Goose's owned inline
+strings from the borrowing `string_view`, flat-offset and `Vec<&str>` rows;
+those have different lifetime requirements.
 
 **Losses and near-ties remain.** `calc` takes 481/491 ms against the Rust
 arena's 436 ms. `lru` takes 2,760/2,068 ms against Rust's 2,249, so it loses
@@ -54,16 +55,16 @@ In `respond`, the inline Goose DTO takes 507/491 ms against Rust's DTO at
 Compare matching interfaces when deciding which result applies to an
 application.
 
-**Read the aggregate with the row-level controls.** It selects the fastest
-Goose implementation separately for each backend and comparison tier;
-memory independently selects the smallest implementation. Thus `graph`
-speed uses CSR while its memory figure uses linked adjacency, and `words`
-speed uses the hand-written table while memory uses `dictionary`. The
-`respond` headline uses streaming, and `blur` uses row slices under MSVC and
-flat indexing under clang. These are not the resource profiles of a single
-implementation. `words` also compares different hash functions and table
-policies; the Goose dictionary uses less memory than its hand-written table
-but runs more slowly.
+**The aggregate combines results from different implementations.** For each
+backend and comparison tier, it uses the fastest Goose implementation. Memory
+figures are selected separately, using the implementation with the lowest memory
+use. For example, `graph` speed comes from CSR and its memory figure from linked
+adjacency. `words` speed comes from the hand-written table and its memory figure
+from `dictionary`. The `respond` headline uses streaming; `blur` uses row slices
+under MSVC and flat indexing under clang. No single implementation has all of
+these results. Also, `words` compares different hash functions and table
+policies: the Goose dictionary uses less memory than its hand-written table but
+runs more slowly.
 
 **These are whole-process measurements on one machine.** They include input
 generation, construction and teardown, use the best of three runs after two

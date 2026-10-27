@@ -1,0 +1,12 @@
+local B 4 3
+ref B 4 3
+local A hi 7
+ref A hi 7
+prefix A hello 6
+payload B 10 9
+local tB 4 3
+ref tB 4 3
+val tB 4 3
+local tA 7
+ref tA 7
+val tA 7

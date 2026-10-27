@@ -13,6 +13,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 add_executable(goose
     src/main.cpp
     src/process.cpp
+    src/version.cpp
     src/process.h
     src/progress.cpp
     src/progress.h
@@ -27,6 +28,7 @@ add_executable(goose
     src/lsp_workspace.h
     src/lsp_features.h
     src/lsp.h
+    src/format.h
     src/builtin.h
     src/includes.h
     src/utils.h
@@ -90,6 +92,17 @@ elseif(WIN32)
                  "${CMAKE_CURRENT_SOURCE_DIR}/src/goose.manifest")
 endif()
 
+# The compiler's version (src/version.cpp): GOOSE_VERSION where given, as a
+# release gives its tag, else `git describe` of this tree at each build.
+set(GOOSE_VERSION "" CACHE STRING "The compiler's version; empty for git describe")
+set(goose_version_h "${CMAKE_CURRENT_BINARY_DIR}/version/goose_version.h")
+add_custom_target(goose_version
+    COMMAND "${CMAKE_COMMAND}" "-DSRC=${CMAKE_CURRENT_SOURCE_DIR}" "-DOUT=${goose_version_h}"
+            "-DVERSION=${GOOSE_VERSION}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.cmake"
+    BYPRODUCTS "${goose_version_h}")
+add_dependencies(goose goose_version)
+target_include_directories(goose PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version")
+
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
@@ -133,7 +146,10 @@ target_link_libraries(goose PRIVATE goose_shaderc)
 include(cmake/libtcc.cmake)
 target_link_libraries(goose PRIVATE libtcc)
 add_dependencies(goose tcc_runtime)
-target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${TCC_STAGE}")
+# A packager sets this to where it installs tcclib/, so the binary names no
+# build directory. A tcclib/ beside the compiler still wins (src/jit.h).
+set(GOOSE_TCC_LIB_PATH "${TCC_STAGE}" CACHE PATH "TinyCC's runtime directory")
+target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${GOOSE_TCC_LIB_PATH}")
 
 # The blessed packages GOOSE_BUILTIN_LIBS names (src/blessed.txt; `all`, or
 # a list of their names), compiled into the compiler (cmake/package.cmake),

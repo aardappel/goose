@@ -425,10 +425,22 @@ struct TailRecursion {
         n->Children([&](Node *ch) { Collect(ch, inner, found); });
     }
 
+    // Whether the tree holds a `defer` (§6.6). Its body runs once the
+    // return it is in scope of has its value, after the self-call there
+    // returns, which the loop cannot do: the rewrite leaves such a body alone.
+    static bool HasDefer(Node *n) {
+        if (!n || Is<FnDecl>(n)) return false;
+        if (Is<Defer>(n)) return true;
+        auto found = false;
+        RunChildren(n, [&](Node *ch) { found = found || HasDefer(ch); });
+        return found;
+    }
+
     void Run() {
         if (sp->rets.size() != 1) return;
         rt = sp->rets[0];
         if (rt->kind != TY_INT || rt->intstorage == IS_VARINT) return;
+        if (HasDefer(sp->body)) return;
         auto selfcalls = false;
         if (!Applicable(sp->body, selfcalls) || !selfcalls) return;
         CollectBound(sp->body);

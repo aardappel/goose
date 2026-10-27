@@ -603,22 +603,15 @@ inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool 
 // Name lookup: current frame's scopes innermost-out, then what the body sees
 // outside them (free variables of nested fns / function values, §7.5), then
 // globals, in the namespace order of docs/design/namespaces.md, unless a type
-// parameter or nested function of the name hides them (§11.1). A nested
-// function called after the scope declaring one of those ended cannot name
-// it, which `use`, the node naming it, reports; what the body finds of it
-// there is part of the body's key (NoteEnvRead).
+// parameter or nested function of the name hides them (§11.1). What a body
+// finds outside its own scopes, at `use`, is part of its key (NoteEnvRead).
 inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use) {
     auto top = (int)frames.size() - 1;
     for (auto i = (int)vars.size() - 1; i >= frames[top].varbase; i--)
         if (vars[i]->name == name) return vars[i];
     VarDef *found = nullptr;
-    ForOuterVars(top, [&](VarDef *v, int i, int fi) {
+    ForOuterVars(top, [&](VarDef *v) {
         if (v->name != name) return false;
-        if (use && !InScope(v, i)) {
-            auto fn = frames[fi].sf->name;
-            Error(use, cat(fn, " names ", v->name, " (bound at ", Where(v->line),
-                           "), whose scope has ended where ", fn, " is called (§7.5)"));
-        }
         v->captured = true;
         found = v;
         return true;
@@ -681,19 +674,13 @@ inline void TypeCheck::DefaultScopeName(string_view name, Node *at, bool fnonly)
     if (typeparam(sf)) return;
     if (fr.defaultsite) {
         if (!fnonly)
-            for (auto [v, i] : fr.defaultsite->vars)
+            for (auto v : fr.defaultsite->vars)
                 if (v->name == name) error(cat(name, ", a local where ", sf->name, " is declared"));
         for (auto &o : fr.defaultsite->fns)
             if (o.sf->name == name) error(cat(name, ", a nested function"));
     }
     for (auto o = sf->outer; o; o = o->outer)
         if (typeparam(o)) return;
-}
-
-// Whether the scope a nested function is declared in has ended: its value
-// left it, and it is called outside.
-inline bool TypeCheck::ScopeEnded(const DeclSite &d) {
-    return d.scope >= (int)scopes.size() || scopes[d.scope].serial != d.serial;
 }
 
 // A nested function: visible from here to the end of the scope, checked when
@@ -711,8 +698,6 @@ inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     auto top = (int)frames.size() - 1;
     auto &fr = frames[top];
     auto &site = declsites.emplace_back();
-    site.scope = (int)scopes.size() - 1;
-    site.serial = scopes.back().serial;
     // Its type parameters hide the variables of their names (§11.1).
     auto visible = [&](VarDef *v) {
         for (auto &g : fd->sf->generics)
@@ -720,9 +705,9 @@ inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
         return true;
     };
     for (auto i = (int)vars.size() - 1; i >= fr.varbase; i--)
-        if (visible(vars[i])) site.vars.push_back({ vars[i], i });
-    ForOuterVars(top, [&](VarDef *v, int i, int) {
-        if (visible(v)) site.vars.push_back({ v, i });
+        if (visible(vars[i])) site.vars.push_back(vars[i]);
+    ForOuterVars(top, [&](VarDef *v) {
+        if (visible(v)) site.vars.push_back(v);
         return false;
     });
     for (auto bp = blockpos.rbegin(); bp != blockpos.rend() && bp->scopeidx >= fr.scopebase; ++bp) {
@@ -2040,13 +2025,21 @@ inline int TypeCheck::FindBreakScope(bool forcontinue) {
         if (!forcontinue && scopes[i].kind == SK_BLOCK) return i;
         if (scopes[i].kind == SK_FN) break;
         if (scopes[i].kind == SK_EXPANSION) return -2;
+        if (scopes[i].kind == SK_DEFER) return -3;
     }
     return -1;
+}
+
+// A break or continue with no loop of its own between it and the defer body
+// it is in (§6.6): the construct it would leave is outside the body.
+inline void TypeCheck::JumpLeavesDefer(Node *at, const char *what) {
+    Error(at, cat(what, " cannot leave a defer body (§6.6)"));
 }
 
 inline void TypeCheck::CheckBreak(Break *b) {
     auto si = FindBreakScope(false);
     if (si == -2) Error(b, "break cannot cross a const for expansion boundary");
+    if (si == -3) JumpLeavesDefer(b, "break");
     if (si < 0) Error(b, "break outside of a loop or block");
     if (b->val) {
         if (!Is<LoopExpr>(scopes[si].node) && !Is<EarlyBlock>(scopes[si].node))
@@ -2151,11 +2144,199 @@ inline void TypeCheck::JoinBreakFlow(const Scope &sc, bool ownexit) {
 inline void TypeCheck::CheckContinue(Node *n) {
     auto si = FindBreakScope(true);
     if (si == -2) Error(n, "continue cannot cross a const for expansion boundary");
+    if (si == -3) JumpLeavesDefer(n, "continue");
     if (si < 0) Error(n, "continue outside of a loop");
     auto &sc = scopes[si];
     sc.backedge = sc.backedges ? JoinFlow(sc.backedge, SaveFlow()) : SaveFlow();
     sc.backedges = true;
     reachable = false;
+}
+
+// ------------------------------------------------------------------
+// `defer` (§6.6).
+
+// The body is checked where it is written, as a block of its own in a
+// scope that marks it (SK_DEFER). It names what is declared before it,
+// which is what every exit of the block has run past. Of the flow facts
+// here, definite assignment holds at every exit too, and so does the
+// narrowing of a `let`; a `var`'s narrowing may have been undone by an
+// assignment between here and an exit, so the body is checked without it.
+// The body itself assigns nothing as far as the code after it can tell:
+// it runs at the exits, after the last read in the block, so the flow
+// after the statement is the flow before it, a body that cannot complete
+// included. Its effects on storage -- stores, growths, shrinks -- are
+// recorded like any statement's, and the lifetime rules see the
+// variables live here, which are at least those live at any exit.
+// Leaving the body is rejected where the jump is written (CheckReturn,
+// FindBreakScope); what it may call, and whether it names the function's
+// named result, are checked once every specialization is known
+// (CheckDefers).
+inline void TypeCheck::CheckDefer(Defer *d) {
+    auto &real = CurRealFrame();
+    if (frames.back().isdefault || !real.sf || !real.spec)
+        Error(d, "defer outside of a function: a global initializer has no scope exit (§6.6)");
+    real.spec->hasdefer = true;
+    auto saved = SaveFlow();
+    for (auto &e : saved.locals)
+        if (e.var->isvar) e.var->narrowed = nullptr;
+    for (auto g : ast.globals)
+        for (auto v : g->defs)
+            if (v->isvar) v->narrowed = nullptr;
+    PushScope(SK_DEFER, d);
+    deferbodies++;
+    CheckBlockVal(d->body, nullptr, false);
+    deferbodies--;
+    PopScope();
+    RestoreFlow(saved);
+    d->exprtype = ast.voidtype;
+}
+
+// Whether the code being checked is written in a defer body: one of the
+// scopes of its frame, or of the frames it is lexically in through function
+// values, is a body's. A nested named function's own scopes end the chain,
+// since its returns and loops are its own.
+inline bool TypeCheck::InDeferBody() {
+    for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+        auto hi = fi + 1 < (int)frames.size() ? frames[fi + 1].scopebase : (int)scopes.size();
+        for (auto i = hi - 1; i >= frames[fi].scopebase; i--)
+            if (scopes[i].kind == SK_DEFER) return true;
+        if (!frames[fi].isfunval) break;
+        fi = frames[fi].lexframe;
+    }
+    return false;
+}
+
+// A use of v in the code being checked: for each defer body the use is
+// lexically in -- through function values and nested named functions,
+// whose bodies may name the variables of the function they are written in
+// -- that v is declared outside of, v is one of what the body names
+// (CheckDefers). The frames between a function value's and the one it is
+// written in are the call it runs under, whose scopes are not lexically
+// around it.
+inline void TypeCheck::NoteDeferMention(VarDef *v) {
+    for (auto fi = (int)frames.size() - 1; fi >= 0; fi = frames[fi].lexframe) {
+        auto hi = fi + 1 < (int)frames.size() ? frames[fi + 1].scopebase : (int)scopes.size();
+        for (auto i = hi - 1; i >= frames[fi].scopebase && i >= Depth(v); i--) {
+            if (scopes[i].kind != SK_DEFER) continue;
+            auto &m = defermentions[(Defer *)scopes[i].node];
+            if (find(m.begin(), m.end(), v) == m.end()) m.push_back(v);
+        }
+    }
+}
+
+// Checked once every specialization is: what a defer body calls, and what
+// it names of its function's result.
+//
+// A body runs on the propagation path of a `return ... from`, in the
+// epilogue of a frame the return passes through, while the return's
+// discriminant and values are in the thread-locals every such return
+// uses (§7.9, implementation.md §6.6). Any long-distance return machinery
+// running then would disturb them: a throw of its own, and also one it
+// catches internally, whose catch clears the discriminant in flight. So the
+// body may not call a specialization that performs or propagates one
+// (FnSpec::needs), one that catches one (a callee of which has it as a
+// target), or one that calls either, transitively: one flag per
+// specialization, a fixpoint over the call graph, which inside a recursive
+// cycle is settled as every member's is. A site written in the body itself
+// was rejected as it was checked (CheckReturn).
+//
+// A local the function returns by name is built at its result destination
+// (§7.3, NamedResultOf): after `return x` its bytes are the caller's value
+// and its count is recorded, so a body that then grows it would hand the
+// caller a value its count does not describe. The body may not name such a
+// local at all, reads included, which keeps the rule one the reader can
+// apply without the placement analysis. What the body names itself, the
+// function values written in it included, was recorded as it was checked
+// (NoteDeferMention); what a nested function it calls names, or a named
+// function it passes as a value, is in that callee's record of the
+// variables outside its activation (FnSpec::envreads), which is complete
+// however the callee was reached, a reuse of its check included.
+inline void TypeCheck::CheckDefers() {
+    vector<FnSpec *> withdefers;
+    for (auto sp : ast.fnspecs)
+        if (sp->hasdefer && sp->body && !sp->failed) withdefers.push_back(sp);
+    if (withdefers.empty()) return;
+    // The callees of every body, then the flag: the callee each
+    // specialization gets the machinery through, or itself where it has a
+    // site or propagates.
+    unordered_map<FnSpec *, vector<FnSpec *>> callees;
+    unordered_map<FnSpec *, FnSpec *> rfvia;
+    auto add = [&](vector<FnSpec *> &to, FnSpec *k) {
+        if (k && find(to.begin(), to.end(), k) == to.end()) to.push_back(k);
+    };
+    function<void(Node *, vector<FnSpec *> &)> collect = [&](Node *n, vector<FnSpec *> &to) {
+        if (!n) return;
+        if (auto c = Is<Call>(n)) {
+            if (c->builtin < 0) add(to, c->spec);
+            for (auto k : c->dispatch) add(to, k);
+            for (auto &[t, k] : c->fmtspecs) add(to, k);
+        }
+        RunChildren(n, [&](Node *ch) { collect(ch, to); });
+    };
+    for (auto sp : ast.fnspecs) {
+        if (!sp->body) continue;
+        collect(sp->body, callees[sp]);
+        if (!sp->needs.empty()) rfvia[sp] = sp;
+    }
+    for (auto changed = true; changed;) {
+        changed = false;
+        for (auto &[sp, ks] : callees) {
+            if (rfvia.count(sp)) continue;
+            for (auto k : ks) {
+                if (!rfvia.count(k)) continue;
+                rfvia[sp] = k;
+                changed = true;
+                break;
+            }
+        }
+    }
+    for (auto sp : withdefers) {
+        // A fixed-size result is copied out at the return (CodeGen::DetectNrvo).
+        vector<const VarDef *> named;
+        for (size_t j = 0; j < sp->rets.size(); j++)
+            if (ClassOf(sp->rets[j]) != SC_FIXED)
+                if (auto v = goose::NamedResultOf(sp->body, sp->sf, sp->rets.size(), j))
+                    named.push_back(v);
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n) return;
+            if (auto d = Is<Defer>(n)) {
+                CheckItem([&] {
+                    vector<FnSpec *> ks;
+                    collect(d->body, ks);
+                    for (auto k : ks) {
+                        if (!rfvia.count(k)) continue;
+                        // The chain from the callee to the specialization
+                        // with the site or the catch.
+                        string chain;
+                        for (auto s = k; rfvia[s] != s; s = rfvia[s])
+                            Append(chain, " calls ", rfvia[s]->sf->qname, ", which");
+                        Error(d, cat("defer body calls ", k->sf->qname, ", which", chain,
+                                     " uses a long-distance return (a `return ... from` site, a "
+                                     "frame one passes through, or a catch, §7.9): a defer body "
+                                     "runs while such a return may be in flight (§6.6)"));
+                    }
+                    auto isnamed = [&](const VarDef *v) {
+                        return find(named.begin(), named.end(), v) != named.end();
+                    };
+                    auto why = [&](const VarDef *v) {
+                        return cat(v->name, ", which ", sp->sf->qname, " returns by name and so "
+                                   "builds at its destination (§7.3): a defer runs after the value "
+                                   "is complete (§6.6)");
+                    };
+                    if (auto it = defermentions.find(d); it != defermentions.end())
+                        for (auto v : it->second)
+                            if (isnamed(v)) Error(d, cat("defer body names ", why(v)));
+                    for (auto k : ks)
+                        for (auto &r : k->envreads)
+                            if (isnamed(r.var))
+                                Error(d, cat("defer body calls ", k->sf->qname, ", which names ",
+                                             why(r.var)));
+                });
+            }
+            RunChildren(n, walk);
+        };
+        walk(sp->body);
+    }
 }
 
 // ------------------------------------------------------------------

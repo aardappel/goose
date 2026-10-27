@@ -38,20 +38,20 @@ with examples. It sits between the two other descriptions of the language.
 The [tutorial](tutorial.md) teaches by example and spends its time on what
 is different about Goose; the [specification](goose_spec.md) states the
 exact rules in the language an implementor needs. This document is for the
-programmer who has read the tutorial and wants the whole language laid out:
-exhaustive like the specification, but written to be read, and with a
-program for every rule.
+programmer who has read the tutorial and wants a description of the whole
+language. It is as complete as the specification, but easier to read, and
+it has an example program for every rule.
 
-Each section ends in, or carries, a pointer of the form "spec §3.3" to the
-specification section that is the final word on it. Features that exist
-nowhere else get the most room. Features that work as they do in C or Rust,
-`if` and `while` among them, get a paragraph.
+Each section has a pointer of the form "spec §3.3", at its end or within
+it, to the specification section that has the final say on the topic.
+Features unique to Goose get the most space. Features that work as they do
+in C or Rust, such as `if` and `while`, get a paragraph.
 
 Every example in this document compiles with the current compiler, and
 `scripts/check_doc_examples.py` checks that they still do. A complete
-program is shown with its output after it; a shorter example is the body
-of a `main`, or a set of declarations, and is written so that it can be
-dropped into one. Run any of them with
+program is shown with its output after it. A shorter example is either the
+body of a `main` or a set of declarations, and is written so that it can
+be pasted into a program. Run any of them with
 
 ```bash
 goose example.goose
@@ -60,15 +60,15 @@ goose example.goose
 which compiles the program into the compiler's own process and runs it
 there, with no C compiler and no build step. `goose check` typechecks
 without running, and `goose build` makes an executable
-([packages.md](packages.md) has the rest of the command line).
+([command_line.md](command_line.md) has the rest of the command line).
 
 ---
 
 ## 1. Lexical structure
 
 A Goose source file is UTF-8 text. A byte-order mark at its start is
-ignored, and line endings are read as `\n` whichever way the file writes
-them.
+ignored, and line endings are read as `\n` whatever convention the file
+uses.
 
 **Comments** are `//` to the end of the line and `/* … */`, which nests:
 `/* a /* b */ c */` is one comment.
@@ -82,8 +82,8 @@ keyword throughout.
 
 **Integer literals** are decimal (`42`) or hexadecimal (`0xFF`). The whole
 unsigned 64-bit range is accepted: a value above `i64.max` is a `u64`
-constant. A character literal `'a'` is an integer constant, the byte's
-value; it takes the escapes a string does.
+constant. A character literal `'a'` is an integer constant holding the
+byte's value, and it accepts the same escapes as a string literal.
 
 **Float literals** have a `.`, an exponent, or both: `1.5`, `2.5e-3`, `1e9`.
 A `.` begins a fraction only when a digit follows it, so `1..2` is a range
@@ -94,14 +94,15 @@ accepted too: `0x1.8p3` is 12.0.
 `\xNN` (two hexadecimal digits). A literal is static read-only data, of type
 `const u8[:]` ([section 6](#6-strings-and-text)).
 
-**Raw strings** are `"""…"""`: no escapes, and the next `"""` ends the text.
-On one line the text is whatever lies between the delimiters, backslashes
-and quotes included. A multi-line raw string starts with its opening `"""`
-at the end of a line and ends with the closing `"""` on a line of its own;
-the closing delimiter's indentation is removed from every line, so the text
-can sit at the code's own indentation. The line breaks just after the
-opening and just before the closing delimiter are not part of the text; an
-empty line before the closing delimiter adds a final newline.
+**Raw strings** are `"""…"""`. They have no escapes, and the next `"""`
+ends the text. On one line, the text is everything between the delimiters,
+including backslashes and quotes. A multi-line raw string starts with its
+opening `"""` at the end of a line and ends with the closing `"""` on a
+line of its own. The closing delimiter's indentation is removed from every
+line, so the text can be indented to match the surrounding code. The line
+breaks just after the opening and just before the closing delimiter are not
+part of the text; an empty line before the closing delimiter adds a final
+newline.
 
 ```goose
 fn main() {
@@ -131,7 +132,7 @@ An expression statement ends in `;`. A statement that *is* a block-ended
 construct, meaning `if`, `match`, `block`, a loop, `guard … else { }`, a
 nested `fn`, or a call with a trailing function block, needs none: it ends
 at its closing `}`. An operator never continues such a statement, so to use
-one of them as an operand it has to be parenthesized:
+one of these constructs as an operand, put it in parentheses:
 
 ```goose
 let a = 3;
@@ -169,9 +170,9 @@ count++;                      // a statement, not an expression
 ```
 
 The type follows the name and can usually be left out: an un-annotated
-declaration takes the type of its initializer. `let` forbids assigning the
-name as a whole and nothing else: the contents of a `let` array or struct
-are as writable as their type says, so `let xs = [1, 2, 3]; xs[0] = 9;` is
+declaration takes the type of its initializer. `let` only forbids assigning
+to the name as a whole: the contents of a `let` array or struct are as
+writable as their type allows, so `let xs = [1, 2, 3]; xs[0] = 9;` is
 fine. Read-only *contents* come from the type, `const T`
 ([section 12](#12-lifetimes-roots-stores-and-writability)), and
 `const x = e;` declares a `let` of type `const T`. A `var` of a `const`
@@ -189,8 +190,9 @@ print(xs, " ", ys, " ", s);
 
 A `let` without an initializer gets its value exactly once, and the
 compiler checks that it does: no path may read it before it is assigned,
-and no path may assign it twice, which includes assigning it in a loop it
-is declared outside of, or in a function called more than once.
+and no path may assign it twice. Assigning it in a loop it is declared
+outside of, or in a function called more than once, counts as assigning it
+twice.
 
 ```goose
 fn main() {
@@ -206,26 +208,27 @@ fn main() {
 ```
 
 Every local must be initialized before it is read, on every path. Fixed
-arrays must be fully initialized; the fill literal `[v; n]` makes a large
-one cheap. An inner scope may redeclare a name, which shadows the outer
-one. Spec §4.4.
+arrays must be fully initialized; the fill literal `[v; n]` makes this easy
+for a large array. An inner scope may redeclare a name, which shadows the
+outer one. Spec §4.4.
 
 ### Globals
 
 Globals are declared like locals, at the top level of a file, with any
-type: scalars, structs, and growable arrays too. They initialize before
-`main` runs, in declaration order within a file and imported files first,
-and their initializers may call functions. A `var` global given only a
-type starts out as that type's default value: `var log: u8[>..];` is an
-empty array. A `let` or `const` global must be given its value.
+type: scalars, structs, and growable arrays too. They are initialized
+before `main` runs, imported files first and then in declaration order
+within a file, and their initializers may call functions. A `var` global
+given only a type starts out as that type's default value:
+`var log: u8[>..];` is an empty array. A `let` or `const` global must be
+given its value.
 [Section 21](#21-program-structure) has the rest.
 
 ### Named constants
 
 A `let` or `const` global with no written type and a constant initializer
-is a **named constant**. An integer one is used exactly as the literal
-would be: it adapts to any integer type its value fits, serves as an array
-size or a fill count, and names a value in a `match` arm.
+is a **named constant**. An integer named constant can be used exactly as
+its literal could: it adapts to any integer type its value fits, serves as
+an array size or a fill count, and names a value in a `match` arm.
 
 ```goose
 let SIZE = 16;
@@ -244,7 +247,8 @@ fn main() {
 ```
 
 A global *with* a written type (`let SIZE: i64 = 16;`), a local `let`, and
-any `var` are values of their type and adapt to nothing. Spec §3.1, §11.1.
+any `var` are ordinary values of their type and do not adapt to other
+types. Spec §3.1, §11.1.
 
 ### Type aliases
 
@@ -272,7 +276,7 @@ A nominal type comes from a `struct` or `enum` declaration
 ### Type syntax at a glance
 
 Type syntax is postfix. Every form below is described in its own section;
-this table is the map.
+this table is an overview.
 
 | Written | Meaning | Section |
 |---|---|---|
@@ -288,10 +292,10 @@ this table is the map.
 | `fn(i64) -> bool` | a function value's shape, as documentation | [18](#18-generics-and-function-values) |
 
 `const` qualifies the first reference or slice built on the base type:
-`const u8[:]` is a read-only view of bytes. To reach an outer one,
-parenthesize: `const (u8[:])&` is a read-only reference to a slice
-variable. An index type takes no postfix of its own, so an array of them is
-written `(u32 in a)[>..]`.
+`const u8[:]` is a read-only view of bytes. To apply `const` to an outer
+reference or slice, use parentheses: `const (u8[:])&` is a read-only
+reference to a slice variable. An index type takes no postfix of its own,
+so an array of an index type is written `(u32 in a)[>..]`.
 
 ---
 
@@ -303,7 +307,7 @@ The integer types are `i8 i16 i32 i64` and `u8 u16 u32 u64`, two's
 complement, usable everywhere: fields, elements, locals, parameters,
 results. `i64` is the conventional type for counts, sizes and indices; it
 is what `.len`, integer literals and the builtins produce. The narrower
-types are for data that should be compact and for kernels that want a
+types are for data that should be compact and for kernels that need a
 particular width.
 
 **Arithmetic happens at the operands' own width.** `u8 + u8` is an 8-bit
@@ -325,11 +329,11 @@ print(wrapped, " ", widened);
 **Mixing widths.** A binary operator's operands must reach one common
 type, which is also the result's type. The rules, in order:
 
-1. Equal types stand.
+1. If the types are equal, that type is the common type.
 2. A literal adapts to the other operand's type (an error if it does not
    fit).
 3. Otherwise, if exactly one operand widens implicitly into the other's
-   type, the wider type wins: `u8 + i64` is an `i64` add.
+   type, the wider type is used: `u8 + i64` is an `i64` add.
 4. An integer meeting a float converts to the float's type: `i32 * f32` is
    an `f32` multiply.
 5. Anything else is a compile error asking for a cast: same-width signed
@@ -353,7 +357,8 @@ but produce `bool`.
 **`%` is Euclidean.** The result lies in `[0, |b|)` and is never negative,
 at every integer type, whatever the dividend's sign. So `x % n` is always a
 valid index into an array of length `n`, and the compiler drops the bounds
-check that a C-style remainder would need a guard for.
+check on it. A C-style remainder would need a guard before the check could
+be dropped.
 
 ```goose
 print(-7 % 3, " ", 7 % -3, " ", -7 / 3);
@@ -364,8 +369,8 @@ print(-7 % 3, " ", 7 % -3, " ", -7 / 3);
 ```
 
 Integer `/` truncates toward zero, so `/` and `%` do not form a matching
-quotient/remainder pair for negative dividends. `std` supplies both missing
-partners, at every integer width: `rem(a, b)` pairs with `/`, and
+quotient/remainder pair for negative dividends. `std` supplies the two
+missing functions, at every integer width: `rem(a, b)` pairs with `/`, and
 `div_euclid(a, b)` pairs with `%`.
 
 ```goose
@@ -390,12 +395,13 @@ Both functions abort on a zero divisor. Float `%` uses C `fmod`, so
 `-7.0 % 3.0` is `-1.0`; these `std` functions take integers only.
 
 **Overflow.** Unsigned arithmetic wraps modulo 2^width in every build, by
-definition: that is what hashes, random number generators and bit tricks
-mean by unsigned math. Signed overflow aborts in a debug build (`--debug`)
-and wraps in a release build. Division or remainder by zero aborts always,
-and so does `i64.min / -1`. A debug build checks each operation as it
-executes after optimization, so it is a bug-finding tool, not a promise
-about every intermediate written in the source.
+definition, since that is what hashes, random number generators and bit
+tricks expect from unsigned math. Signed overflow aborts in a debug build
+(`--debug`) and wraps in a release build. Division or remainder by zero
+always aborts, and so does `i64.min / -1`. A debug build checks each
+operation as it executes after optimization. It is therefore a tool for
+finding bugs, not a guarantee about every intermediate value written in the
+source.
 
 ```goose
 var h: u64 = 14695981039346656037;
@@ -417,9 +423,9 @@ A float literal adapts to whichever float type its destination or other
 operand has, and is an `f64` where nothing gives it a type. So does an
 expression whose float-ness comes only from literals and integers: `n *
 0.5` is computed in 32 bits when it is passed to an `f32` parameter and is
-an `f64` in `let h = n * 0.5;`. A `let` with no written type whose
-initializer is such an expression adapts the same way at each use, local or
-global, which is how `PI` in the standard library serves both widths.
+an `f64` in `let h = n * 0.5;`. A `let` with no written type, local or
+global, whose initializer is such an expression adapts the same way at each
+use. This is how `PI` in the standard library works at both widths.
 
 ```goose
 let PI = 3.141592653589793;
@@ -442,10 +448,10 @@ its own type*, with `.0` after a whole number: `1.0`, `0.1`, `-0.0`; `inf`,
 
 ### `bool`
 
-`bool` holds `true` or `false` in one byte. Comparisons produce it; `if`,
-`while` and `guard` require it: there is no integer-to-bool coercion, so
-`if n { … }` with an integer `n` is an error (`if n != 0`). `&&` and `||`
-short-circuit.
+`bool` holds `true` or `false` in one byte. Comparisons produce it, and
+`if`, `while` and `guard` require it. There is no integer-to-bool coercion,
+so `if n { … }` with an integer `n` is an error; write `if n != 0` instead.
+`&&` and `||` short-circuit.
 
 ### `varint`
 
@@ -456,10 +462,10 @@ an `i64`; it can only be written when its containing value is constructed.
 
 ### Conversions
 
-One principle: within a kind, a conversion the compiler can prove
-value-preserving is implicit; anything that could lose a bit or flip a
-sign takes a cast. Between the kinds, an integer becomes a float
-implicitly and a float becomes an integer only through a cast.
+Within a kind, a conversion the compiler can prove value-preserving is
+implicit, and anything that could lose a bit or flip a sign needs a cast.
+Between the kinds, an integer becomes a float implicitly and a float
+becomes an integer only through a cast.
 
 | Conversion | How |
 |---|---|
@@ -473,11 +479,11 @@ implicitly and a float becomes an integer only through a cast.
 
 `x as T` converts between any two numeric types. It is range-checked in a
 debug build, which aborts if the value changes, and truncates, wraps or
-rounds toward zero silently in a release build. `x as! T` never checks: it
-is for when losing bits is the intent, in a debug build too. Conversions to
-a float are never checked, in either form. Float to integer is defined
-exactly: truncate toward zero, then wrap into the target's width; NaN gives
-0.
+rounds toward zero silently in a release build. `x as! T` never checks,
+not even in a debug build: it is for when losing bits is intended.
+Conversions to a float are never checked, in either form. Float to integer
+conversion is fully defined: truncate toward zero, then wrap into the
+target's width; NaN gives 0.
 
 ```goose
 let big = 300;
@@ -491,14 +497,14 @@ print(n, " ", i, " ", back, " ", u);
 ```
 
 A cast that changes nothing is a **warning**, so the compiler points out
-the ones the rules above make unnecessary: `b as i64` of a `u8` stored in
+casts that the rules above make unnecessary: `b as i64` of a `u8` stored in
 an `i64` says ``redundant `as i64`: a u8 converts to i64 implicitly here``.
-A cast that decides something stays silent: a type nothing else gives
-(`let k = 5 as u32;`), an operation's width (`(a as i64) * b` with `i32`
-operands), or a float's rounding.
+A cast that decides something gives no warning, whether it decides a type
+that nothing else gives (`let k = 5 as u32;`), the width of an operation
+(`(a as i64) * b` with `i32` operands), or how a float is rounded.
 
-**Comparing `u64` with signed values.** `u64` is the one unsigned type with
-no signed type to widen into. A comparison between a `u64` and a signed
+**Comparing `u64` with signed values.** `u64` is the only unsigned type
+with no signed type to widen into. A comparison between a `u64` and a signed
 operand is allowed when the signed operand is *syntactically* known to be
 non-negative: a non-negative literal, a `.len` or `.cap`, or a `let` bound
 to one of those (and not also bound to a writable reference). The
@@ -516,11 +522,11 @@ Spec §6.1, §6.3.
 ### Arithmetic on structs and fixed arrays
 
 The arithmetic operators apply memberwise to two values of the same struct
-or fixed-array type whose scalar leaves are all integers or all floats,
-and so does unary `-` where no leaf is unsigned. `*` and `/` also take one
-scalar operand, in either order, when every leaf has exactly the same
-type; the scalar converts to that type. This is how the library's vector
-types work, with no operator overloading in the language.
+or fixed-array type whose scalar leaves are all integers or all floats.
+Unary `-` applies memberwise too, where no leaf is unsigned. `*` and `/`
+also take one scalar operand, in either order, when every leaf has exactly
+the same type; the scalar converts to that type. This is how the library's
+vector types work; the language has no operator overloading.
 
 ```goose
 struct V3 { x: f32, y: f32, z: f32 }
@@ -550,9 +556,9 @@ in zeroes on unsigned types and copies the sign bit on signed ones. The
 bitwise operators bind tighter than comparisons, so `x & mask != 0` is
 `(x & mask) != 0`, and shifts bind tighter than `&`. `~c` of a
 non-negative constant adapts like a constant, so `let a: u8 = ~4;` is 251
-and `flags & ~F_ROAD` clears a bit of a `u8`. A shift of a constant by a
-variable count keeps the constant's freedom: `1 << k` takes the type its
-destination has.
+and `flags & ~F_ROAD` clears a bit of a `u8`. A constant shifted by a
+variable count still adapts like a constant: `1 << k` takes the type of its
+destination.
 
 ```goose
 var flags: u8 = 0;
@@ -599,24 +605,24 @@ depth; only flat values may cross between threads
 A Goose program has the native call stack, some static data (string
 literals and compile-time constants), and **N data stacks**, where N is a
 number the compiler computes for the program. A data stack is a large
-reservation of address space with a bump pointer. That is the whole memory
-system: no `malloc`, no free list, no garbage collector, no reference
-counts, no destructors.
+reservation of address space with a bump pointer. This is the entire
+memory system. There is no `malloc`, free list, garbage collector,
+reference counting or destructor.
 
 Fixed-size values live on the native stack or in registers. Every variable
-or resizable value lives on a data stack, owned by the variable that
+or resizable value lives on a data stack and is owned by the variable that
 declares it (a local, a global, a by-value parameter, or a field or
-element of one of those), and the rules that make this work are:
+element of one of those). Two rules make this work:
 
 1. Values are pushed in lifetime order and freed all at once when the
-   owning scope ends. The free is one store: the stack's top goes back to
-   where it was.
+   owning scope ends. Freeing them is a single store: the stack's top is
+   set back to where it was.
 2. At most one resizable value is live per stack, and it is the topmost
    thing on that stack for its whole life. So growth is a pointer bump
    with no capacity check, and nothing ever moves.
 
 Three growable arrays alive at once get three stacks; a stack is reused
-the moment a scope frees it. The compiler proves all of this statically,
+as soon as a scope frees it. The compiler proves all of this statically,
 and there is no syntax for a stack anywhere in the language. Spec §1.2,
 §1.3, §10.3.
 
@@ -656,19 +662,19 @@ fn main() {
 1000000 items, first is Item { 1, 99.5 }
 ```
 
-A `std::vector` or a `Vec` reallocates and cannot promise this. It is why
-Goose code holds typed references where other languages hold integer
+A `std::vector` or a `Vec` reallocates and cannot promise this. This is
+why Goose code holds typed references where other languages hold integer
 indices into an arena.
 
 ### Copies are visible
 
 Fixed-size values copy silently on assignment, as in C, whatever their
-size. **Non-fixed values are never copied implicitly**: that copy is
-O(size), and the source should show it. A variable, field or element of
-variable or resizable class reaching a destination *binds by reference*
-when the destination is a reference, a slice, an untyped parameter, an
-un-annotated `let`/`var`, or a `for` binding, and is an error at a
-destination that wants a value of its own. A value-typed destination takes
+size. **Non-fixed values are never copied implicitly**: such a copy takes
+O(size) time, so it should be visible in the source. A variable, field or
+element of variable or resizable class *binds by reference* when it
+reaches a destination that is a reference, a slice, an untyped parameter,
+an un-annotated `let`/`var`, or a `for` binding. At a destination that
+needs a value of its own, it is an error. A value-typed destination takes
 a fresh value (a literal, a call's result) or an explicit `copy(x)`.
 
 ```goose
@@ -690,29 +696,29 @@ struct Item { id: i32, weight: f32 }
 [1, 2, 3, 5] [1, 2, 3, 4] 1 2
 ```
 
-The same rule governs calls: `f(xs)` hands a growable array to a slice
-parameter, to a `T[>..]&` parameter and to an untyped parameter alike, by
-reference. Spec §4.1.
+The same rule applies to calls: `f(xs)` passes a growable array by
+reference to a slice parameter, to a `T[>..]&` parameter and to an untyped
+parameter alike. Spec §4.1.
 
 ### Built in place
 
 A constructed value that is not fixed-size is built **directly in its final
-home**, through any depth of calls and through the branch an `if` or
-`match` takes: a function returning a growable array by value writes its
-elements straight into the caller's variable, or into the element being
+location**, through any depth of calls and through whichever branch an `if`
+or `match` takes. A function returning a growable array by value writes its
+elements directly into the caller's variable, into the element being
 pushed, or into the field of a record being built inside another array.
-There is never a temporary that is then copied into place. So returning a
-built-up value costs what filling an out-parameter would, and
-`words.push(str("word", i))` formats the text straight into the new
+No temporary is ever built and then copied into place. Returning a built-up
+value is therefore as cheap as filling an out-parameter, and
+`words.push(str("word", i))` formats the text directly into the new
 element. Spec §4.3, §7.3.
 
 ---
 
 ## 5. The array family
 
-There is no single array type. There is a family whose members differ in
-one respect only: what happens to the size. In all of them the
-representation is `[metadata][elements…]`, inline and packed, never a
+There is no single array type. Instead there is a family of array types
+that differ only in what can happen to their size. All of them are
+represented as `[metadata][elements…]`, inline and packed, never as a
 pointer to a separate block.
 
 | Type | Class | What it is | Stored metadata |
@@ -754,15 +760,17 @@ fn main() {
 
 * **`T[>..]`** is the default: arenas, pools, string builders, tree
   storage, scratch that is refilled between phases. "Grow-only" names the
-  guarantee that references into it stay valid, not its operation set; it
-  can still `pop` and `clear` at points where the compiler sees that nothing
-  points into it ([section 13](#13-growing-shrinking-and-assigning-whole-arrays)).
+  guarantee that references into it stay valid, not the operations it
+  supports; it can still `pop` and `clear` at points where the compiler
+  can tell that nothing points into it
+  ([section 13](#13-growing-shrinking-and-assigning-whole-arrays)).
 * **`T[>..<]`** for a stack, a queue or a heap. References into it may live
   in variables only, never in storage, so the compiler can check them at
   each shrink.
 * **`T[..k]`** and **`T[..]`** when the array must sit inline inside
   something else: a 16-byte name inside a struct, a small list inside an
-  array element. `T[..k]` is fixed-size, so a struct holding one still is.
+  array element. `T[..k]` is fixed-size, so a struct holding one is still
+  fixed-size.
 * **`T[]`** and **`T[varint]`** for finished data: a string in a record, a
   node in a pool, anything built once and then read.
 * **`T[k]`** for a fixed shape: a 4x4 matrix, a 256-entry table.
@@ -775,7 +783,7 @@ can.
 
 The `k` of `T[k]` and `T[..k]`, and the count of a fill literal `[v; n]`,
 is a constant expression: literals, named constants, arithmetic on them,
-and the `.len` of a global whose length its declaration fixes (`const
+and the `.len` of a global whose length is fixed by its declaration (`const
 names = ["a", "bc"]; var counts: i64[names.len];`). A type parameter is a
 type, never a size: `fn f<N>(a: i64[N])` is an error, since there are no
 size parameters. A local that hides a global's name is not a constant
@@ -790,9 +798,10 @@ either. Spec §3.3.
   An array of strings, `u8[][>..]`, is one block: a length, then each
   string's own length and bytes, back to back.
 * An array with variable-size elements is **sequential**: where an element
-  starts depends on every element before it, so it can be iterated but not
-  indexed, and has no `pop`. To reach its elements in any order, keep an
-  index of references beside it ([section 11](#an-index-for-a-sequential-array)).
+  starts depends on every element before it, so the array can be iterated
+  but not indexed, and has no `pop`. To reach its elements in any order,
+  keep an index of references beside it
+  ([section 11](#an-index-for-a-sequential-array)).
 
 ```goose
 fn main() {
@@ -826,7 +835,8 @@ time. Spec §3.3.
   random access.
 * **Resizable** values go in locals and globals, by-value parameters,
   results, and the **last field** of a struct, which makes the struct
-  resizable too. Never an array element, and at most one per struct.
+  resizable too. A resizable value is never an array element, and a struct
+  has at most one.
 * **Zero-size** values (`T[0]`, `T[..0]`, a variant with no fields) exist
   only as values of their own, never as a field or an element.
 
@@ -890,8 +900,9 @@ read the same way.
 
 Growth always supplies element values: there is no operation that exposes
 an uninitialized slot. Exceeding a limited array's capacity aborts; so does
-shrinking below empty. `index_of` needs a reference the compiler knows
-points into that very array ([section 12](#12-lifetimes-roots-stores-and-writability)).
+shrinking below empty. `index_of` needs a reference that the compiler can
+prove points into that very array
+([section 12](#12-lifetimes-roots-stores-and-writability)).
 The `reusable` pool operations are in [section 14](#14-reusable-pools).
 Spec §3.3, §12.
 
@@ -920,7 +931,7 @@ fn main() {
 
 `==` and `!=` compare arrays structurally: length first, then elements.
 Two operands of *different* array kinds compare too, as slices, whenever
-their slices would have one type: a `u8[>..]` against a string literal, a
+their slices would have the same type: a `u8[>..]` against a string literal, a
 `u8[..32]` field against a `u8[:]`. Spec §4.5.
 
 ---
@@ -971,7 +982,7 @@ arguments of any type, inserting nothing between them:
   single write, so lines from different threads never interleave.
 * `format(out, a, b, …)` appends the text to `out`, any growable `u8` array.
 * `str(a, b, …)` builds a fresh `u8[>..]` of the text, constructed directly
-  at its destination: `words.push(str("item", i))` writes straight into
+  at its destination: `words.push(str("item", i))` writes directly into
   the new element.
 
 Every scalar has a text form: integers in decimal, floats in the shortest
@@ -984,10 +995,12 @@ at, and a null optional as `null`. A character literal is an integer, so
 nested inside an aggregate is quoted and escaped.
 
 A **`format` overload** `fn format(out: u8[>..]&, v: T)`, taking `T` by
-value or by reference, renders a `T` through itself wherever one occurs in
-an argument of any of the three builtins, so a type chooses its text once.
-It is looked up in the namespace `T` is declared in, then globally: the
-type decides, not the code that prints.
+value or by reference, is called to render a `T` wherever a `T` occurs in
+an argument of any of the three builtins, so a type defines its text form
+in one place. The overload is looked up in the namespace `T` is declared
+in, then globally, so the type decides how it is printed, not the code
+that prints it. A `T` that is not fixed-size is never copied implicitly,
+so its overload takes it by reference.
 
 ```goose
 struct Person { name: u8[..16], age: i32 }
@@ -1008,10 +1021,10 @@ fn main() {
 ```
 
 Spec §3.7. The standard library's `std` module adds the usual
-operations, all over `u8[:]`: `find`, `trim`, `split`, `words`, `join`,
-`parse_int`, `parse_flt`, `format_int`, `compare`, `to_lower`, and more
-([stdlib.md](stdlib.md#strings)). `split` returns an array of slices into
-its input: a few bytes per part, with no text copied.
+operations, all operating on `u8[:]`: `find`, `trim`, `split`, `words`,
+`join`, `parse_int`, `parse_flt`, `format_int`, `compare`, `to_lower`, and
+more ([stdlib.md](stdlib.md#strings)). `split` returns an array of slices into
+its input: each part takes a few bytes, and no text is copied.
 
 ```goose
 fn main() {
@@ -1035,20 +1048,22 @@ fn main() {
 
 `T[:]` is a reference plus an element count: a view of a contiguous run of
 `T`s inside some array. It is the universal "process a range" parameter
-type, since every array kind becomes one without copying its elements.
+type, since every array kind converts to a slice without copying its
+elements.
 
 * **Slicing**: `a[x..y]` is elements `x` up to `y` (exclusive); either
   bound may be left out, and `^k` means "`len - k`": `a[^2..]` is the last
   two elements. Re-slicing a slice is always allowed and never grows it.
-* **Coercion**: an array, or a reference to one, reaching a destination
-  whose type is a slice of its element type becomes a whole-array slice of
-  that array itself, as `a[..]` would. That holds for a parameter, an
-  annotated variable, an assignment, a field, a pushed element, a `return`,
-  and a branch of an `if` whose other branch is a slice.
+* **Coercion**: when an array, or a reference to one, reaches a
+  destination whose type is a slice of its element type, it becomes a
+  slice of that whole array itself, as `a[..]` would. This holds for a
+  parameter, an annotated variable, an assignment, a field, a pushed
+  element, a `return`, and a branch of an `if` whose other branch is a
+  slice.
 * Slices of fixed-size elements index and iterate, bounds-checked against
   the slice's own length. Slices of variable-size elements iterate only.
-* A slice of a grow-only array taken before a `push` stays valid; it just
-  does not see the new elements.
+* A slice of a grow-only array taken before a `push` stays valid, but does
+  not include the new elements.
 
 ```goose
 fn total(xs: i64[:]) -> i64 { var t = 0; for x in xs { t += x; } return t; }
@@ -1071,11 +1086,12 @@ fn main() {
 ```
 
 A slice is **checked**. It carries a static root, the variable that bounds
-the lifetime of what it views, and it can neither outlive that variable nor
-survive a shrink that would free the elements. The checker tracks liveness,
-not scope: a slice whose last use is before a `clear` is dead, and the
-`clear` is fine. [Section 12](#12-lifetimes-roots-stores-and-writability)
-has the rules, and [section 13](#13-growing-shrinking-and-assigning-whole-arrays)
+the lifetime of what it views. A slice can neither outlive that variable
+nor survive a shrink that would free the elements. The checker tracks
+liveness, not scope: a slice whose last use is before a `clear` is dead,
+and the `clear` is allowed.
+[Section 12](#12-lifetimes-roots-stores-and-writability) has the rules,
+and [section 13](#13-growing-shrinking-and-assigning-whole-arrays)
 the shrink side.
 
 ```goose
@@ -1097,11 +1113,12 @@ hello
 again
 ```
 
-A slice is a reference, so it follows the same writability rule: a slice of
-a `var` array is writable through, a string literal and a slice of a
-`const` value are not, and a parameter declared `T[:]` takes either and is
-checked with what it is given. A function that only reads documents that
-with `const T[:]`. Spec §3.10, §9.5.
+A slice is a reference, so it follows the same writability rule. A slice
+of a `var` array is writable through, while a string literal and a slice
+of a `const` value are not. A parameter declared `T[:]` accepts either, and
+is checked against the argument it is given. A function that only reads
+through a slice parameter documents that by declaring the parameter
+`const T[:]`. Spec §3.10, §9.5.
 
 Because a slice never copies, it is the natural key for a table. The
 library's dictionary keyed by `const u8[:]` stores views into text the
@@ -1164,25 +1181,26 @@ Unit { 1, 100, 1.5, 2.5, "scout" } 50 Unit { 3, 100, 0.0, 0.0, "" } 100
 
 A global `var` given only a type starts as its type's default value. A
 local must be initialized at its declaration when its type is not
-fixed-size, since the value's storage is laid out when it is constructed;
-a fixed-size local may be declared first and assigned on every path before
+fixed-size, since the value's storage is laid out when it is constructed.
+A fixed-size local may be declared first and assigned on every path before
 it is read ([section 2](#2-declarations-variables-and-scope)).
 
-Named initializers may be written out of declaration order only when
-swapping them back changes nothing the compiler can see: reads and
-arithmetic that cannot trap are fine, calls with effects, indexing and
-loops are not. Construction always proceeds in declaration order, straight
+Named initializers may be written out of declaration order only when the
+compiler can tell that putting them back in order changes nothing: reads
+and arithmetic that cannot trap are fine; calls with effects, indexing and
+loops are not. Construction always proceeds in declaration order, directly
 into each field. If effects must happen in another order, do them before
 the literal. Spec §4.2.
 
 ### Field defaults
 
-A default is an expression evaluated at each construction that leaves the
-field out, in field order among the explicit initializers. It may name
-globals and call functions, and it never sees the constructor's locals or
-sibling fields. `default<T>()` ([Builtins](#25-builtins)) builds a
-fixed-size `T` from its declared defaults, so an invariant a declaration
-encodes as a default survives generic code that fills in values.
+A default is an expression that is evaluated at each construction that
+leaves the field out. It is evaluated in field order, among the explicit
+initializers. It may name globals and call functions, but it can never
+refer to the constructor's locals or to sibling fields.
+`default<T>()` ([Builtins](#25-builtins)) builds a fixed-size `T` from its
+declared defaults, so an invariant that a declaration encodes as a default
+is kept even in generic code that fills in values.
 
 ```goose
 var serial = 0;
@@ -1201,8 +1219,8 @@ fn main() {
 Rec { 1, "none", 1.0 } Rec { 2, "none", 2.0 } 3
 ```
 
-A default may not lead back to a construction that takes it again, which
-would never end. Spec §3.2.
+A default may not lead back to a construction that uses the same default
+again, since that would never end. Spec §3.2.
 
 ### Field qualifiers and padding
 
@@ -1262,16 +1280,16 @@ fn main() {
 alice owes 4498 cents over 2 items, 29 bytes in all
 ```
 
-That order is 29 bytes with no pointer in it. The price is that `book` is
-sequential: iterate it, or keep an index beside it. A variable-class field
+That order is 29 bytes with no pointer in it. The downside is that `book`
+is sequential: iterate it, or keep an index beside it. A variable-class field
 or element is frozen once built: to change one, rebuild its container.
 Spec §3.4, §3.6.
 
 ### A resizable tail
 
 A struct's **last** field may be a resizable array, which makes the struct
-resizable: it lives where a growable array can (a local, a global, a
-by-value parameter, a result), never as an element or a middle field. The
+resizable: it can live wherever a growable array can (a local, a global, a
+by-value parameter, a result), but never as an element or a middle field. The
 tail grows through the struct like any growable array.
 
 ```goose
@@ -1318,7 +1336,7 @@ Spec §3.2.
 
 ### Equality and arithmetic
 
-`==` and `!=` compare structs memberwise, pads excluded; a reference or
+`==` and `!=` compare structs memberwise, excluding pads; a reference or
 slice *field* compares by identity (address and length), since recursing
 through it could loop. The arithmetic operators apply memberwise
 ([section 3](#arithmetic-on-structs-and-fixed-arrays)). Ordering operators
@@ -1333,24 +1351,24 @@ enum Shape { Circle { r: f64 }, Rect { w: f64, h: f64 }, Dot }
 ```
 
 An enum is a tag followed by the payload of one of its variants. It is the
-only dynamic polymorphism in the language: no inheritance, no traits, no
-vtables. A variant's payload is declared like a struct's fields, with the
-same defaults and `..` rules, and a variant with no payload is a plain
-constant. An enum whose variants all have no payload is a C-like enum, one
-byte. A variant literal is `Shape.Circle { r: 1.0 }`, and `Shape.Dot` for a
-payload-less one.
+only form of dynamic polymorphism in the language; there is no
+inheritance, no traits and no vtables. A variant's payload is declared like
+a struct's fields, with the same defaults and `..` rules, and a variant
+with no payload is a plain constant. An enum whose variants all have no
+payload is a C-like enum, one byte. A variant literal is
+`Shape.Circle { r: 1.0 }`, or `Shape.Dot` for a variant with no payload.
 
 ### Two modes
 
 Every enum type can be stored two ways, chosen at the point of use by the
 type written there:
 
-**Fixed mode** (`Shape`) is what a Rust `enum` or a C++ `variant` is: a tag
-plus room for the largest payload, 17 bytes for every `Shape`, `Dot`
-included. It is fixed-size, so an array of them is indexable, and a value
-may be overwritten in place with a different variant. In exchange, nothing
-may point *into* its payload: `match` binds the payload by value only. It
-is usable only when every payload is fixed-size.
+**Fixed mode** (`Shape`) is the layout of a Rust `enum` or a C++ `variant`:
+a tag plus room for the largest payload, so every `Shape` is 17 bytes,
+including `Dot`. It is fixed-size, so an array of them is indexable, and a
+value may be overwritten in place with a different variant. In exchange,
+nothing may point *into* its payload: `match` binds the payload by value
+only. It is usable only when every payload is fixed-size.
 
 **Variable mode** (`Shape..`, with the trailing dots) gives each value
 exactly its variant's size: 1 byte for a `Dot`, 9 for a `Circle`, 17 for a
@@ -1420,10 +1438,10 @@ big circle square true
 
 * A match over an enum is exhaustive: every variant has an arm, or `_`
   covers the rest. No variant is named twice.
-* `Circle c =>` binds the payload **by value**, a copy, which cannot be
-  written. `Circle &c =>` binds it **by reference**, which is legal only
-  for a variable-mode scrutinee, and through which the variant can never be
-  replaced.
+* `Circle c =>` binds the payload **by value**, as a copy that cannot be
+  written. `Circle &c =>` binds it **by reference**. This is legal only for
+  a variable-mode scrutinee, and the variant can never be replaced through
+  such a reference.
 * An arm may list several variants, `Circle, Dot =>`, and then binds
   nothing, since their payloads have different types.
 * `match` is an expression; its arms must agree on a type, with the usual
@@ -1473,8 +1491,8 @@ The arms of a `match` may instead be written as separate functions, one
 per variant type, and called with the enum value. The call dispatches on
 the tag through a jump table, and exhaustiveness is checked exactly as for
 a `match`: every variant needs exactly one applicable overload, and the
-result types must agree. This is the virtual-call idiom, without a vtable,
-and a new variant is a compile error until it gets its case.
+result types must agree. This gives the effect of a virtual call without a
+vtable, and adding a variant is a compile error until it has its own case.
 
 ```goose
 enum Shape { Circle { r: f64 }, Rect { w: f64, h: f64 }, Dot }
@@ -1499,20 +1517,21 @@ fn main() {
 9.14159 12.56636
 ```
 
-Variant types (`Shape.Circle`) are first-class: a value, a parameter, a
-field, or a reference `Shape.Circle&`. An overload taking `Shape.Rect&`
-binds the payload by reference and needs a variable-mode scrutinee, as a
-`&`-binder does. Dispatch is on one parameter position; the other
-arguments pass through, and every argument is evaluated once before the
-tag picks the case. Tag dispatch is tried only when no ordinary overload
-matches the call. Spec §8.2.
+Variant types (`Shape.Circle`) are ordinary types: they can be the type of
+a value, a parameter, a field, or a reference `Shape.Circle&`. An overload
+taking `Shape.Rect&` binds the payload by reference and needs a
+variable-mode scrutinee, as a `&`-binder does. Dispatch is on one
+parameter position; the other arguments are passed through, and every
+argument is evaluated once before the tag selects the case. Tag dispatch is
+tried only when no ordinary overload matches the call. Spec §8.2.
 
 ### Enums with references
 
 An enum may refer to its own type through a reference, which is what makes
 linked and tree-shaped data in a pool possible. Combined with variable mode
 and the narrow links of [section 11](#11-relative-references), a tree of
-mostly-small nodes stops paying for its largest variant everywhere:
+mostly small nodes no longer needs room for its largest variant in every
+node:
 
 ```goose
 enum Expr {
@@ -1555,7 +1574,7 @@ dereference operator and no `->`. A write through a reference, `r = v` or
 `r += v`, writes the target.
 
 Since the reference itself is invisible in ordinary expressions, there is
-a separate spelling for "the reference, not the target":
+a separate syntax for "the reference, not the target":
 
 * `let r .= e;` and `var r .= e;` declare `r` as a reference to `e`,
   whatever `e` is: a variable, a field, an element, or a call that returns
@@ -1636,14 +1655,14 @@ fn main() {
 3 1 [1, 2]
 ```
 
-A function whose result type is written `T&` returns a reference; one whose
-result type is inferred returns a reference where it returns a non-fixed
-lvalue or an explicit `&x`, and a copy where it returns a reference to a
-fixed-size value. To bind a reference-returning call to a fixed-size
-element, use `.=` or annotate: `let e .= pool.push(v);`.
+A function whose result type is written `T&` returns a reference. A
+function whose result type is inferred returns a reference where it returns
+a non-fixed lvalue or an explicit `&x`, and a copy where it returns a
+reference to a fixed-size value. To bind a reference-returning call to a
+fixed-size element, use `.=` or annotate: `let e .= pool.push(v);`.
 
-A `let` reference variable does not rebind; it says nothing about the
-target, which is as writable as it was: `let r .= xs[i]; r = 5;` writes
+A `let` reference variable cannot be rebound, but that says nothing about
+the target, which is as writable as it was: `let r .= xs[i]; r = 5;` writes
 the element.
 
 ### Optionals
@@ -1651,13 +1670,13 @@ the element.
 References are never null. `T?` is an **optional `T`**: a nullable
 reference, represented as a reference whose null is address 0, at no space
 cost. It composes with any type (`i64?` is an optional integer, by
-reference), and applied to a reference type it just makes that reference
+reference), and applied to a reference type it only makes that reference
 nullable: `T&?` is `T?`. The literal `null` is its empty value, and an
 optional struct field with no declared default is null when left out.
 
-An optional is **not transparent**. It must be *narrowed* first, by `if`,
-`while`, `guard`, `assert`, or a comparison with `null`, and inside the
-narrowed region it simply *is* a `T&`: transparent, writable through, and
+An optional is **not transparent**. It must first be *narrowed* by `if`,
+`while`, `guard`, `assert`, or a comparison with `null`. Inside the
+narrowed region it *is* a `T&`: transparent, writable through, and
 bindable with `.=`. Rebinding the variable ends the narrowing, except in a
 `while` whose condition is the test, which runs again before each
 iteration.
@@ -1703,14 +1722,14 @@ reference; there is no way to write through one *without* narrowing it.
 
 ### What references may point to
 
-Anything, with two restrictions that the sections on enums and shrinking
-explain: nothing may point into the payload of a fixed-mode enum
-([section 9](#two-modes)), and a reference into a grow-shrink array
-`T[>..<]` may live in a variable only and must be done with before the
-array next shrinks ([section 13](#13-growing-shrinking-and-assigning-whole-arrays)).
-A reference into a grow-only array stays valid for as long as it can be
-named, and references into limited arrays survive pops and pushes, reading
-whatever value the slot holds now.
+A reference may point to anything except a fixed-mode enum's payload ([section
+9](#two-modes)). A reference into a grow-shrink array `T[>..<]` has a further
+restriction: it may be held only in a variable and must no longer be used when
+the array next shrinks ([section
+13](#13-growing-shrinking-and-assigning-whole-arrays)). References into
+grow-only arrays stay valid for as long as they can be named. References into
+limited arrays stay valid across pops and pushes, and read whatever value their
+slot currently holds.
 
 ---
 
@@ -1719,9 +1738,9 @@ whatever value the slot holds now.
 A `T&` is eight bytes, and an address means nothing outside the process
 that made it. A **relative reference** is the same link stored as a narrow
 offset: `T&<u8>`, `T&<u16>`, `T&<u32>`, `T&<u64>` or `T&<varint>`. Loading
-one yields an ordinary `T&`, storing one re-encodes it, and nothing else
-about using it changes. There are two forms, differing in what the offset
-is measured from:
+one yields an ordinary `T&` and storing one re-encodes it; otherwise it is
+used like any other reference. There are two forms, differing in what the
+offset is measured from:
 
 * **Self-relative**, the default, `T&<u32>`: the offset from the field
   itself to the target, which must live in the same enclosing array. The
@@ -1784,15 +1803,15 @@ width holds.
 ### Copying values that hold self-relative links
 
 A self-relative offset is only meaningful where it was stored, so a value
-that *contains* one cannot be copied: not by assignment from a variable,
-not as a by-value argument or match binder, not as an element copy, not
+that *contains* one cannot be copied in any way: by assignment from a
+variable, as a by-value argument or match binder, as an element copy, or
 by `copy(x)`. Such values are constructed in place (a literal pushed into
 the array), bound by reference (`let n .= f();` rather than `let n =
-f();`, which the error suggests), matched with `&`-binders, and taken by
+f();`, as the error suggests), matched with `&`-binders, and taken by
 reference in case functions and `format` overloads. A value whose links
 are all `in pool` copies like any other, since its offsets do not depend
-on where it sits. The one copy that is always allowed is a default value:
-a literal's `..` gives a relative field null. Spec §3.9.
+on where it sits. The only copy that is always allowed is of a default
+value: a literal's `..` sets a relative field to null. Spec §3.9.
 
 A function or trailing block can return a fresh value with relative links.
 It is constructed at the receiver, including across function calls and
@@ -1826,15 +1845,15 @@ resize fill or converted through a temporary array representation.
 grow-only type whose elements hold a `T`; the pool is part of the type's
 identity. The stored value is the offset from the pool's base plus one,
 so 0 is null in the optional form and a `u32` link spans a pool of 4 GB.
-A load is rooted at `pool`, exactly, wherever the link was read from,
-which is what lets a container of links stay usable where a container of
-plain references would be ambiguous.
+A load is rooted at `pool`, exactly, wherever the link was read from. This
+lets a container of links stay usable where a container of plain
+references would be ambiguous.
 
 A non-optional relative reference has no null, so a value whose links
 should point at itself could not be built: there is nothing yet to point
 at. **`self`**, written as the whole initializer of such a field, denotes
-the value the literal is constructing. That is how a circular list gets a
-sentinel, after which no link is ever null and every insert and remove is
+the value the literal is constructing. This is how a circular list gets a
+sentinel. After that, no link is ever null, and every insert and remove is
 the same four stores:
 
 ```goose
@@ -1879,9 +1898,9 @@ insert_after(…)` would copy the node out of the pool, and `remove(two)`
 would then be asked to free the slot of a local copy, which the compiler
 rejects.
 
-`self` is legal only in a struct or variant literal, only for a
+`self` is legal only in a struct or variant literal, and only for a
 non-optional relative-reference field whose pointee is the type being
-constructed, and for an `in pool` field only in a literal built inside
+constructed. For an `in pool` field, the literal must also be built inside
 that pool (a `push`, an `alloc_ref`, an element store). The `reusable`
 pool and `alloc_ref` are explained in [section 14](#14-reusable-pools).
 
@@ -1896,10 +1915,10 @@ pool and `alloc_ref` are explained in [section 14](#14-reusable-pools).
   is wanted as an index, since `&pool[i]` encodes as `i * sizeof(T) + 1`
   and `index_of` reads it back.
 
-A parameter that points into a pool is settled per call site, so a
-function that relinks is specialized per pool and needs nothing passed to
-it. A function's result cannot be declared relative: declare `T&` or `T?`,
-and a relative slot that receives it encodes it.
+Whether a parameter points into a pool is settled at each call site, so a
+function that relinks is specialized per pool and needs no extra argument
+for the pool. A function's result cannot be declared relative: declare
+`T&` or `T?`, and a relative slot that receives it encodes it.
 
 ### An index for a sequential array
 
@@ -1935,11 +1954,11 @@ fn main() {
 24 bytes of marks, 3 links of 4 bytes
 ```
 
-`push` returns a reference to the element it built; stored into `mark_at`,
-that reference becomes the mark's offset from the base of `marks`. The
-array an `in` offset is measured from must be a global; a local array is
-indexed the same way with plain references, `(Mark..&)[>..]`, at eight
-bytes an entry.
+`push` returns a reference to the element it built. When that reference
+is stored into `mark_at`, it becomes the mark's offset from the base of
+`marks`. The array an `in` offset is measured from must be a global; a
+local array can be indexed the same way with an array of plain references,
+`(Mark..&)[>..]`, at eight bytes per entry.
 
 ---
 
@@ -1957,15 +1976,16 @@ safety here. Spec §9.1.
 
 ### Roots
 
-Every reference and slice has one or more static **roots**: each a local
-or global variable, or a temporary, that bounds the lifetime of its
-target. A root is **exact** when that variable's own storage contains the
-target, and inexact when it only bounds the target's lifetime. Roots are
-inferred, never written: `&x` is rooted at `x` exactly, a slice of a
-function's parameter is rooted at whatever the caller passed, and a
-reference read out of a container is rooted at the variables whose storage
-could hold its target. Functions are specialized per distinct root, which
-gives the precision of lifetime parameters with no syntax. Spec §9.2.
+Every reference and slice has one or more static **roots**. A root is a
+local or global variable, or a temporary, that bounds the lifetime of the
+reference's target. A root is **exact** when that variable's own storage
+contains the target, and inexact when it only bounds the target's
+lifetime. Roots are inferred, never written: `&x` is rooted at `x`
+exactly, a slice of a function's parameter is rooted at whatever the
+caller passed, and a reference read out of a container is rooted at the
+variables whose storage could hold its target. Functions are specialized
+per distinct root, which gives the precision of lifetime parameters
+without any syntax for them. Spec §9.2.
 
 ### The rules
 
@@ -1978,11 +1998,12 @@ gives the precision of lifetime parameters with no syntax. Spec §9.2.
 * **Branches.** The value of an `if`, `match`, `block` or loop is received
   after the scopes its branches opened have ended, so it may not be rooted
   at a variable declared inside a branch.
-* **Merged values.** A value that may be any of several, the branches of
-  an `if`, the bindings of a `var` reference, the returns of a function,
-  has every one of their roots, and must satisfy each rule by all of them.
+* **Merged values.** A value that may come from any of several places
+  (the branches of an `if`, the bindings of a `var` reference, the returns
+  of a function) has the roots of all of them, and must satisfy each rule
+  for every one of those roots.
 * **Rebinding.** A reference variable commits to its first binding's
-  root: `.=` may rebind it within the same root or to one at the same
+  root: `.=` may rebind it within the same root or to a root at the same
   scope depth, which is the common case of walking a container. Anything
   else needs a new variable.
 * **Temporaries.** A literal, a call's result, a `copy`, or the value of a
@@ -1990,10 +2011,10 @@ gives the precision of lifetime parameters with no syntax. Spec §9.2.
   may be passed down, but not stored in a variable that outlives the
   statement, nor returned: `let s = f()[..];` is an error, and `let t =
   f(); let s = t[..];` is fine.
-* **Holders.** A struct with reference fields, an array of slices, a
-  payload with a reference, is rooted at what was stored into it, and the
-  checker records every such store, so a shrink or a scope exit that would
-  strand a reference inside a holder is caught too.
+* **Holders.** A holder (a struct with reference fields, an array of
+  slices, a payload with a reference) is rooted at what was stored into
+  it. The checker records every such store, so it also catches a shrink or
+  a scope exit that would strand a reference inside a holder.
 
 A lifetime error names both ends: the reference's root and its
 destination.
@@ -2041,8 +2062,8 @@ Writability is *inferred* per instantiation, like roots:
   a field of one, or of a by-value `for` or `match` binding; a view into a
   temporary; a `bytes_of` view; whatever is read out of a slot declared
   `const`.
-* **Writable**: everything else, `&x` and `x[..]` of a `var` or a plain
-  `let` included.
+* **Writable**: everything else, including `&x` and `x[..]` of a `var` or
+  a plain `let`.
 * **Parameters and results are generic over constness.** A parameter
   declared `u8[:]` takes a writable or a read-only argument, and the body
   is checked with what it is given: a write through a parameter given a
@@ -2083,18 +2104,19 @@ Spec §9.5.
 
 ### Where a reference read out of a container may point
 
-A container names a scope, not the storage its contents point into, so
-the root of a reference read out of a container is re-derived: it may
-point into any variable in scope whose own storage can hold a value of its
-type, a **candidate**. Where there is exactly one candidate, the reference
-is rooted there exactly; where there are several, it is rooted at all of
-them, inexactly, and a rule that needs the exact identity of the array (a
-relative-link store, `index_of`, which array a shrink through it frees)
-reports the candidates it could not choose between: "`n` was read out of
-`slots` and may point into `pool` or `spare`". Two things narrow this: a
-relative link `in pool` always points into `pool`, exactly, and a local
-holder whose stores the checker has all seen is rooted at what was stored
-into it. Spec §9.5.
+A container identifies a scope, but not necessarily the storage its contents
+point into. The checker therefore derives the root again when reading a
+reference from a container. Each variable in scope whose storage can hold the
+pointee's type is a **candidate**. With one candidate, the reference is rooted
+there exactly. With several, it is rooted at all of them inexactly.
+
+Some operations need an array's exact identity: storing a relative link, calling
+`index_of`, or determining which array a shrink through the reference frees. If
+the checker cannot choose, it reports the candidates: "`n` was read out of
+`slots` and may point into `pool` or `spare`". Two rules narrow the candidates.
+A relative link `in pool` points exactly into `pool`. A local holder whose
+stores are all known to the checker is rooted at the values stored into it. Spec
+§9.5.
 
 ### Reading the errors
 
@@ -2128,14 +2150,14 @@ rooted in the array is still in use:
 * no *holder* (a struct with a reference field, an array of slices) still
   in use had a reference into the array stored into it, and
 * the shrink's own statement does not use a reference into the array that
-  it evaluated earlier (`use(a[0], a.pop())` is an error, `a[0] +
-  a.pop()` reads its left operand first and is not).
+  it evaluated earlier (`use(a[0], a.pop())` is an error; `a[0] +
+  a.pop()` is not, because it reads its left operand first).
 
 The test is liveness, not scope: a slice whose last use is before the
 shrink is dead, and the shrink is fine. So a scratch buffer refilled per
-iteration hands out slices of itself freely. The error, when there is one,
-names the holder and the line where a reference into the array was stored
-into it.
+iteration can hand out slices of itself freely. The error, when there is
+one, names the holder and the line where a reference into the array was
+stored into it.
 
 ```goose
 fn reset(buf: u8[>..]&) { buf.clear(); }
@@ -2164,7 +2186,7 @@ line| 3
 ```
 
 A shrink through a reference parameter, or of a global, cannot see the
-caller's variables, so it is checked at every level: each function records
+caller's variables, so it is checked at every level. Each function records
 which globals and which parameters' targets it shrinks, and a call is
 checked as if it made those shrinks in the caller. `pop`, `pop_n` and
 `resize` also need fixed-size elements, since a sequential array cannot
@@ -2173,15 +2195,15 @@ find its last element. Spec §5.1.
 ### Grow-shrink arrays keep their references in variables
 
 A `T[>..<]` holds fixed-size elements and shrinks from anywhere: on a
-local, through a reference, on a global, as a struct's tail. Its price:
-**references and slices into it live in variables only.** They may be
-bound to a local, passed down and returned, but never stored into a
-field, an element, a global or a literal. After a pop, that stack-top
-memory may be reused by a different type, so no reference into it may
-outlive the next shrink, and keeping such references out of storage is
-what makes the check a scan of the variables in scope. A shrink is an
-error while any such variable is still used afterwards; the error names
-the variable and where it was bound.
+local, through a reference, on a global, as a struct's tail. The
+trade-off is that **references and slices into it live in variables
+only.** They may be bound to a local, passed down and returned, but never
+stored into a field, an element, a global or a literal. After a pop, the
+freed memory at the top of the stack may be reused by a different type, so
+no reference into it may outlive the next shrink. Because such references
+are kept out of storage, the check only needs to scan the variables in
+scope. A shrink is an error while any such variable is still used
+afterwards; the error names the variable and where it was bound.
 
 ```goose
 fn main() {
@@ -2202,11 +2224,11 @@ fn main() {
 ```
 
 A call is **balanced** for an array when the array is never shorter
-during the call than when it began: a function that takes `let mark =
-xs.len`, pushes, and ends with `xs.resize(mark)`. A balanced call frees
-nothing a view taken before it points into, so it is not a shrink where it
-is made. That is how a recursion shares one scratch stack
-([section 19](#19-recursion)). Spec §5.2.
+during the call than when it began, for example a function that takes
+`let mark = xs.len`, pushes, and ends with `xs.resize(mark)`. A balanced
+call frees nothing that a view taken before it points into, so it does not
+count as a shrink at the place where it is made. This is how a recursion
+shares one scratch stack ([section 19](#19-recursion)). Spec §5.2.
 
 ### Limited arrays
 
@@ -2222,10 +2244,11 @@ An lvalue may be assigned after construction when its size cannot change,
 or when it can absorb the change:
 
 * fixed-size `var` lvalues: a plain overwrite;
-* a whole resizable array, or a value whose tail is one: *clear, then
-  construct*, so the right-hand side is built where the old elements were
-  and may not use the array at all, not even its length (`x = f(x)` is an
-  error; build the new contents in a variable and assign `copy()` of it);
+* a whole resizable array, or a value whose tail is one: assignment means
+  *clear, then construct*. The right-hand side is built where the old
+  elements were, so it may not use the array at all, not even its length
+  (`x = f(x)` is an error; build the new contents in a variable and assign
+  `copy()` of it);
 * limited arrays, if the new length fits;
 * fixed-mode enum lvalues, with any variant;
 * **not** assignable: variable-class lvalues (`T[]` fields, variable-mode
@@ -2284,9 +2307,9 @@ it with a hidden freelist:
 valid, live value of its type at all times**, so a reference to a freed
 and reused slot reads a *different value of the correct type*: a logic
 bug of the same kind as a stale index, never memory corruption, type
-confusion or an out-of-bounds access. That is the whole extent of the
-unsafety, and it is what lets tree-mutating workloads run without an
-allocator.
+confusion or an out-of-bounds access. Such logic bugs are the full extent
+of the unsafety, and this design is what lets tree-mutating workloads run
+without an allocator.
 
 ```goose
 struct Item { id: i32, weight: f32 }
@@ -2310,9 +2333,9 @@ slots 0 1 0, pool length 3
 A pool may be a local or a global. It never shrinks (its freelist keeps
 every slot live), and `push` and `append` still add at the end without
 consulting the freelist. A `T[>..]&` parameter bound to a pool is a *pool
-reference*: the pool's operations work through it, since it carries the
-freelist beside the address, and a variable that was first bound to a pool
-can only be rebound to a pool of the same kind. Spec §5.4.
+reference*. It carries the freelist beside the address, so the pool's
+operations work through it. A variable that was first bound to a pool can
+only be rebound to a pool of the same kind. Spec §5.4.
 
 ### Slice pools
 
@@ -2325,8 +2348,8 @@ freelist of spans that merges neighbours:
 | `a.free_slice(s)` | records the run `s` for reuse |
 | `a.realloc_slice(s, n) -> T[:]` | `s` resized to `n` elements, in place where it can be, else freed and copied to where `alloc_slice(n)` puts it |
 
-This is what the child lists of an n-ary tree want: each node's entries
-one contiguous run that can be walked as a plain slice.
+This suits the child lists of an n-ary tree: each node's entries are one
+contiguous run that can be walked as a plain slice.
 
 ```goose
 fn main() {
@@ -2347,29 +2370,30 @@ fn main() {
 ```
 
 The slice handed to `free_slice` or `realloc_slice` must be one of the
-pool's runs; where the checker cannot see that, the call checks at run
-time and aborts on a slice that is not. A grown slice may be moved, so
-`realloc_slice` is unavailable for an element type holding self-relative
-links. The single-slot operations do not exist on a slice pool, nor these
-on a plain `reusable` one. Spec §5.4.
+pool's runs. Where the checker cannot prove that, the call checks it at
+run time and aborts if the slice is not one. A grown slice may be moved,
+so `realloc_slice` is unavailable for an element type holding
+self-relative links. A slice pool has no single-slot operations, and a
+plain `reusable` pool has none of these slice operations. Spec §5.4.
 
 ---
 
 ## 15. Index types and checkfree functions
 
 Every index is bounds-checked, and the compiler removes the checks it can
-prove unnecessary ([section 16](#bounds-checks)). The one check no analysis
-removes is an index read out of *another* array, `dist[adj[k]]`, since
-that is a fact about the contents of one array against the length of
-another. Index types move that check to where the index enters the
-program.
+prove unnecessary ([section 16](#bounds-checks)). The check that no
+analysis removes is an index read out of *another* array, `dist[adj[k]]`,
+since whether it is in range depends on the contents of one array compared
+with the length of another. Index types move that check to where the
+index enters the program.
 
 An **index type** `uN in a` (`u8`, `u16`, `u32` or `u64`) is an unsigned
-integer that is below `a.len` wherever it can be observed, and a **bound
-type** `uN upto a` is one that is at most `a.len`: the end of a range.
-`a` names a global `var` or `reusable var` of a grow-only type with
-fixed-size elements, and the type is part of the identity: `u32 in nodes`
-is neither `u32` nor `u32 in edges`. The value is the plain integer.
+integer that is below `a.len` wherever it can be observed. A **bound
+type** `uN upto a` is an unsigned integer that is at most `a.len`, used
+for the end of a range. `a` names a global `var` or `reusable var` of a
+grow-only type with fixed-size elements, and the array is part of the
+type's identity: `u32 in nodes` is neither `u32` nor `u32 in edges`. The
+value is the plain integer.
 
 ```goose
 struct Node { lo: u32 upto edges, hi: u32 upto edges, weight: i32 }
@@ -2378,10 +2402,10 @@ type NodeId = u32 in nodes;          // an alias reads better at every use
 var edges: NodeId[>..] = [];
 ```
 
-* **Making one.** `x as (uN in a)` aborts unless `0 <= x < a.len`, with
-  the error `a[x]` would give, in every build: it is a bounds check,
-  moved, and the bounds-check pass elides it where it would elide `a[x]`.
-  `as!` cannot make one, and a literal never adapts to one.
+* **Making one.** `x as (uN in a)` aborts in every build unless
+  `0 <= x < a.len`, with the error `a[x]` would give. It is a bounds check
+  moved to this point, and the bounds-check pass elides it where it would
+  elide `a[x]`. `as!` cannot make one, and a literal never adapts to one.
 * **Using one.** Indexing `a` with an index of `a` needs no check. A
   value converts implicitly to its plain integer type, so arithmetic on it
   gives plain integers; compound assignment on a place of an index type is
@@ -2395,12 +2419,14 @@ var edges: NodeId[>..] = [];
   array's index types keeps it (at the widest width). A reference to such
   storage is `(u32 in a)&`, never a `u32&`.
 * **Never shrunk.** An array an index type names cannot be shrunk
-  anywhere, so a value once in range stays in range. It has no default
-  value. `from_bytes` checks every index in an image against its array.
+  anywhere, so a value once in range stays in range. An index type has no
+  default value. `from_bytes` checks every index in an image against its
+  array.
 
-An index type takes no postfix: an array of them is `(u32 in nodes)[>..]`
-or, with the alias, `NodeId[>..]`, and a `for` binder's written one is
-parenthesized: `for v: (u32 in nodes) in …`.
+An index type takes no postfix, so an array of them is
+`(u32 in nodes)[>..]` or, with the alias, `NodeId[>..]`. An index type
+written on a `for` binder is parenthesized too:
+`for v: (u32 in nodes) in …`.
 
 ```goose
 struct Node { lo: u32 upto edges, hi: u32 upto edges, weight: i32 }
@@ -2446,7 +2472,7 @@ every specialization and every copy inlined into a caller. It changes
 nothing about what the program computes. Every call in such a function
 must be to another `checkfree` function, a builtin or an `extern fn`, and
 a block it calls must be written in a `checkfree` function. The other
-aborts stay, `assert` in particular, which is how such a function states
+aborts remain, in particular `assert`, which such a function uses to state
 its preconditions once, outside its loops:
 
 ```goose
@@ -2472,14 +2498,20 @@ fn main() {
 44
 ```
 
-The compiler must prove at least these inside a `checkfree` function: a
-constant index into a fixed array; an index of `a`'s index type into `a`;
-one into `b` where `b.len >= a.len` was asserted and neither array changed
-since; a `for` index into the array whose length is its count; `a[i]`
-after a condition established `0 <= i < a.len`; and a repeat of a check
-already passed. The error names the check that stayed and why.
-`checkfree` goes after `export` and before `inline`, `simd`, `recursive`
-or `fn`, and a nested function inherits it. Spec §7.14.
+Inside a `checkfree` function, the compiler must prove at least these
+checks unnecessary:
+
+* a constant index into a fixed array;
+* an index of `a`'s index type into `a`;
+* an index of `a`'s index type into `b`, where `b.len >= a.len` was
+  asserted and neither array has changed since;
+* a `for` index into the array whose length is its count;
+* `a[i]` after a condition established `0 <= i < a.len`;
+* a repeat of a check already passed.
+
+The error names the check that remained and why. `checkfree` goes after
+`export` and before `inline`, `simd`, `recursive` or `fn`, and a nested
+function inherits it. Spec §7.14.
 
 ---
 
@@ -2522,9 +2554,9 @@ fn main() {
 none 2
 ```
 
-A trailing construct that cannot supply a value, an `if` without `else`,
-a `match` with an arm that ends in a `return`, a `loop` none of whose
-`break`s carries a value, is a statement, so a function whose result is
+A trailing construct that cannot supply a value is a statement: an `if`
+without `else`, a `match` with an arm that ends in a `return`, or a `loop`
+none of whose `break`s carries a value. So a function whose result is
 inferred may end in one and produce nothing.
 
 ### `block`, `break` with a value, and bare blocks
@@ -2558,13 +2590,14 @@ dead 2 35
 
 `guard c;` runs the rest of its block only where `c` holds, and `guard c
 else { … }` runs the `else` block instead. It is `if` turned inside out,
-and it jumps nowhere by itself: directly in a function body the rest of
-the block is the rest of the function, in a loop body skipping the rest
-goes on to the next iteration, and in a function value's body it ends that
-call of the value. Leaving more than the block is the `else` block's job:
-`guard c else { return; }` leaves the function, `guard c else { break; }`
-the loop. The code after a guard knows the condition held, which includes
-narrowing an optional: after `guard r else { return; }`, `r` is a `T&`.
+and it does not jump anywhere by itself. Directly in a function body, the
+rest of the block is the rest of the function; in a loop body, skipping
+the rest goes on to the next iteration; in a function value's body, it
+ends that call of the value. Leaving more than the block is the `else`
+block's job: `guard c else { return; }` leaves the function,
+`guard c else { break; }` the loop. In the code after a guard, the
+condition is known to hold, which includes narrowing an optional: after
+`guard r else { return; }`, `r` is a `T&`.
 
 ```goose
 fn half(n: i64) -> i64 { guard n % 2 == 0 else { return -1; } n / 2 }
@@ -2585,6 +2618,72 @@ even 4
 ```
 
 Spec §6.4.
+
+### `defer`
+
+`defer s;` and `defer { … }` run their body when the block they are
+written in ends, however it ends: falling off the end, `break`,
+`continue`, `return`, a block's `return` through a higher-order function,
+or a `return … from` passing through the function. A `defer` in a loop
+body runs at the end of every iteration. An exit runs the defers written
+before it, latest first, so a cleanup sits next to what it cleans up and
+is skipped where that never happened. The body is ordinary code run later:
+it sees variables as they are at the exit, and on a `return` it runs after
+the returned value is built and before the block's storage is released.
+
+```goose
+var depth = 0;
+
+fn describe(items: i64[:]) -> i64 {
+    depth++;
+    defer depth--;                   // every way out of describe restores it
+    print("depth ", depth);
+    var count = 0;
+    for x in items {
+        defer count++;               // once per iteration, continue included
+        if x < 0 { continue; }
+        if x > 100 { return -1; }
+    }
+    return count;
+}
+
+fn main() {
+    print(describe([1, 2, -3]), " ", describe([5, 500, 7]), " ", depth);
+    {
+        defer print("block done");
+        print("in the block");
+    }
+}
+```
+
+```
+depth 1
+depth 1
+3 -1 0
+in the block
+block done
+```
+
+The body is checked where it is written, so it names only what is declared
+before it, and a `var` optional narrowed before it is not narrowed inside
+it, since an assignment before an exit may undo that. Three things it may
+not do, each a compile error:
+
+* **Leave.** No `return`, `break` or `continue` in it may target anything
+  outside it, including a `return` in a block passed to a call in the body.
+* **Use long-distance returns.** It may not call a function that does
+  `return … from`, propagates one, or catches one, since the body may run
+  while such a return is in flight ([section 20](#20-long-distance-return-and-errors));
+  the error names the chain of calls that brings the machinery in.
+* **Name the function's named result.** A local that the function returns
+  by name is built where the caller receives it ([section 17](#results)),
+  and is complete when the body runs.
+
+A `defer` belongs in a function: a global initializer has no scope exit.
+Nothing runs a defer where no exit happens: `abort`, a failed `assert` or
+bounds check, `exit`, and a contained worker's abort end the code without
+running any, and the process or the worker's end reclaims what the body
+would have released. Spec §6.6.
 
 ### Loops
 
@@ -2607,8 +2706,8 @@ loop { if done { break; } }
   does nothing.
 * `for x in arr` copies fixed-size elements and binds variable-size ones
   by reference. A copy cannot be written (`x.f = 1` is an error naming
-  `&x`), since the write would update the copy and nothing else. An
-  element that *is* a reference binds as the reference it holds.
+  `&x`), since the write would update only the copy. An element that
+  *is* a reference binds as the reference it holds.
 * `for &x in arr` binds every element by reference. Over a `T[>..<]` the
   binding is a live reference, so no shrink may happen inside the loop.
 * A loop iterates its sequence in place. A resizable array's length is
@@ -2678,19 +2777,20 @@ label = pt
 Point { 2, 3, "pt" }
 ```
 
-`fields<T>` binds each field's name (a string constant) and an *accessor*
-usable as `v.A` or as the label `A:` in a literal of that struct type;
-`types<…>` binds a type; `[…]` binds a constant (literals, named
-constants, and the integer expressions an array size allows). A statement
-fragment is a scope of its own per entry, and a constructor fragment
-contributes initializers. `break` and `continue` cannot cross an
-expansion.
+`fields<T>` binds each field's name (a string constant) and an
+*accessor*, usable as `v.A` or as the label `A:` in a literal of that
+struct type. `types<…>` binds a type, and `[…]` binds a constant
+(literals, named constants, and the integer expressions an array size
+allows). A statement fragment is a scope of its own for each entry, and a
+constructor fragment contributes initializers. `break` and `continue`
+cannot cross an expansion.
 
-`variants<E>` binds each variant's name and the variant `V`, written where
-a variant's name is: `V` as a type (and `fields<V>` for its payload), `V {
-… }` to build one, `V c` or `V &c` as a `match` arm, and `V` as a value when
-it has no payload. A `match` fragment contributes arms, checked as written
-ones: every variant once, `_` last.
+`variants<E>` binds each variant's name and the variant `V`, which is
+written wherever a variant's name would be: `V` as a type (and `fields<V>`
+for its payload), `V { … }` to build one, `V c` or `V &c` as a `match`
+arm, and `V` as a value when it has no payload. A `match` fragment
+contributes arms, which are checked like written arms: every variant
+once, `_` last.
 
 ```goose
 enum Shape { Circle { r: i64 }, Rect { w: i64, h: i64 }, Dot }
@@ -2726,10 +2826,10 @@ Spec §6.5, `docs/design/const_for.md`.
 
 ### Functions that never return
 
-`abort(msg)` and `exit(code)` never return, and the checker knows it: a
-branch that ends in one gives no value, statements after one are not
-checked, and the knowledge propagates through calls, so a function may end
-in a call to one without a dummy result.
+`abort(msg)` and `exit(code)` never return, and the checker takes this
+into account: a branch that ends in one gives no value, statements after
+one are not checked, and this propagates through calls, so a function may
+end in a call to one without a dummy result.
 
 ```goose
 fn fail(what: u8[:]) { abort(str("cannot ", what)); }
@@ -2749,16 +2849,21 @@ An unknown recursive call is assumed to return. Spec §7.3, §9.3.
 
 ### Bounds checks
 
-Every index into an array or slice is checked, and every conversion into
-an index type ([section 15](#15-index-types-and-checkfree-functions)); a
-check that fails aborts the program. The compiler removes the checks it
+Every index into an array or slice is checked, as is every conversion
+into an index type ([section 15](#15-index-types-and-checkfree-functions)).
+A check that fails aborts the program. The compiler removes the checks it
 can prove unnecessary, and the language is designed to give that analysis
-what it needs: a `T[>..]` shrinks only at a `pop`, `pop_n`, `resize` or
-`clear` the analysis sees, so a bound established before a `push` still
-holds after it; `%` is Euclidean, so a reduction is in range by
-construction; fixed sizes and capacities are constants; and every call
-site records what it proves about its arguments. The idiom that helps most
-is an `assert` of the lengths at the top of a kernel:
+what it needs:
+
+* a `T[>..]` shrinks only at a `pop`, `pop_n`, `resize` or `clear` the
+  analysis sees, so a bound established before a `push` still holds after
+  it;
+* `%` is Euclidean, so a reduction is always in range;
+* fixed sizes and capacities are constants;
+* every call site records what it proves about its arguments.
+
+The idiom that helps most is an `assert` of the lengths at the top of a
+kernel:
 
 ```goose
 let W = 8;
@@ -2777,7 +2882,7 @@ fn blur_row(above: u8[:], here: u8[:], below: u8[:], out: u8[:]) {
 aborts that remain in every build are division by zero, a limited
 array's capacity overflow, shrinking below empty, a relative-reference
 offset that does not fit its width, a failed `assert`, and data-stack
-exhaustion, all of them clean aborts with a message. Spec §9.3, §10.5.
+exhaustion. All of them are clean aborts with a message. Spec §9.3, §10.5.
 
 ---
 
@@ -2792,9 +2897,10 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { … }   // scaled(2) is sca
 ```
 
 Functions are free functions. There are no methods and no `impl` blocks,
-but **`x.f(a)` is exactly `f(x, a)`** for any function, so method-call
-syntax is available wherever it reads better. Resolution tries fields and
-built-in members first, then functions. Top-level declarations are
+but **`x.f(a)` calls `f(x, a)`** for any function, so method-call syntax
+is available wherever it reads better. Resolution tries fields and
+built-in members first, then functions, starting in the namespace of
+`x`'s type ([Namespaces](#namespaces)). Top-level declarations are
 order-independent. Spec §7.1.
 
 ### Parameters
@@ -2810,11 +2916,11 @@ order-independent. Spec §7.1.
 * **Defaults.** A trailing parameter may declare a default, `c: f32 =
   1.0`, and a call may leave out any number of trailing parameters that
   have one. The default is evaluated at each such call, after the written
-  arguments, as a value of the parameter's type; it may name globals and
-  call functions, and never sees the caller's locals. A generic parameter's
-  default adapts to the type the arguments bind (`fn scale<T>(x: T, by: T
-  = 2)` doubles a `u8` and an `f64` alike) and decides no type variable
-  itself.
+  arguments, as a value of the parameter's type. It may name globals and
+  call functions, but cannot refer to the caller's locals. A generic
+  parameter's default adapts to the type the arguments bind
+  (`fn scale<T>(x: T, by: T = 2)` doubles a `u8` and an `f64` alike) and
+  never decides a type variable itself.
 
 ```goose
 var counter = 0;
@@ -2869,9 +2975,9 @@ fn main() {
 Only `return` and a call carry several values: a branch cannot end in
 `a, b`, so each branch returns on its own.
 
-A result type may be left out where it can be inferred, in which case it
-is taken from the first `return` (or the body's final expression), as an
-un-annotated `let` takes its initializer's type: a non-fixed lvalue other
+A result type may be left out where it can be inferred. It is then taken
+from the first `return` (or the body's final expression), the way an
+un-annotated `let` takes its initializer's type. A non-fixed lvalue other
 than the function's own local, or an explicit `&x`, makes the result a
 reference, and a reference to a fixed-size value is returned as a copy.
 Across a recursive cycle every signature must be written out.
@@ -2880,24 +2986,25 @@ A non-fixed result is **constructed directly in its destination**
 ([section 4](#built-in-place)): the caller's variable, the element being
 pushed, the argument slot of another call. When every `return` of such a
 result returns the same local, that local *is* the destination from its
-declaration on, so `return xs` costs nothing (the compiler warns where a
-second returned local keeps the first from its destination). A function's
-own local is *moved* by `return`; a part of it, or of a temporary, dies
-with the call and has to be returned as `copy(x)`. Spec §7.1, §7.3.
+declaration on, so `return xs` copies nothing (the compiler warns where a
+second returned local stops the first one from being allocated at the
+destination). A function's own local is *moved* by `return`; a part of
+it, or of a temporary, dies with the call and has to be returned as
+`copy(x)`. Spec §7.1, §7.3.
 
 ### Overloading
 
-Functions overload by parameter types, resolved statically: the unique
-exact match wins, then a generic exact match, then a match that needs a
-coercion (array to slice, a literal fitting a type, implicit widening).
-A candidate's rank is its worst argument's rank, and ties are errors. A
-default is no argument, so `f(a, b = 0)` beside `f(a)` makes every
-one-argument call ambiguous. Only when no ordinary candidate matches is
-tag dispatch ([section 9](#case-functions)) tried, and a candidate that
-converts an integer argument to a float comes last of all: `f(2)` calls
-`f(i32)` beside `f(f64)`, and `sqrt(n)` with an integer `n` is ambiguous
-between the two widths (`sqrt(n as f64)`). The expected result type never
-selects an overload.
+Functions overload by parameter types, resolved statically. A unique
+exact match is chosen first, then a generic exact match, then a match that
+needs a coercion (array to slice, a literal fitting a type, implicit
+widening). A candidate's rank is its worst argument's rank, and ties are
+errors. A default does not count as an argument, so `f(a, b = 0)` beside
+`f(a)` makes every one-argument call ambiguous. Tag dispatch
+([section 9](#case-functions)) is tried only when no ordinary candidate
+matches. A candidate that converts an integer argument to a float comes
+last of all: `f(2)` calls `f(i32)` beside `f(f64)`, and `sqrt(n)` with an
+integer `n` is ambiguous between the two widths (write `sqrt(n as f64)`).
+The expected result type never selects an overload.
 
 ```goose
 fn describe(x: i64) -> u8[>..]     { str("int ", x) }
@@ -2920,13 +3027,13 @@ Spec §7.1.
 
 A function may be declared inside a function, and it reads and writes the
 enclosing function's locals as free variables, under those variables'
-normal rules. Names resolve where the nested function is declared, and
-the nested functions of one block may call each other in either order,
-as the functions of a recursive-descent parser do; the enclosing code can
-call one only after its declaration. Nested functions of one name in one
-block overload like top-level ones, so case functions can be nested too.
-A nested function is a compile-time entity: it is passed as a function
-value and never escapes.
+normal rules. Names resolve where the nested function is declared. The
+nested functions of one block may call each other in either order, as the
+functions of a recursive-descent parser do, but the enclosing code can
+call a nested function only after its declaration. Nested functions of
+one name in one block overload like top-level ones, so case functions can
+be nested too. A nested function is a compile-time entity: it is passed
+as a function value and never escapes.
 
 ```goose
 struct Employee { name: u8[..12], dept: u8[..8], salary: i32 }
@@ -2970,17 +3077,20 @@ The qualifiers come in a fixed order: `export` or `extern` first, then
 
 `inline` asks for the function to be inlined at every call; without it
 the compiler decides from the function's size and its number of calls.
-It changes nothing about what the program computes, and is refused with
-`extern`, `export`, `simd`, `recursive` and `thread_fn`.
+It changes nothing about what the program computes, and cannot be
+combined with `extern`, `export`, `simd`, `recursive` or `thread_fn`.
 
 `simd` asks for the function to be built once for the target's baseline
 instruction set and once more for each wider one it supports (AVX2 and
-AVX-512 on x86-64), with the widest version the CPU has chosen at each
-call. It suits a function holding a hot loop the C compiler can vectorize:
-byte transforms, codecs, kernels over arrays. Every version computes
-exactly what the baseline does, so nothing about a program's output
-depends on it; a backend may ignore it, as the C backend does under
+AVX-512 on x86-64). At each call, the widest version the CPU has is
+chosen. It suits a function holding a hot loop the C compiler can
+vectorize: byte transforms, codecs, kernels over arrays. Every version
+computes exactly what the baseline does, so nothing about a program's
+output depends on it. A backend may ignore it, as the C backend does under
 compilers other than clang and under the in-process TinyCC backend.
+The exception is `math`'s `mul_add(x, y, z)`: `x * y + z` rounded once
+where the code is built for FMA and twice where it is not. The AVX2 and
+AVX-512 versions round once, and the baseline rounds as its target does.
 Spec §7.12, §7.13.
 
 ```goose
@@ -3039,37 +3149,37 @@ comparison.
 
 Inside generic code, `.=` on a location that is not a reference assigns
 as `=` does. That lets generic code move whole values of a type parameter's
-type with `.=`: where `T` is a reference type it moves the reference
-itself, where `=` would write through it, and where `T` is a value it is
-a plain assignment. The library's `swap_at` is written that way, and so
-swaps the elements of an array of references, relative ones included, as
-it does those of any other array.
+type with `.=`. Where `T` is a reference type, `.=` moves the reference
+itself (where `=` would write through it); where `T` is a value, it is a
+plain assignment. The library's `swap_at` is written that way, so it swaps
+the elements of an array of references, including relative ones, as it
+swaps those of any other array.
 
 Where a literal is the only thing binding a type variable, the parameter
 is a *literal parameter* inside the specialization: a constant of unknown
-value that adapts wherever it meets a type, so `push_n(flags, 1, n)` with
-`fn push_n<A, T>(xs: A&, v: T, n: i64)` pushes a `u8` into a `u8[>..]`
-with no cast at the call, and `push_n(flags, 300, n)` is an error naming
-the `push` that takes a `u8`.
+value that adapts wherever it meets a type. For example, with
+`fn push_n<A, T>(xs: A&, v: T, n: i64)`, `push_n(flags, 1, n)` pushes a
+`u8` into a `u8[>..]` with no cast at the call, and `push_n(flags, 300, n)`
+is an error naming the `push` that takes a `u8`.
 
 **Floating context.** An `f32` destination may refine an otherwise
 unconstrained float computation in a generic call: with integer `width`
 and `height`, `let scale: f32 = max(0.5, min(width / 960.0, height /
 600.0));` computes both calls in `f32`. The rule applies to a function
-returning a bare `T` whose `T` parameters are bare values, given literals
-and float expressions of literals and integers; a typed argument commits
-the type. Spec §7.7.
+that returns a bare `T` and whose `T` parameters are bare values, when it
+is given literals and float expressions of literals and integers. A typed
+argument fixes the type. Spec §7.7.
 
 ### Function values
 
 Function values are compile-time entities passed as generic parameters,
 not runtime data. A function argument is a function name, a bound generic
 function parameter, or a block literal; the `: fn(…)` bound on the
-parameter is optional documentation. Every call of one is direct and
-inlinable, and it cannot escape: storing one, returning one, or putting
-one in data is a compile error. There are no closure objects and no
-function pointers, so a higher-order function compiles to exactly the loop
-it looks like.
+parameter is optional documentation. Every call of a function value is
+direct and inlinable, and a function value cannot escape: storing one,
+returning one, or putting one in data is a compile error. There are no
+closure objects and no function pointers, so a higher-order function
+compiles to exactly the loop it looks like.
 
 <!-- fragment -->
 ```goose
@@ -3084,22 +3194,24 @@ foo(1, h)                            // a named function
   argument. Its parameters are `it`, or named ones before `=>`. Goose
   allows one trailing block per call; a second function value is passed
   by name.
-* A block sees the enclosing function's locals and writes them, like a
+* A block can read and write the enclosing function's locals, like a
   nested function.
 * A `return` inside a block returns from the **lexically enclosing named
   function**, not from the function calling the block, so a hand-written
-  iterator has the same structuring power as `for`. A reference it returns
-  may be one the function calling the block handed it, which points where
-  that call's argument does, but not one into that function's own locals
-  or the block's, which die as the return leaves them.
-* A named function keeps its parameter defaults as a value; a block's
-  parameters have none. A function value may follow fewer arguments than
-  the callee has parameters where the rest have defaults.
+  iterator has the same structuring power as `for`. A reference returned
+  this way may be one that the function calling the block handed to it,
+  which points where that call's argument does. It may not point into that
+  function's own locals or the block's, which die as the return leaves
+  them.
+* A named function keeps its parameter defaults when passed as a value; a
+  block's parameters have none. A function value passed as an argument may
+  come after fewer arguments than the callee has parameters, where the
+  rest have defaults.
 * A name with several overloads passes them all, and each call of the
   value resolves among them.
-* A block infers its value's type without the destination type its call
-  meets, so a block cannot be `[]`. Its receiving storage is still available
-  for checking relative links in a fresh result.
+* A block's value type is inferred without the destination type its call
+  meets, so a block's value cannot be `[]`. The storage that receives it
+  is still known, and is used to check relative links in a fresh result.
 
 ```goose
 fn each_pair<T, F>(xs: T[:]) {
@@ -3133,7 +3245,7 @@ fn main() {
 [7, 7, 4, 1] [4, 8, 16] 66 28 [8, 16, 30, 32, 46] 15
 ```
 
-The library's `filter` and `map` build their result straight into the
+The library's `filter` and `map` build their result directly in the
 variable receiving it, with no intermediate array. A HOF never states what
 its function value returns: `map`'s result element type is whatever `F(x)`
 is in that instantiation. Spec §7.6, §7.7.
@@ -3155,11 +3267,11 @@ every activation would need a stack of its own. So a recursive function
 owns no growable data across a recursive call, and what must outlive the
 call is owned outside the cycle and passed in: a reference, a slice, a
 pool, or a struct of references to several tables. Scratch declared in a
-block that ends *before* the call costs the recursion nothing. The same
-holds of the temporaries of the calling statement: at a call into the
-cycle, no non-fixed temporary may be live, which rules out a `str(…)` as
-an argument of the call, or the call inside a `print`. Recursion depth
-then costs native stack only, and exhausting it is a clean abort.
+block that ends *before* the call is not affected by this rule. The same
+rule applies to the temporaries of the calling statement: at a call into
+the cycle, no non-fixed temporary may be live, which rules out a `str(…)`
+as an argument of the call, or the call inside a `print`. Recursion depth
+then uses only native stack, and exhausting it is a clean abort.
 
 ```goose
 struct Node { key: i32, left: Node&<u32>?, right: Node&<u32>? }
@@ -3230,10 +3342,11 @@ fn main() {
 ```
 
 A program whose state is several growable tables (nodes, text, a stack)
-owns each as a local of a non-recursive driver function and passes the
-recursion one struct of references to them; or writes the recursive
-functions *nested* inside the driver, where they reach the tables as free
-variables with no struct at all, as the samples' parsers do.
+can own each as a local of a non-recursive driver function and pass the
+recursion one struct of references to them. Alternatively, it can write
+the recursive functions *nested* inside the driver, where they reach the
+tables as free variables with no struct at all, as the samples' parsers
+do.
 
 ### The rules in detail
 
@@ -3263,17 +3376,17 @@ Spec §7.8.
 
 There is no exception mechanism and no `Result` type, and no required
 error convention. For a call with two outcomes, a trailing `bool` is
-enough; for "found or not", a `T?`, which costs nothing because it is a
+enough; for "found or not", a `T?`, which copies nothing because it is a
 reference into the input. Both are ordinary return values
 ([section 17](#results)). The third idiom is for a failure deep inside
-nested calls that should land in one place.
+nested calls that should be handled in one place.
 
 ### `return … from`
 
 `return E from f` returns `E` as the result of the innermost active call
-of `f`, unwinding every frame in between. The functions between keep
-their plain signatures: no error parameter, no `?` on each call, nothing
-to propagate.
+of `f`, unwinding every frame in between. The functions in between keep
+their plain signatures: they take no error parameter and need no `?` on
+each call or any other code to propagate the error.
 
 ```goose
 struct User { name: u8[..16], age: i32 }
@@ -3317,28 +3430,29 @@ error: line 1: bad age
 
 * **It is checked statically.** Every call of a function containing
   `return … from load` must lie within a call of `load`, which the
-  whole-program compiler verifies in call-graph order. Nothing is uncaught
-  at run time.
+  whole-program compiler verifies in call-graph order, so no such return
+  goes uncaught at run time.
 * **It is a hidden discriminant, not an unwinder.** Each frame on the
   path checks a flag after the call and returns at once in the propagate
   case; normal epilogues run, so every data stack restores itself. There
-  are no tables and no destructors, because there is nothing to destroy.
+  are no tables and no destructors; the only code that runs on the way is
+  the `defer` bodies of the blocks being left ([section 16](#defer)).
 * **The value lands where `load`'s caller wanted it.** `str(…)` builds the
-  message directly at `load`'s return destination, straight past the
-  frames being unwound.
-* `f` is resolved where the returning function is written: a nested
-  function in scope, else the name's overload set, with `from ns::parse`
-  explicit. An unrelated function that merely shares the name never
-  catches the return.
+  message directly at `load`'s return destination, bypassing the frames
+  being unwound.
+* `f` is resolved where the returning function is written: as a nested
+  function in scope, otherwise as the name's overload set, and
+  `from ns::parse` names the namespace explicitly. An unrelated function
+  that merely shares the name never catches the return.
 * The current compiler lets a long-distance return written in a named
   function carry references to globals and static data only; return owned
   values, as above.
 
-The same machinery is what lets a block `return` from its enclosing
-function through a higher-order function ([section 18](#function-values)).
+The same machinery lets a block `return` from its enclosing function
+through a higher-order function ([section 18](#function-values)).
 The library's `exception` module packages it as `exception::try<E>(body)
-{ error => … }` and `exception::throw(value)` ([stdlib.md](stdlib.md#exception)).
-Spec §7.9.
+{ error => … }` and `exception::throw(value)`, with a `finally` written
+as a `defer` ([stdlib.md](stdlib.md#exception)). Spec §7.9.
 
 ### Stopping the program
 
@@ -3355,10 +3469,11 @@ Spec §9.3.
 ### Files and imports
 
 A program is compiled whole, from the *root file* named on the command
-line. `import a.b.c;` includes the file `a/b/c.goose` once, resolved
-relative to the root of the importing file's package (for the program's
-own files, the directory of the root file), then as a module of a package
-the root declared, then in the standard library's directory. `import
+line. `import a.b.c;` includes the file `a/b/c.goose` once. The path is
+resolved first relative to the root of the importing file's package (for
+the program's own files, that is the directory of the root file), then as
+a module of a package the root declared, then in the standard library's
+directory. `import
 .a.b;` with a leading dot resolves relative to the importing file instead.
 An import loads a file and nothing more: it creates no namespace and
 brings no names into scope beyond what the file declares. The standard
@@ -3368,25 +3483,26 @@ dictionary;`.
 ### Packages
 
 `import name from "source";` in the root file declares the package
-`name`, a directory holding its entry `name.goose`, and imports that
-entry: the source is a directory relative to the root file (`"../mylib"`)
+`name` (a directory holding its entry file `name.goose`) and imports that
+entry. The source is a directory relative to the root file (`"../mylib"`)
 or a git repository at a tag or commit (`"owner/repo@v1"` on GitHub,
 `"host/owner/repo@ref"`, or a URL), which the compiler fetches and builds
-once. Only the root file declares packages; the same line in any other
-file, a library's own included, is a *requirement* that the root must
-satisfy, so a program's dependencies are flat, pinned and in one place.
-[packages.md](packages.md) has the whole story, including a program's own
-C and how to make a package.
+once. Only the root file declares packages. The same line in any other
+file, including a library's own files, is a *requirement* that the root
+must satisfy, so a program's dependencies are flat, pinned and in one
+place. [packages.md](packages.md) has the full details, including a
+program's own C and how to make a package.
 
 ### Namespaces
 
 `namespace image;` at the top of a file, before its declarations, places
 them in the namespace `image`; a file without it declares into the global
-namespace, and several files may share a namespace. From elsewhere a
-declaration is `image::Pixel`, `image::brightness(p)`, `image::Shape.Circle
-{ r: 1.0 }`; `::name` names a global declaration that a namespaced one
-shadows, or a builtin. A declaration may spell its namespace itself, `fn
-image::brightness(…)`, or `fn ::main()` inside a namespaced file.
+namespace, and several files may share a namespace. From elsewhere, such
+declarations are written `image::Pixel`, `image::brightness(p)`,
+`image::Shape.Circle { r: 1.0 }`. `::name` names a global declaration that
+a namespaced one shadows, or a builtin. A declaration may also write its
+namespace itself, as in `fn image::brightness(…)`, or `fn ::main()` inside
+a namespaced file.
 
 ```goose
 import std;
@@ -3398,40 +3514,43 @@ fn format(out: u8[>..]&, p: Pt) { format(out, "(", p.x, ",", p.y, ")"); }
 
 fn ::main() {                                       // declared in the global namespace
     let p = geo::Pt { -3, 4 };
-    print(p, " ", geo::norm1(p));                   // the format hook follows the type
+    print(p, " ", geo::norm1(p), " ", p.norm1());   // the format hook and UFCS follow the type
 }
 ```
 
 ```
-(-3,4) 7
+(-3,4) 7 7
 ```
 
 An unqualified name resolves lexically first (locals, type parameters,
 nested functions), then in the current declaration's namespace, then in
 the global namespace and the builtins. A function name's overload set is
-that of the first namespace in this order that declares the name at all;
-sets never merge across namespaces, so a namespaced `hash` overload reaches
-the global ones as `::hash(x)`. UFCS follows the same rule for the calling
-code's namespace, so `p.norm1()` inside the global `main` above would not
-find `geo::norm1`. The `format` hook is the one type-directed exception:
-`print(p)` finds `geo::format` for a `geo::Pt` from anywhere. A global
+that of the first namespace in this order that declares the name at all.
+Sets never merge across namespaces, so a namespaced `hash` overload reaches
+the global ones as `::hash(x)`. A UFCS call looks in the namespace of its
+receiver's struct or enum type first, past the lexical scopes, where that
+namespace declares the name. So `p.norm1()` finds `geo::norm1` for a
+`geo::Pt` from any namespace, even one with a `norm1` of its own, and so
+does a generic body's `x.norm1()`; a plain call `norm1(p)` does not. The
+`format` hook follows the type too: `print(p)` finds `geo::format` for a
+`geo::Pt` from anywhere. A global
 variable and functions may share a name, since a call resolves past
-variables to functions. Namespaces affect name resolution, type identity
-and generated C names, and nothing else: there is no privacy, no
-re-export and no nesting. Spec §11.1, `docs/design/namespaces.md`.
+variables to functions. Namespaces affect only name resolution, type
+identity and generated C names. There is no privacy, no re-export and no
+nesting of namespaces. Spec §11.1, `docs/design/namespaces.md`.
 
 ### Globals and initialization
 
-Globals initialize before `main`, in declaration order within a file and
-imported files first, so an initializer may use a global from a module the
-file imports, and may call functions. Naming a global before its
-initializer has run, in an earlier initializer or in a function one calls,
-is an error. The whole program runs inside an implicit outermost scope
-that owns the globals: they are the outermost roots for the lifetime
-rules, and a global growable array owns the bottom of a data stack for the
-program's life, a natural whole-program arena. `const` globals of flat
-fixed type with compile-time initializers live in static data, shared and
-read-only.
+Globals are initialized before `main`, in declaration order within a
+file, with imported files first. So an initializer may use a global from a
+module the file imports, and may call functions. It is an error to name a
+global before its initializer has run, whether in an earlier initializer
+or in a function that such an initializer calls. The whole program runs
+inside an implicit outermost scope that owns the globals: they are the
+outermost roots for the lifetime rules. A global growable array owns the
+bottom of a data stack for the program's life, which makes it a natural
+whole-program arena. `const` globals of flat fixed type with compile-time
+initializers live in static data, shared and read-only.
 
 ```goose
 var log: u8[>..];                        // a var with only a type: empty
@@ -3474,11 +3593,11 @@ graphics module ([stdlib.md](stdlib.md#shaders)). Spec §12.
 
 There is no shared mutable memory. A worker is declared `thread_fn`, and
 the compiler compiles it and everything it calls as a **separate program**
-with its own data stacks and its own copies of the globals it uses, taken
-from the spawning program at the moment of the spawn. A worker that
-increments a global increments its own; main's is what it was. There are
-no data races to have, and no locks, atomics or memory orderings anywhere
-in the language.
+with its own data stacks and its own copies of the globals it uses. Those
+copies are taken from the spawning program at the moment of the spawn. A
+worker that increments a global increments its own copy, and main's copy
+keeps its value. So there are no data races, and the language has no
+locks, atomics or memory orderings.
 
 | Builtin | Meaning |
 |---|---|
@@ -3493,11 +3612,12 @@ in the language.
 | `qpoll<T>() -> T, bool` | takes one if there is one; else `T`'s zero value and `false` |
 | `qlimit<T>(n)` | lets the queue for `T` hold at most `n` messages |
 
-Values cross between programs through **typed queues**, one per type, and
-whatever crosses, arguments included, must be **flat**: no references or
-slices at any depth. That is cheap because a flat Goose value is
-contiguous, so a job or a result carries real data, variable-size parts
-included, as one copy. A `thread_fn`'s parameters have no defaults.
+Values cross between programs through **typed queues**, one per type.
+Whatever crosses, including a worker's arguments, must be **flat**: it
+holds no references or slices at any depth. This is cheap because a flat
+Goose value is contiguous, so a job or a result carries real data,
+including its variable-size parts, as a single copy. A `thread_fn`'s
+parameters have no defaults.
 
 <!-- check-only -->
 ```goose
@@ -3527,29 +3647,29 @@ fn main() {
 }
 ```
 
-A queue has no limit of messages until `qlimit` gives it one. Past it,
-`qput` returns `false` without waiting, so a server can turn work away
-rather than queue it without end; `qput(v);` as a statement ignores the
-answer. To bound the memory a queue may hold, set its limit to that memory
-divided by the size of a typical message.
+A queue has no message limit until `qlimit` gives it one. Once the queue
+is full, `qput` returns `false` without waiting, so a server can turn work
+away rather than queue it without end. `qput(v);` as a statement ignores
+the result. To bound the memory a queue may hold, set its limit to that
+memory divided by the size of a typical message.
 
 A worker's return releases everything it owned, whether or not anyone
-waits for it; queued messages outlive their sender; workers still running
+waits for it. Queued messages outlive their sender. Workers still running
 when `main` returns are killed. A global that is not flat is an error in
 any function a `thread_fn` reaches, unless it is a `let` whose references
 all lead to static data, as a string literal's do. Programs with threads
-need a real C compiler: `goose build`, since the in-process TinyCC
+need a real C compiler (`goose build`), since the in-process TinyCC
 backend cannot place thread-local storage. Spec §11.2.
 
 ### Contained workers
 
 A failed check or `abort(msg)` in a worker started with
-`thread_spawn_contained` ends only that worker, which releases what a
-return would. The message goes to the waiter instead of stderr: every
-`thread_wait` for the worker returns `false`, and the first
+`thread_spawn_contained` ends only that worker, and releases everything a
+return would. The message goes to the waiter instead of stderr:
+every `thread_wait` for the worker returns `false`, and the first
 `thread_wait(id, msg)` appends the message, with its source location, to
 `msg`. Later waits get no message, so ask for it once and keep it. A
-supervisor can log it and start another:
+supervisor can log the message and start another worker:
 
 <!-- check-only -->
 ```goose
@@ -3570,7 +3690,7 @@ fn main() {
 ```
 
 Stack overflow, `exit(code)`, and aborts on main's thread still end the
-program, and a worker that a contained one starts with `thread_spawn` is
+program. A worker that a contained worker starts with `thread_spawn` is
 not contained. Files and other resources opened through `extern fn` stay
 open. Spec §11.2.
 
@@ -3588,14 +3708,14 @@ a read. Three builtins do this for any array:
 | `bytes_of(a) -> u8[:]` | the element region alone, as a read-only view: nothing copied |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a **verified** array from an untrusted image; `false` and an empty array if it is not one |
 
-Bytes arriving from outside the program are the one place a reference
+Bytes arriving from outside the program are the only place a reference
 could enter without the compiler having proved it, so `from_bytes`
-verifies before the bytes become a value: the framing, every tag, every
-length, canonical varints, and every link landing on an element start of
-that same image. A corrupt or hostile file is a `false`, never a wild
-reference. What it verifies is *safety*, not integrity: edited data bytes
-still describe a well-formed structure, and a checksum is the program's
-business.
+verifies them before they become a value. It checks the framing, every
+tag, every length, that varints are canonical, and that every link lands
+on an element start of that same image. A corrupt or hostile file gives
+`false`, never a wild reference. What it verifies is *safety*, not
+integrity: edited data bytes still describe a well-formed structure, and
+adding a checksum is up to the program.
 
 ```goose
 struct Node { word: u8[..8], count: i32, left: Node&<u32>?, right: Node&<u32>? }
@@ -3644,12 +3764,12 @@ true 6 nodes, 'the' x3, 126 bytes
 false 0
 ```
 
-What comes back is an ordinary array: it indexes, it grows, and references
-into it are ordinary references. `from_bytes` also builds `T[>..<]` and the
-`T[]` family, and checks an array of index types against its array. Links
-into a *field* of an element, and `in pool` links, are not serializable; a
-`bytes_of` view is never writable, since bytes written through it would be
-links the checker never proved. The byte contract is in
+What comes back is an ordinary array: it can be indexed and grown, and
+references into it are ordinary references. `from_bytes` also builds
+`T[>..<]` and the `T[]` family, and checks an array of index types against
+its array. Links into a *field* of an element, and `in pool` links, are
+not serializable. A `bytes_of` view is never writable, since bytes written
+through it would be links the checker never proved. The byte contract is in
 `docs/design/serialization.md`. Spec §3.9, §9.4, §12.
 
 ---
@@ -3658,12 +3778,12 @@ links the checker never proved. The byte contract is in
 
 ### `extern fn`
 
-A declaration without a body binds a Goose signature to a C function; a
-string after `=`, where the body would go, is the C symbol, and the Goose
-name is used otherwise. The older `extern "cbrt" fn cube_root(...)`,
-with the string after `extern`, is deprecated and warns. It
-is top-level, fully typed, not generic, and joins overload resolution like
-any function. A call compiles to a direct C call.
+A declaration without a body binds a Goose signature to a C function. A
+string after `=`, where the body would go, is the C symbol; without one,
+the Goose name is used. The older `extern "cbrt" fn cube_root(...)`, with
+the string after `extern`, is deprecated and gives a warning. Such a
+declaration is top-level, fully typed and not generic, and joins overload
+resolution like any function. A call compiles to a direct C call.
 
 ```goose
 struct Stats { lo: i32, hi: i32, mean: f64 }
@@ -3675,28 +3795,33 @@ extern fn stats_of(xs: i32[:], out: Stats&);    // a struct filled through a poi
 extern fn c_version(out: u8[>..]&);             // a builder C appends to
 ```
 
-What may cross is exactly what has a plain C shape: the integer and float
-scalars and `bool`; any flat fixed-size value (structs, fixed and
-static-capacity arrays, fixed-mode enums) by value as its packed C type;
-`T&` to such a `T` as a pointer; `T[:]` of such a `T` as a `{ data, len }`
-struct; and `u8[>..]&`, a builder C appends to through `gs_bld_append`.
+What may cross is exactly what has a plain C shape:
+
+* the integer and float scalars and `bool`;
+* any flat fixed-size value (structs, fixed and static-capacity arrays,
+  fixed-mode enums), by value as its packed C type;
+* `T&` to such a `T`, as a pointer;
+* `T[:]` of such a `T`, as a `{ data, len }` struct;
+* `u8[>..]&`, a builder C appends to through `gs_bld_append`.
+
 Results are one scalar or flat fixed-size value, or nothing. Everything
-else, `varint`s, references inside structs, variable or resizable values
-by value, optionals, is rejected at the declaration. A parameter is as
-writable as it says, so a read-only argument needs it declared `const`.
-C must not keep a borrowed argument beyond the call. The program's own C
-goes in a sidecar `foo.build` beside `foo.goose` (`c_sources = ["impl.c"];`)
-or arrives with `--include header.h`; the `math` and `os` modules are
-built on this interface. Spec §7.10, [packages.md](packages.md#3-a-program-with-c-of-its-own).
+else (`varint`s, references inside structs, variable or resizable values
+by value, optionals) is rejected at the declaration. A parameter is as
+writable as its type says, so a read-only argument needs it declared
+`const`. C must not keep a borrowed argument beyond the call. The
+program's own C goes in a sidecar `foo.build` beside `foo.goose`
+(`c_sources = ["impl.c"];`) or comes in with `--include header.h`; the
+`math` and `os` modules are built on this interface. Spec §7.10,
+[packages.md](packages.md#3-a-program-with-c-of-its-own).
 
 ### `extern "lib" { … }`: a shared library, bound by name
 
 An `extern` block names a shared library and declares functions bound
-from it when the program starts, with no C to compile or link: the
-program opens the library and looks the symbols up, and a library or
-symbol that is missing is a runtime error naming the spelling it tried.
-A member is an `extern fn` written without the word; its string after
-`=`, if any, is its C symbol.
+from it when the program starts, with no C to compile or link. The
+program opens the library and looks the symbols up; a missing library or
+symbol is a runtime error that says which name was tried. A member is an
+`extern fn` written without the `extern` keyword; its string after `=`,
+if any, is its C symbol.
 
 ```goose
 extern "SDL2" {
@@ -3707,12 +3832,13 @@ extern "SDL2" {
 }
 ```
 
-`"SDL2"` opens `SDL2.dll`, `libSDL2.dylib` or `libSDL2.so` by the
-loader's search; `"bin/steam_api64"` opens that file, spelled the same
-way, under the program's resource directory (`resource_dir()`), which is
-how a program ships a library beside itself; a dotted name such as
-`"libSDL2-2.0.so.0"` is taken as written. A spelling that differs per
-platform, or per installation, goes in the sidecar rather than the source:
+`"SDL2"` opens `SDL2.dll`, `libSDL2.dylib` or `libSDL2.so`, found by the
+loader's search. `"bin/steam_api64"` opens that file, with the same
+naming rule applied to its last component, under the program's resource
+directory (`resource_dir()`); this is how a program ships a library
+beside itself. A dotted name such as `"libSDL2-2.0.so.0"` is taken as
+written. A name that differs per platform, or per installation, goes in
+the sidecar rather than the source:
 
 <!-- fragment -->
 ```goose
@@ -3721,19 +3847,21 @@ dylibs_linux = ["SDL2=libSDL2-2.0.so.0"];     // the soname every distro install
 dylibs_windows = ["SDL2=bin/SDL2.dll"];       // shipped with the program
 ```
 
-A package's sidecar maps its own names as defaults and the program's
-sidecar wins, platform by platform, for the names it mentions.
+A package's sidecar maps its own names as defaults, and the program's
+sidecar overrides them, platform by platform, for the names it mentions.
 
-With no adapter between, a member is the library's real prototype under
-Goose's shapes. What that means in practice:
+With no adapter in between, a member declares the library's real
+prototype in terms of Goose's shapes:
 
 * **Scalars** are their C types: `i32` is `int`, `u32` `unsigned`, `i64`
   `int64_t`, `f32` `float`, `f64` `double`, `bool` one byte, `size_t`
-  `u64`. A C `enum`, `SDL_bool` included, is an `int`, so `i32`, not
-  `bool`. C's `long` is `i64` on Linux and macOS and `i32` on Windows, so
-  a function with a `long` needs a per-platform declaration or an adapter.
-* **Opaque handles**, the `SDL_Window *` a library returns and takes back,
-  are `u64`: a token Goose passes along and cannot look through.
+  `u64`. A C `enum`, including `SDL_bool`, is an `int`, so it is declared
+  `i32`, not `bool`. C's `long` is `i64` on Linux and macOS and `i32` on
+  Windows, so a function with a `long` needs a per-platform declaration or
+  an adapter.
+* **Opaque handles**, such as the `SDL_Window *` a library returns and
+  takes back, are `u64`: a token Goose passes along and cannot look
+  inside.
 * **A pointer to something Goose owns** is `T&` for a flat fixed `T`:
   `fn SDL_GetWindowSize(w: u64, x: i32&, y: i32&)`. Where C wants
   `(ptr, count)`, pass `xs[0]` and `xs.len` as two arguments; where it
@@ -3748,25 +3876,26 @@ Goose's shapes. What that means in practice:
   let win = SDL_CreateWindow(title[0], 100, 100, 640, 480, 0);
   ```
 
-* **Structs** cross in Goose's packed layout, which is C's only when the
-  fields already sit where C would place them. `SDL_Rect { int x, y, w,
-  h }` matches `struct Rect { x: i32, y: i32, w: i32, h: i32 }`; a `u8`
+* **Structs** cross in Goose's packed layout, which matches C's only when
+  the fields already sit where C would place them. `SDL_Rect { int x, y, w,
+  h }` matches `struct Rect { x: i32, y: i32, w: i32, h: i32 }`. A `u8`
   before an `i32` needs `pad 3` written where C pads, and a struct whose
-  size C rounds up, `{ a: i32, b: u8 }`, needs `pad 3` at the end to be
-  kept in an array C indexes. A struct with `pad` crosses by reference
-  only: by value, its pad is bytes the calling convention passes, where
-  C's padding is nothing, so `{ x: f32, pad 4, y: f64 }` would arrive in
-  the wrong registers. A struct passed by
-  reference, `const Rect&`, wants a variable: a literal is no reference
-  target, so `let r = Rect { 0, 0, 10, 10 }; SDL_HasIntersection(r, s)`
-  rather than the literal in the call.
-* **Memory the library owns**, a `const char *` it returns or an array it
-  keeps, comes back as a `u64` too, and `ffi::cstr(p)` and
+  size C rounds up, such as `{ a: i32, b: u8 }`, needs `pad 3` at the end
+  to be kept in an array C indexes. A struct with `pad` crosses by
+  reference only. Passed by value, its pad is bytes the calling convention
+  passes, while C's padding is not passed at all, so
+  `{ x: f32, pad 4, y: f64 }` would arrive in the wrong registers. A
+  struct passed by reference, `const Rect&`, needs a variable, since a
+  literal cannot be a reference target: write
+  `let r = Rect { 0, 0, 10, 10 }; SDL_HasIntersection(r, s)` rather than
+  putting the literal in the call.
+* **Memory the library owns**, such as a `const char *` it returns or an
+  array it keeps, also comes back as a `u64`. `ffi::cstr(p)` and
   `ffi::bytes(p, n)` ([stdlib.md](stdlib.md#ffi)) copy what is there into
   Goose storage: `print(ffi::cstr(SDL_GetError()))`.
 * **Still an adapter's job**: callbacks (a function pointer the library
-  wants) and variadic functions, which cannot be bound at all. Each is a
-  few lines of C in a native part.
+  wants) and variadic functions, which cannot be bound at all. Each needs
+  a few lines of C in a native part.
 
 Only a member a call reaches is bound, and a library none of whose
 members is called is never opened, so a block may declare an interface
@@ -3778,11 +3907,12 @@ runs under the in-process backend with no C toolchain installed. Spec
 
 `export fn` makes a Goose function callable from C: the compiler emits a
 C wrapper under the function's name, or the string given. The function
-must be top-level, non-generic, with explicit parameter types and at most
-one typed result; defaults, `return … from`, pool parameters and builders
-are not supported at the boundary. Scalars and flat fixed-size values are
-returned by value, and a `const u8[:]` result comes back as a pointer plus
-an extra `int64_t *` length parameter (the bytes are not NUL-terminated).
+must be top-level and non-generic, with explicit parameter types and at
+most one typed result. Defaults, `return … from`, pool parameters and
+builders are not supported at the boundary. Scalars and flat fixed-size
+values are returned by value, and a `const u8[:]` result comes back as a
+pointer plus an extra `int64_t *` length parameter (the bytes are not
+NUL-terminated).
 
 ```goose
 export fn hello_world() -> const u8[:] { return "Hello, world!" }
@@ -3796,19 +3926,20 @@ Hello, world! 42
 ```
 
 `goose --standalone --header hello.h -o hello.c hello.goose` builds the C
-for a C host: no `main` of its own, and a header declaring
-`goose_init(argc, argv)`, which the host calls once before anything else.
-It sets up the runtime and the globals and runs the Goose `main`, if there
-is one, so `main` is where a library keeps its start-up code. Exported
-functions are not thread-safe: call them from the thread that called
-`goose_init`. Spec §7.11.
+for a C host. The C has no `main` of its own, and comes with a header
+declaring `goose_init(argc, argv)`, which the host calls once before
+anything else. That function sets up the runtime and the globals and runs
+the Goose `main`, if there is one, so `main` is where a library keeps its
+start-up code. Exported functions are not thread-safe: call them from the
+thread that called `goose_init`. Spec §7.11.
 
 ---
 
 ## 25. Builtins
 
-The language's own functions. Everything else is the standard library,
-written in Goose under `stdlib/` and documented in [stdlib.md](stdlib.md).
+These are the language's own functions. Everything else is in the
+standard library, written in Goose under `stdlib/` and documented in
+[stdlib.md](stdlib.md).
 
 | Builtin | Meaning | Section |
 |---|---|---|
@@ -3836,13 +3967,13 @@ Spec §12.
 
 **Keywords**: `import namespace struct enum type fn thread_fn export simd
 recursive let var extern const pad reusable if else while for in loop
-block guard match return break continue as true false null self bool
+block guard defer match return break continue as true false null self bool
 varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`.
 
-**Contextual keywords**, names everywhere else: `from` (after a `return`
-value), `upto` (after an unsigned type in a type), `inline` and
-`checkfree` (before `fn`, `recursive`, `simd` or `thread_fn`), `fields`
-and `types` (in a `const for` header).
+**Contextual keywords**, which are ordinary names everywhere else: `from`
+(after a `return` value), `upto` (after an unsigned type in a type),
+`inline` and `checkfree` (before `fn`, `recursive`, `simd` or
+`thread_fn`), `fields` and `types` (in a `const for` header).
 
 **Operators**, tightest first; the precedence is Rust's:
 
@@ -3871,7 +4002,8 @@ Spec §6.1, Appendix D.
 * **Balanced call**: a call during which an array is never shorter than
   when the call began, so views taken before it survive it. §13.
 * **Candidate**: a variable whose own storage could hold the target of a
-  reference read out of a container; the roots of such a reference. §12.
+  reference read out of a container; such a reference is rooted at its
+  candidates. §12.
 * **Case function**: one overload per variant type, called with the enum;
   `match` as an overload set. §9.
 * **Data stack**: a large address-space reservation with a bump pointer;
@@ -3910,8 +4042,8 @@ Spec §6.1, Appendix D.
   read-only. §12.
 * **Temporary**: a value that lasts for the rest of its statement: a
   literal, a call's result, a `copy`, a control construct's value. §12.
-* **Transparent**: a reference's behaving as its target in every value
-  context. §10.
+* **Transparent**: the property of a reference that it behaves as its
+  target in every value context. §10.
 * **Variable mode, fixed mode**: an enum stored as exactly its variant's
   size (`Shape..`), or as a tag plus room for the largest variant
   (`Shape`). §9.

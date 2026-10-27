@@ -3299,6 +3299,13 @@ error:
                 vtop->c.ld = vtop->c.d;
 
             if (df) {
+                if (sbt_bt == VT_LLONG && dbt == VT_FLOAT) {
+                    /* Directly: through a long double no wider than a
+                       double, it would round twice. */
+                    vtop->c.f = (sbt & VT_UNSIGNED) ? (float)vtop->c.i
+                                                    : (float)(int64_t)vtop->c.i;
+                    goto done;
+                }
                 if (sbt_bt == VT_LLONG) {
                     if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
                         vtop->c.ld = vtop->c.i;

@@ -116,7 +116,7 @@ fn total(pool: Tiny..[>..]&) -> i64 {
     for t in pool {
         match t {
             Leaf &l => { sum += l.count; },
-            Fork &f => { sum += f.count; }
+            Fork &f => { sum += f.count; },
         }
     }
     return sum;

@@ -42,8 +42,8 @@ fn main() {
     ui::check();
     print("config defaults are Nuklear's: ", ui::default_font_config() == ui::FontConfig {});
 
-    // Every built-in set of characters, as pairs, and the default one's
-    // first pair: printable ASCII.
+    // Every built-in set of characters, as pairs, each starting with 32..255:
+    // Basic Latin and Latin-1.
     for which in 4 {
         let r = ui::glyph_ranges(which);
         print("range set ", which, ": ", r.len / 2, " ranges, the first ", r[0], "..", r[1]);

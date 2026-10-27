@@ -1,5 +1,4 @@
-// error: varint
-// error: construction
+// error: varint fields are written only at construction
 struct S { n: varint }
 fn main() {
     var s = S { 2 };

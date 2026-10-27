@@ -1,1 +1,1 @@
-integer overflow (debug)
+integer overflow (debug): -128 / -1 at i8

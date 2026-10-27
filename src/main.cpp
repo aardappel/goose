@@ -49,6 +49,7 @@
 #include "build.h"
 #include "packages.h"
 #include "native.h"
+#include "format.h"
 #include "lsp_rpc.h"
 #include "lsp_analysis.h"
 #include "lsp_workspace.h"
@@ -56,6 +57,9 @@
 #include "lsp.h"
 
 namespace goose {
+
+// In version.cpp: the compiler's version, as the build found it.
+const char *CompilerVersion();
 
 string DirOf(const string &path) {
     auto pos = path.find_last_of("/\\");
@@ -532,52 +536,6 @@ void DumpTokens(const string &path) {
     fputs(s.c_str(), stdout);
 }
 
-// What --dump-docs prints: the documentation comments (Lexer::doc) of the
-// top-level declarations, in source order, and of their fields and
-// variants: a line naming each one that has one (`fn add`, `field
-// Point.x`, `variant Shape.Circle`), then the comment's lines, each less
-// its indentation and indented by four spaces.
-void DumpDocs(Ast &ast, string &s) {
-    auto doc = [&](const string &head, string_view text) {
-        if (text.empty()) return;
-        Append(s, head, "\n");
-        for (size_t pos = 0; pos <= text.size();) {
-            auto end = text.find('\n', pos);
-            if (end == string_view::npos) end = text.size();
-            auto line = text.substr(pos, end - pos);
-            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-            auto first = line.find_first_not_of(" \t");
-            Append(s, "    ", first == string_view::npos ? string_view() : line.substr(first),
-                   "\n");
-            pos = end + 1;
-        }
-    };
-    auto fields = [&](const string &owner, const vector<Field> &fs) {
-        for (auto &f : fs)
-            if (!f.ispad) doc(cat("field ", owner, ".", f.name), f.doc);
-    };
-    for (auto d : ast.topdecls) {
-        if (auto fd = Is<FnDecl>(d)) {
-            doc(cat("fn ", fd->sf->qname), fd->sf->doc);
-        } else if (auto sd = Is<StructDecl>(d)) {
-            doc(cat("struct ", sd->st->qname), sd->st->doc);
-            fields(string(sd->st->qname), sd->st->fields);
-        } else if (auto ed = Is<EnumDecl>(d)) {
-            doc(cat("enum ", ed->en->qname), ed->en->doc);
-            for (auto &v : ed->en->variants) {
-                auto name = cat(ed->en->qname, ".", v.name);
-                doc(cat("variant ", name), v.doc);
-                fields(name, v.fields);
-            }
-        } else if (auto ad = Is<AliasDecl>(d)) {
-            doc(cat("type ", ad->al->qname), ad->al->doc);
-        } else if (auto vd = Is<VarDecl>(d)) {
-            doc(cat(vd->isconst ? "const " : vd->isvar ? "var " : "let ",
-                    ast.QualifiedName(vd->ns, vd->names[0])), vd->doc);
-        }
-    }
-}
-
 // The runtime C sources embedded into the compiler (runtime_inline.h), in the
 // order a standalone program holds them (runtime.h has how they divide), and
 // goose.h, the header native parts compile against (native.h).
@@ -686,8 +644,13 @@ constexpr const char *MULTIMARK = "==== goose --multi-test: exit";
 
 // The options run, build and check share, for their help.
 constexpr const char *COMPILEOPTIONS =
-R"(  --diagnostics json    Print the errors and warnings as JSON on stdout, and
-                        the progress lines on stderr.
+R"(  --stats               Print what the compile did: the declarations parsed,
+                        the specializations, the optimizations, the bounds
+                        checks removed and the files written.
+  --color when          Color errors and warnings: auto (on a terminal, unless
+                        NO_COLOR is set), always or never.
+  --diagnostics json    Print the errors and warnings as JSON on stdout, and
+                        the --stats lines on stderr.
   --offline             Fetch nothing: a package that is not fetched is an
                         error at its import, which goose fetch resolves.
   -D NAME[=VALUE]       Define a C macro in the generated program (or -DNAME).
@@ -723,15 +686,21 @@ Commands:
   build      Build an executable with a C compiler on this machine.
   check      Parse and typecheck a program, and run nothing.
   fetch      Fetch the packages a program declares.
+  format     Rewrite Goose files in the standard layout.
   toolchain  Report the C compiler, cmake and git found, and GOOSE_HOME.
-  version    Print the runtime version.
+  version    Print the compiler's version (or --version).
   lsp        Serve an editor over the Language Server Protocol.
+  completion Print a shell's completion script for goose.
   help       Print this (or --help, -h); with a command, that command's help.
 
 Common options:
-  -O0, -O1, -O2   Inlining level (a run defaults to -O1, a build to -O2).
+  -O0, -O1, -O2   Inlining level (default -O2).
   --debug         Overflow, range and tag checks that name the source line
                   they fail on.
+  --stats         Print what the compile did (declarations, bounds checks
+                  removed, files written).
+  --color when    Color errors and warnings: auto (on a terminal, unless
+                  NO_COLOR is set), always or never.
   -- args...      What follows is the program's arguments.
 
 Environment:
@@ -743,7 +712,8 @@ Environment:
 
 goose <command> --help, or goose help <command>, lists a command's options.
 goose help c covers writing the C yourself (goose -o out.c), and goose help
-internals the options for looking into the compiler and testing it.
+internals the options for looking into the compiler and testing it. goose
+help --man prints all of the help as a man page.
 )";
     if (topic == "run") return cat(
 R"(usage: goose run file.goose [options] [-- program args...]
@@ -754,7 +724,7 @@ its exit code. What follows -- is the program's arguments. A program that
 starts threads needs goose build.
 
 Options:
-  -O0, -O1, -O2         Inlining level (default -O1).
+  -O0, -O1, -O2         Inlining level (default -O2).
 )", DEBUGOPTION, COMPILEOPTIONS,
 R"(  --cc name|path        The C compiler for packages' native parts: msvc,
                         clang-cl, clang, gcc, cc or a path (or GOOSE_CC).
@@ -800,6 +770,26 @@ Options:
   --update              Fetch packages at a tag or branch again (a commit is
                         never fetched again).
 )";
+    if (topic == "format") return
+R"(usage: goose format [--check] file.goose|dir...
+       goose format [-]
+
+Rewrites each file in the standard layout, in place: indentation, the
+spaces between tokens, blank lines and trailing commas. Line breaks stay
+where they are. A directory stands for the .goose files under it, less
+those in directories whose names start with a dot and in build trees. With
+no files, or -, it formats standard input to standard output. A file that
+does not parse is left as it is, with its errors.
+
+Options:
+  --check               Write nothing: list the files that are not formatted.
+
+Exit status:
+  0                     Every file is formatted (or now is).
+  1                     --check found a file that is not.
+  2                     A file does not parse or cannot be read or written,
+                        or an option is wrong.
+)";
     if (topic == "lsp") return
 R"(usage: goose lsp [--stdio] [--stdlib dir]
        goose lsp --probe
@@ -807,8 +797,8 @@ R"(usage: goose lsp [--stdio] [--stdlib dir]
 Serves an editor over the Language Server Protocol, on stdin and stdout:
 diagnostics as files change, hover, go to definition, references and
 rename, document and workspace symbols, semantic highlighting, signature
-help, completion, inlay hints, folding and selection ranges, and code
-lenses. It analyzes the programs whose entry files the editor configures
+help, completion, inlay hints, folding and selection ranges, code
+lenses, and formatting as goose format does. It analyzes the programs whose entry files the editor configures
 (the initializationOptions' entryFiles, with the standard library's
 directory as stdlib) and every open file none of them imports; the
 initializationOptions' commands are the client's own commands a code lens
@@ -835,9 +825,23 @@ Options:
 )";
     if (topic == "version") return
 R"(usage: goose version
+       goose --version
 
-Prints the runtime version, which the runtime that goose --emit-runtime
-writes has to match.
+Prints the compiler's version and the runtime's: a hash of the runtime's
+text, which the runtime that goose --emit-runtime writes has to match.
+)";
+    if (topic == "completion") return
+R"(usage: goose completion bash|zsh|fish|powershell
+
+Prints the script that completes goose's commands, options and .goose
+files in that shell. To have it in every shell:
+
+  bash        goose completion bash > ~/.local/share/bash-completion/completions/goose
+  zsh         goose completion zsh > "${fpath[1]}/_goose"
+  fish        goose completion fish > ~/.config/fish/completions/goose.fish
+  powershell  goose completion powershell >> $PROFILE
+
+or, for the shell at hand, source <(goose completion bash) (or zsh).
 )";
     if (topic == "c") return cat(
 R"(usage: goose -o out.c file.goose [options]
@@ -860,7 +864,7 @@ Options:
   --<package>-link msvc|cc
                         Print the response file that links the native part of
                         a package compiled into goose (--gfx-link cc).
-  -O0, -O1, -O2         Inlining level (default -O1).
+  -O0, -O1, -O2         Inlining level (default -O2).
 )", DEBUGOPTION, COMPILEOPTIONS);
     if (topic == "internals") return cat(
 R"(usage: goose [options] file.goose
@@ -884,6 +888,10 @@ Options:
   --unsafe-no-rf-check  Leave out the checks after calls that a `return ...
                         from` can pass through: unsound, for pricing them only.
   --gen-runtime-header  Regenerate src/runtime_inline.h from src/runtime/.
+
+goose format --verify file.goose|dir... formats each file in memory and
+writes nothing: it checks the result as a format does, and that formatting
+it again changes nothing, and skips a file that does not parse.
 )");
     return "";
 }
@@ -1012,23 +1020,260 @@ CodeGen::StackConfig StackConfigOf(const vector<string> &cdefines) {
     return cfg;
 }
 
+// The commands, in the order the help lists them.
+static const char *const VERBS[] = { "run", "build", "check", "fetch", "format", "toolchain",
+                                     "version", "lsp", "completion", "help" };
+
+// The edit distance between two words, for the command a mistyped one meant.
+static size_t EditDistance(string_view a, string_view b) {
+    vector<size_t> row(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); j++) row[j] = j;
+    for (size_t i = 1; i <= a.size(); i++) {
+        auto diag = row[0];
+        row[0] = i;
+        for (size_t j = 1; j <= b.size(); j++) {
+            auto up = row[j];
+            row[j] = min({ row[j] + 1, row[j - 1] + 1, diag + (a[i - 1] != b[j - 1]) });
+            diag = up;
+        }
+    }
+    return row[b.size()];
+}
+
+// The options a command's help names, for the completion scripts: the
+// first word of each spelling on the lines that start with an option.
+static vector<string> HelpOptions(const string &topic) {
+    vector<string> opts;
+    auto text = HelpText(topic);
+    for (size_t pos = 0; pos < text.size();) {
+        auto e = text.find('\n', pos);
+        if (e == string::npos) e = text.size();
+        auto line = string_view(text).substr(pos, e - pos);
+        pos = e + 1;
+        if (line.substr(0, 3) != "  -") continue;
+        auto head = line.substr(2, line.find("  ", 2) - 2);
+        for (size_t p = 0; p < head.size();) {
+            auto comma = head.find(", ", p);
+            auto spelling = head.substr(p, comma == string_view::npos ? string_view::npos : comma - p);
+            auto word = string(spelling.substr(0, spelling.find(' ')));
+            if (word != "--" && word.size() > 1 && find(opts.begin(), opts.end(), word) == opts.end())
+                opts.push_back(word);
+            if (comma == string_view::npos) break;
+            p = comma + 2;
+        }
+    }
+    return opts;
+}
+
+// What `goose completion <shell>` prints: completion of the commands, each
+// command's options as its help names them, the help's topics, and .goose
+// files and directories. "" for a shell it does not know.
+static string CompletionScript(const string &shell) {
+    vector<string> verbs(begin(VERBS), end(VERBS));
+    vector<string> topics = verbs;
+    topics.push_back("c");
+    topics.push_back("internals");
+    const vector<string> shells = { "bash", "zsh", "fish", "powershell" };
+    // Each command's one-line summary, from the overview.
+    map<string, string> summary;
+    auto overview = HelpText("");
+    for (auto &v : verbs) {
+        auto at = overview.find(cat("\n  ", v, " "));
+        if (at == string::npos) continue;
+        auto start = overview.find_first_not_of(' ', at + 3 + v.size());
+        auto end = overview.find('\n', start);
+        summary[v] = overview.substr(start, end - start);
+        // The lines it wraps onto, indented under it.
+        while (overview.compare(end, 6, "\n     ") == 0) {
+            auto next = overview.find_first_not_of(' ', end + 1);
+            end = overview.find('\n', next);
+            Append(summary[v], " ", overview.substr(next, end - next));
+        }
+    }
+    // The options of the commands that take some; a file alone is a run.
+    vector<pair<string, vector<string>>> optsof;
+    for (auto &v : verbs)
+        if (v != "help" && v != "completion" && v != "version") optsof.push_back({ v, HelpOptions(v) });
+    auto words = [](const vector<string> &ws) {
+        string s;
+        for (auto &w : ws) Append(s, s.empty() ? "" : " ", w);
+        return s;
+    };
+    auto runopts = words(HelpOptions("run"));
+    string s;
+    if (shell == "bash") {
+        Append(s, "# goose completion bash: source this, or install it as\n"
+                  "# ~/.local/share/bash-completion/completions/goose\n"
+                  "_goose() {\n"
+                  "    local cur=${COMP_WORDS[COMP_CWORD]} verb= i opts\n"
+                  "    for ((i = 1; i < COMP_CWORD; i++)); do\n"
+                  "        case ${COMP_WORDS[i]} in -*) ;; *) verb=${COMP_WORDS[i]}; break ;; esac\n"
+                  "    done\n"
+                  "    case $verb in\n");
+        for (auto &[v, opts] : optsof) Append(s, "        ", v, ") opts=\"", words(opts), "\" ;;\n");
+        Append(s, "        help) COMPREPLY=($(compgen -W \"", words(topics), "\" -- \"$cur\")); return ;;\n"
+                  "        completion) COMPREPLY=($(compgen -W \"", words(shells), "\" -- \"$cur\")); return ;;\n"
+                  "        version) return ;;\n"
+                  "        *) opts=\"", runopts, " --help --version\" ;;\n"
+                  "    esac\n"
+                  "    if [[ $cur == -* ]]; then COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\")); return; fi\n"
+                  "    COMPREPLY=()\n"
+                  "    [[ -z $verb ]] && COMPREPLY=($(compgen -W \"", words(verbs), "\" -- \"$cur\"))\n"
+                  "    COMPREPLY+=($(compgen -f -X '!*.goose' -- \"$cur\") $(compgen -d -- \"$cur\"))\n"
+                  "}\n"
+                  "complete -o filenames -F _goose goose\n");
+    } else if (shell == "zsh") {
+        Append(s, "#compdef goose\n"
+                  "# goose completion zsh: source this, or install it as _goose in a\n"
+                  "# directory on $fpath\n"
+                  "_goose() {\n"
+                  "    local verb word\n"
+                  "    for word in ${words[2,CURRENT-1]}; do\n"
+                  "        [[ $word == -* ]] || { verb=$word; break }\n"
+                  "    done\n"
+                  "    local -a opts\n"
+                  "    case $verb in\n");
+        for (auto &[v, opts] : optsof) Append(s, "        ", v, ") opts=(", words(opts), ") ;;\n");
+        Append(s, "        help) compadd -- ", words(topics), "; return ;;\n"
+                  "        completion) compadd -- ", words(shells), "; return ;;\n"
+                  "        version) return ;;\n"
+                  "        *) opts=(", runopts, " --help --version) ;;\n"
+                  "    esac\n"
+                  "    if [[ $PREFIX == -* ]]; then compadd -- $opts; return; fi\n"
+                  "    if [[ -z $verb ]]; then\n"
+                  "        local -a commands\n"
+                  "        commands=(\n");
+        for (auto &v : verbs) {
+            string d;
+            for (auto c : summary[v]) { if (c == '\'') d += "'\\''"; else if (c == ':') d += "\\:"; else d += c; }
+            Append(s, "            '", v, ":", d, "'\n");
+        }
+        Append(s, "        )\n"
+                  "        _describe command commands\n"
+                  "    fi\n"
+                  "    _files -g '*.goose'\n"
+                  "}\n"
+                  "if [[ $zsh_eval_context[-1] == loadautofunc ]]; then _goose \"$@\"; else compdef _goose goose; fi\n");
+    } else if (shell == "fish") {
+        auto quote = [](const string &t) {
+            string q = "'";
+            for (auto c : t) { if (c == '\'' || c == '\\') q += '\\'; q += c; }
+            return q + "'";
+        };
+        Append(s, "# goose completion fish: install it as ~/.config/fish/completions/goose.fish\n"
+                  "complete -c goose -f\n");
+        for (auto &v : verbs)
+            Append(s, "complete -c goose -n __fish_use_subcommand -a ", v, " -d ", quote(summary[v]), "\n");
+        auto flag = [&](const string &cond, const string &o) {
+            Append(s, "complete -c goose -n ", quote(cond), " ");
+            if (o.rfind("--", 0) == 0) Append(s, "-l ", o.substr(2));
+            else if (o.size() == 2) Append(s, "-s ", o.substr(1));
+            else Append(s, "-o ", o.substr(1));
+            s += "\n";
+        };
+        for (auto &[v, opts] : optsof)
+            for (auto &o : opts) flag(cat("__fish_seen_subcommand_from ", v), o);
+        string verbset;
+        for (auto &v : verbs) Append(verbset, " ", v);
+        for (auto &o : HelpOptions("run")) flag(cat("not __fish_seen_subcommand_from", verbset), o);
+        Append(s, "complete -c goose -n '__fish_seen_subcommand_from help' -a ", quote(words(topics)), "\n"
+                  "complete -c goose -n '__fish_seen_subcommand_from completion' -a ", quote(words(shells)), "\n"
+                  "complete -c goose -n 'not __fish_seen_subcommand_from help completion version toolchain lsp' "
+                  "-a '(__fish_complete_suffix .goose)'\n");
+    } else if (shell == "powershell") {
+        auto list = [](const vector<string> &ws) {
+            string l = "@(";
+            for (size_t i = 0; i < ws.size(); i++) Append(l, i ? ", " : "", "'", ws[i], "'");
+            return l + ")";
+        };
+        Append(s, "# goose completion powershell: add this to $PROFILE\n"
+                  "Register-ArgumentCompleter -Native -CommandName goose, goose.exe -ScriptBlock {\n"
+                  "    param($wordToComplete, $commandAst, $cursorPosition)\n"
+                  "    $words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })\n"
+                  "    if ($wordToComplete -and $words.Count -gt 0) { $words = @($words | Select-Object -First ($words.Count - 1)) }\n"
+                  "    $verb = $words | Where-Object { $_ -notlike '-*' } | Select-Object -First 1\n"
+                  "    $opts = switch ($verb) {\n");
+        for (auto &[v, opts] : optsof) Append(s, "        '", v, "' { ", list(opts), " }\n");
+        auto runlist = HelpOptions("run");
+        runlist.push_back("--help");
+        runlist.push_back("--version");
+        Append(s, "        default { ", list(runlist), " }\n"
+                  "    }\n"
+                  "    $candidates = if ($verb -eq 'help') { ", list(topics), " }\n"
+                  "        elseif ($verb -eq 'completion') { ", list(shells), " }\n"
+                  "        elseif ($verb -eq 'version') { @() }\n"
+                  "        elseif ($wordToComplete -like '-*') { $opts }\n"
+                  "        else {\n"
+                  "            $dir = Split-Path $wordToComplete\n"
+                  "            $files = @(Get-ChildItem -Path \"$wordToComplete*\" -ErrorAction SilentlyContinue |\n"
+                  "                Where-Object { $_.PSIsContainer -or $_.Extension -eq '.goose' } |\n"
+                  "                ForEach-Object { if ($dir) { Join-Path $dir $_.Name } else { $_.Name } })\n"
+                  "            if ($verb) { $files } else { ", list(verbs), " + $files }\n"
+                  "        }\n"
+                  "    $candidates | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {\n"
+                  "        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)\n"
+                  "    }\n"
+                  "}\n");
+    }
+    return s;
+}
+
+// What `goose help --man` prints: the help of every command and topic as a
+// man page, each kept as the terminal shows it.
+static string ManPage() {
+    auto roff = [](const string &text) {
+        string s = ".nf\n";
+        for (size_t pos = 0; pos < text.size();) {
+            auto e = text.find('\n', pos);
+            if (e == string::npos) e = text.size();
+            auto line = string_view(text).substr(pos, e - pos);
+            pos = e + 1;
+            if (!line.empty() && (line[0] == '.' || line[0] == '\'')) s += "\\&";
+            for (auto c : line) {
+                if (c == '\\') s += "\\e";
+                else if (c == '-') s += "\\-";
+                else s += c;
+            }
+            s += '\n';
+        }
+        return s + ".fi\n";
+    };
+    auto overview = HelpText("");
+    auto body = overview.substr(overview.find("\n\n") + 2);
+    string s;
+    Append(s, ".TH GOOSE 1 \"\" \"goose ", CompilerVersion(), "\" \"Goose Manual\"\n"
+              ".SH NAME\n"
+              "goose \\- the Goose compiler, its build tool and its language server\n"
+              ".SH SYNOPSIS\n", roff(overview.substr(0, overview.find("\n\n"))),
+              ".SH DESCRIPTION\n", roff(body), ".SH COMMANDS\n");
+    for (auto v : VERBS) {
+        if (string_view(v) == "help") continue;
+        Append(s, ".SS ", v, "\n", roff(HelpText(v)));
+    }
+    Append(s, ".SH WRITING THE C\n", roff(HelpText("c")),
+              ".SH INTERNALS\n", roff(HelpText("internals")));
+    return s;
+}
+
 int Main(int argc, char **argv) {
     auto exe = ExePath(argv[0]);
-    // The verb forms, `goose run|build|check|fetch|toolchain|version|help ...`.
+    // The verb forms, `goose run|build|check|fetch|format|toolchain|version|help ...`.
     // A first argument that is none of them is read as an option or a file,
     // as it always was, so `goose foo.goose` is `goose run foo.goose`.
     string verb;
     auto firstarg = 1;
     if (argc > 1) {
         string v = argv[1];
-        if (v == "run" || v == "build" || v == "check" || v == "fetch" || v == "toolchain" ||
-            v == "version" || v == "help" || v == "lsp") {
-            verb = v;
-            firstarg = 2;
-        }
+        for (auto known : VERBS)
+            if (v == known) {
+                verb = v;
+                firstarg = 2;
+            }
     }
+    // Errors and warnings in color on a terminal (--color changes it).
+    stderrcolor = StderrColor(false);
     // --help anywhere before a `--` is the help on the command given, or on
-    // all of them when none is.
+    // all of them when none is; --version likewise prints the version.
     for (int i = firstarg; i < argc; i++) {
         string arg = argv[i];
         if (arg == "--") break;
@@ -1036,9 +1281,38 @@ int Main(int argc, char **argv) {
             fputs(HelpText(verb).c_str(), stdout);
             return 0;
         }
+        if (arg == "--version" && (verb.empty() || verb == "version")) verb = "version";
+    }
+    // A first word that is no command, no option and no file is a command
+    // mistyped, not a program: `goose biuld x.goose`.
+    if (verb.empty() && argc > 1 && argv[1][0] != '-') {
+        string v = argv[1];
+        if (v.find_first_of("/\\.") == string::npos && !PathExists(v)) {
+            string near;
+            for (auto known : VERBS)
+                if (EditDistance(v, known) <= 2 && near.empty()) near = known;
+            fprintf(stderr, "goose: unknown command %s%s (goose help lists the commands)\n", v.c_str(),
+                    near.empty() ? "" : cat(": did you mean ", near, "?").c_str());
+            return 1;
+        }
+    }
+    if (verb == "completion") {
+        auto shell = argc > 2 ? string(argv[2]) : string();
+        auto script = CompletionScript(shell);
+        if (script.empty() || argc > 3) {
+            fprintf(stderr, "goose completion takes bash, zsh, fish or powershell%s\n",
+                    shell.empty() ? "" : cat(", not ", shell).c_str());
+            return 1;
+        }
+        fputs(script.c_str(), stdout);
+        return 0;
     }
     if (verb == "help") {
         auto topic = argc > 2 ? string(argv[2]) : string();
+        if (topic == "--man") {
+            fputs(ManPage().c_str(), stdout);
+            return 0;
+        }
         auto help = HelpText(topic);
         if (help.empty()) {
             fprintf(stderr, "no help on %s: goose help lists the commands\n", topic.c_str());
@@ -1048,23 +1322,25 @@ int Main(int argc, char **argv) {
         return 0;
     }
     if (verb == "version") {
-        printf("goose runtime %s\n", RuntimeVersion().c_str());
+        printf("goose %s (runtime %s)\n", CompilerVersion(), RuntimeVersion().c_str());
         return 0;
     }
     if (verb == "lsp") return RunLsp(exe, vector<string>(argv + firstarg, argv + argc));
+    if (verb == "format") return RunFormat(vector<string>(argv + firstarg, argv + argc));
     string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, dumpdocs = false, tokens = false, parseonly = false, specs = false;
     auto nocgen = false;
     auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
+    auto stats = false;
     auto forcejit = false, standalone = false;
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     auto jsondiag = false;
     string ccrequest;
-    // A build is for a deliverable: the inlining at its highest. The C
-    // compiler optimizes whatever the level, unless --debug (Builder::CFlags).
-    auto optlevel = verb == "build" ? 2 : 1;
+    // The inlining at its highest. The C compiler optimizes whatever the
+    // level, unless --debug (Builder::CFlags).
+    auto optlevel = 2;
     vector<string> cdefines, progargs, includenames, files;
     for (int i = firstarg; i < argc; i++) {
         string arg = argv[i];
@@ -1113,7 +1389,7 @@ int Main(int argc, char **argv) {
             try {
                 GenRuntimeHeader(exe.c_str());
             } catch (CompileError &e) {
-                fprintf(stderr, "%s\n", e.msg.c_str());
+                PrintDiagnosticText(e.msg);
                 return 1;
             }
             return 0;
@@ -1143,7 +1419,7 @@ int Main(int argc, char **argv) {
                 auto path = BuiltinLinkFile(arg.substr(2, arg.size() - 7), style, DirOf(exe));
                 printf("%s\n", path.c_str());
             } catch (CompileError &e) {
-                fprintf(stderr, "%s\n", e.msg.c_str());
+                PrintDiagnosticText(e.msg);
                 return 1;
             }
             return 0;
@@ -1163,6 +1439,15 @@ int Main(int argc, char **argv) {
             cdefines.push_back("GS_DEBUG=1");
         }
         else if (arg == "-v") verbose = true;
+        else if (arg == "--stats") stats = true;
+        else if (arg == "--color" && i + 1 < argc) {
+            string when = argv[++i];
+            if (when != "auto" && when != "always" && when != "never") {
+                fprintf(stderr, "--color takes auto, always or never, not %s\n", when.c_str());
+                return 1;
+            }
+            stderrcolor = when == "always" ? StderrColor(true) : when == "auto" && StderrColor(false);
+        }
         else if (arg == "--dry-run") dryrun = true;
         else if (arg == "--update") package_update = true;
         else if (arg == "--offline") package_nofetch = true;
@@ -1189,7 +1474,7 @@ int Main(int argc, char **argv) {
             fputs(ToolsReport(tools, json, builtin).c_str(), stdout);
             return tools.havecc ? 0 : 1;
         } catch (CompileError &e) {
-            fprintf(stderr, "%s\n", e.msg.c_str());
+            PrintDiagnosticText(e.msg);
             return 1;
         }
     }
@@ -1227,7 +1512,7 @@ int Main(int argc, char **argv) {
         try {
             DumpShader(shaderfile, shadersource);
         } catch (CompileError &e) {
-            fprintf(stderr, "%s\n", e.msg.c_str());
+            PrintDiagnosticText(e.msg);
             return 1;
         }
         return 0;
@@ -1314,16 +1599,17 @@ int Main(int argc, char **argv) {
         ResolveTypeNames(ast);
         // As after the parse, which an unknown type name is part of.
         if (!ast.errors.empty()) return 1;
-        // Printed by every run that gets this far, so that one which goes on
-        // to fail says by itself which side of resolution it failed on.
-        fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
+        // With --stats, printed by every run that gets this far, so that one
+        // which goes on to fail says by itself which side of resolution it
+        // failed on.
+        if (stats) fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
                 (int)ast.topdecls.size(), (int)ast.sources.size());
         // After resolution, so that a program that does not resolve fails as
         // it would without --roundtrip.
         if (roundtrip) {
             CheckRoundtrip(dumped, dumpfile.empty() ? cat(filename, ".dump") : dumpfile,
                            stdlibdirs, DirOf(exe));
-            fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
+            if (stats) fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
         }
         if (parseonly) return 0;
         TypeCheckProgram(ast, library, nocgen);
@@ -1335,7 +1621,7 @@ int Main(int argc, char **argv) {
             opt.DumpSpecs(s);
             fputs(s.c_str(), stdout);
         }
-        fprintf(msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
+        if (stats) fprintf(msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
                 "optimized -O%d: %d inlined, %d base case(s), %d folded, %d propagated, "
                 "%d tail loop(s), %d reassociated\n",
                 (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
@@ -1344,7 +1630,7 @@ int Main(int argc, char **argv) {
         BCE bce(ast);
         if (!nobce) {
             bce.RunAll();
-            fprintf(msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
+            if (stats) fprintf(msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
                     bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
             if (!bce.checkfreefails.empty()) throw bce.CheckfreeError();
         } else {
@@ -1430,13 +1716,13 @@ int Main(int argc, char **argv) {
             auto out = assemble(!standalone);
             if (!WriteFileMakingDirs(outfile, out))
                 throw CompileError { cat("cannot write output file: ", outfile) };
-            fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
+            if (stats) fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
         }
         if (!headername.empty()) {
             auto header = cg.ExportHeader();
             if (!WriteFileMakingDirs(headername, header))
                 throw CompileError { cat("cannot write export header: ", headername) };
-            fprintf(msgs, "wrote %s (%d bytes)\n", headername.c_str(), (int)header.size());
+            if (stats) fprintf(msgs, "wrote %s (%d bytes)\n", headername.c_str(), (int)header.size());
         }
         if (jit && !nocgen) {
             // TinyCC's in-memory runner rejects a thread-local section, and
@@ -1555,7 +1841,7 @@ int Main(int argc, char **argv) {
         try {
             code = attempt();
         } catch (CompileError &e) {
-            if (!jsondiag) fprintf(stderr, "%s\n", e.msg.c_str());
+            if (!jsondiag) PrintDiagnosticText(e.msg);
             // A driver's error has no place in the program: its text is all
             // there is to report.
             if (e.diags.empty()) {

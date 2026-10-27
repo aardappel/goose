@@ -1,7 +1,8 @@
 // Namespaces (docs/design/namespaces.md): qualified names, per-namespace
 // overload sets, definition-site lookup in generic bodies, shadowed globals,
-// qualified types, variants and pools, format hooks and the hash bridge
-// across namespaces, same-leaf `return from` targets, and same-leaf
+// qualified types, variants and pools, format hooks across namespaces, UFCS
+// calls resolving in the receiver type's namespace (a dictionary's
+// `key.hash()` among them), same-leaf `return from` targets, and same-leaf
 // declarations that stay distinct in the generated C.
 import ns.image;
 import ns.image_more;
@@ -18,6 +19,16 @@ fn parse(s: u8[:]) -> i64 { image::parse(s) + 1000000 }
 // same type as image::Node's own `next`, since both name the one pool.
 struct Mark { at: image::Node&<u16 in image::pool>? }
 
+// A generic body's UFCS call resolves in the namespace of the receiver's
+// type where that declares the name, else where the body is defined.
+fn bright_of<T>(x: T) -> i64 { x.brightness() }
+
+// A nested function hides the type's namespace, as it hides any declaration.
+fn nested_first(p: image::Pixel) -> i64 {
+    fn brightness(x: image::Pixel) -> i64 { x.r }
+    p.brightness()
+}
+
 fn main_namespaces() {
     let p = image::Pixel { 10, 20, 30 };
     print(image::brightness(p));             // 60
@@ -29,19 +40,26 @@ fn main_namespaces() {
     let q = Pixel { 7 };
     let g = geometry::Pixel { 1.5, 2.5 };
     print(q.v, " ", geometry::brightness(g), " ", ::brightness(q.v));   // 7 4 14
-    // Variants and case functions through qualified names.
+    // UFCS resolves in the receiver type's namespace before the global
+    // brightness, wherever the call is; a receiver of no namespaced type
+    // resolves as a call does.
+    print(p.brightness(), " ", g.brightness(), " ", q.v.brightness());  // 60 4 14
+    print(geometry::image_brightness(p), " ", dimmed(p));              // 60 30
+    print(bright_of(p), " ", bright_of(g), " ", bright_of(3));         // 60 4 6
+    print(nested_first(p));                                            // 10
+    // Variants and case functions through qualified names, and by UFCS.
     var shapes: image::Shape..[>..] = [];
     shapes.push(image::Shape.Circle { r: 2.0 });
     shapes.push(image::Shape.Square { s: 3.0 });
     shapes.push(image::Shape.Empty);
     for s in shapes {
-        print(image::area(s));
+        print(image::area(s), " ", s.area());
         match s {
             Circle c => print(c.r),
             Square sq => print(sq.s),
             Empty => print("empty"),
         }
-    }                                        // 12.0 2.0 9.0 3.0 0.0 empty
+    }                                        // 12.0 12.0 2.0 9.0 9.0 3.0 0.0 0.0 empty
     // A pool named across namespaces.
     image::push_node(1);
     image::push_node(2);
@@ -53,7 +71,7 @@ fn main_namespaces() {
     let n1 = n0.next;
     assert(n1);
     print(n0.v, " ", n1.v);                  // 1 2
-    // A dictionary keyed by a namespaced type, through the global hash bridge.
+    // A dictionary keyed by a namespaced type: its `key.hash()` is image::hash.
     var d = dictionary<image::Key, i64> {};
     d.insert(image::Key { 1, 2 }, 12);
     d.insert(image::Key { 2, 1 }, 21);

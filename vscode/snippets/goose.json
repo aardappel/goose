@@ -13,6 +13,7 @@
   "For": { "prefix": "for", "body": ["for ${1:item} in ${2:items} {", "\t$0", "}"], "description": "Iterate over a range or collection" },
   "While": { "prefix": "while", "body": ["while ${1:condition} {", "\t$0", "}"], "description": "While loop" },
   "Guard": { "prefix": "guard", "body": ["guard ${1:condition} else {", "\t${2:return;}", "}", "$0"], "description": "Guard with a diverging fallback" },
+  "Defer": { "prefix": "defer", "body": "defer ${1:cleanup};$0", "description": "Run a statement when the block ends" },
   "Match": { "prefix": "match", "body": ["match ${1:value} {", "\t${2:Variant} ${3:v} => ${4:expression},", "\t$0", "}"], "description": "Pattern match" },
   "Growable array": { "prefix": "grow", "body": "var ${1:items}: ${2:i64}[>..] = [];\n$0", "description": "Grow-only array" },
   "Grow-shrink array": { "prefix": "growshrink", "body": "var ${1:items}: ${2:i64}[>..<] = [];\n$0", "description": "Grow-shrink array" }

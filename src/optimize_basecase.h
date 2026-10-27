@@ -104,9 +104,11 @@ struct BaseCaseInliner {
         // A jump out of the subtree would land in the caller instead of the
         // callee; a nested declaration is a separate tree left behind. Every
         // return is one: Setup reads a recursive function's body before it
-        // is optimized, and nothing is ever inlined into one (TryInline).
+        // is optimized, and nothing is ever inlined into one (TryInline). A
+        // defer is bound to the block it is in, which the copy is not in.
         assert(!Is<InlineBlock>(n));
-        if (Is<Break>(n) || Is<Continue>(n) || Is<Return>(n) || Is<FnDecl>(n) || Is<FunVal>(n))
+        if (Is<Break>(n) || Is<Continue>(n) || Is<Return>(n) || Is<FnDecl>(n) || Is<FunVal>(n) ||
+            Is<Defer>(n))
             return false;
         if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) bound.insert(d);
         if (auto fl = Is<ForLoop>(n)) {

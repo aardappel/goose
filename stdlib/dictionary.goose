@@ -3,9 +3,10 @@
 // hash(key) & mask, backward-shift deletion (no tombstones). Keys and
 // values are fixed-size; strings are keyed as u8[:] slices into text the
 // caller owns, or as inline u8[..k]. A user key type provides
-// `fn hash(k: key) -> u64` (and `==`). A reference value is an optional
-// one, plain or `in pool`: new slots hold default<V>(), which a
-// non-optional reference has none of.
+// `fn hash(k: key) -> u64` (and `==`), in its own namespace or the global
+// one: `key.hash()` looks in the key type's namespace first (spec §11.1).
+// A reference value is an optional one, plain or `in pool`: new slots hold
+// default<V>(), which a non-optional reference has none of.
 //
 // Each slot keeps a tag: 0 when the slot is unused, else the low 31 bits of
 // the key's hash with bit 31 set. A probe compares keys only where the tags
@@ -28,7 +29,7 @@ fn dict_tag(h: u64) -> u32 { (h as! u32) | 2147483648 }
 // The slot holding key, or -1.
 fn dict_probe<K, V>(d: dictionary<K, V>&, key: K) -> i64 {
     if d.count == 0 { return -1; }
-    let h = hash(key);
+    let h = key.hash();
     let tag = dict_tag(h);
     let mask = d.slots.len - 1;
     var i = (h & (mask as u64)) as i64;
@@ -91,7 +92,7 @@ fn dict_grow<K, V>(d: dictionary<K, V>&, cap: i64) {
         let t = d.slots[p].tag;
         if t != 0 {
             var q = (t as i64) & mask;
-            if mask >= 2147483648 { q = (hash(d.slots[p].key) & (mask as u64)) as i64; }
+            if mask >= 2147483648 { q = (d.slots[p].key.hash() & (mask as u64)) as i64; }
             let e = d.slots[p];
             d.slots[p].tag = 0;
             while d.slots[q].tag != 0 { q = (q + 1) & mask; }
@@ -114,7 +115,7 @@ fn contains<K, V>(d: dictionary<K, V>&, key: K) -> bool { dict_probe(d, key) >= 
 // slot where it goes.
 fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool {
     dict_room(d);
-    let h = hash(key);
+    let h = key.hash();
     let i = dict_slot(d, key, h);
     if d.slots[i].tag != 0 {
         // The whole slot, since `=` into a reference V would write its
@@ -130,7 +131,7 @@ fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool {
 // The value for key, inserted as v0 first if absent.
 fn get_or_insert<K, V>(d: dictionary<K, V>&, key: K, v0: V) -> V& {
     dict_room(d);
-    let h = hash(key);
+    let h = key.hash();
     let i = dict_slot(d, key, h);
     if d.slots[i].tag == 0 {
         d.slots[i] = dictionary_slot<K, V> { key, v0, dict_tag(h) };
@@ -142,7 +143,7 @@ fn get_or_insert<K, V>(d: dictionary<K, V>&, key: K, v0: V) -> V& {
 // F(val&) on the value for key, inserted as v0 first if absent.
 fn update<K, V, F>(d: dictionary<K, V>&, key: K, v0: V) {
     dict_room(d);
-    let h = hash(key);
+    let h = key.hash();
     let i = dict_slot(d, key, h);
     if d.slots[i].tag == 0 {
         d.slots[i] = dictionary_slot<K, V> { key, v0, dict_tag(h) };
@@ -162,7 +163,7 @@ fn remove<K, V>(d: dictionary<K, V>&, key: K) -> bool {
         let t = d.slots[j].tag;
         if t == 0 { break; }
         var h = (t as i64) & mask;
-        if mask >= 2147483648 { h = (hash(d.slots[j].key) & (mask as u64)) as i64; }
+        if mask >= 2147483648 { h = (d.slots[j].key.hash() & (mask as u64)) as i64; }
         // An entry whose home is not in the cyclic range (i, j] can move up
         // into the hole without leaving its probe sequence.
         if ((j - h) & mask) >= ((j - i) & mask) {

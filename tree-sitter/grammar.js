@@ -351,6 +351,7 @@ module.exports = grammar({
       $.function_declaration,
       $.const_for_statement,
       $.guard_statement,
+      $.defer_statement,
       $.assignment_statement,
       $.increment_statement,
       $.expression_statement,
@@ -382,6 +383,19 @@ module.exports = grammar({
       'guard',
       field('condition', $._expression),
       choice(';', seq('else', field('alternative', $.block))),
+    ),
+
+    // Runs its body when the block it is in ends: a block, or one of the
+    // statements that start with an expression.
+    defer_statement: $ => seq(
+      'defer',
+      field('body', choice(
+        $.assignment_statement,
+        $.increment_statement,
+        $.expression_statement,
+        $._block_ended_expression,
+        prec(1, alias($._trailing_call, $.call_expression)),
+      )),
     ),
 
     // Compile-time expansion over fields, variants, types, or constants.

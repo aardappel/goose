@@ -1,5 +1,5 @@
 // error: in const for field S.flag
-// error: bool
+// error: operator + cannot be applied to bool and i64
 struct S { flag: bool }
 fn visit<T, F>(s: T&) { const for <N, A> in fields<T> { F(s.A); } }
 fn main() {

@@ -2,7 +2,6 @@
 write to stderr and call exit(7) together, with the output redirected, which
 crashed in the C library's teardown on Windows when two exits ran it at once.
 Every run must end with the code they all exit with."""
-import os
 import subprocess
 import tempfile
 from pathlib import Path

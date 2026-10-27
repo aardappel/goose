@@ -1,8 +1,8 @@
 /* Direct runtime regression: bounded resource use under repeated worker
    creation, including workers nobody joins, concurrent/repeated waits and
    contained workers that abort, whose messages the runtime keeps until a
-   wait takes them. Small limits make the previous leaking
-   region registry fail quickly. */
+   wait takes them. Small limits make a region registry that leaks
+   entries fail quickly. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

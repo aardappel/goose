@@ -11,63 +11,51 @@
 
 </details>
 
-How to turn a Goose program into an executable, how to use libraries that
-are not part of the compiler, and how to make one. The design behind it,
-and the compiler's side of it, is in [design/packages.md](design/packages.md).
+This page explains how to turn a Goose program into an executable, how to
+use libraries that are not part of the compiler, and how to make such a
+library. The design behind this, and how the compiler implements it, are
+described in [design/packages.md](design/packages.md).
 
 ## 1. Running and building
 
 `goose foo.goose` (or `goose run foo.goose`) compiles the program into the
-compiler's own process and runs it there: no C compiler, no build step, the
-arguments after `--` go to the program. `goose build foo.goose` makes an
-executable, `foo` or `foo.exe` beside the source:
+compiler's own process and runs it there, with no C compiler and no build
+step. `goose build foo.goose` makes an executable, `foo` or `foo.exe`,
+beside the source, with a C compiler found on the machine:
 
 ```bash
 goose build foo.goose && ./foo
-goose build -o out/foo foo.goose        # the executable elsewhere
-goose build --debug foo.goose           # GS_DEBUG checks, debug information, no C optimization
-goose build --standalone foo.goose      # the runtime inside the one C file
 goose build --dry-run foo.goose         # print the commands instead of running them
-goose build -v foo.goose                # print them as they run
 ```
 
-`build` finds a C compiler on the machine (`goose toolchain` says which:
-MSVC or clang on Windows, cc, gcc or clang elsewhere; `--cc clang`,
-`GOOSE_CC`, or `cc = "clang";` in `~/.goose/config` choose), compiles the
-runtime once per compiler into `~/.goose`, and links the program with the
-native parts of every package it uses. `goose check foo.goose` only
-typechecks. A build defaults to `-O2`, a run to `-O1`.
+`goose toolchain` shows which C compiler a build uses, and `--cc clang`,
+`GOOSE_CC` or `cc = "clang";` in `~/.goose/config` selects another. The
+runtime and the C of each package are compiled once per C compiler, and an
+executable is linked with the native parts of the packages it uses. A run
+builds the same native parts into a library that it loads, unless the
+package is compiled into the compiler. Everything the compiler produces
+along the way goes under `~/.goose` (`GOOSE_HOME` moves it,
+[§5](#5-the-cache)).
 
-Everything the compiler makes on the way goes under `~/.goose`
-(`GOOSE_HOME` moves it): fetched packages, their builds, the runtime
-objects and each program's C. `goose build --dry-run` shows the commands
-with their paths, for a Makefile or CMake project that wants to drive the
-C compiler itself.
-
-Work that takes a while (fetching a package, building a package's C,
-compiling the runtime) prints one line as it starts. On a terminal a live
-line below it shows what is running, for how long, and the last line the
-tool printed, and is erased when the work is done. When the output goes
-anywhere else (a file, a pipe, a CI log, an agent running the command)
-there is no live line, only those one-line notes. `GOOSE_PROGRESS=plain`
-or `GOOSE_PROGRESS=live` overrides the choice; `-v` and `--dry-run` print
-plainly.
+[The command line](command_line.md) describes the rest: every option of
+run, build and check, what the compiler prints, and how to write the C
+for a build system of your own.
 
 ## 2. Using a package
 
 A *package* is a library in a directory of its own: a module named after it,
 `name.goose`, further modules beside it, and possibly C. The packages the
-compiler knows by name are the *blessed* ones (`src/blessed.txt`): a program
-imports them like any module,
+compiler knows by name are the *blessed* ones (`src/blessed.txt`). A program
+imports them like any other module:
 
 ```goose
 import gfx;
 import physics;
 ```
 
-and the compiler fetches the package from its repository at the pinned tag
-the first time, into `~/.goose/pkg`, builds its C with cmake and the C
-compiler, and keeps both. A compiler configured with
+The first time, the compiler fetches the package from its repository at the
+pinned tag into `~/.goose/pkg`, builds its C with cmake and the C compiler,
+and keeps both. A compiler configured with
 `-DGOOSE_BUILTIN_LIBS=all` has the blessed packages compiled in and runs
 such a program with nothing else installed; `goose toolchain` lists what is
 built in.
@@ -83,25 +71,28 @@ import mylib from "../mylib";                      // a directory, used in place
 ```
 
 `import name from "source";` declares the package `name` and imports its
-module `name.goose`; its other modules are `import name.other;`. A git
-source needs a ref after `@`: a tag or a commit is a pin, and a branch is
-one too until `goose fetch --update program.goose` fetches it again. A path
-is relative to the file that writes it, and nothing is copied: edit the
-library and run the program.
+module `name.goose`; its other modules are imported with
+`import name.other;`. A git source needs a ref after `@`. A tag or a commit
+pins the package. A branch does too, until
+`goose fetch --update program.goose` fetches it again. A path is relative
+to the file that contains the import, and nothing is copied: you can edit
+the library and run the program.
 
-**Only the root file declares packages.** Every other file, the library's
-own included, imports by name alone. A library that needs another package
+**Only the root file declares packages.** Every other file, including the
+library's own files, imports by name alone. A library that needs another package
 writes the same `import other from "…";` line in its own files, and the
 compiler reads it as a *requirement*: if the root does not declare `other`,
-the error says exactly what line to add to the root. The root declaring the
-same package from a different ref gets a warning; from a different source,
-an error. So a program's dependencies are flat, pinned, and in one place,
-and one version of each package exists in a program.
+the error says exactly what line to add to the root. If the root declares
+the same package from a different ref, the compiler warns; if it declares
+it from a different source, that is an error. So a program's dependencies
+are flat, pinned and in one place, and a program contains only one version
+of each package.
 
-`goose fetch program.goose` fetches everything the root declares, for an
-offline session later. The tools involved are reported by name when they
-are missing: `git` to fetch, `cmake` for a package built with CMake, a C
-compiler for any C at all. A program with no C and no such packages needs
+`goose fetch program.goose` fetches everything the root declares, for a
+later offline session, and `--offline` makes any command fetch nothing.
+When a tool that is needed is missing, the error
+names it: `git` to fetch, `cmake` for a package built with CMake, and a C
+compiler for any C code. A program with no C and no such packages needs
 none of them.
 
 ## 3. A program with C of its own
@@ -114,6 +105,7 @@ C that belongs to the program goes in a sidecar beside the root file,
 c_sources = ["impl.c", "vendor/stb_impl.c"];   // compiled with the program's build
 c_include = ["vendor"];
 c_defines = ["IMPL_FAST=1"];
+c_flags_cc = ["-mavx2"];                       // compile flags for gcc and clang; c_flags_msvc for MSVC
 c_libs = ["m"];                                // system libraries, by name
 c_libs_windows = ["user32"];                   // one platform's part
 dylibs_linux = ["SDL2=libSDL2-2.0.so.0"];      // what an extern "SDL2" block opens here
@@ -121,20 +113,22 @@ output = "foo";                                // the executable's name, if not 
 ```
 
 The file looks like Goose (`//` comments, `key = value;`, strings, `true`
-and `false`, `[lists]`), and every `c_*` key takes a `_windows`, `_linux`
-or `_macos` suffix for a platform-only part. `goose build` compiles and
-links that C; `goose run` builds it into a library the in-process run
-loads. Either way an `extern fn` in the program reaches it:
+and `false`, `[lists]`), and every `c_*` key can take a `_windows`,
+`_linux` or `_macos` suffix for a part that applies to one platform only.
+`goose build` compiles and links that C; `goose run` builds it into a
+library that the in-process run loads. Either way, an `extern fn` in the
+program can call it:
 
 ```goose
 extern fn impl_sum(a: i32, b: i32) -> i32;
 extern fn impl_count(s: const u8[:], c: u8) -> i64;   // a slice arrives as { data, len }
 ```
 
-A single-header library is one `impl.c` that defines its implementation
-macro and includes the header. A header spliced into the generated C
-instead, `--include shim.h` on the command line, still works for small
-shims written against the generated types (spec §7.10).
+A single-header library needs only one `impl.c` that defines its
+implementation macro and includes the header. Alternatively,
+`--include shim.h` on the command line splices a header into the generated
+C; this still works for small shims written against the generated types
+(spec §7.10, [command_line.md](command_line.md#8-writing-the-c-yourself)).
 
 ## 4. Making a package
 
@@ -155,29 +149,32 @@ package's root, `import .helper;` finds it relative to the importing file,
 and `import std;` reaches the standard library. By convention a package's
 files declare its name as their namespace.
 
-A library that needs another package writes the requirement in its entry,
-`import vec_extras from "github.com/x/vec_extras@v2";`, which the compiler
-checks against the program's root as described above. Its own examples and
-tests are root files, so there the line is honored and the examples run on
-their own.
+A library that needs another package writes the requirement in its entry
+file, `import vec_extras from "github.com/x/vec_extras@v2";`, and the
+compiler checks it against the program's root as described above. The
+library's own examples and tests are root files, so in them the line
+declares the package, and the examples run on their own.
 
 ### The native part
 
-A package over a library that is installed on the machine, or shipped
-beside the program, may need no C of its own: an `extern "name" { ... }`
-block declares the functions bound from that shared library by name when
-the program starts (spec §7.10), and the sidecar's `dylibs` list, with
-the platform suffixes, maps a name a block uses to the spelling to open
-where the derived one is wrong, `dylibs_linux = ["SDL2=libSDL2-2.0.so.0"];`.
-A package maps its own names as defaults; the program's sidecar maps a
-name for any package it uses and wins, platform by platform, for the
-names it mentions; a name no block declares is an error. A program
-calling only such functions builds and links nothing, and runs under
-`goose run` with no C toolchain installed. The rest of this section is
-about C the package compiles itself.
+A package can call a library installed on the machine or shipped beside the
+program without compiling C of its own. An `extern "name" { ... }` block
+declares functions to load from that shared library by name at program startup
+(spec §7.10).
 
-The sidecar names the C, one of two ways. Plain sources, which the compiler
-compiles with the includes, defines, flags and libraries given:
+If the name produces the wrong library filename, map it in the sidecar's
+`dylibs` list using a platform suffix, for example `dylibs_linux =
+["SDL2=libSDL2-2.0.so.0"];`. A package supplies defaults for its own names. The
+program's sidecar can override any of those names, with precedence determined
+separately for each platform. Mapping a name that no block declares is an error.
+
+A program that calls only these functions compiles and links no native code and
+can run with `goose run` without a C toolchain. The rest of this section covers
+packages that compile their own C.
+
+The sidecar names the C in one of two ways. The first is plain sources,
+which the compiler compiles with the given includes, defines, flags and
+libraries:
 
 ```goose
 // mylib.build
@@ -186,8 +183,8 @@ c_include = ["include"];
 c_libs_linux = ["m"];
 ```
 
-Or a CMake project at the package root, by the name of its static library
-target:
+The second is a CMake project at the package root, named by its static
+library target:
 
 ```goose
 // mylib.build
@@ -196,30 +193,31 @@ cmake_options = ["MYLIB_SIMD=ON"];
 ```
 
 The compiler then configures and builds a small wrapper project around the
-package's own CMakeLists and takes the target's whole link line, so a
-package can be a thin Goose layer over an existing C library with no CMake
-written for Goose's sake. Submodules the package needs are cloned with it.
-Either way the part is built once per C compiler under `~/.goose/build`,
-and a program links it statically.
+package's own CMakeLists and uses the target's complete link line, so a
+package can be a thin Goose layer over an existing C library without any
+CMake code written specifically for Goose. Submodules the package needs are
+cloned with it. Either way, the native part is built once per C compiler
+under `~/.goose/build`, and a program links it statically.
 
-The functions the package's `extern fn`s name must be defined by that C (or
-by the C library); the runtime's own `gs_os_*` and friends belong to the
-standard library. Every `.goose` file under the package root counts as the
-package's, except in a directory below the root holding a sidecar of its
-own (an example program with its own C, say) and in the directories the
-sidecar lists as not the package's:
+The functions that the package's `extern fn`s name must be defined by that
+C (or by the C library); the runtime's own `gs_os_*` functions and similar
+ones belong to the standard library. Every `.goose` file under the package
+root belongs to the package, except files in a directory below the root
+that has a sidecar of its own (such as an example program with its own C),
+and files in the directories that the sidecar excludes:
 
 ```goose
 // mylib.build
 exclude = ["tools", "third_party/demo"];
 ```
 
-Most values an `extern fn` passes have layouts C can declare for itself, a
-slice as `{ data, len }`, say (spec §7.10). A builder, `u8[>..]&`, is the
-exception: C appends to it through the runtime, which `goose.h` gives C
-compiled on its own. The compiler puts that header on the include path of
-every native part, the program's own included, CMake targets too, and
-builds them all again when it changes:
+Most values an `extern fn` passes have layouts that C can declare for
+itself, such as a slice as `{ data, len }` (spec §7.10). A builder,
+`u8[>..]&`, is the exception: C appends to it through the runtime, and
+`goose.h` gives separately compiled C access to the runtime for this. The
+compiler puts that header on the include path of every native part,
+including the program's own and CMake targets, and rebuilds them all when
+the header changes:
 
 ```c
 #include "goose.h"
@@ -231,16 +229,17 @@ void mylib_name(gs_rref out, int64_t id) {   /* extern fn mylib_name(out: u8[>..
 A package's C is self-contained: two packages that must share C share a
 repository, as `gfx`, `audio` and `ui` do. A package whose functions keep
 one state for the process, or that may only be called from the main thread,
-says so in its sidecar, `main_thread_only = true;`, and a `thread_fn`
-calling it is then a compile error.
+says so in its sidecar with `main_thread_only = true;`, and calling it from
+a `thread_fn` is then a compile error.
 
 ### Files a package needs at run time
 
-`embed_file("path")` reads a file when the program is compiled, relative to
-the file with the call, and gives its bytes as a `const u8[:]` into static
-data: a font, a table, a shader source. That is how a package ships data
-without a deployment story. Files read at run time belong to the program
-(`resource_dir()`, `docs/stdlib.md`).
+`embed_file("path")` reads a file when the program is compiled (the path is
+relative to the file containing the call) and gives its bytes as a
+`const u8[:]` into static data, such as a font, a table or a shader source.
+This is how a package ships data without having to deploy separate files.
+Files read at run time belong to the program (`resource_dir()`,
+`docs/stdlib.md`).
 
 ### Publishing
 
@@ -253,7 +252,7 @@ import mylib from "github.com/you/mylib@v1";
 There is no registry to register with. A tag can move and a branch always
 does, so users who need a build to be reproducible pin a commit. Code from
 a fetched package runs on the user's machine when its C is built, as with
-any build script; that is the trust a pin expresses.
+any build script; pinning a version expresses trust in that code.
 
 ## 5. The cache
 
@@ -267,4 +266,4 @@ any build script; that is the trust a pin expresses.
   toolchain/                      what finding the C compiler took (vcvars on Windows)
 ```
 
-Deleting it loses nothing that a build does not make again.
+Deleting it loses nothing that a build cannot recreate.

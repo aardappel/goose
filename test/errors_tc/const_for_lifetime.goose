@@ -1,4 +1,5 @@
 // error: returning a reference rooted in s, which dies with this function
+// error: in const for field S.x
 struct S { x: i64 }
 fn escaped() -> i64& {
     var s = S { 1 };

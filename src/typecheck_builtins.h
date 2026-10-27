@@ -883,6 +883,11 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         if (auto id = Is<Ident>(arg); id && id->vdef && value.lvalue && IsPlainRef(pt1) &&
                                       !pt1->cq && argvals[1].writable)
             NoteWritableRef(id->vdef, arg);
+        // Rendering a T is no copy(x), and a T that is not fixed-size
+        // reaches a value parameter only as one or as an rvalue (§4.1).
+        if (!IsRefOrSlice(pt1) && ClassOf(pt1) != SC_FIXED)
+            Error(c, cat(TypeStr(t), " is not fixed-size and is not copied implicitly into the "
+                         "format overload taking it by value (§4.1): take it by reference"));
         // The hook's copy would still measure its self-relative references
         // from where the value lies (§3.9).
         if (!IsRefOrSlice(pt1) && HasRelRefT(pt1))

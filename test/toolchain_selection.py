@@ -1,13 +1,20 @@
 """Compiler discovery prefers speed, while --exe keeps assertion builds explicit."""
 
+import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import toolchain as tc
+# A copy of scripts/toolchain.py of this test's own: run_tests.py runs the
+# test on a thread beside jobs that read the shared module's REPO_ROOT, which
+# patching it here would move under them.
+_spec = importlib.util.spec_from_file_location(
+    "toolchain_selection_tc", Path(__file__).resolve().parents[1] / "scripts" / "toolchain.py")
+tc = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = tc
+_spec.loader.exec_module(tc)
 
 
 class CompilerSelection(unittest.TestCase):

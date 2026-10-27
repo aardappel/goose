@@ -41,7 +41,10 @@ inline void CodeGen::GenStmt(Node *n) {
     PushSc(SC_STMT);
     termjump = false;
     GenStmt2(n);
-    if (termjump) cscopes.back().saves.clear();   // Nothing runs after a jump.
+    if (termjump) {   // Nothing runs after a jump.
+        cscopes.back().saves.clear();
+        cscopes.back().defers.clear();
+    }
     PopSc();
     termjump = false;
 }
@@ -79,6 +82,7 @@ inline void CodeGen::CloseLoop(const OpenedLoop &lp) {
     auto usedbrk = cscopes[lp.si].usedbrk;
     auto brklbl = cscopes[lp.si].brklbl;
     cscopes[lp.si].saves.clear();   // Restores already emitted in-loop.
+    cscopes[lp.si].defers.clear();
     PopSc();
     if (usedbrk) L(brklbl, ":;");
     MarkLoopEnd(lp.loopid);
@@ -544,6 +548,7 @@ inline void CodeGen::GenBlocked(ForLoop *f, int k, const string &more, const str
         L("}");
     }
     cscopes[si].saves.clear();
+    cscopes[si].defers.clear();
     cscopes[si].usedcnt = false;
     cscopes[si].cntlbl = Lbl();
     L("for (; ", cond, "; ", step, ") {");

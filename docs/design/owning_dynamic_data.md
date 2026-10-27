@@ -14,15 +14,15 @@
 
 </details>
 
-Research example. The requirement is a runtime-sized set of independently
-editable buffers, with memory reclaimed when each document closes. The
-difficulty is independent growth and release in arbitrary order, rather than
-simply representing a list of strings. `reusable[]` slice pools (spec 5.4) now
-express this inside the language. This note shows that representation and what
-it costs, which earlier workarounds remain useful, and two
-possible future extensions for what slice pools leave out: bounded independent
-dynamic stacks and opaque API resources. Neither extension is an implemented
-language feature.
+This note is a research example. The requirement is a runtime-sized set of
+independently editable buffers, with memory reclaimed when each document
+closes. The difficulty is independent growth and release in arbitrary order,
+not the representation of a list of strings. `reusable[]` slice pools (spec
+5.4) now express this inside the language. This note shows that
+representation and what it costs, which earlier workarounds remain useful, and
+two possible future extensions that cover what slice pools leave out: bounded
+independent dynamic stacks and opaque API resources. Neither extension is an
+implemented language feature.
 
 ## The ordinary owning representation
 
@@ -74,44 +74,47 @@ fn close(d: Document&) {
 }
 ```
 
-`alloc_slice` places a run at the first free span, in index order, that holds
-it, or else at the end of the array. `realloc_slice` grows a run in place where
-it ends the array or free bytes follow it, and otherwise moves it where a new
-run of the new size would go, its own old place included. `free_slice` returns
-a run, merged with the free spans beside it. Every byte a run gains is zero.
+`alloc_slice` places a run in the first free span (in index order) that can
+hold it, or else at the end of the array. `realloc_slice` grows a run in place
+where the run ends the array or free bytes follow it. Otherwise it moves the
+run to where a new run of the new size would go, which can be the run's own
+old place. `free_slice` returns a run to the pool and merges it with the free
+spans beside it. Every byte a run gains is zero.
 
-In the example, A and B are placed end to end. Appending 5 MB to A finds B
-directly behind it and no free 6 MB run, so A's megabyte is copied to the end
-of the array. Closing A leaves two free runs: A's first place and the 6 MB at
-the end, which C then takes the front of. Growing B, now followed by C, copies
-B's 20 MB to the first free run that holds the new size: B's own place merged
-with the megabyte before it if the growth fits there, or else the end of the
-array, starting in the 4 MB left free after C. Closing C merges its bytes with
-whichever free bytes border them.
+In the example, A and B are placed end to end. When 5 MB is appended to A, B
+directly follows A and there is no free 6 MB run, so A's megabyte is copied to
+the end of the array. Closing A leaves two free runs: A's first place, and the
+6 MB at the end. C then takes the front of the 6 MB run. B is now followed by
+C, so growing B copies B's 20 MB to the first free run that can hold the new
+size. That run is B's own place merged with the free megabyte before it, if
+the growth fits there; otherwise it is at the end of the array, starting in
+the 4 MB left free after C. Closing C merges its bytes with whichever free
+bytes border them.
 
 Views keep the `reusable` semantics (spec 9.4). A slice or byte reference
 taken before a move or a close keeps its original range, and reads whatever
 bytes a later allocation puts there; it never reaches outside the array.
-Editing code therefore reads the document's `text` again after anything that can
-grow or close it, and keeps cursors as offsets rather than references. A link
-in the tab list outlives its document's close the same way: it reads a valid
-`Document`, which may by then be another one.
+Editing code therefore reads the document's `text` again after anything that
+can grow or close it, and keeps cursors as offsets rather than references. A
+link in the tab list outlives its document's close in the same way: it still
+reads a valid `Document`, which may by then be a different document.
 
-`index_of` is what turns a `Document&` back into the slot `free` takes, and it
-recognises a reference a caller passed in as one of `docs`' slots only because
-a type names that pool (spec 3.9). A pool no `T&<w in pool>` type names has to
-pass slot numbers around instead; `docs/implementation.md` §10 records what
-would lift that.
+`index_of` turns a `Document&` back into the slot that `free` takes. It
+recognises a reference that a caller passed in as one of `docs`' slots only
+because a type names that pool (spec 3.9). A pool that no `T&<w in pool>` type
+names has to pass slot numbers around instead; `docs/implementation.md` §10
+records what would lift that restriction.
 
 The checker cannot always tell which array a slice read out of `docs` points
-into: any other global able to hold a `u8`, a log buffer say, is as good a
-candidate as `bytes` (spec 9.5). `realloc_slice` and `free_slice` do not need
-it to. A slice they are not shown to be `bytes`' own is checked when the call
-runs, and the call aborts unless the slice lies inside `bytes` on an element
-boundary: a few compares beside the work the call does anyway. A slice type
+into. Any other global that can hold a `u8`, such as a log buffer, is as
+good a candidate as `bytes` (spec 9.5). `realloc_slice` and `free_slice` do
+not need the checker to know. When a slice passed to them is not shown to
+belong to `bytes`, it is checked when the call runs, and the call aborts
+unless the slice lies inside `bytes` on an element boundary. That check is a
+few compares, in addition to the work the call does anyway. A slice type
 naming its pool (`u8[: in bytes]`, like `T&<u32 in pool>`) would make that
-knowledge static, if a program needs to avoid the runtime
-check or detect an invalid pool assignment earlier.
+knowledge static, if a program needs to avoid the runtime check or detect an
+invalid pool assignment earlier.
 
 ## What the slice pool costs
 
@@ -124,36 +127,41 @@ check or detect an invalid pool assignment earlier.
   array's high-water length stays committed and is never returned to the OS.
 * **A move copies.** Growth that cannot happen in place is O(current length),
   and a document grown in small steps while another follows it can be copied
-  at each step. Growing by a factor is the caller's policy.
+  at each step. Whether to grow by a factor is up to the caller.
 * **Fragmentation.** Placement is first fit in index order, with neighbors
   merged on release. Enough free bytes in total does not guarantee a free run
-  of the needed size; the array then grows. First fit was measured against
-  best fit: it was faster everywhere, best fit's array came out at most 12%
-  smaller on buffers grown a step at a time, and first fit's came out smaller
-  on mixed sizes.
+  of the needed size; in that case the array grows. First fit was measured
+  against best fit. First fit was faster in every measurement. Best fit's
+  array came out at most 12% smaller on buffers grown a step at a time, and
+  first fit's array came out smaller on mixed sizes.
 * **Views do not follow a move.** Store positions as offsets into the current
   run so they remain usable after it moves, as described above.
 * **Element types.** Elements are fixed-size, and `realloc_slice` rejects
-  element types holding self-relative references, whose offsets a copy would
-  leave measuring from the old place (spec 3.9).
+  element types holding self-relative references, because after a copy their
+  offsets would still be measured from the old place (spec 3.9).
 * **Per-operation cost.** Placement, growth and release each walk a tree of
   the free spans, so their cost grows with the logarithm of the number of
-  simultaneously free runs (docs/implementation.md 9.7). A slice handed back
-  that the checker cannot place in the pool also pays a range test.
+  simultaneously free runs (docs/implementation.md 9.7). A slice passed back
+  that the checker cannot place in the pool also costs a range test.
 
 ## The other Goose representations
 
-The placement rules are unchanged: an array still cannot contain resizable
+The placement rules are unchanged. An array still cannot contain resizable
 elements (spec 3.4), so a growable array of growable documents remains
-inexpressible, and cycle functions still cannot keep nonfixed locals across
-a call into their cycle (spec 7.8). Slice pools are the in-language
-substitute. Several earlier workarounds are superseded by them: append-only
-byte storage with per-document offsets (retention followed edit history
-until a whole-region reset), one big
-grow-shrink buffer with application-managed shifting (the pool now does the
-placement and moving), runtime-capacity limited arrays `u8[..]` (which could
-neither grow nor live in a slot pool), and a table of references to separately
-scoped locals (which never owned anything). The following approaches remain useful:
+inexpressible. Cycle functions still cannot keep nonfixed locals across a
+call into their cycle (spec 7.8). Slice pools are the in-language substitute,
+and they supersede several earlier workarounds:
+
+* append-only byte storage with per-document offsets (retained memory
+  followed the edit history until a whole-region reset);
+* one big grow-shrink buffer with application-managed shifting (the pool now
+  does the placement and moving);
+* runtime-capacity limited arrays `u8[..]` (which could neither grow nor live
+  in a slot pool);
+* a table of references to separately scoped locals (which never owned
+  anything).
+
+The following approaches remain useful:
 
 | Approach | Where it still fits |
 |---|---|
@@ -164,15 +172,17 @@ scoped locals (which never owned anything). The following approaches remain usef
 
 ## Future option A: bounded independent dynamic stacks
 
-What a slice pool cannot give: element addresses that stay put while a
-document grows, growth that never copies, release of a closed document's memory
-to the OS, isolation of one document's fragmentation from the others, and more
-total storage than one reservation. This option extends the dynamic stacks idea
-in spec 11.3 to a runtime-sized collection whose elements each own an
-independently growing stack: a resizable array of resizable arrays. This is a
-new owning container, not something today's placement rules already permit.
-Its descriptor table can grow or reuse slots while the element storage stays in
-separately reserved address regions.
+A slice pool has several limits: element addresses can change during growth,
+growth can copy data, and closing a document does not return its memory to the
+OS. Documents also share fragmentation and are limited to one reservation's
+total storage.
+
+This option extends the dynamic stacks idea in spec 11.3. It proposes a
+runtime-sized collection in which each element owns an independently growing
+stack: a resizable array of resizable arrays. Today's placement rules do not
+permit this, so it requires a new owning container. Its descriptor table could
+grow or reuse slots while element storage stays in separately reserved address
+regions.
 
 For a supported 64-bit target, define a virtual-address reservation budget rather
 than assuming that a 64-bit pointer provides 2^64 usable bytes. A runtime profile
@@ -215,15 +225,15 @@ in a slice pool instead.
   released when its owning collection or runtime budget ends. No document's live
   data is copied to release another's storage.
 
-The two compose: a stack from this option can back a slice pool of its own,
-for example one per class of document, combining stable large buffers with
-pooled small ones. The remaining questions include per-stack versus pooled size
-budgets, the owning descriptor's transfer rules, and how much per-document
-lifetime precision the checker can provide without annotation-heavy APIs. Fixed
-size and count limits are part of this option's contract, not an accidental
-failure mode to hide. This option is only worth that checker work where
-measurements of slice pools show copies, retained memory or a reservation limit
-that matters.
+The two can be combined: a stack from this option can back a slice pool of
+its own, for example one per class of document, combining stable large
+buffers with pooled small ones. The remaining questions include per-stack
+versus pooled size budgets, the owning descriptor's transfer rules, and how
+much per-document lifetime precision the checker can provide without
+annotation-heavy APIs. Fixed size and count limits are part of this option's
+contract, not an accidental failure mode to hide. This option is worth that
+checker work only where measurements of slice pools show that copies,
+retained memory or a reservation limit matter.
 
 ## Future option C: opaque API resources
 
@@ -264,21 +274,22 @@ array. Holding a mapping resource therefore would not automatically make the
 mapped bytes a Goose array or slice. Direct mapped views would need a separate
 design connecting their bounds and lifetime to the resource.
 
-**Cleanup remains unresolved.** A binding might optionally supply cleanup to run when a
-local resource leaves scope; whether or how that extends to resources inside
-aggregates is also open. Which copies would trigger cleanup, what happens to
-aliases after an explicit release, how repeated cleanup or double-free is
-prevented, and what aggregate copying means are unresolved. The proposal does
-not yet promise RAII, destructors or automatic ownership transfer. These
-questions must be settled before a cleanup hook could be given reliable
-language semantics.
+**Cleanup remains unresolved.** A binding might optionally supply cleanup to
+run when a local resource leaves scope; whether or how that extends to
+resources inside aggregates is also open. Several further questions are
+unresolved: which copies would trigger cleanup, what happens to aliases after
+an explicit release, how repeated cleanup or double-free is prevented, and
+what aggregate copying means. The proposal does not yet promise RAII,
+destructors or automatic ownership transfer. These questions must be settled
+before a cleanup hook could be given reliable language semantics.
 
 ## Extending slice pools
 
-Smaller steps than either option, each addressing one of the costs above:
+There are also smaller steps than either option, each addressing one of the
+costs above:
 
 * **A slice type naming its pool**, as described above, turning the run-time
-  check on a slice handed back into a static one.
+  check on a slice passed back into a static one.
 * **Recoverable allocation:** a form of `alloc_slice` and `realloc_slice` that
   reports a run the reservation cannot hold instead of aborting, leaving the
   original run intact.
@@ -290,16 +301,17 @@ Smaller steps than either option, each addressing one of the costs above:
   from option A.
 * **Relocating self-relative references:** tracking the region a relative
   reference ranges over (spec TODO 16) would let a run of linked elements move
-  whole.
+  as a whole.
 
 ## Evaluating what remains
 
 Run the open/edit/close sequence against slice pools first, now that they
 exist. Measure live bytes, the array's high-water and committed bytes, copied
-bytes and latency separately, including repeated fragmenting growth and
-release, a document that outgrows the reservation, and old views read after a
-move, a close and reuse. That establishes where option A's stable, releasable
-storage justifies the additional lifetime analysis: its evaluation adds the 257th document, a
-document exceeding its size ceiling, and references held across a document
-close. For option C, evaluate API buffer transfers and file-mapping access
-while keeping the unresolved cleanup policy explicit.
+bytes and latency separately. Include repeated fragmenting growth and release,
+a document that outgrows the reservation, and old views read after a move, a
+close and reuse. Those measurements establish where option A's stable,
+releasable storage justifies the additional lifetime analysis. Evaluating
+option A also covers the 257th document, a document exceeding its size
+ceiling, and references held across a document close. For option C, evaluate
+API buffer transfers and file-mapping access while keeping the unresolved
+cleanup policy explicit.

@@ -1,4 +1,8 @@
-![The Goose programming language](docs/logo/logo_black_fg_white_bg_mini.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/logo_white_fg_trans_bg_mini.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/logo/logo_black_fg_white_bg_mini.png">
+  <img alt="The Goose programming language" src="docs/logo/logo_black_fg_white_bg_mini.png">
+</picture>
 
 # The Goose Programming Language
 
@@ -7,12 +11,13 @@ lifetime annotations. In this repository's benchmarks, Goose runs faster than
 C++ and Rust while using less memory.
 
 [Tutorial](docs/tutorial.md) · [Reference](docs/reference.md) ·
-[Specification](docs/goose_spec.md) · [Packages](docs/packages.md) ·
+[Specification](docs/goose_spec.md) · [Command line](docs/command_line.md) ·
+[Packages](docs/packages.md) ·
 [Samples](samples/README.md) · [Benchmarks](bench/results.md) ·
 [Standard library](docs/stdlib.md)
 
 Goose has syntax familiar to C and Rust programmers, but **there is no heap**.
-Every dynamic value lives inline on a data stack managed by the compiler.
+Every dynamic value lives inline on data stacks managed by the compiler.
 Growth advances a pointer, and memory is freed when its scope ends. The
 language's type and lifetime rules make this memory model safe to use.
 
@@ -23,51 +28,57 @@ language's type and lifetime rules make this memory model safe to use.
 
 * **Faster than C++ and than safe Rust, while memory safe.** Over sixteen
   benchmarks Goose runs at 3.3x the speed of idiomatic C++, 1.16x hand-optimized
-  C++ and 1.12x the best safe Rust, on 1.9x, 1.3x and 1.2x less memory
+  C++ and 1.12x the best safe Rust, and uses 1.9x, 1.3x and 1.2x less memory
   ([results](bench/results.md)). These gains
   come from Goose's data layouts and memory model.
 * **No allocator, no GC, no reference counting, no destructors.** Memory is a
   handful of data stacks that the compiler assigns statically. Freeing a
-  million-element structure is one store, however deeply it nests.
+  structure with a million elements takes a single store, no matter how
+  deeply it is nested.
 * **Growth preserves references.** A reference into a growing array stays valid for as
-  long as the array does. You keep typed references where C++ must `reserve`
-  and safe Rust uses `u32` indices in the corresponding benchmarks.
-* **Memory safe with zero annotations.** No lifetime syntax, no aliasing or
-  exclusivity rules, no `unsafe`. The compiler infers what every reference is
-  rooted in and rejects references that could outlive their owners.
+  long as the array does. In the corresponding benchmarks, Goose keeps typed
+  references where C++ must call `reserve` and safe Rust uses `u32` indices.
+* **Memory safe with zero annotations.** There is no lifetime syntax, there
+  are no aliasing or exclusivity rules, and there is no `unsafe`. The compiler
+  infers what every reference is rooted at and rejects references that could
+  outlive their owners.
 * **Nested data stays inline.** A string, an array of strings, a record with
-  variable-size fields and an array of those records are each one contiguous
-  block with no pointer in it. A record that is 160 bytes and an allocation in
-  C++ is 29 bytes and none in Goose.
-* **Enums that cost what they hold.** Variable-mode ADTs give each value its own
-  variant's size rather than the largest one's: 4x less memory and 2x the speed
-  of a Rust `enum` on the benchmark that exercises it.
+  variable-size fields and an array of those records are each stored as one
+  contiguous block that contains no pointers. A example record that takes 160 bytes
+  and one allocation in C++ takes 29 bytes and no allocations in Goose.
+* **Variable sized Enums.** Variable-mode ADTs store each value at
+  the size of its own variant rather than that of the largest variant. On the
+  benchmark that exercises this, they use 4x less memory than a Rust `enum`
+  and run at 2x its speed.
 * **Links narrower than pointers.** A relative reference stores a typed, checked
   link as a 1, 2 or 4-byte offset. Structures built from them are position
-  independent, so your data structure is already its file format: saving is a
-  write, loading is a read plus a verification pass that rejects hostile bytes.
+  independent, so a data structure can be written to a file as is. Saving
+  it is a single write, and loading it is a single read followed by a
+  verification pass that rejects malformed or hostile data.
 * **Everything is built in place, guaranteed.** A value is constructed at its
   final destination through any depth of calls. `items.push(parse(line))`
-  writes the parsed record straight into the array, and returning a growable
-  array by value costs nothing.
-* **Returns across multiple calls.** `return err from load` returns from a function
-  any number of frames up, statically checked, with no unwinder, no `Result`
-  type and no `?` on every call.
-* **Threads that share nothing.** A worker is compiled as a separate program
-  with its own memory, and flat values cross typed queues as a `memcpy`. Data
-  races, locks, atomics and memory orderings do not exist in the language.
+  writes the parsed record directly into the array, and returning a growable
+  array by value does not copy it.
+* **Returns across multiple calls.** `return err from load` returns from a
+  function any number of frames up the call stack. It is checked statically,
+  and needs no unwinder, no `Result` type and no `?` on every call.
+* **Threads with no shared memory.** A worker is compiled as a separate program
+  with its own memory, and flat values are passed between threads through
+  typed queues with a `memcpy`. Data races, locks, atomics and memory
+  orderings do not exist in the language.
 * **Generics and higher-order functions with no overhead.** An untyped
   parameter is generic. Function values are compile-time entities, so
-  `xs.filter() { it > 0 }` compiles to the loop it looks like and builds its
-  result straight into its destination.
-* **Plain C in, plain C out.** Goose compiles to one C file, so it runs wherever
+  `xs.filter() { it > 0 }` compiles to what the handwrittend loop would looks like and builds its
+  result directly in its destination.
+* **Compiles to C and can call C.** Goose compiles to one C file, so it runs wherever
   a C compiler does and calls C directly through `extern fn`. The bundled
   TinyCC backend compiles and runs a program in-process, with no build step.
 
 The [tutorial](docs/tutorial.md) walks through all of this by example, the
 [reference](docs/reference.md) covers the whole language topic by topic,
 the [specification](docs/goose_spec.md) has the exact rules, and the
-[benchmarks](bench/results.md) have the numbers, losses included.
+[benchmarks](bench/results.md) have the numbers, including the cases where
+Goose loses.
 
 ## Features
 
@@ -75,7 +86,7 @@ This section focuses on what distinguishes Goose. The [tutorial](docs/tutorial.m
 explains these features in more detail, and the [samples](samples/README.md)
 show them in thirty-one complete programs.
 
-### One memory model: stacks, and scope exit is the free
+### One memory model: data stacks freed at scope exit
 
 A program has the native call stack, static data and N data stacks, where the
 compiler works out N. A data stack is a large address-space reservation with a
@@ -92,7 +103,7 @@ for round in 3 {
 }                                                     // the free: one store to the stack top
 ```
 
-### Nothing moves, so references survive growth
+### Memory never moves, so references survive growth
 
 ```goose
 struct Item { id: i32, weight: f32 }
@@ -134,22 +145,24 @@ a dictionary keyed by `u8[:]` stores views of strings rather than copies.
 
 ### Nested data stays inline
 
-There is no single array type. There is a family that differs only in what
-happens to the size, and every member is `[metadata][elements...]`, inline and
-packed, never a pointer to an element block:
+There is no single array type. Instead there is a family of array types that
+differ only in how their size can change. Every member is laid out as
+`[metadata][elements...]`, inline and packed, never as a pointer to a separate
+block of elements:
 
-| Spelling | What it is |
+| Type | What it is |
 |---|---|
 | `T[k]` | fixed size, known at compile time |
 | `T[]`, `T[varint]` | sized at construction, frozen after; a fixed or variable-width length |
 | `T[..k]`, `T[..]` | capacity inline; grows and shrinks within it |
-| `T[>..]` | **grow-only**: the workhorse; references into it stay valid |
+| `T[>..]` | **grow-only**: the most commonly used kind; references into it stay valid |
 | `T[>..<]` | **grow-shrink**: stacks, queues, heaps |
 
-Strings are just `u8` arrays: `u8[>..]` is a builder, `u8[]` a finished string
+Strings are `u8` arrays: `u8[>..]` is a builder, `u8[]` a finished string
 stored inline in whatever holds it, `u8[..16]` a small string inside a struct,
-`u8[:]` a view. A struct may contain variable-size parts, and they sit inline
-in declaration order, so a record is a run of bytes with nothing indirect in it:
+`u8[:]` a view. A struct may contain variable-size parts, which are stored
+inline in declaration order, so a record is a sequence of bytes with no
+indirection in it:
 
 ```goose
 struct Item  { sku: u8[varint], qty: varint, cents: varint }
@@ -163,18 +176,19 @@ book.push(Order { id: 1001, customer: "alice",
 
 That order is **29 bytes and 0 allocations**. As C++ `std::string` +
 `std::vector<Item>` it is 160 bytes and 1 allocation, and as Rust `String` +
-`Vec<Item>` 153 bytes and 4. A whole order book is one array that streams
-through the cache. The price is that an array of variable-size elements is
-sequential: you can iterate it but not index it (unless you keep a second
-array of references into it as an index).
+`Vec<Item>` it is 153 bytes and 4 allocations. An entire order book is a single
+array, so reading it streams through the cache. The trade-off is that an array
+of variable-size elements is sequential: you can iterate it but not index it
+(unless you keep a second array of references into it as an index).
 
 ### Enums in two sizes
 
-Algebraic data types are the only dynamic polymorphism: no inheritance, no
-vtables. Every ADT can be stored two ways, chosen at the point of use. Fixed
-mode (`Shape`) is a tag plus room for the largest payload, indexable and
-overwritable. Variable mode (`Shape..`) gives each value exactly its variant's
-size; the array becomes sequential and a value never changes variant, and in
+Algebraic data types are the only form of dynamic polymorphism; there is no
+inheritance and there are no vtables. Every ADT can be stored in two ways,
+chosen at the point of use. Fixed mode (`Shape`) stores a tag plus room for
+the largest payload, so values can be indexed and overwritten. Variable mode
+(`Shape..`) gives each value exactly the size of its variant. An array of
+such values becomes sequential and a value never changes variant, but in
 exchange you may take references *into* a payload:
 
 ```goose
@@ -203,12 +217,13 @@ for s in packed { print(s, " area ", area(s)); }
 
 ### Links narrower than pointers
 
-A `T&` is a machine address: eight bytes, never dangling. A *relative reference*
-is the same link stored as a narrow offset: `T&<u32>` is measured from the field
-itself to a target in the same array, so the structure is position independent,
-and `T&<u32 in pool>` from a named pool's base, so other arrays can link into
-the pool. `T&<u32>?` uses offset 0 as null. Here is a binary search tree in one
-grow-only array, with 12-byte nodes:
+A `T&` is a machine address: it takes eight bytes and never dangles. A
+*relative reference* is the same link stored as a narrow offset. A `T&<u32>`
+is measured from the field itself to a target in the same array, so the
+structure is position independent. A `T&<u32 in pool>` is measured from the
+base of a named pool, so other arrays can link into the pool. `T&<u32>?` uses
+offset 0 as null. Here is a binary search tree in one grow-only array, with
+12-byte nodes:
 
 ```goose
 struct Node { key: i32, left: Node&<u32>?, right: Node&<u32>? }   // 12 bytes, links included
@@ -227,15 +242,16 @@ fn insert(pool: Node[>..]&, key: i32) {
 }
 ```
 
-References are transparent (no `*`, no `->`), `.=` binds or retargets one, and
-`Node?` is a nullable reference that `if`, `guard` and `assert` narrow. The
-insert is one push and one store, and the push cannot invalidate `cur`. When
-lifetimes are not nested, a `reusable` pool pairs a grow-only array with a
-hidden freelist: `alloc_ref` reuses a slot or pushes, `free` hands one back,
-and since nothing is ever actually freed, a stale slot reads a *different value
-of the correct type* rather than corrupting memory.
+References are transparent (there is no `*` or `->`). `.=` binds or retargets
+a reference, and `Node?` is a nullable reference that `if`, `guard` and
+`assert` narrow. The insert is one push and one store, and the push cannot
+invalidate `cur`. When lifetimes are not nested, a `reusable` pool pairs a
+grow-only array with a hidden freelist. `alloc_ref` reuses a free slot or
+pushes a new one, and `free` returns a slot to the pool. Since a slot's memory
+is never actually freed, a stale slot reads a *different value of the correct
+type* rather than corrupting memory.
 
-### Your data is already a file format
+### Saving and loading data as bytes
 
 ```goose
 var image: u8[>..] = tree.to_bytes();           // a framed byte image of the whole array
@@ -244,20 +260,21 @@ image[image.len - 3] = 200;                     // tamper with a link ...
 var bad, bok = from_bytes<Node[>..]>(image);    // ... and it is false and an empty array
 ```
 
-The tree's links are self-relative, so it means the same thing wherever it
-sits: saving is writing its bytes and loading is reading them back, with no
-serializer, no schema and no pointer fixups. `from_bytes` checks the framing,
-every tag, every length and every link before the bytes become a value, so a
-corrupt or hostile file is a `false`, never a wild reference.
+The tree's links are self-relative, so the tree means the same thing wherever
+it is stored. Saving it writes its bytes and loading it reads them back, with
+no serializer, no schema and no pointer fixups. `from_bytes` checks the
+framing, every tag, every length and every link before the bytes become a
+value, so a corrupt or hostile file makes it return `false`, never a wild
+reference.
 
-### Built in place, always
+### In-place construction
 
 The copy-free construction guarantee
 ([spec §4.3](docs/goose_spec.md#43-the-in-place-construction-guarantee)) says a
-constructed value is always built in its final home, propagated top-down
+constructed value is always built at its final location, which is passed down
 through calls. A function returning a grow-only array by value writes its
-elements straight into the caller's variable, or into a field of the record
-being built inside another array, so out-parameters mostly do not appear.
+elements directly into the caller's variable, or into a field of the record
+being built inside another array, so out-parameters are rarely needed.
 
 ```goose
 words.push(str("word", i));                    // formatted straight into the new element
@@ -287,12 +304,12 @@ fn parse_user(line: u8[:]) -> User {              // returns a User: no Result, 
 ```
 
 `return E from f` returns `E` as the result of the innermost active call of
-`f`, however many frames up, and every function in between keeps its plain
-signature. It is checked statically, so every call of `parse_user` must lie
-inside a `load` call and nothing is uncaught at runtime. It is a hidden
-discriminant checked per frame rather than an unwinder, and the message is
-built directly where `load`'s caller wants it. The parsers in the samples use
-it for every syntax error.
+`f`, however many frames up that call is. Every function in between keeps its
+plain signature. The construct is checked statically: every call of
+`parse_user` must lie inside a `load` call, so nothing can go uncaught at
+runtime. It is implemented as a hidden discriminant checked in each frame
+rather than as an unwinder, and the message is built directly where `load`'s
+caller wants it. The parsers in the samples use it for every syntax error.
 
 ### Generics and function blocks
 
@@ -314,14 +331,15 @@ sort(xs) { a, b => a > b };
 ```
 
 Everything is monomorphized. Type arguments are inferred from argument types;
-parameters absent from those types can be supplied explicitly. Function values
-are passed as generic parameters: every call is direct and inlinable, they
-cannot escape, and there are no closure objects or function pointers, so a
-higher-order function compiles to exactly the loop it looks like. A block may
-`return` from its lexically enclosing function, and nested functions see the
-enclosing function's locals.
+type parameters that do not appear in those types can be supplied explicitly.
+Function values are passed as generic parameters. Every call of a function
+value is direct and can be inlined, function values cannot escape, and there
+are no closure objects or function pointers, so a higher-order function
+compiles to exactly the loop it looks like. A block may `return` from its
+lexically enclosing function, and nested functions can use the enclosing
+function's locals.
 
-### Threads that share nothing
+### Threads with no shared memory
 
 ```goose
 thread_fn worker() {                                // a separate program with its own memory
@@ -337,10 +355,10 @@ for i in n { ids.push(thread_spawn(worker)); }
 
 There is no shared mutable memory. A `thread_fn` and everything it calls is
 compiled as its own program with its own data stacks and its own copies of the
-globals. Values cross through typed queues, one per type, and must be *flat*,
-with no references at any depth. That is cheap because a flat Goose value is
-contiguous: a job or a result carries real data, pixels included, and crossing
-is a `memcpy`.
+globals. Values are passed between threads through typed queues, one per
+type, and must be *flat*, with no references at any depth. Passing them is
+cheap because a flat Goose value is contiguous: a job or a result can carry
+real data, such as pixels, and passing it is a single `memcpy`.
 
 A failed check or `abort` in a worker started with `thread_spawn_contained`
 ends only that worker. Its message goes to whoever waits for it, not to
@@ -358,7 +376,7 @@ while !thread_wait(thread_spawn_contained(serve, attempt), why) {
 The first `thread_wait(id, msg)` for a worker takes the message; a caller
 that doesn't ask for it loses it.
 
-### Plain C in, plain C out
+### Compiling to and calling C
 
 ```goose
 extern fn hypot(x: f64, y: f64) -> f64;             // straight from libm
@@ -377,10 +395,11 @@ backend can compile and run that C inside the Goose compiler's process.
 Much of the speed comes from the memory model: no heap allocation or
 per-object teardown, contiguous data, narrow links, and enums sized for the
 variant they contain. Every index is bounds-checked, and the compiler removes
-checks it can prove unnecessary. An `assert` on a slice length often lets a
-kernel eliminate its remaining checks and vectorize. `--bce-lines` reports
-the checks that remain. `checkfree fn` rejects a kernel if any bounds check
-survives; index types let graph edges retain validation done during construction.
+checks it can prove unnecessary. An `assert` on a slice length often lets the
+compiler remove the remaining checks in a kernel, so that the kernel can be
+vectorized. `--bce-lines` reports the checks that remain. `checkfree fn`
+rejects a kernel if any bounds check remains in it; index types let graph
+edges keep the validation done while the graph was built.
 Benchmark measurements use whole-process wall-clock time, including teardown.
 
 | Geometric mean over 16 benchmarks | vs idiomatic C++ | vs hand-optimized C++ | vs best safe Rust |
@@ -393,22 +412,25 @@ The [summary](bench/summary.md) explains the gains and losses;
 [results.md](bench/results.md) has every measurement, and
 [design.md](bench/design.md) explains what the suite tests.
 
-### What it costs you
+### Limitations
 
-* You think about where data lives: who owns this, and how long does its scope
-  last. Usually the answer is "the function that builds it", and that is free;
-  when it is not, it is a `reusable` pool.
-* Recursive functions cannot keep growable data across a recursive call;
-  scratch ends before the call, and what outlives it is passed in as a pool.
-* Arrays of variable-size elements iterate but do not index (short of an index
-  of references kept beside them), a fixed-mode enum cannot be pointed into,
-  and a variable-mode one cannot be overwritten. You choose per container.
-* No escaping closures, no function pointers, no dynamic dispatch beyond ADT
-  tags, and whole-program compilation only.
-* A slot handed back to a `reusable` pool and still named reads whatever its
-  next owner put there: a logic bug, never memory corruption.
+* You have to think about where data lives: who owns it, and how long its
+  scope lasts. Usually the owner is the function that builds the data, which
+  needs no extra work; when it is not, the data goes in a `reusable` pool.
+* Recursive functions cannot keep growable data across a recursive call.
+  Scratch data must end before the call, and data that outlives the call is
+  passed in as a pool.
+* Arrays of variable-size elements can be iterated but not indexed (unless
+  you keep an index of references beside them). A fixed-mode enum cannot be
+  pointed into, and a variable-mode one cannot be overwritten. You make this
+  choice per container.
+* There are no escaping closures, no function pointers and no dynamic
+  dispatch beyond ADT tags, and only whole-program compilation is supported.
+* A slot that was returned to a `reusable` pool but is still referenced
+  reads whatever its next owner put there. That is a logic bug, but never
+  memory corruption.
 
-[Tutorial §18](docs/tutorial.md#18-what-it-costs-you) is the full list.
+[Tutorial §18](docs/tutorial.md#18-limitations) is the full list.
 
 ## Install a release
 
@@ -425,9 +447,10 @@ Windows. On Linux it needs the C library's headers (`libc6-dev`, or
 `glibc-devel`); on macOS, the SDK of the Xcode command line tools
 (`xcode-select --install`). `goose build` also needs a C compiler: Visual
 Studio 2022 or later, or clang, on Windows; gcc or clang elsewhere. The Linux
-compiler needs glibc 2.35 or later (Ubuntu 22.04, Debian 12), the macOS one
-macOS 13.3 or later. macOS keeps a downloaded archive's files from running
-until `xattr -dr com.apple.quarantine` is run on the unpacked directory.
+compiler needs glibc 2.35 or later (Ubuntu 22.04, Debian 12), and the macOS
+compiler needs macOS 13.3 or later. macOS keeps a downloaded archive's files
+from running until `xattr -dr com.apple.quarantine` is run on the unpacked
+directory.
 
 ## Build and run
 
@@ -437,11 +460,12 @@ built from, is part of the tree. The graphics, audio, ui and physics
 modules are packages in repositories of their own
 ([goose_gfx](https://github.com/aardappel/goose_gfx) and
 [goose_physics](https://github.com/aardappel/goose_physics);
-`docs/design/packages.md`): `-DGOOSE_BUILTIN_LIBS=all` fetches them at the
-pinned tags (git, at configure time) and compiles them into the compiler, so
-their programs run with nothing else installed. Without it the compiler
-builds alone, and a program importing one of them has it built into
-`~/.goose` the first time, which needs git, cmake and a C compiler.
+`docs/design/packages.md`). `-DGOOSE_BUILTIN_LIBS=all` fetches them with git
+at configure time, at the pinned tags, and compiles them into the compiler,
+so programs that use them run with nothing else installed. Without that
+option the compiler is built on its own, and the first time a program
+imports one of these packages, the package is built into `~/.goose`, which
+needs git, cmake and a C compiler.
 
 ```bash
 git clone https://github.com/aardappel/goose
@@ -451,7 +475,7 @@ cmake --build build --config Release
 ```
 
 `GOOSE_BUILTIN_LIBS` can also name some of the packages (`physics`, or
-`gfx`, which carries `audio` and `ui` too). On
+`gfx`, which includes `audio` and `ui` too). On
 Linux, SDL needs the X11 or Wayland development packages
 ([`third_party/SDL/docs/README-linux.md`](https://github.com/libsdl-org/SDL/blob/main/docs/README-linux.md));
 without them the build leaves the `gfx` module out and says what to install.
@@ -466,69 +490,41 @@ UTF-8 process code page so compiler paths do not depend on the system locale.
 Earlier Windows versions retain their legacy code page. Generated native
 executables retain their own process settings.
 
-Run a program straight from source, in-process (`goose run` says the
-same explicitly, and `goose check` only typechecks):
+Run a program directly from source, in-process, with no C compiler and no
+build step (`goose run` is the explicit form of the same command):
 
 ```bash
 build/goose samples/01_tour.goose
 ```
 
-Or build an executable, which lands beside the source (`-o` puts it
-elsewhere). The compiler finds a C compiler on the machine (`goose toolchain`
-says which: MSVC or clang on Windows, cc, gcc or clang elsewhere; `--cc`
-chooses) and links the generated C with the runtime and whatever native
-modules the program uses, graphics included. Programs that use threads need
-this route, since TinyCC cannot place thread-local storage.
+Or build an executable, which is written beside the source. The compiler
+finds a C compiler on the machine (`goose toolchain` shows which one) and
+links the generated C with the runtime and any native modules the program
+uses, including graphics. Programs that use threads must be built this way,
+since TinyCC cannot place thread-local storage.
 
 ```bash
 build/goose build samples/01_tour.goose && samples/01_tour
 build/goose build samples/27_gfx_cube.goose && samples/27_gfx_cube
 ```
 
-`--debug` turns on the overflow, range and tag checks in the generated C, each
-abort naming its source line (and an overflow or a cast the values involved),
-and builds the C with debug information; `--dry-run` prints the commands a
-build would run, for a build system of your own; `-v` prints them as they
-run. Intermediates go under `~/.goose` (`GOOSE_HOME`), the runtime object
-compiled once per C compiler. Useful flags of both forms: `-O0`/`-O1`/`-O2`
-set the inlining level (a build defaults to `-O2`, a run to `-O1`),
-`--bce-lines` reports the bounds checks kept per line, and `-DGS_DEBUG=1` is
-what `--debug` defines. Every resizable value lives on a data stack of 2 GB
-of reserved address space, committed as it is used: `--stack-reserve 16G`
-changes that for a program, `--stacks` reports how many data stacks the
-program and each of its workers can take and the cap that puts on
-`hardware_threads()`, and `-DGS_STACK_STATS=1` makes a program report its
-actual use as it ends.
+`goose check` only typechecks. `--debug` turns on the overflow, range and
+tag checks, each of which names its source line when it fails, and
+`--bce-lines` reports the bounds checks that remain on each line. Every
+resizable value lives on a data stack of 2 GB of reserved address space,
+committed as it is used, and `--stack-reserve 16G` changes that size.
+[The command line](docs/command_line.md) describes every command and
+option, including how to write the C for a build system or a C host of your
+own (`goose -o tour.c tour.goose`).
 
-A program with C of its own names it in a sidecar beside the source,
-`foo.build` beside `foo.goose`: `c_sources = ["impl.c"];`, with `c_include`,
-`c_defines`, `c_libs` and `_windows`, `_linux` or `_macos` variants of each
-for one platform's part. Both forms build it: `goose build` links it in,
-and `goose run` builds it into a library the in-process run loads, so an
-`extern fn` reaches it either way. A library does the same with a sidecar
-beside its entry (or names the static library target of its own CMake
-project, `cmake_target = "x";`, which the compiler builds through cmake), and
-a program takes a library with `import name from
-"source";` in its root file: a directory (`"./lib"`), or a git repository
-at a tag or commit (`"owner/repo@v1"` on GitHub, `"host/owner/repo@ref"`),
-fetched into `~/.goose` and built there once per C compiler
-(`docs/design/packages.md`).
-
-Underneath, `goose -o tour.c tour.goose` writes the C, which holds the
-program and the part of the runtime that inlines into it; the rest of the
-runtime (the OS layer, data stack reservation, threads, printing) is one more
-C file, which `goose --emit-runtime goose_runtime.c` writes, to be compiled
-once and linked with every program (`cc -O2 tour.c goose_runtime.o -o tour
--lm -pthread`; on Windows `cl /O2 tour.c goose_runtime.obj`). Build the
-runtime with the compiler and flags the programs use; it takes no `-D` of its
-own, and a program from another version of the compiler fails to link
-against it. `--standalone` writes a C file that holds the whole runtime
-instead, and builds on its own. A program using `audio`, `gfx`, `physics` or
-`ui` also links that module's layer, which `goose --audio-link msvc|cc`,
-`--gfx-link`, `--physics-link` and `--ui-link` name in a response file (`cc
-cube.c goose_runtime.o -o cube @$(goose --gfx-link cc)`, a ui program's
-before the gfx one it draws through). `goose build --dry-run` prints all of
-this for the program at hand.
+A program with C of its own lists that C in a sidecar file beside the
+source, `foo.build` beside `foo.goose`: `c_sources = ["impl.c"];`. Both
+forms build that C, so an `extern fn` can call it either way. A program uses
+a library by writing `import name from "source";` in its root file. The
+source is a directory (`"./lib"`), or a git repository at a tag or commit
+(`"owner/repo@v1"` on GitHub, `"host/owner/repo@ref"`), which is fetched
+into `~/.goose` and built there once per C compiler
+([packages](docs/packages.md)).
 
 A program using `audio` plays procedural mono/stereo PCM through SDL3 without
 opening a graphics window. See the [audio reference](docs/stdlib.md#audio).
@@ -560,24 +556,29 @@ has the configuration for Neovim, Helix and Emacs.
 * [Tutorial](docs/tutorial.md): the friendly introduction, by example. Read
   this first.
 * [Language reference](docs/reference.md): every feature, topic by topic,
-  with a compiling example for each: the whole language, written to be
-  read.
+  with a compiling example for each. It covers the whole language and is
+  written to be read.
 * [Language specification](docs/goose_spec.md): the exact rules, when you want
   to know why something did not compile.
 * [Samples](samples/README.md): thirty-one complete programs in reading
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
   file tree built from two pools, a spinning cube on the GPU, thousands of
   boxes raining into a heap and a to-do list in windows of widgets.
-* [Standard library](docs/stdlib.md): fourteen modules, all readable Goose under
-  `stdlib/`, including `gfx`, graphics on SDL3's GPU API
-  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md)), `physics`, rigid body physics
-  on Box3D ([how it is built](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md)), and `ui`, fonts,
-  [text rendering and game HUDs](docs/stdlib.md#text-rendering-and-game-huds),
-  windows and widgets on Nuklear, drawn through gfx
-  ([how it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md)).
-* [Building programs and using packages](docs/packages.md): `goose build`,
-  libraries from git repositories or directories, a program's own C, and
-  how to make a package of your own.
+* [Standard library](docs/stdlib.md): fourteen modules, all written in readable
+  Goose under `stdlib/`. They include `gfx` for graphics on SDL3's GPU API ([how
+  it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md))
+  and `physics` for rigid body physics on Box3D ([how it is
+  built](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md)).
+  The `ui` module provides fonts, [text rendering and game
+  HUDs](docs/stdlib.md#text-rendering-and-game-huds). It also provides windows
+  and widgets on Nuklear, drawn through gfx ([how it is
+  built](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md)).
+* [The command line](docs/command_line.md): every command and option of
+  `goose`, from running and building to writing the C yourself, the
+  formatter and the language server.
+* [Building programs and using packages](docs/packages.md): libraries from
+  git repositories or directories, a program's own C, and how to make a
+  package of your own.
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.
 * [Implementation notes](docs/implementation.md): how the compiler works, pass
@@ -588,9 +589,9 @@ has the configuration for Neovim, Helix and Emacs.
 Goose is new. What exists today is a whole-program compiler of about thirty
 thousand lines of C++, the specification, the standard library, the samples,
 and a test suite that CI runs on Windows, macOS and Linux with an extra
-sanitizer job. Deliberately out of scope for now: moves for resizable values,
-more than one resizable per struct, labeled `break`, namespace privacy, and
-more OS/library access. Open items are tracked in the
+sanitizer job. These are deliberately out of scope for now: moves for
+resizable values, more than one resizable per struct, labeled `break`,
+namespace privacy, and more OS/library access. Open items are tracked in the
 [specification's Appendix B](docs/goose_spec.md#appendix-b-todo--open-items).
 
 ## License

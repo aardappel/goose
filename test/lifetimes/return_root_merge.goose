@@ -1,9 +1,8 @@
-// A function's result is rooted as a branch's value is (§9.2): at the
-// deepest of the roots its returns give, mapped to each call's own
-// arguments, and exact only where every return names one root exactly. So a
-// function may return a view of its input on one path and of a global arena,
-// or a string literal, on another, and a caller may keep the result wherever
-// the deepest of those allows.
+// A function's result has every root its returns give, mapped to each call's
+// own arguments (§9.2), and names one array exactly only where every return
+// names that one root exactly. So a function may return a view of its input
+// on one path and of a global arena, or a string literal, on another, and a
+// caller may keep the result wherever all of those outlive the store.
 var arena: u8[>..] = [];
 
 struct Named { s: const u8[:] }
@@ -35,8 +34,8 @@ fn or_default(s: const u8[:]) -> const u8[:] {
     return s;
 }
 
-// Either of two parameters: rooted at whichever argument is deeper at each
-// call, whatever order they come in.
+// Either of two parameters: both arguments are its roots at each call,
+// whatever order they come in.
 fn longer(a: const u8[:], b: const u8[:]) -> const u8[:] {
     if a.len >= b.len { return a; }
     return b;
@@ -74,11 +73,11 @@ fn main() {
         inner.push(Named { s: longer(x, y) });
         inner.push(Named { s: longer(y, x) });
         for n in inner { print(n.s); }
-        // Rooted at y either way, so kept, which outlives y, may not hold
-        // them, but x's own views it may.
+        // Rooted at x and y either way, so kept, which outlives y, may not
+        // hold them, but x's own views it may.
         kept.push(Named { s: longer(x, x) });
     }
-    // Two arguments declared side by side tie: either is the bound.
+    // Rooted at x and z, locals of kept's own block: kept may hold them.
     var z: u8[>..] = "zz";
     kept.push(Named { s: longer(x, z) });
     kept.push(Named { s: longer(z, x) });

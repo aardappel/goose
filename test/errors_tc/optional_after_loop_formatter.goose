@@ -1,7 +1,7 @@
 // error: operator + cannot be applied to i64? and i64
 // A format overload called in a loop body rebinds the global the loop's
-// condition narrows, which the name scan cannot see: after the loop the
-// global is not narrowed.
+// condition narrows: print's call carries that rebind back to the loop's
+// head, so after the loop the global is not narrowed.
 struct Show { x: i64 }
 var n = 41;
 var opt: i64? = null;

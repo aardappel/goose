@@ -1,9 +1,9 @@
-// A recursive cycle's returns may give different roots too (§7.8, §9.2). A
-// back edge is checked before the returns are, so it takes the roots the
-// cycle's scan predicts they give, each mapped through its own arguments, and
-// merges them as a call merges its callee's returns: here `build`'s back edge
-// gives either of the two pools, rooted at the deeper, which is enough to
-// write through it and to link it from an element of either.
+// A recursive cycle's returns may give different roots too (§7.8, §9.2). The
+// cycle is checked in rounds: each gives a back edge the roots its callee's
+// returns gave in the round before, each mapped through the back edge's own
+// arguments and merged as a call merges its callee's returns: here `build`'s
+// back edge has both pools as roots, which is enough to write through it and
+// to link it from an element of either.
 struct Cell { v: i64, prev: Cell&? }
 
 recursive fn build(a: Cell[>..]&, b: Cell[>..]&, n: i64) -> Cell& {
@@ -34,9 +34,8 @@ recursive fn nth_or(s: const u8[:], n: i64) -> const u8[:] {
     return nth_or(s[1..], n - 1);
 }
 
-// The scan does not follow an `if` returned whole: the first return checked
-// stands in for the prediction, so the back edge after it has a writable
-// result to write through.
+// An `if` returned whole: its branches' roots are among those the back edge
+// is given, all writable, so the back edge's result can be written through.
 recursive fn bump(p: Cell[>..]&, n: i64) -> Cell& {
     if n == 0 { return if p.len > 1 { p[1] } else { p[0] }; }
     let r: Cell& = bump(p, n - 1);

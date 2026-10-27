@@ -598,6 +598,26 @@ struct BCE {
 
     // Granted invariants for the judging pass.
     set<VarDef *> ge0;
+    // While ValidateGlobalInvariants walks a tree: every candidate of gge0
+    // still standing is assumed (Ge0) and recorded (CandOf) without being
+    // copied into ge0 and cands, of which a tree writes a handful.
+    bool seedglobals = false;
+
+    bool GlobalCand(VarDef *v) {
+        auto it = gge0.find(v);
+        return it != gge0.end() && it->second;
+    }
+    bool Ge0(VarDef *v) { return ge0.count(v) || (seedglobals && GlobalCand(v)); }
+    // v's candidate state, made on its first write while validating the
+    // globals; null for a variable that is no candidate.
+    Cand *CandOf(VarDef *v) {
+        auto it = cands.find(v);
+        if (it != cands.end()) return &it->second;
+        if (!seedglobals || !GlobalCand(v)) return nullptr;
+        auto &c = cands[v];
+        c.declseen = true;
+        return &c;
+    }
     map<VarDef *, vector<pair<int, int64_t>>> lelen;   // v <= len(P) + c, as (P, c).
     map<VarDef *, int> mono;   // +1 nondecreasing / -1 nonincreasing, wrap-free.
 
@@ -790,7 +810,7 @@ struct BCE {
                     edges.push_back({ 0, (int)i, -lo });
                     edges.push_back({ (int)i, 0, hi });
                 }
-                if (ge0.count(v)) edges.push_back({ 0, (int)i, 0 });
+                if (Ge0(v)) edges.push_back({ 0, (int)i, 0 });
                 if (IsIndexT(t)) edges.push_back({ 0, (int)i, 0 });   // Unsigned, u64 too.
                 auto it = lelen.find(v);
                 if (it != lelen.end())
@@ -2089,9 +2109,9 @@ struct BCE {
     // Variable writes: shifts, sets, and invariant recording.
 
     void RecordShift(VarDef *v, int64_t c) {
-        auto it = cands.find(v);
-        if (it == cands.end()) return;
-        auto &st = it->second;
+        auto cp = CandOf(v);
+        if (!cp) return;
+        auto &st = *cp;
         auto [lo, hi] = IntRange(v->type->intstorage);
         if (c > 0) {
             auto nowrap = Query(VarBase(v), Zero(), SatSub(hi, c));   // v <= hi - c.
@@ -2109,9 +2129,9 @@ struct BCE {
     }
 
     void RecordSet(VarDef *v, const Term &t, bool isdecl) {
-        auto it = cands.find(v);
-        if (it == cands.end()) return;
-        auto &st = it->second;
+        auto cp = CandOf(v);
+        if (!cp) return;
+        auto &st = *cp;
         // A term that may have wrapped says nothing about the value.
         auto exact = NoWrap(t, v->type->intstorage);
         // The declaration's value decides how far above len(P) the bound
@@ -2141,9 +2161,9 @@ struct BCE {
     // Which way a plain assignment moves v, measured against v's value just
     // before it. A term that may have wrapped says nothing about the value.
     void RecordSetDir(VarDef *v, const Term &t) {
-        auto it = cands.find(v);
-        if (it == cands.end()) return;
-        auto &st = it->second;
+        auto cp = CandOf(v);
+        if (!cp) return;
+        auto &st = *cp;
         auto exact = t.ok && NoWrap(t, v->type->intstorage);
         st.setdec = st.setdec && exact && Query(t.b, VarBase(v), SatSub(0, t.off));   // e <= v.
         st.setinc = st.setinc && exact && Query(VarBase(v), t.b, t.off);              // v <= e.
@@ -2153,7 +2173,7 @@ struct BCE {
     void Materialize(VarDef *v) {
         if (mode != M_JUDGE) return;
         auto vb = VarBase(v);
-        if (ge0.count(v)) AddFactB(Zero(), vb, 0);
+        if (Ge0(v)) AddFactB(Zero(), vb, 0);
         auto it = lelen.find(v);
         if (it != lelen.end())
             for (auto [pid, c] : it->second) AddFactB(vb, LenBase(pid), c);
@@ -3249,20 +3269,18 @@ struct BCE {
         auto check = [&](Node *n) {
             cands.clear();
             ge0.clear();
-            for (auto &[v, ok] : gge0)
-                if (ok) {
-                    cands[v].declseen = true;
-                    ge0.insert(v);   // The inductive hypothesis.
-                }
+            // The inductive hypothesis: every candidate standing (seedglobals).
+            seedglobals = true;
             mode = M_RECORD;
             flow = Flow {};
             Walk(n);
             mode = M_JUDGE;
+            seedglobals = false;
             auto dropped = false;
-            for (auto &[v, ok] : gge0) {
-                auto it = cands.find(v);
-                if (ok && it != cands.end() && !it->second.ge0) {
-                    ok = false;
+            for (auto &[v, c] : cands) {
+                auto it = gge0.find(v);
+                if (it != gge0.end() && it->second && !c.ge0) {
+                    it->second = false;
                     dropped = true;
                 }
             }
@@ -3713,11 +3731,17 @@ inline bool Call::BceWalk(BCE &b) {
 
 inline bool Block::BceWalk(BCE &b) {
     auto fell = true;
+    auto defers = false;
     for (auto st : stmts) {
         fell = b.Walk(st);
         if (!fell) break;
+        defers = defers || Is<Defer>(st);
     }
     if (fell) b.Walk(tail);
+    // The deferred bodies run as the block ends (Defer::BceWalk).
+    if (fell && defers)
+        for (auto st : stmts)
+            if (auto d = Is<Defer>(st)) b.StripKills(d->body);
     return fell;
 }
 
@@ -4065,6 +4089,27 @@ inline bool Break::BceWalk(BCE &b) {
 }
 
 inline bool Continue::BceWalk(BCE &) { return false; }
+
+// A deferred body runs at every exit of its block, not where it is written
+// (§6.6). Its checks are judged without the facts that hold here, since a
+// write between here and an exit may have undone them, and what it kills is
+// killed from here on, which covers the exits inside the block, and once
+// more at the block's end for the facts stated after it (Block::BceWalk). A
+// loop or `block` left by a break strips its whole body's kills after it,
+// this body's among them, and a loop's entry strips its body's, which a
+// continue returns to.
+inline bool Defer::BceWalk(BCE &b) {
+    if (b.mode != BCE::M_KILLS) {
+        auto saved = std::move(b.flow);
+        b.flow = BCE::Flow {};
+        b.loopdepth++;
+        b.Walk(body);
+        b.loopdepth--;
+        b.flow = std::move(saved);
+    }
+    b.StripKills(body);
+    return true;
+}
 
 inline bool VarDecl::BceWalk(BCE &b) {
     for (auto i : inits) b.Walk(i);

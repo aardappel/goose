@@ -27,6 +27,52 @@ fn f() {
       (identifier))))
 
 ========================================
+Defer statements
+========================================
+
+fn f() {
+    defer close(h);
+    defer n += 1;
+    defer { a(); b(); }
+    defer if c { a() }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (defer_statement
+        (expression_statement
+          (call_expression
+            (identifier)
+            (argument_list
+              (identifier)))))
+      (defer_statement
+        (assignment_statement
+          (identifier)
+          (int_literal)))
+      (defer_statement
+        (block
+          (expression_statement
+            (call_expression
+              (identifier)
+              (argument_list)))
+          (expression_statement
+            (call_expression
+              (identifier)
+              (argument_list)))))
+      (defer_statement
+        (if_expression
+          (identifier)
+          (block
+            (call_expression
+              (identifier)
+              (argument_list))))))))
+
+========================================
 Assignments and increments
 ========================================
 

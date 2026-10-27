@@ -16,3 +16,7 @@ fn parse(s: u8[:]) -> i64 {
     for c in s { total = total * 10 + image::digit(c); }
     total
 }
+
+// An image::Pixel's UFCS calls resolve in image:: here as well, although
+// this namespace declares a brightness of its own.
+fn image_brightness(p: image::Pixel) -> i64 { p.brightness() }

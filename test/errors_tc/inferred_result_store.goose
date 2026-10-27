@@ -1,4 +1,4 @@
-// error: storing a reference rooted at s, which does not outlive the destination (§9.2)
+// error: storing a reference rooted at s, which does not outlive the destination
 // An inferred result that is a reference carries the root of what it refers
 // to (§9.2): here the caller's local, too short-lived for a global.
 struct Ctx { args: i64[>..<]& }

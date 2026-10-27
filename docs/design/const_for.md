@@ -88,7 +88,7 @@ source         := "fields" "<" type ">"
                 | "[" (const-expr ("," const-expr)* ","?)? "]"
 ```
 
-Here the quoted `fields`, `variants`, and `types` spellings are contextual identifiers,
+Here the quoted `fields`, `variants`, and `types` are contextual identifiers,
 not lexer keywords. `const-expr` is parsed using the expression grammar and
 validated against section 3.3 during specialization. The enclosing list
 determines the grammar of `fragments`; the compiler does not guess the
@@ -97,7 +97,7 @@ fragment category from the body after parsing it.
 The binding count is exact: two for `fields` and `variants`, one for either
 explicit list.
 V1 has no third field-type binding, index binding, binding annotations, or
-optional outputs. A binding may simply go unused. The source is resolved
+optional outputs. A binding may go unused. The source is resolved
 before its own binders enter scope; enclosing expansion bindings remain
 available to it.
 
@@ -134,7 +134,7 @@ T { A: expression } // named initializer label
 The receiver or constructor must have the accessor's owning struct type,
 allowing ordinary reference access and const qualifications. For a variant
 type, that is a value of the variant type, such as a payload bound by a
-`match` arm, or that variant's constructor; a value of the ADT is the wrong
+`match` arm, or that variant's constructor. A value of the ADT is the wrong
 owner, since its variant is not known until it is matched. A different
 nominal type, or a different generic instantiation, does not match merely
 because it has a field with the same name. Structural matching by name would
@@ -171,7 +171,7 @@ const for <U> in types<i32, Pair<u8>, const u8[:]> {
 Types retain their identity and qualifiers; they do not become runtime
 values. Repeated entries produce repeated instances. `types<>` is empty.
 
-A distinct spelling avoids parsing an entry as both a possible type and a
+A separate syntax avoids parsing an entry as both a possible type and a
 possible value expression. In particular, `[i32, u8[:]]` is not a type list.
 
 ### 3.3 Constant lists
@@ -181,7 +181,7 @@ entry is validated independently, and entries need not have the same type.
 There is no common-element-type inference, array allocation, or runtime
 evaluation of the source. Repeated entries are preserved; `[]` is empty.
 
-The initial constant-expression subset is deliberately bounded:
+The initial version accepts these constant expressions:
 
 * Integer, character, floating-point, boolean, and string literals; a signed
   numeric literal may use unary `-` subject to the normal representability
@@ -194,11 +194,11 @@ The initial constant-expression subset is deliberately bounded:
 * Constant bindings of enclosing `const for` expansions, including their use
   as operands in those supported integer expressions.
 
-Arbitrary function calls, runtime variables, aggregate construction,
-references, function values, and general floating-point or string computation
-are outside this subset. A nonconstant entry is an error; it does not fall
-back to runtime iteration. This is a specification of accepted forms, not
-permission to accept whatever an optimizer happens to fold.
+Arbitrary function calls, runtime variables, aggregate construction, references,
+function values, and general floating-point or string computation are outside
+this subset. A nonconstant entry is an error; it does not fall back to runtime
+iteration. Only the forms listed here are accepted, even if an optimizer could
+fold other forms.
 
 Materializing a constant binding preserves the distinction between an
 adaptable literal and a value with a declared type. It must not erase a named
@@ -229,8 +229,8 @@ For each entry:
 * `N` is the variant's name as an immutable string constant, as for
   `fields<T>`. It is for display; neither it nor the declaration order is a
   stable persistence identifier, and no index binding is provided.
-* `V` identifies the variant of that concrete ADT. It takes the positions in
-  which the variant's own name is written today:
+* `V` identifies the variant of that concrete ADT. It can be used in the
+  positions where the variant's own name is written today:
 
 ```goose
 V                   // a type: the variant type, also fields<V>
@@ -263,14 +263,14 @@ fn from_number<E>(n: i64, fallback: E) -> E, bool {
 
 Substitution follows lexical binding identity, not matching identifier text.
 The compiler must distinguish a reference to an expansion binder from an
-unrelated identifier with the same spelling, including across cloned bodies
+unrelated identifier with the same name, including across cloned bodies
 and nested functions. Ordinary shadowing rules apply; generated local
 declarations have distinct identities in each instance.
 
 For member and initializer-label positions, an in-scope accessor binding
-takes precedence over interpreting that spelling as a literal field name.
+takes precedence over interpreting that name as a literal field name.
 This choice must not depend on whether the receiver happens to declare a
-field with that spelling. For example, adding a real field named `A` must not
+field with that name. For example, adding a real field named `A` must not
 change what `value.A` means inside an expansion binding `A`. To refer to that
 literal field within such code, choose another accessor binder name.
 
@@ -335,7 +335,7 @@ Point {
 }
 ```
 
-Callbacks execute at runtime, and each result meets its actual field's
+Callbacks execute at runtime, and each result goes to its actual field's
 construction destination. No intermediate tuple, array, or temporary struct
 is introduced. A callback that cannot produce a legal initializer for one
 field gives an error at that field's expansion.
@@ -348,9 +348,10 @@ Explicit entries and expansions may appear together. Entry and list
 separators are commas; a final comma in either list is optional. An expansion
 occupies one syntactic position in its enclosing list, so a following explicit
 entry or expansion is separated from its closing brace by a comma. Flattening
-operates on AST entries, not comma-bearing text. Zero entries therefore work
-without punctuation repair. The constructor's optional trailing `..` remains
-outside the expansions and applies to the complete resulting initializer list.
+operates on AST entries, not comma-bearing text, so an expansion with zero
+entries needs no punctuation repair. The constructor's optional trailing
+`..` remains outside the expansions and applies to the complete resulting
+initializer list.
 
 After flattening, the ordinary constructor checks apply:
 
@@ -394,11 +395,12 @@ After flattening, the ordinary `match` checks apply (specification section
 8.1, "`match`"), exactly as for a written `match`:
 
 * Over an ADT, every variant is matched once: a missing or repeated variant
-  is an error. As `variants<E>` generates an arm for every variant, a written
-  variant arm beside it repeats one; only a final `_` can accompany it.
+  is an error. Because `variants<E>` generates an arm for every variant, any
+  variant arm written beside it is a repeat; only a final `_` can accompany
+  it.
 * Over an integer, a constant-list expansion may sit beside written arms and
-  the required `_`; a pattern that earlier arms match whole is an error, in
-  the flattened order.
+  the required `_`. A pattern that earlier arms already match entirely is an
+  error, where "earlier" means earlier in the flattened order.
 * `_` must be the last arm, so an expansion after it is an error.
 * Copy and reference binders are written by the author and checked for each
   generated arm: `V &c` is an error for a fixed-mode or resizable ADT, as
@@ -408,9 +410,9 @@ After flattening, the ordinary `match` checks apply (specification section
   variants) is an error, as a written `match` without arms is.
 
 A generated arm may bind a variant without payload (`V v` for every
-variant); the binder is an empty value of that variant type. A written arm
-binding such a variant remains an error, so generic code needs no `const if`
-to write one arm for every variant.
+variant), so generic code needs no `const if` to write one arm for every
+variant. The binder is an empty value of that variant type. A written arm
+binding such a variant remains an error.
 
 ## 6. Library use and receiver semantics
 
@@ -482,11 +484,11 @@ that boundary rather than in a source-text preprocessing pass.
    `match`'s complete arm list before its exhaustiveness and binder checks.
 6. Pass ordinary checked constructs to optimization and code generation.
 
-The parser need not resolve a member named `A` or know the members of `T`.
-However, this is not solely an identifier-replacement pass: semantic binding
-information and the distinct fragment categories must survive parsing and
-resolution. The existing `FieldInit` name representation will need a way to
-distinguish literal labels from bound accessors.
+The parser need not resolve a member named `A` or know the members of `T`. It
+does need to preserve semantic bindings and distinguish fragment categories
+through parsing and resolution. Replacing identifier text alone is not enough.
+The existing `FieldInit` name representation will need to distinguish literal
+labels from bound accessors.
 
 The compiler need not prove a generic expansion valid for every possible type.
 It checks the instances the program reaches, as for other generic code. Empty
@@ -513,15 +515,24 @@ specialization, and the relevant field, variant, type, or constant-list entry. A
 unsupported operation should point to the operation as well as the entry
 that made it invalid. A field must never be silently omitted on failure.
 
-Useful diagnostics include incorrect binding arity, a `fields` source that is
-neither a struct nor a variant type, a `variants` source that is not an ADT,
-an unsupported/nonconstant list entry, an accessor used on the wrong owning
-type (including an ADT value for a variant's accessor), a binding used in the
-wrong syntactic category, a variant with a payload used as a value, a pattern
-variant of another ADT, and duplicate or missing constructor fields or
-`match` variants after expansion, an illegal reference binder, an expansion
-after `_`, and a `match` left without arms. A variant must never be silently
-omitted either.
+Useful diagnostics include:
+
+* incorrect binding arity;
+* a `fields` source that is neither a struct nor a variant type;
+* a `variants` source that is not an ADT;
+* an unsupported/nonconstant list entry;
+* an accessor used on the wrong owning type (including an ADT value for a
+  variant's accessor);
+* a binding used in the wrong syntactic category;
+* a variant with a payload used as a value;
+* a pattern variant of another ADT;
+* duplicate or missing constructor fields or `match` variants after
+  expansion;
+* an illegal reference binder;
+* an expansion after `_`;
+* a `match` left without arms.
+
+A variant must never be silently omitted either.
 
 The source dump should preserve and round-trip unexpanded syntax. An expanded
 view would be useful for debugging, but adding a new display mode is not a
@@ -538,7 +549,7 @@ includes:
 
 * Statement visitation of heterogeneous, empty, padded, const-qualified, and
   generic structs; declaration order and no implicit recursion.
-* Accessor binding despite an actual field with the binder's spelling;
+* Accessor binding despite an actual field with the binder's name;
   lexical shadowing, nested expansions, and fresh local identities.
 * Normal reference forwarding, rejected writes and references, and preserved
   lifetime roots. Coverage should include variable-size fields, `varint`,
@@ -554,12 +565,12 @@ includes:
   expansion, explicit entries and commas, duplicate/missing fields, and `..`.
   Preserve default evaluation, declaration-order effects, and construction
   directly in each destination, including non-fixed fields.
-* Variants of ADTs with and without payloads and of an enum without variants;
-  declaration order; `variants` in statement lists, constructors, and arm
-  lists; `fields<V>` reads and variant construction; by-value and by-reference
-  arms in fixed and variable mode, and their lifetime errors; written arms and
-  `_` beside an expansion, missing and repeated variants, and a pattern
-  variant of another ADT.
+* Variant tests should cover ADTs with and without payloads, an enum without
+  variants, and declaration order. Exercise `variants` in statement lists,
+  constructors, and arm lists, as well as `fields<V>` reads and variant
+  construction. Test by-value and by-reference arms in fixed and variable mode,
+  including lifetime errors. Also test written arms and `_` beside an expansion,
+  missing and repeated variants, and a pattern variant from another ADT.
 * Parse/dump round trips and errors that identify the failing expansion entry.
 * Generated-code inspection for absent reflection infrastructure, ordinary
   callback dispatch, unnecessary copies, and repeated dynamic offset walks.
@@ -572,10 +583,10 @@ includes:
   and not every storage type is legal as an ordinary function result.
 * **Constant integer ranges.** Reuse half-open `lo..hi` syntax with constant
   bounds if adopted. V1 supports explicit constant lists only.
-* **`const if` or filtering.** Select fragments using a deliberately specified
-  set of compile-time predicates, such as expanding only some variants into
-  arms beside written ones. This must not be confused with an ordinary
-  runtime `if`, and must not silently introduce arbitrary compile-time calls.
+* **`const if` or filtering.** Define a set of compile-time predicates for
+  selecting fragments. For example, a predicate could expand only some variants
+  into arms alongside written arms. This would be distinct from an ordinary
+  runtime `if` and would not allow arbitrary compile-time calls.
 * **Additional fragment positions.** Argument lists and array-element lists,
   followed by other justified grammar positions. The shared expansion model
   permits these additions, but each needs explicit parsing, ordering, and

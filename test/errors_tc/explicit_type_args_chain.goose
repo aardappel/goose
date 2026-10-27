@@ -1,4 +1,6 @@
 // error: constant 300 does not fit u8
+// error: in fn cap<T = u8>()
+// error: in fn scale<U = u8>(f64)
 // Both calls in main pass an f64 but differ in an explicit type argument no
 // parameter type names, so they are separate instantiations (§7.7) that the
 // argument types alone would print alike. The chain lists such type

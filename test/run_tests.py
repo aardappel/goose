@@ -76,7 +76,9 @@ import argparse
 import json
 import concurrent.futures
 import os
+import platform
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -124,9 +126,9 @@ def has_bce_annotations(f):
 def front_args(line, bce):
     """The flags of a positive fixture's one parse, roundtrip and typecheck
     run, by its first line and whether it has bce annotations."""
-    # The default -O1 is what the bce annotations describe.
+    # The bce annotations describe -O1.
     return ["--roundtrip"] + (["--parse"] if "parse-only" in line else
-                              ["--check"] + (["--bce-test"] if bce else []))
+                              ["--check"] + (["-O1", "--bce-test"] if bce else []))
 
 
 def runtime_defines(source):
@@ -499,7 +501,12 @@ class Runner:
     def goose_argv(self, args):
         # Resource-bound regressions use the same runtime configuration
         # through generated C and TinyCC, at every optimization level.
-        return [self.exe] + ["-D" + d for d in runtime_defines(args[-1])] + [str(a) for a in args]
+        # --stats for the parsed ok and typechecked ok lines the checks read,
+        # after the command where the arguments start with one.
+        args = [str(a) for a in args]
+        verb = args[:1] if args and not args[0].startswith("-") and len(args) > 1 else []
+        return ([self.exe] + verb + ["--stats"] + ["-D" + d for d in runtime_defines(args[-1])] +
+                args[len(verb):])
 
     def screened(self, what, result):
         """A compiler run's result, failing the current piece of work if the
@@ -538,7 +545,7 @@ class Runner:
         as theirs. A batch that exits with an error after every mark, or
         prints anything after the last one (a leak report), gets through
         none."""
-        argv = [self.exe, "--multi-test"] + [str(a) for a in args] + [str(f) for f in files]
+        argv = [self.exe, "--multi-test", "--stats"] + [str(a) for a in args] + [str(f) for f in files]
         code, out, err = tc.run_capture(argv)
         outs, outrest = split_multi(out, files)
         errs, errrest = split_multi(err, files)
@@ -605,12 +612,16 @@ class Runner:
             self.fail(f"{label} {path.name} (exit {code})", out + err)
             return False
         markers = error_markers(path)
-        # Match diagnostic headers and structural expansion contexts, not
-        # echoed source (which may itself name the expected message).
-        # The missing-main error has no source location.
+        # Match diagnostic headers and structural lines -- expansion
+        # contexts, the instantiation chain's frames less where they were
+        # instantiated from, an overload candidate's reason -- not echoed
+        # source (which may itself name the expected message). The
+        # missing-main error has no source location.
         diagnostics = []
         for line in err.splitlines():
-            match = re.match(r"^\S.*:\d+(?::\d+)?: error: (.*)$", line)
+            match = (re.match(r"^\S.*:\d+(?::\d+)?: error: (.*)$", line) or
+                     re.match(r"^  (in (?:fn|thread_fn) .*) instantiated from .*:\d+$", line) or
+                     re.match(r"^  candidate \S+ at .*?:\d+: (.*)$", line))
             if match:
                 diagnostics.append(match[1])
             elif line.startswith("  in const for "):
@@ -1469,8 +1480,8 @@ def main():
              f.name != "lexer_tokens.goose"]
     if len({f.stem for f in tests}) != len(tests):
         ap.error("fixture names must be unique across categories (shared expected/ and build outputs)")
-    # A gfx, physics or ui fixture with error markers is a rejection test,
-    # kept beside what it rejects (for gfx, shaders).
+    # A native module's (audio, gfx, physics or ui) fixture with error markers
+    # is a rejection test, kept beside what it rejects (for gfx, shaders).
     native_errors = [f for f in tests if f.parent.name in native and error_markers(f)]
     tests = [f for f in tests if f not in native_errors]
 
@@ -1594,7 +1605,7 @@ def main():
 
     # --- what the log shows, in order ---------------------------------------
 
-    r.section("lexer, shader compiler and native module APIs")
+    r.section("lexer and shader compiler")
 
     def lexer_tokens():
         code, out, err = r.goose("--tokens", HERE / "syntax" / "lexer_tokens.goose")
@@ -1638,13 +1649,13 @@ def main():
     for name in ("gfx_err_shader_syntax", "gfx_err_shader_part"):
         r.show_task(shader_error_line, name)
 
-
     r.section("parse, roundtrip and typecheck")
     for f in tests:
         r.show(lambda f=f: fixtures[f].result().front)
 
-    # The optimizer runs at -O1 in every typecheck above; also exercise the
-    # other levels (and the --specs dump path) on the optimizer coverage file.
+    # The optimizer runs in every typecheck above, at -O1 for bce annotations
+    # and -O2 otherwise; also exercise every level (and the --specs dump path)
+    # on the optimizer coverage file.
     r.section("optimizer, stack report and C shapes")
 
     def optimize(lvl):
@@ -1754,6 +1765,24 @@ def main():
         else:
             r.ok(f"member stores {f.name}")
     r.show_task(member_stores)
+    # A constant array of listed elements is static data at any length, and
+    # a long fill keeps its runtime initialization (MAXSTATICELEMS).
+    def static_arrays():
+        f = HERE / "codegen" / "const_global_folding.goose"
+        cfile = gendir / "const_global_folding-static.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"static arrays {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        listed = re.search(r"^static const a260_i64 LONG_g\w* = ", text, re.MULTILINE)
+        filled = re.search(r"^static const \w+ FILLED_g", text, re.MULTILINE)
+        if not listed or filled:
+            r.fail(f"static arrays {f.name}",
+                   f"LONG static: {bool(listed)}, FILLED static: {bool(filled)}")
+        else:
+            r.ok(f"static arrays {f.name}")
+    r.show_task(static_arrays)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.
@@ -1890,6 +1919,117 @@ def main():
                 out = r.run_expected([out_exe], name, f"clang-{label} {name}.goose")
                 if out is not None and r.check_stdout(name, f"clang-{label}", out):
                     r.ok(f"{label}-clang {name}.goose")
+        # math's mul_add is the one result a simd function's versions may give
+        # differently from its baseline (spec §7.12): rounded once where the
+        # code is built for FMA. Built by clang at each level, a plain
+        # function rounds as the target does (once on arm64, twice on a plain
+        # x86-64 build) and the simd function's versions round once, which on
+        # x86-64 a CPU with AVX2 and FMA runs at levels 1 and 2. Where the CPU
+        # can't be asked, levels 1 and 2 may give either.
+        def host_fma():
+            if tc.IS_WINDOWS:
+                try:
+                    import ctypes
+                    # PF_AVX2_INSTRUCTIONS_AVAILABLE; every CPU with AVX2
+                    # this runs on has FMA.
+                    return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))
+                except (AttributeError, OSError):
+                    return None
+            if sys.platform.startswith("linux"):
+                try:
+                    flags = set()
+                    for line in open("/proc/cpuinfo", encoding="utf-8"):
+                        if line.startswith("flags"):
+                            flags.update(line.split(":", 1)[1].split())
+                            break
+                    return "avx2" in flags and "fma" in flags
+                except OSError:
+                    return None
+            return None
+
+        def clang_mul_add():
+            name = "simd_mul_add"
+            arm = platform.machine().lower() in ("arm64", "aarch64")
+            fma = host_fma()
+            # The program reports five calls: a plain function's, then in a
+            # simd function a direct call, an inline helper's, a plain
+            # helper's and one through a function value. At Goose -O2 the
+            # helpers are inlined (the plain one may or may not be); at -O0
+            # nothing is, and both keep the plain function's rounding.
+            for gopt in ("-O2", "-O0"):
+                tag = gopt[1:].lower()
+                src = gendir / f"muladdclang-{tag}.c"
+                code, out, err = r.goose(gopt, "-o", src, HERE / "codegen" / f"{name}.goose")
+                if code != 0:
+                    r.fail(f"mul_add-clang{gopt} {name}.goose", out + err)
+                    continue
+                ctext = src.read_text(encoding="utf-8")
+                if not re.search(r"#define GS_MUL_ADD_MODE fused\nGS_SIMD_TARGET1 static [^\n]*"
+                                 r"\bdirect_g\w*_simd1\(", ctext):
+                    r.fail(f"mul_add-clang{gopt} {name}.goose", "no fused mode around the AVX2 version")
+                    continue
+                for level in ("2", "1", "0"):
+                    label = f"mul_add-simd{level}-clang{gopt} {name}.goose"
+                    out_exe = gendir / f"muladdclang-{tag}-{level}{tc.EXE_SUFFIX}"
+                    ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
+                                            defines=[f"GS_SIMD={level}"], runtime=r.runtime,
+                                            log=gendir / f"muladdclang-{tag}-{level}.log")
+                    if not ok:
+                        r.fail(label, "\n".join(log.splitlines()[:8]))
+                        continue
+                    out = r.check_run(name, label, *tc.run_capture([out_exe, "modes"]))
+                    if out is None:
+                        continue
+                    lines = out.splitlines()
+                    got = lines[-1].split() if lines else []
+                    plain = {"fused" if arm else "separate"}
+                    simd = ({"fused"} if arm else {"separate"} if level == "0" else
+                            {"fused", "separate"} if fma is None else {"fused" if fma else "separate"})
+                    inlined = simd if gopt == "-O2" else plain
+                    want = [plain, simd, inlined, simd | plain if gopt == "-O2" else plain, simd]
+                    if len(lines) != 2 or lines[0] != "true" or len(got) != len(want) or                             any(g not in w for g, w in zip(got, want)):
+                        r.fail(label, f"got {out!r}; want " +
+                               " ".join("|".join(sorted(w)) for w in want))
+                    else:
+                        r.ok(label)
+
+        # Elementwise float arithmetic as one vector operation (GS_VEC,
+        # runtime.h): vec_elemwise's struct and array shapes are computed
+        # through each of the six vector types where the compiler has vector
+        # extensions, and nothing else is. Built by clang with GS_VEC on and
+        # off, both print the member-by-member results.
+        def clang_vec():
+            name = "vec_elemwise"
+            src = gendir / "vecclang.c"
+            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen" / f"{name}.goose")
+            if code != 0:
+                r.fail(f"vec-clang {name}.goose", out + err)
+                return
+            ctext = src.read_text(encoding="utf-8")
+            missing = [v for v in ("gs_vf64_2", "gs_vf64_4", "gs_vf64_8", "gs_vf32_4", "gs_vf32_8", "gs_vf32_16")
+                       if f"GS_VST({v}," not in ctext]
+            if missing:
+                r.fail(f"vec-clang {name}.goose", f"no vector operations on {', '.join(missing)}")
+                return
+            # The generated code's tests are indented; runtime.h's are not.
+            opens = len(re.findall(r"^\s+#if GS_VEC$", ctext, re.M))
+            elses = len(re.findall(r"^\s+#else$", ctext, re.M))
+            if opens == 0 or opens > elses:
+                r.fail(f"vec-clang {name}.goose", f"{opens} vector operations, {elses} member-by-member ones")
+                return
+            for on in ("1", "0"):
+                label = f"vec{on}"
+                out_exe = gendir / f"vecclang-{on}{tc.EXE_SUFFIX}"
+                ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
+                                        defines=[f"GS_VEC={on}"], runtime=r.runtime,
+                                        log=gendir / f"vecclang-{on}.log")
+                if not ok:
+                    r.fail(f"{label}-clang {name}.goose", "\n".join(log.splitlines()[:8]))
+                    continue
+                out = r.run_expected([out_exe], name, f"clang-{label} {name}.goose")
+                if out is not None and r.check_stdout(name, f"clang-{label}", out):
+                    r.ok(f"{label}-clang {name}.goose")
+
         if args.profile == "sanitize":
             pass  # The full generated-C suite already ran through Clang.
         elif not clang:
@@ -1900,59 +2040,16 @@ def main():
                         clang_simd_versions)
             r.show_task(clang_simd, "stdlib_base64", HERE / "stdlib" / "stdlib_base64.goose",
                         clang_simd_named("base64_encode", "base64_decode"))
+            r.show_task(clang_mul_add)
+            r.show_task(clang_vec)
 
-    def extern_types():
-        from extern_types import check_extern_types
-        try:
-            check_extern_types(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
-            r.ok("extern types: unused and partially used C adapters")
-        except RuntimeError as e:
-            r.fail("extern types", str(e))
-    if cc or jit:
-        r.section("extern types")
-        r.show_task(extern_types)
-
-    def extern_dylib():
-        from extern_dylib import check_extern_dylib
-        try:
-            check_extern_dylib(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
-            r.ok("extern dylib: a block's members bound from a shared library by name, "
-                 "missing library and symbol, unused members, a package with both kinds")
-        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
-            r.fail("extern dylib", str(e))
-    if cc:
-        r.section("extern dylib")
-        r.show_task(extern_dylib)
-
-    def resource_paths():
-        from resource_paths import check_resource_paths
-        try:
-            check_resource_paths(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
-            r.ok("resource paths: JIT/native roots, relocation and unchanged cwd")
-        except RuntimeError as e:
-            r.fail("resource paths", str(e))
-    if cc or jit:
-        r.section("resource paths")
-        r.show_task(resource_paths)
-
-    def git_packages():
-        from packages_git import check_git_packages
-        try:
-            skipped = check_git_packages(exe, gendir, jit=jit)
-            if skipped:
-                r.say(f"skip packages from git ({skipped})")
-            else:
-                r.ok("packages from git: concurrent fetches, submodules, interrupted fetch, "
-                     "tag, commit, update, differing ref, offline")
-        except RuntimeError as e:
-            r.fail("packages from git", str(e))
-    r.section("packages from git")
-    r.show_task(git_packages)
+    r.section("driver, diagnostics and language server")
 
     def driver_verbs():
         """The verb forms of the command line against the flag forms they
-        stand for: `goose run`, `goose check` and `goose version`, and the
-        help."""
+        stand for: `goose run`, `goose check` and `goose version`, the help, a
+        mistyped command, --color, --stats, the completion scripts and the
+        man page."""
         probe = gendir / "verbs.goose"
         tc.write_text(probe, 'fn main() { print("verbs"); }\n')
         checks = []
@@ -1960,13 +2057,82 @@ def main():
             code, out, err = tc.run_capture([exe, "run", probe])
             checks.append(("run", code == 0 and out.strip() == "verbs", out + err))
         code, out, err = tc.run_capture([exe, "check", probe])
-        checks.append(("check", code == 0 and "typechecked ok" in out + err and
+        checks.append(("check", code == 0 and not out and not err, out + err))
+        code, out, err = tc.run_capture([exe, "check", "--stats", probe])
+        checks.append(("check --stats", code == 0 and "typechecked ok" in out + err and
                        "verbs" not in out, out + err))
         code, out, err = tc.run_capture([exe, "run", "-o", str(gendir / "verbs.c"), probe])
         checks.append(("run -o (refused)", code != 0 and "takes no -o" in err, out + err))
+        version = re.compile(r"goose \S+ \(runtime [0-9a-f]{12}\)\s*$")
         code, out, err = tc.run_capture([exe, "version"])
-        checks.append(("version", code == 0 and
-                       re.match(r"goose runtime [0-9a-f]{12}\s*$", out) is not None, out + err))
+        checks.append(("version", code == 0 and version.match(out) is not None, out + err))
+        code, out2, err = tc.run_capture([exe, "--version"])
+        checks.append(("--version", code == 0 and out2 == out, out2 + err))
+        # A word that is no command, option or file is a mistyped command.
+        code, out, err = tc.run_capture([exe, "biuld", str(probe)])
+        checks.append(("a mistyped command", code == 1 and "unknown command biuld" in err and
+                       "did you mean build?" in err, out + err))
+        code, out, err = tc.run_capture([exe, "nosuch.goose"])
+        checks.append(("a missing file", code == 1 and "cannot open file" in err, out + err))
+        # --color always colors an error, and NO_COLOR, or output that is no
+        # terminal, colors nothing.
+        bad = gendir / "verbs_bad.goose"
+        tc.write_text(bad, "fn main() {\n    let y = (;\n}\n")
+        code, out, err = tc.run_capture([exe, "check", "--color", "always", bad])
+        checks.append(("--color always", code == 1 and "\x1b[1;31merror: \x1b[0m" in err and
+                       "\x1b[1;32m^\x1b[0m" in err, repr(err)))
+        code, out, err = tc.run_capture([exe, "check", bad])
+        checks.append(("no color off a terminal", code == 1 and "\x1b" not in err and
+                       "error: expression expected" in err, repr(err)))
+        nocolor = subprocess.run([str(exe), "check", bad], capture_output=True,
+                                 env=dict(os.environ, NO_COLOR="1", CLICOLOR_FORCE="1"))
+        checks.append(("NO_COLOR", b"\x1b" not in nocolor.stderr, repr(nocolor.stderr)))
+        forced = subprocess.run([str(exe), "check", bad], capture_output=True,
+                                env={k: v for k, v in dict(os.environ, CLICOLOR_FORCE="1").items()
+                                     if k != "NO_COLOR"})
+        checks.append(("CLICOLOR_FORCE", b"\x1b[1;31m" in forced.stderr, repr(forced.stderr)))
+        code, out, err = tc.run_capture([exe, "check", "--color", "sometimes", probe])
+        checks.append(("--color sometimes (refused)", code == 1 and "auto, always or never" in err,
+                       out + err))
+        # The completion scripts, from the help: each names every command,
+        # and bash's, run, completes a command, an option and a file.
+        for shell in ["bash", "zsh", "fish", "powershell"]:
+            code, out, err = tc.run_capture([exe, "completion", shell])
+            # fish names a long option without its dashes.
+            names = ["-l debug", "-l check"] if shell == "fish" else ["--debug", "--check"]
+            checks.append((f"completion {shell}", code == 0 and
+                           all(v in out for v in ["build", "format", ".goose", *names]),
+                           out[:400] + err))
+            if shell in ("bash", "zsh") and shutil.which(shell) and os.name != "nt":
+                script = gendir / f"completion.{shell}"
+                tc.write_text(script, out)
+                if shell == "bash":
+                    tc.write_text(gendir / "complete_me.goose", "fn main() {}\n")
+                    probe_sh = (f"source '{script}'; t() {{ COMP_WORDS=(\"$@\"); "
+                                "COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMPREPLY=(); _goose; "
+                                "echo \"${COMPREPLY[*]}\"; }; t goose bu; t goose build --dr; t goose complete_m")
+                    r2 = subprocess.run(["bash", "-c", probe_sh], capture_output=True, text=True,
+                                        cwd=gendir)
+                    lines = r2.stdout.splitlines()
+                    checks.append(("completion bash, run", lines == ["build", "--dry-run", "complete_me.goose"],
+                                   r2.stdout + r2.stderr))
+                else:
+                    r2 = subprocess.run(["zsh", "-n", str(script)], capture_output=True, text=True)
+                    checks.append(("completion zsh parses", r2.returncode == 0, r2.stderr))
+        code, out, err = tc.run_capture([exe, "completion", "tcsh"])
+        checks.append(("completion tcsh (refused)", code == 1 and "bash, zsh, fish or powershell" in err,
+                       out + err))
+        # The man page holds every command's help.
+        code, man, err = tc.run_capture([exe, "help", "--man"])
+        checks.append(("help --man", code == 0 and man.startswith(".TH GOOSE 1") and
+                       all(f".SS {v}\n" in man for v in ["run", "build", "format", "completion"]),
+                       man[:400] + err))
+        if shutil.which("groff") and os.name != "nt":
+            page = gendir / "goose.1"
+            tc.write_text(page, man)
+            r2 = subprocess.run(["groff", "-man", "-ww", "-z", str(page)], capture_output=True, text=True)
+            checks.append(("help --man is a man page groff reads without warnings",
+                           r2.returncode == 0 and not r2.stderr, r2.stderr))
         # Less than a page or two of data stack is no reservation to run on.
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",
@@ -1978,7 +2144,8 @@ def main():
         checks.append(("--help", code == 0 and "build" in overview and
                        "--multi-test" not in overview, overview + err))
         pages = overview
-        for cmd in ["run", "build", "check", "fetch", "toolchain", "version"]:
+        for cmd in ["run", "build", "check", "fetch", "format", "toolchain", "version", "lsp",
+                    "completion"]:
             code, out, err = tc.run_capture([exe, cmd, "--help"])
             checks.append((f"{cmd} --help", code == 0 and
                            out.startswith(f"usage: goose {cmd}"), out + err))
@@ -2079,15 +2246,29 @@ def main():
                 r.ok(f"goose {what}")
             else:
                 r.fail(f"goose {what}", text)
-    r.section("driver verbs")
     r.show_task(driver_verbs)
+
+    def compiler_discovery():
+        import unittest
+        import toolchain_selection
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromModule(toolchain_selection).run(result)
+        if result.testsRun and result.wasSuccessful():
+            r.ok("compiler discovery: --exe as given, else build/'s Release, RelWithDebInfo, "
+                 "single-configuration and Debug compilers in that order; a missing --exe, "
+                 "or no compiler, refused")
+        else:
+            r.fail("compiler discovery", "".join(trace for _, trace in result.errors +
+                                                 result.failures) or "no tests ran")
+    r.show_task(compiler_discovery)
 
     def cli_paths():
         from cli_paths import check_cli_paths
         try:
             check_cli_paths(exe, cc, gendir)
             r.ok("command line paths: new -o directories, \".\" and \"..\" sources, rooted "
-                 "--include, unresolved imports, no runtime sources")
+                 "--include, unresolved imports, a directory as a source or an embed_file, "
+                 "no standard library, no runtime sources")
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("command line paths", str(e))
     r.show_task(cli_paths)
@@ -2112,6 +2293,26 @@ def main():
             r.fail("documentation comments", str(e))
     r.show_task(doc_comments)
 
+    def format_layout():
+        from format import check_format
+        try:
+            check_format(exe, gendir)
+            r.ok("format: the layout of the golden cases, each a fixed point, and the command "
+                 "line: in place, --check, the directory walk, errors and exit codes")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("format", str(e))
+    r.show_task(format_layout)
+
+    def format_sweep():
+        from format import check_format_sweep
+        try:
+            summary = check_format_sweep(exe, [HERE.parent / "samples", HERE.parent / "stdlib",
+                                               HERE.parent / "bench", HERE])
+            r.ok(f"format --verify over samples, stdlib, bench and test: {summary}")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("format --verify", str(e))
+    r.show_task(format_sweep)
+
     def lsp_protocol():
         from lsp_protocol import check_lsp_protocol
         try:
@@ -2122,6 +2323,52 @@ def main():
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("language server", str(e))
     r.show_task(lsp_protocol)
+
+    r.section("native builds, packages and runtime I/O")
+
+    def extern_types():
+        from extern_types import check_extern_types
+        try:
+            check_extern_types(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
+            r.ok("extern types: unused and partially used C adapters")
+        except RuntimeError as e:
+            r.fail("extern types", str(e))
+    if cc or jit:
+        r.show_task(extern_types)
+
+    def extern_dylib():
+        from extern_dylib import check_extern_dylib
+        try:
+            check_extern_dylib(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
+            r.ok("extern dylib: a block's members bound from a shared library by name, "
+                 "missing library and symbol, unused members, a package with both kinds")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("extern dylib", str(e))
+    if cc:
+        r.show_task(extern_dylib)
+
+    def resource_paths():
+        from resource_paths import check_resource_paths
+        try:
+            check_resource_paths(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
+            r.ok("resource paths: JIT/native roots, relocation and unchanged cwd")
+        except RuntimeError as e:
+            r.fail("resource paths", str(e))
+    if cc or jit:
+        r.show_task(resource_paths)
+
+    def git_packages():
+        from packages_git import check_git_packages
+        try:
+            skipped = check_git_packages(exe, gendir, jit=jit)
+            if skipped:
+                r.say(f"skip packages from git ({skipped})")
+            else:
+                r.ok("packages from git: concurrent fetches, submodules, interrupted fetch, "
+                     "tag, commit, update, differing ref, offline")
+        except RuntimeError as e:
+            r.fail("packages from git", str(e))
+    r.show_task(git_packages)
 
     def runtime_cache():
         from runtime_cache import check_runtime_cache
@@ -2142,6 +2389,7 @@ def main():
             r.fail("native part cache", str(e))
     if cc:
         r.show_task(native_cache)
+
     def runtime_io():
         from runtime_io import check_runtime_io
         try:

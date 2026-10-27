@@ -9,7 +9,7 @@
     { "match": "\\b(?:bool|varint|[iu](?:8|16|32|64)|f(?:32|64))\\b", "name": "storage.type.goose" },
     { "match": "\\b(?:true|false|null)\\b", "name": "constant.language.goose" },
     { "match": "\\bself\\b", "name": "variable.language.goose" },
-    { "match": "\\b(?:if|else|while|for|in|loop|block|guard|match|return|break|continue)\\b", "name": "keyword.control.goose" },
+    { "match": "\\b(?:if|else|while|for|in|loop|block|guard|defer|match|return|break|continue)\\b", "name": "keyword.control.goose" },
     { "match": "\\b(?:import|namespace|as)\\b", "name": "keyword.other.goose" },
     { "match": "\\b(?:struct|enum|type|fn|thread_fn|let|var|const)\\b", "name": "storage.type.goose" },
     { "match": "\\b(?:export|extern|simd|recursive|pad|reusable)\\b", "name": "storage.modifier.goose" },

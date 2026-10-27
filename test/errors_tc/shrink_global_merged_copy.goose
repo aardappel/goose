@@ -1,8 +1,8 @@
 // error: cannot clear ws: global G may hold a reference into it
-// r may be W1 or ws[0], whose h.s views ws's own element; the copy of r.h
-// into G is on record as a copy of what one of them holds, and what the
-// other holds counts beside it. ws's view into its own elements is freed
-// with them; G, holding a copy of it, is what the error names (§5.1).
+// r may be W1 or ws[0], whose h.s views ws's own element. A copy out of one
+// of several places names no container as its source, so its own roots bound
+// the copy of r.h, and G may then hold a view into one of ws's elements,
+// which the clear frees (§3.5, §5.1).
 struct H { s: const u8[:] }
 struct W { h: H, name: u8[..8] }
 var ws: W[>..] = [];

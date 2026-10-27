@@ -363,7 +363,23 @@ template<typename F> void TypeCheck::ForOperands(Node *n, F f) {
     // Conditions, scrutinees, blocks and bodies: nothing held.
 }
 
-inline int TypeCheck::OperandIndex(Node *parent, Node *child) {
+// Where child is among parent's operands, or -1. Operands are mostly entered
+// in order, so a list's (an array literal's elements, a call's arguments) is
+// tried at `next`, the one after the last entered, first: a scan for each of
+// a long literal's elements takes time quadratic in its length.
+inline int TypeCheck::OperandIndex(Node *parent, Node *child, int next) {
+    auto u = (size_t)next;
+    Node *guess = nullptr;
+    if (next < 0) {
+    } else if (auto al = Is<ArrayLit>(parent)) {
+        if (u < al->elems.size()) guess = al->elems[u];
+    } else if (auto sl = Is<StructLit>(parent)) {
+        if (u < sl->inits.size()) guess = sl->inits[u].val;
+    } else if (auto c = Is<Call>(parent)) {
+        if (Is<Dot>(c->callee)) u--;
+        if (u < c->args.size()) guess = c->args[u];
+    }
+    if (guess && guess == child) return next;
     auto idx = -1, i = 0;
     ForOperands(parent, [&](Node *ch, HoldKind) {
         if (ch == child) idx = i;
@@ -377,7 +393,8 @@ inline int TypeCheck::OperandIndex(Node *parent, Node *child) {
 // on the way, as a path is by its node's Check, stays one entry.
 inline bool TypeCheck::Descend(Node *n) {
     if (!cur.nodepath.empty() && cur.nodepath.back().node == n) return false;
-    auto idx = cur.nodepath.empty() ? -1 : OperandIndex(cur.nodepath.back().node, n);
+    auto idx = cur.nodepath.empty() ? -1 : OperandIndex(cur.nodepath.back().node, n,
+                                                        cur.nodepath.back().pos);
     if (idx >= 0) cur.nodepath.back().pos = idx;
     cur.nodepath.push_back({ n, idx, 0, false, (int)frames.size() - 1 });
     return true;
@@ -3338,6 +3355,7 @@ inline void TypeCheck::CheckStmt(Node *n) {
     if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }
     if (auto x = Is<IncDec>(n)) { CheckIncDec(x); return; }
     if (auto fd = Is<FnDecl>(n)) { DeclareLocalFn(fd); return; }
+    if (auto d = Is<Defer>(n)) { CheckDefer(d); return; }
     CheckStmtExpr(n);
 }
 

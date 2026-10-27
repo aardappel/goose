@@ -1,0 +1,45 @@
+inner done: inner 3
+mid done: 3 4!
+outer done
+300
+inner done: inner -4
+mid done: 2 -3!
+outer done
+4
+deep_text done: local
+deep_text done: local+
+deep_text done: local+
+mid_text done: 100
+top_text done
+from depth 0
+deep_text done: local
+mid_text done: 100
+top_text done
+from depth 0
+deep_landing done
+landing done
+partial 1
+deep_landing done
+landing done
+replaced
+step3 done 1
+step3 done 2
+step2 done 2
+step3 done 2
+step3 done 3
+step2 done 1
+step1 done
+caught: too big: 3
+step3 done 2
+step3 done 3
+step2 done 1
+step1 done
+caught: too big: 3
+ran 0
+finally 0
+finally_demo 0 -> 0
+caught text: inner error
+finally 1
+finally_demo 1 -> 0
+finally 2
+finally_demo 2 -> 7

@@ -13,59 +13,60 @@ The suite tests the effects of these features:
 * Less copying overhead.
 * No "realloc" of resizable data structures, while allowing element pointers.
 * Variable size enums.
-* No allocator at all: no malloc/free call, no per-allocation header, no size class
-  rounding, no free list to walk, no fragmentation, and no lock or thread cache in the
-  path. Deallocation is a pointer reset. `reusable` pools (spec 5.4) cover the
+* No allocator: there are no malloc/free calls, per-allocation headers, size class
+  rounding, free lists to walk, fragmentation, or locks and thread caches in the path.
+  Deallocation is a pointer reset. `reusable` pools (spec 5.4) cover the
   mutation-heavy cases that would otherwise force an allocator back in.
-* No destructors and no drop glue: releasing a large nested structure is O(1), not an
-  O(n) pointer chasing traversal. C++/Rust pay for teardown of every unique_ptr/Box/
-  String they built, and it is the same cache hostile walk as building it was.
-* Relative references: 1-2 byte links where C++ and Rust spend 8. Note the idiomatic
-  Rust workaround for pointer heavy graphs is already an index based arena
-  (`Vec<Node>` plus u32 indices), so that, not `Box`, is the Rust comparison point,
-  and it still costs 4 bytes plus a base+scale computation per hop.
+* No destructors and no drop glue: releasing a large nested structure is O(1) instead
+  of an O(n) pointer-chasing traversal. C++ and Rust pay for tearing down every
+  unique_ptr/Box/String they built, and that teardown is the same cache-hostile walk as
+  building was.
+* Relative references: 1-2 byte links where C++ and Rust use 8 bytes. The idiomatic
+  Rust workaround for pointer-heavy graphs is already an index-based arena
+  (`Vec<Node>` plus u32 indices), so that arena, rather than `Box`, is the Rust
+  comparison point, and it still uses 4 bytes plus a base+scale computation per hop.
 * Compact scalars inside aggregates generally: packed structs (no padding), u8/u16/
   varint array length fields, u8 enum tags, varint payload fields. Rust and C++ round
   enums up to max-variant-plus-alignment and cannot express any of the rest without
   hand rolled bit twiddling.
 * Nested containers stay flat and contiguous: `u8[][>..]` is one block, where
   `Vec<String>`/`vector<string>` is 1 + N allocations each carrying a 24 byte header
-  (mitigated only for short strings, by SSO, in C++). Worth testing both short
-  (SSO sized) and long strings for exactly this reason.
+  (in C++, SSO mitigates this, but only for short strings). For this reason it is
+  worth testing both short (SSO-sized) and long strings.
 * Guaranteed construct-in-destination (4.3, 7.3): no construct-then-copy anywhere,
   guaranteed NRVO, callees writing their result directly into the caller's container
   (`v.push(f())`). C++ has non-guaranteed NRVO and an `emplace_back` that cannot do
-  this for variable size values; Rust memcpy-moves large values around freely, which
-  is a well known weakness of it.
+  this for variable size values; Rust moves large values around freely with memcpy,
+  which is a well-known weakness.
 * Tag dispatch instead of vtables (8.2): no vtable pointer per object (8 bytes on
   every polymorphic node), a jump table instead of an indirect call, and the arms stay
   inlinable.
 * Exact size growth: a grown-to-n array occupies n elements, where Vec/vector carry up
   to 2x capacity slack on top of the allocator's own rounding.
-* Goose data is already its own serialized form: a relative-reference structure loads
-  by memcpy or mmap with no parse and no pointer fixup pass. Load time is a real and
-  frequently occurring cost that this reduces to I/O.
+* Goose data is already in serialized form: a relative-reference structure can be
+  loaded with memcpy or mmap, with no parsing and no pointer fixup pass. Load time is a
+  real and frequently occurring cost, and this reduces it to the I/O time.
 * Cheap long distance errors (`return from`, 7.9): a discriminant check per frame,
-  versus C++ exceptions (catastrophic on the throwing path) and Rust `?` chains that
-  also copy the error payload up each frame.
-* Thread queues (11.2) move flat contiguous values: no per-element pointer chasing, no
-  serialization step, no shared ownership machinery.
+  versus C++ exceptions (very slow on the throwing path) and Rust `?` chains that also
+  copy the error payload up each frame.
+* Thread queues (11.2) move flat contiguous values, with no per-element pointer
+  chasing, serialization step or shared ownership machinery.
 
 We will want to test against performance conscious (but still idiomatic) C++ and Rust.
 C++ can reproduce many of these layouts through manual pointer management
 and data packing. Those techniques belong in the expert comparisons; Goose
 aims to make them convenient and memory safe in ordinary code.
 
-Besides speed, we will want to test memory usage, and the combination of both, by
-running with at least 3 different data sizes for each algorithm, where the smallest
-one focuses on pure CPU, but the 2 bigger sizes will stress cache and memory
-subsystems increasingly, to see if the Goose advantage appears or widens.
+Besides speed, we will want to test memory usage, and the combination of both. Each
+algorithm runs with at least 3 different data sizes: the smallest one focuses on pure
+CPU, and the 2 bigger sizes stress the cache and memory subsystems increasingly, to
+see if the Goose advantage appears or widens.
 
-We will want to test all reasonably idiomatic forms per language, e.g. for an
-algorithm that works on variant/polymorphic data, for Goose we'll want to see
-both fixed and variable enums if possible, for Rust just fixed enums, and for
-C++ we'll want to compare subclasses (most idiomatic but slow), std::variant
-(faster but unergonomic) and C-style unions (fastest, but very unsafe).
+We should test all reasonably idiomatic forms in each language. For an algorithm
+that uses variant or polymorphic data, compare Goose's fixed and variable enums
+where possible, and Rust's fixed enums. For C++, compare subclasses (most
+idiomatic but slow), std::variant (faster but awkward to use), and C-style
+unions (fastest, but very unsafe).
 
 If an algorithm does a lot of resizable array pushing, we'll want to be
 fair to C++ and compare both what happens if the programmer optimally
@@ -91,9 +92,9 @@ biggest expected wins, in rough order:
 3. Anything that grows while holding pointers into what it grew. In C++/Rust this
    forces the programmer into indices, a chunked arena (deque-like, extra
    indirection), or reserving a hard upper bound. All three are worth benchmarking as
-   separate rows, because it is exactly the workaround cost we are trying to delete.
-4. Load/save and cross thread paths, where Goose does no work at all and the others
-   serialize or pointer fixup.
+   separate rows, because that workaround cost is what we are trying to eliminate.
+4. Load/save and cross thread paths, where Goose does no work and the others have to
+   serialize or fix up pointers.
 
 If a benchmark's data is a flat array of scalars, expect no advantage. That is a useful control case.
 
@@ -107,33 +108,35 @@ The suite should measure these potential limitations:
   what remains.
 * Packed, unaligned layouts (3.2) may cost real SIMD performance for the same reason:
   no padding means no alignment guarantee. Also TODO 10. A float/vector math benchmark
-  (particles, n-body, image kernel) is the test, and it doubles as the exercise for
-  elementwise struct math (6.1).
-* No aliasing information. Rust hands LLVM `noalias` on `&mut`, C++ has `restrict`
-  when someone bothers, and Goose deliberately permits aliasing and so tells the
-  backend nothing. Any in-place transform over two array arguments is where this shows.
+  (particles, n-body, image kernel) is the test, and it also exercises elementwise
+  struct math (6.1).
+* No aliasing information. Rust gives LLVM `noalias` on `&mut`, C++ has `restrict`
+  when the programmer uses it, and Goose deliberately permits aliasing and so gives the
+  backend no aliasing information. This shows up in any in-place transform over two
+  array arguments.
 * Bounds checks on everything non-fixed, like Rust, unlike C++. The compiler now
   proves most of them away (10.5), and `--no-bce` gives a direct A/B for what the
-  rest cost -- `bench/bce_ab.py` runs it. The checked number stays the headline:
-  this compares Goose and Rust with bounds checking enabled, using C++ as
-  the unchecked baseline.
-* Copies are real. By-value semantics with no move operation (4.1, TODO 3) means idioms
-  a Rust programmer would express as a cheap move are an O(size) copy in Goose. A
-  benchmark that returns different locals on different paths (7.3), or reassigns large
-  values around, will show it. This is the most likely place to find something worth
-  fixing in the language.
+  rest cost; `bench/bce_ab.py` runs it. The headline numbers are the checked ones:
+  they compare Goose and Rust with bounds checking enabled, using C++ as the unchecked
+  baseline.
+* Copies have a real cost. By-value semantics with no move operation (4.1, TODO 3)
+  mean that idioms a Rust programmer would express as a cheap move are an O(size)
+  copy in Goose. A benchmark that returns different locals on different paths (7.3),
+  or reassigns large values around, will show it. This is the most likely place to
+  find something worth fixing in the language.
 * Stack discipline friction. Workloads whose lifetimes are not nested (caches,
   long lived mutable graphs, anything wanting free-then-alloc at differing sizes) must
   go through `reusable` pools, and recursive cycles cannot own growable locals at all
   (7.8). Include a benchmark that is awkward in Goose to measure the cost of the
-  workaround. (`lru` is that benchmark. The pool itself turned out to cost
-  nothing; the relative links it relinks cost 1.5x against indices -- the offset
-  arithmetic sits on the pointer-chasing path -- so compact links are a
-  build-once-walk-many trade, not a free one.)
+  workaround. `lru` is that benchmark. The pool itself turned out to have no
+  measurable cost, but the relative links it relinks cost 1.5x against indices,
+  because the offset arithmetic sits on the pointer-chasing path. Compact links are
+  therefore a tradeoff that suits structures built once and walked many times; they
+  are not free.
 * Address space accounting: report committed pages, not the multi-GB reservations
-  (10.4), to avoid counting reserved but unused address space as memory use. Conversely, Goose commits at page
-  granularity per stack, so at the smallest data sizes it may legitimately look worse
-  than malloc.
+  (10.4), to avoid counting reserved but unused address space as memory use.
+  Conversely, Goose commits at page granularity per stack, so at the smallest data
+  sizes it may legitimately look worse than malloc.
 
 ## Candidate algorithms
 
@@ -176,21 +179,27 @@ Familiar, widely written code, each chosen to hit specific axes above:
 ## The suite as built
 
 `bench/goose/`, `bench/cpp/` and `bench/rust/` hold sixteen benchmarks against
-this design. The first ten are small, one construct each, from `sum` (the
-control) to `sexp` (the flagship). The six added after that are a little
-larger and were chosen to fill the gaps the first ten left: `lru` (a cache:
-the `reusable` pool, free-then-alloc out of scope order, the mutation-heavy
-shape the stack discipline is worst placed for), `scene` (a scene graph with
-inline child arrays of relative references, mutated every frame), `calc`
-(many small parses into per-input local pools, with `return from` taken as a
-real error path a quarter of the time), `bintrees` (the Benchmarks Game's
-allocator benchmark, for recognisability), `respond` (a web handler's DTO
-with a string and a list of records, built and rendered per request), and
-`blur` (an image stencil: flat scalar work, bounds checks and no aliasing
-information, chosen to test a likely weakness). `bench/run_bench.py` builds and runs them at
-three sizes each, checks that every implementation of a benchmark prints the
-same checksum, and writes `bench/results.md`; the commentary that file ends
-with lives in `bench/notes.md`.
+this design. The first ten are small, each testing one construct, from `sum`
+(the control) to `sexp` (the flagship). The six added after that are a little
+larger and were chosen to fill the gaps the first ten left:
+
+* `lru`: a cache, using the `reusable` pool with free-then-alloc out of scope
+  order. This is the mutation-heavy shape the stack discipline is least suited to.
+* `scene`: a scene graph with inline child arrays of relative references, mutated
+  every frame.
+* `calc`: many small parses into per-input local pools, with `return from` taken as
+  a real error path a quarter of the time.
+* `bintrees`: the Benchmarks Game's allocator benchmark, included for
+  recognisability.
+* `respond`: a web handler's DTO with a string and a list of records, built and
+  rendered per request.
+* `blur`: an image stencil with flat scalar work, bounds checks and no aliasing
+  information, chosen to test a likely weakness.
+
+`bench/run_bench.py` builds and runs them at three sizes each, checks that every
+implementation of a benchmark prints the same checksum, and writes
+`bench/results.md`. The commentary at the end of that file comes from
+`bench/notes.md`.
 
 The suite does not benchmark saving and loading relative-reference
 structures or sending them through thread queues. Serialization has since
@@ -198,16 +207,14 @@ been implemented with validation (see `docs/design/serialization.md`). Queues
 can carry the serialized byte image, but cannot directly carry values with
 relative references because those values are not flat (TODO 9).
 
-C++ is measured at two tiers, idiomatic and expert, because the language admits
-such a wide range of implementation techniques that one row would
-misrepresent it. For Rust, the benchmarks compare safe, idiomatic
-implementations. Where a benchmark has two idiomatic Rust representations
-they are both listed, but the reason is always a semantic difference (owned
-versus borrowed strings) or a structural one (owning `Box` nodes versus the
-`Vec`-plus-indices arena the community recommends for pointer-heavy data), never
-just that one is faster. The prediction made above -- that the arena, not `Box`,
-is the real Rust comparison point -- held: it is 2.8x to 5.9x faster than `Box`
-on the three benchmarks that have both.
+C++ is measured at two tiers, idiomatic and expert. Its range of implementation
+techniques is too wide for one row to represent it. For Rust, the benchmarks
+compare safe, idiomatic implementations. When two Rust representations are
+listed, they differ in semantics or structure: owned versus borrowed strings,
+for example, or owning `Box` nodes versus a `Vec`-plus-indices arena. A faster
+time alone is not a reason to include another representation. The community
+recommends the arena for pointer-heavy data, and the prediction above held: it
+is 2.8x to 5.9x faster than `Box` on the three benchmarks that have both.
 
 The comparison also has a usability dimension that timing does not measure:
 when Rust uses `u32` indices and Goose uses typed, nullable references, similar

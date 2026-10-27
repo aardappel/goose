@@ -20,6 +20,11 @@ extern fn log(x: f64) -> f64 = "gs_log";              extern fn log(x: f32) -> f
 extern fn log2(x: f64) -> f64 = "gs_log2";            extern fn log2(x: f32) -> f32 = "gs_log2f";
 extern fn log10(x: f64) -> f64 = "gs_log10";          extern fn log10(x: f32) -> f32 = "gs_log10f";
 extern fn pow(x: f64, y: f64) -> f64 = "gs_pow";      extern fn pow(x: f32, y: f32) -> f32 = "gs_powf";
+// x * y + z, rounded once where the code is built for FMA and twice where it
+// is not: which is the implementation's, so results may differ between
+// machines (§7.12). A simd fn's versions past the baseline round once.
+extern fn mul_add(x: f64, y: f64, z: f64) -> f64 = "gs_mul_add";
+extern fn mul_add(x: f32, y: f32, z: f32) -> f32 = "gs_mul_addf";
 extern fn floor(x: f64) -> f64;                       extern fn floor(x: f32) -> f32 = "floorf";
 extern fn ceil(x: f64) -> f64;                        extern fn ceil(x: f32) -> f32 = "ceilf";
 extern fn round(x: f64) -> f64;                       extern fn round(x: f32) -> f32 = "roundf";
@@ -28,8 +33,18 @@ extern fn trunc(x: f64) -> f64;                       extern fn trunc(x: f32) ->
 let PI = 3.141592653589793;
 let TAU = 6.283185307179586;
 
+// Both widths, as libm's functions above. The f32 forms multiply by the
+// ratio written out, which rounds to f32 once; 180.0 / PI worked out in
+// f32 rounds PI first and comes out an ulp off.
 fn radians(deg: f64) -> f64 { deg * (PI / 180.0) }
+fn radians(deg: f32) -> f32 { deg * 0.017453292519943295 }
 fn degrees(rad: f64) -> f64 { rad * (180.0 / PI) }
+fn degrees(rad: f32) -> f32 { rad * 57.29577951308232 }
 
+// x - x is 0 for every finite x, and NaN for an infinity or a NaN.
 fn is_nan(x: f64) -> bool { x != x }
+fn is_nan(x: f32) -> bool { x != x }
 fn is_inf(x: f64) -> bool { x == x && (x - x) != (x - x) }
+fn is_inf(x: f32) -> bool { x == x && (x - x) != (x - x) }
+fn is_finite(x: f64) -> bool { x - x == 0.0 }
+fn is_finite(x: f32) -> bool { x - x == 0.0 }

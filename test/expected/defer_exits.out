@@ -1,0 +1,58 @@
+body
+inner body
+inner
+after inner
+fall 2
+fall 1
+early 5
+negative
+early -5
+10 -1
+x = 2
+first
+second
+first
+body 0
+iter 0
+iter 1
+body 2
+iter 2
+iter 3
+loop 1
+loop 2
+v = 20
+while 0
+while 2
+n = 3
+block done
+then
+then done
+arm other
+arm other done
+6
+block done
+else
+else done
+arm 0
+arm 0 done
+6
+1
+items: 4 3
+15
+block 1 done
+block 2 done
+through_hof done, total 1
+99
+fv body 1
+fv 1
+fv body 2
+fv 2
+defer 2 sees aabb
+defer 1 sees aa
+computing 3
+squares [0, 1, 4]
+tiny 0
+tiny 4
+0 5
+depth 5
+depth 0

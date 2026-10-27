@@ -1,3 +1,4 @@
+// runtime-define: GS_STACK_RESERVE=4194304
 // A continue leaves the loop body through restores of its own, for exactly
 // the locals declared before it: a local declared after it never ran, so
 // its base holds nothing to restore. Ordinary fallthrough still restores
@@ -73,8 +74,8 @@ fn while_and_loop() {
 }
 
 // Every iteration allocates a large local and abandons it through continue;
-// the reserve per stack is far smaller than the sum, so each continue must
-// hand the watermark back.
+// a stack's 4 MB reservation above is far smaller than the sum, so each
+// continue must hand the watermark back.
 fn no_growth() {
     var count = 0;
     for i in 5000 {

@@ -823,6 +823,7 @@ enum NodeKind : uint8_t {
     NK_Return,
     NK_Break,
     NK_Continue,
+    NK_Defer,
     NK_FunVal,
     NK_VarDecl,
     NK_Assign,
@@ -1367,6 +1368,18 @@ NODE_END
 NODE(Continue)
     BCE_WALK
     Continue(Line l) : Node(l, NKind) {}
+NODE_END
+
+// `defer s;` or `defer { ... }` (§6.6): the body runs when the block the
+// statement is in ends, however it ends. The statement form is a block of
+// one statement. The body cannot leave, and may not run long-distance
+// return machinery or name the function's named result (TypeCheck::
+// CheckDefer, CheckDefers); codegen emits it at each exit of the block
+// (CodeGen::RegisterDefer).
+NODE(Defer)
+    BCE_WALK
+    Block *body;
+    Defer(Line l, Block *_body) : Node(l, NKind), body(_body) {}
 NODE_END
 
 // A function value: trailing block or block with named params. Non-escaping,
@@ -2195,11 +2208,6 @@ struct FnSpec {
     // view (VarDef::heldslice/heldholder), including stores made while the
     // body runs. cls is -1 for every other parameter. Part of the key.
     vector<RootArg> views;
-    // A nested function reached after the scope declaring it ended, its
-    // value having left that block or function value body (§7.5): part of
-    // the key, since its body may name nothing the scope declared, and one
-    // checked inside the scope may.
-    bool escaped = false;
     // Optional facts in the lexical environment at specialization entry.
     vector<VarDef *> narrowedenv;
     // What the body read of the variables outside its activation that it, or
@@ -2260,6 +2268,7 @@ struct FnSpec {
     vector<VarDef *> classroots;
     Line joinedat;                 // The call that joined it to its cycle.
     set<FnSpec *> needs;           // Concrete `return from` targets enclosing every call.
+    bool hasdefer = false;         // The body, a function value's run in it included, has a `defer`.
     // Calls that reused this spec, with the call path each was checked on: a
     // target recorded later applies to those paths too. The call that created
     // the spec needs no entry, since its path starts every path a target
@@ -2442,7 +2451,7 @@ struct Ast {
 
     void Emit(const Diagnostic &d) {
         if (sink) sink(d);
-        else fprintf(stderr, "%s\n", d.text.c_str());
+        else PrintDiagnosticText(d.text);
     }
 
     // A warning about a place, as the checker and the driver give them.
@@ -2794,6 +2803,17 @@ struct Ast {
         static const vector<SFunction *> none;
         auto p = Lookup(&Namespace::functionmap, name, usens);
         return p ? *p : none;
+    }
+    // A UFCS call's overload set past the scopes around it: that of the
+    // namespace the receiver's nominal type is declared in, where that is a
+    // named namespace declaring the name, else the call's own. A type's
+    // functions are its methods wherever it is used (§11.1).
+    const vector<SFunction *> &LookupMethods(string_view name, string_view usens,
+                                             const TypeExpr *recv) {
+        auto tns = NominalNs(recv);
+        if (auto n = tns.empty() ? nullptr : FindNS(tns))
+            if (auto it = n->functionmap.find(name); it != n->functionmap.end()) return it->second;
+        return LookupFunctions(name, usens);
     }
 
     // The entry point: the root file's global `main` (an imported file's is

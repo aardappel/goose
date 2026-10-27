@@ -32,6 +32,23 @@ fn hashing() {
     print(hash(0.1) == hash(0.1), " ", hash(-1.5) != hash(1.5));               // true true
     let q: f32 = 0.1;
     print(hash(q) == hash(q), " ", hash(q) != hash(-q));                       // true true
+    // Floats: -0.0 equals 0.0 and hashes so, an f32 hashes as the f64 of its
+    // value, and keys that only scaling by 65536 used to tell apart (tiny or
+    // huge ones) spread over the slots of a 16384-slot table as random
+    // values would, about 7490 of them for 10000 keys.
+    let z = 0.0;
+    let one: f32 = 1.0;
+    print(hash(z) == hash(-z), " ", hash(one) == hash(1.0), " ", hash(1e-6) != hash(2e-6));   // true true true
+    for scale in [1.0, 1e-9, 1e200] {
+        var seen: bool[>..] = [];
+        push_n(seen, false, 16384);
+        var slots = 0;
+        for i in 10000 {
+            let k = (hash(i * scale) & 16383) as i64;
+            if !seen[k] { seen[k] = true; slots += 1; }
+        }
+        print(slots > 7000);                                                    // true
+    }
     // Bytes: the same bytes hash the same wherever they lie, every prefix
     // of a text (each length the hash reads its own way) hashes differently,
     // and the low 12 bits, which a 4096-slot dictionary uses, spread 4096
@@ -109,6 +126,12 @@ fn random() {
     sort(xs);
     assert(xs == [1, 2, 3, 4, 5, 6, 7, 8]);  // Check the entire permutation.
     print(xs[0], " ", xs[7], " ", xs.len);            // 1 8 8
+    // n = 3 * 2^61: x % n gives each result below 2^62 from three values
+    // of x and the rest from two, 3/4 of all draws where 2/3 is fair.
+    let n = 3 * 2305843009213693952;
+    var low = 0;
+    for i in 30000 { if r.rand_int(n) < 4611686018427387904 { low += 1; } }
+    print(low > 19400 && low < 20600);                // true
 }
 
 fn searching() {

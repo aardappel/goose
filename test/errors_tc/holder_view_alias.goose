@@ -1,4 +1,4 @@
-// error: cannot clear
+// error: cannot clear reusable pool pool (which a.bytes may point at)
 import std;
 reusable[] var pool: u8[>..] = [];
 struct Cache { bytes: u8[>..]& }

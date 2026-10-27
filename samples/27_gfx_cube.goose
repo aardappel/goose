@@ -69,6 +69,7 @@ fn main() {
         write_stderr(str("gfx: ", gfx::error(), "\n"));
         return;
     }
+    defer gfx::close();   // On every way out of main from here on.
 
     var verts: Vertex[>..] = [];
     var indices: u16[>..] = [];
@@ -153,5 +154,4 @@ fn main() {
     for i in 3 { cube_there = cube_there || abs(px[mid + i] as i64 - background[i]) > 8; }
     print("drew ", drawn, " frames; cube in the middle: ", cube_there, "; saved gfx_cube.png: ",
           saved);
-    gfx::close();
 }

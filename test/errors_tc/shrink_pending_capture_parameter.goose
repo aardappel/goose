@@ -2,8 +2,8 @@
 // error: may still refer into first
 //
 // Both captures share a root; seeing its scalar alias must not hide the array.
+// The error names the shared root by its first alias, the parameter first.
 fn read(r: i64&, unused: i64) -> i64 { return r; }
-// Both captures share a root; seeing its scalar alias must not hide the array.
 fn outer(first: i64&, xs: i64[>..<]&) {
     recursive fn step(n: i64) -> i64 {
         if n > 0 { return read(xs[0], step(n - 1)); }

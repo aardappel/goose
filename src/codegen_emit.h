@@ -528,10 +528,14 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
     }
     auto ret = SigRet(sp);
     vector<string> versions(SIMD_LEVELS + 1);
+    // Every version above the baseline has FMA, so math's mul_add fuses in
+    // it whatever the target's mode (runtime.h).
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         versions[lv] = Unique(cat(name, "_simd", lv));
-        Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
-               versions[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
+        Append(code, "#if GS_SIMD >= ", lv,
+               "\n#undef GS_MUL_ADD_MODE\n#define GS_MUL_ADD_MODE fused\nGS_SIMD_TARGET", lv,
+               " static ", ret, " ", versions[lv], "(", params, ") {\n", fnbody,
+               "}\n#undef GS_MUL_ADD_MODE\n#define GS_MUL_ADD_MODE GS_MUL_ADD_BASE\n#endif\n");
     }
     Append(code, "static ", ret, " ", name, "(", params, ") {\n",
            "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
@@ -708,16 +712,16 @@ inline bool CodeGen::StaticInitX(Node *n, TypeExpr *t, string &out) {
             auto &a = *t->arr;
             if (a.akind != A_FIXED) return false;
             auto k = ArrSize(t->arr);
-            if (k < 1 || k > MAXSTATICELEMS) return false;
+            if (k < 1) return false;
             string s = "{ { ";
             if (auto str = Is<StrLit>(n)) {
-                if (!IsU8(a.sub) || (int64_t)str->val.size() != k) return false;
+                if (k > MAXSTATICELEMS || !IsU8(a.sub) || (int64_t)str->val.size() != k) return false;
                 for (int64_t e = 0; e < k; e++)
                     Append(s, e ? ", " : "", (int)(uint8_t)str->val[(size_t)e]);
             } else if (auto al = Is<ArrayLit>(n)) {
                 string ex;
                 if (al->fillval) {
-                    if (!StaticInitX(al->fillval, a.sub, ex)) return false;
+                    if (k > MAXSTATICELEMS || !StaticInitX(al->fillval, a.sub, ex)) return false;
                     for (int64_t e = 0; e < k; e++) Append(s, e ? ", " : "", ex);
                 } else {
                     if ((int64_t)al->elems.size() != k) return false;

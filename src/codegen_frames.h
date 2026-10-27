@@ -770,8 +770,56 @@ inline void CodeGen::PushSc(int kind) {
 }
 
 inline void CodeGen::EmitRestores(const CScope &s) {
-    for (auto i = (int)s.saves.size() - 1; i >= 0; i--)
-        L(Top(s.saves[i].first), " = ", s.saves[i].second, ";");
+    if (s.defers.empty()) {
+        for (auto i = (int)s.saves.size() - 1; i >= 0; i--)
+            L(Top(s.saves[i].first), " = ", s.saves[i].second, ";");
+        return;
+    }
+    // A deferred body registered after k saves runs after those made later
+    // are restored and before the k are. Emitting a body opens scopes of its
+    // own, which may move the scope vector, so the lists are copied first.
+    auto saves = s.saves;
+    auto defers = s.defers;
+    auto di = (int)defers.size() - 1;
+    for (auto k = (int)saves.size(); k >= 0; k--) {
+        for (; di >= 0 && (int)defers[di].first == k; di--) EmitDeferBody(defers[di].second);
+        if (k > 0) L(Top(saves[k - 1].first), " = ", saves[k - 1].second, ";");
+    }
+    assert(di < 0);
+}
+
+// A `defer` statement (§6.6): its body joins the exits of the block it is
+// in, which is the innermost scope that is not a statement's (as SaveBase
+// places a local's restore).
+inline void CodeGen::RegisterDefer(Defer *d) {
+    for (auto i = (int)cscopes.size() - 1; i >= 0; i--) {
+        if (cscopes[i].kind == SC_STMT) continue;
+        cscopes[i].defers.push_back({ cscopes[i].saves.size(), d });
+        return;
+    }
+    assert(false);
+}
+
+// One run of a deferred body at an exit of its block: its statements as
+// written, in a C block of their own. The body cannot leave (§6.6), so the
+// exit goes on after it however the body's last statement ends; its
+// temporaries take stack indices above everything the exit still holds.
+// Every exit emits the body again, so what it declares is named afresh each
+// time, as a blocked loop's body copies are (NameScope): the declarations
+// of aggregates are hoisted to one scope (HoistAggregateDecls), where one
+// name declared twice would not do.
+inline void CodeGen::EmitDeferBody(Defer *d) {
+    auto tj = termjump;
+    NameScope ns(*this);
+    PushSc(SC_PLAIN);
+    L("{");
+    ind++;
+    for (auto st : d->body->stmts) GenStmt(st);
+    if (d->body->tail) GenStmt(d->body->tail);
+    PopSc();
+    ind--;
+    L("}");
+    termjump = tj;
 }
 
 inline void CodeGen::PopSc() {

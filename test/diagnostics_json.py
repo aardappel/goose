@@ -35,8 +35,8 @@ def check_diagnostics_json(exe, base):
             alone."""
             if source is not None:
                 tc.write_text(root / name, source)
-            code, out, err = tc.run_capture([exe, "check", name], cwd=root)
-            jcode, jout, jerr = tc.run_capture([exe, "check", "--diagnostics", "json", name],
+            code, out, err = tc.run_capture([exe, "check", "--stats", name], cwd=root)
+            jcode, jout, jerr = tc.run_capture([exe, "check", "--stats", "--diagnostics", "json", name],
                                                cwd=root)
             require(code == jcode, f"{name}: exit code {code} in text mode, {jcode} as JSON",
                     err + jerr)

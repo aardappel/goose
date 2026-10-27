@@ -1716,30 +1716,129 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
 
 // Elementwise arithmetic (§6.1), expanded member by member with direct
 // loads and stores — no whole-struct temporaries, which backends fail to
-// scalarize. Member i of the result depends only on member i of each
+// scalarize — except that floats GS_VEC can hold go through one vector
+// operation where the C compiler has vector extensions (VecShape,
+// implementation §6.14). Member i of the result depends only on member i of each
 // operand, so writing members straight into `dst` is exact even when it
 // aliases an operand (the p.vel = p.vel + g shape). Scalar operands are
 // snapshotted by the caller because they may alias any destination member.
 inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
                                      const string &r, const string &dst,
                                      bool lscalar, bool rscalar) {
+    FltStorage fs = FS_F64;
+    int64_t n = 0;
+    const char *o = op == T_PLUS || op == T_PLUSEQ   ? " + "
+                    : op == T_MINUS || op == T_MINUSEQ ? " - "
+                    : op == T_MUL || op == T_MULEQ   ? " * "
+                    : op == T_DIV || op == T_DIVEQ   ? " / "
+                                                     : nullptr;
+    bool vec = o && VecShape(t, fs, n);
+    // Where the C compiler has vector extensions, one vector operation
+    // (GS_VEC, runtime.h); the members below otherwise.
+    if (vec) {
+        // The operands go to temps of their own type first, inside the test
+        // so that the member-by-member form doesn't pay for them; both are
+        // read before dst, which may be one of them, is written.
+        L("#if GS_VEC");
+        auto a = VecOperand(t, fs, l, lscalar);
+        auto b = VecOperand(t, fs, r, rscalar);
+        auto vt = VecType(fs, n);
+        L("GS_VST(", vt, ", &(", dst, "), ", VecLoad(vt, n, a, lscalar), o,
+          VecLoad(vt, n, b, rscalar), ");");
+        L("#else");
+    }
     GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
         auto a = cat("(", l, ")", lscalar ? string() : path);
         auto c = cat("(", r, ")", rscalar ? string() : path);
         return ArithX(op, tt, a, c, line, false, a, c);
     });
+    if (vec) L("#endif");
 }
 
 // Elementwise negation (§6.1), member by member as above: member i of the
-// result reads only member i of the operand.
+// result reads only member i of the operand. As a vector where it can be.
 inline void CodeGen::GenElemwiseNegInto(TypeExpr *t, Line line, const string &x,
                                         const string &dst) {
+    FltStorage fs = FS_F64;
+    int64_t n = 0;
+    bool vec = VecShape(t, fs, n);
+    if (vec) {
+        L("#if GS_VEC");
+        auto a = VecOperand(t, fs, x, false);
+        auto vt = VecType(fs, n);
+        L("GS_VST(", vt, ", &(", dst, "), -", VecLoad(vt, n, a, false), ");");
+        L("#else");
+    }
     GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
         auto a = cat("(", x, ")", path);
         if (tt->kind == TY_FLT) return cat("(-", a, ")");
         return cat("gs_neg_", IntSfx(tt->intstorage), "(", a,
                    OvfLocArgs(tt->intstorage, line), ")");
     });
+    if (vec) L("#endif");
+}
+
+// Whether t is all floats of one width, 2, 4, 8 or 16 of them in 16, 32 or
+// 64 bytes with no padding: a value GS_VEC can compute on as one vector.
+inline bool CodeGen::VecShape(TypeExpr *t, FltStorage &fs, int64_t &n) {
+    n = 0;
+    // Anything past 64 bytes is too big for a vector, however it nests:
+    // reject it before visiting its leaves.
+    if (FixedSize(t) > 64) return false;
+    int sto = -1;
+    bool ok = true;
+    function<void(TypeExpr *)> rec = [&](TypeExpr *tt) {
+        if (!ok) return;
+        switch (tt->kind) {
+            case TY_FLT:
+                if (sto < 0) sto = tt->fltstorage;
+                else if (sto != tt->fltstorage) ok = false;
+                if (++n > 16) ok = false;
+                return;
+            case TY_STRUCT: {
+                auto si = SI(tt);
+                for (size_t i = 0; i < si->st->fields.size(); i++)
+                    if (!si->st->fields[i].ispad) rec(si->ftypes[i]);
+                return;
+            }
+            case TY_ARRAY:
+                if (tt->arr->akind != A_FIXED || ArrSize(tt->arr) > 16) { ok = false; return; }
+                for (int64_t i = 0; i < ArrSize(tt->arr); i++) rec(tt->arr->sub);
+                return;
+            default: ok = false; return;
+        }
+    };
+    rec(t);
+    if (!ok || sto < 0 || (n != 2 && n != 4 && n != 8 && n != 16)) return false;
+    fs = (FltStorage)sto;
+    auto bytes = n * (fs == FS_F32 ? 4 : 8);
+    return (bytes == 16 || bytes == 32 || bytes == 64) && FixedSize(t) == bytes;
+}
+
+inline string CodeGen::VecType(FltStorage fs, int64_t n) {
+    return cat("gs_v", FltStorageName(fs), "_", n);
+}
+
+// An operand of a vector operation in a new temp: a scalar of the lanes'
+// type, or a value of type t.
+inline string CodeGen::VecOperand(TypeExpr *t, FltStorage fs, const string &x, bool scalar) {
+    auto v = T();
+    if (scalar) {
+        auto ect = fs == FS_F32 ? "float" : "double";
+        L(ect, " ", v, " = (", ect, ")(", x, ");");
+    } else {
+        L(CT(t), " ", v, " = ", x, ";");
+    }
+    return v;
+}
+
+// The vector of type vt (n lanes) that the temp v holds, or that it fills
+// every lane of.
+inline string CodeGen::VecLoad(const string &vt, int64_t n, const string &v, bool scalar) {
+    if (!scalar) return cat("GS_VLD(", vt, ", &", v, ")");
+    string lanes;
+    for (int64_t i = 0; i < n; i++) lanes += cat(i ? ", " : "", v);
+    return cat("((", vt, "){ ", lanes, " })");
 }
 
 // Stores leaf(type, path) into dst's member at each numeric leaf path of the

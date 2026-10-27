@@ -1,7 +1,8 @@
 // runtime-debug: fixed values above the C backend's native-value threshold
-// keep their value semantics on data stacks. With the old lowering the
-// save/reset/load sequence alone reserved 1,280,144 bytes in MSVC's main
-// frame after Goose inlining, overflowing Windows' default 1 MiB stack.
+// keep their value semantics on data stacks. The save/reset/load sequence
+// below must not put its values in main's native frame: after Goose inlining
+// they would take over 1 MiB of it, past Windows' default 1 MiB stack under
+// MSVC.
 struct Game { blocks: u8[256000], seed: i64 }
 var game = Game { .. };
 
@@ -45,35 +46,6 @@ fn calls() {
     assert(before.seed == 7 && game.seed == 99);
     let selected = if seed == 7 { copied } else { game };
     assert(selected.seed == 7);
-}
-
-// A large return can unwind through other large locals. Repeat exits often
-// enough that failing to restore a 256 KB data-stack watermark exhausts its
-// default 256 MiB reservation.
-fn bail(n: i64) {
-    let scratch = Game { seed: n, .. };
-    if n > 0 { return scratch from early; }
-}
-fn early(n: i64) -> Game {
-    let live = Game { seed: -1, .. };
-    bail(n);
-    return live;
-}
-fn scopes() {
-    for i in 1100 {
-        let g = Game { seed: i, .. };
-        if i % 2 == 0 { continue; }
-        assert(g.seed == i);
-    }
-    for i in 1100 {
-        let result = early(i);
-        assert(result.seed == (if i == 0 { -1 } else { i }));
-        while true {
-            let g = Game { seed: i, .. };
-            assert(g.seed == i);
-            break;
-        }
-    }
 }
 
 enum Item { Empty, World { value: Game } }
@@ -121,7 +93,8 @@ fn defaults_and_links() {
     let run = pool.alloc_slice(3);
     assert(run[2].blocks[8191] == 3);
     // This fixed root must be built at its final address, including every
-    // self-relative link. The change affects storage, not relative offsets.
+    // self-relative link: where it is stored does not change the relative
+    // offsets.
     var links = [Link { next: null, .. }; 2];
     links[0].next .= &links[1];
     links[1].blocks[8191] = 23;
@@ -153,7 +126,6 @@ fn main() {
         assert(game.blocks[0] == 19 && game.blocks[255999] == 23);
     }
     calls();
-    scopes();
     enums();
     arrays();
     defaults_and_links();

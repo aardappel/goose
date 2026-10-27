@@ -151,11 +151,9 @@ struct TypeCheck {
 
     // What a nested function's body can name outside its own scopes (§7.5),
     // as its declaration sees it: the variables in scope there, innermost
-    // first, each with the index it holds in `vars` while it is in scope;
-    // and every function declared in the blocks around the declaration,
-    // before or after it, then those the declaring body sees from outside,
-    // each with the environment it is declared in. Kept after the declaring
-    // scope ends, for a function whose value leaves it.
+    // first, and every function declared in the blocks around the
+    // declaration, before or after it, then those the declaring body sees
+    // from outside, each with the environment it is declared in.
     // A nested function a body can call, with the environment it is
     // declared in, the scope declaring it (its Scope::serial) and its place
     // among that scope's declarations: those of one name in one scope are
@@ -167,10 +165,8 @@ struct TypeCheck {
         int order = 0;
     };
     struct DeclSite {
-        vector<pair<VarDef *, int>> vars;
+        vector<VarDef *> vars;
         vector<OuterFn> fns;
-        int scope = 0;               // The declaring scope, and its Scope::serial.
-        int serial = 0;
     };
 
     // A function body's exits as its caller's flow sees them (§4.4): the
@@ -228,7 +224,7 @@ struct TypeCheck {
         vector<Val> *argvals = nullptr;
     };
 
-    enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK, SK_EXPANSION };
+    enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK, SK_EXPANSION, SK_DEFER };
     // A part of a holder's storage a whole assignment of a value holding no
     // references emptied (§5.1): the part `path` -- field names, each after
     // a '.' -- names under `base`, a holder variable's own storage or a
@@ -307,7 +303,7 @@ struct TypeCheck {
         int serial = 0;              // Unique per scope opened: tells a later one at its index apart.
         int varbase = 0;
         int fnbase = 0;              // Into localfns.
-        Node *node = nullptr;        // The loop / `block` construct for SK_LOOP/SK_BLOCK.
+        Node *node = nullptr;        // The loop / `block` / `defer` for SK_LOOP/SK_BLOCK/SK_DEFER.
         TypeExpr *breaktype = nullptr;
         Val breakvalue;             // Roots and permissions of all valued exits.
         TypeExpr *breakexpected = nullptr;   // The construct's expected value type.
@@ -415,7 +411,7 @@ struct TypeCheck {
     enum HoldKind { HK_NONE, HK_VALUE, HK_VIEW, HK_ELEMS, HK_RECEIVER, HK_LOCATION,
                     HK_SEQUENCE };
     template<typename F> void ForOperands(Node *n, F f);
-    int OperandIndex(Node *parent, Node *child);
+    int OperandIndex(Node *parent, Node *child, int next = -1);
     // A value evaluated earlier in the statement and still live: a reference
     // or slice, a view of an array's elements, a holder's references, or an
     // assignment's location, which is only the slot the value lands in (what
@@ -1384,21 +1380,19 @@ struct TypeCheck {
     // scopes, innermost first: a nested function's are those in scope where
     // it is declared, a function value's those of the frame it is written
     // in as they are at the call it is written at, then those that frame
-    // names outside its own. f gets each with its index in `vars` while in
-    // scope, and the frame whose declaration site lists it (-1 for a frame's
-    // current scopes); the walk stops when f returns true, and returns
-    // whether it did.
+    // names outside its own. The walk stops when f returns true, and
+    // returns whether it did.
     template <typename F> bool ForOuterVars(int fi, F f) {
         for (;;) {
             auto &fr = frames[fi];
             if (fr.decl) {
-                for (auto [v, i] : fr.decl->vars) if (f(v, i, fi)) return true;
+                for (auto v : fr.decl->vars) if (f(v)) return true;
                 return false;
             }
             auto p = fr.lexframe;
             if (p < 0) return false;
             for (auto i = frames[p + 1].varbase - 1; i >= frames[p].varbase; i--)
-                if (f(vars[i], i, -1)) return true;
+                if (f(vars[i])) return true;
             fi = p;
         }
     }
@@ -1426,7 +1420,6 @@ struct TypeCheck {
     }
 
     bool InScope(VarDef *v, int idx) { return idx < (int)vars.size() && vars[idx] == v; }
-    bool ScopeEnded(const DeclSite &d);
     void DeclareLocalFn(FnDecl *fd);
     int FrameOfSpec(FnSpec *sp);
     int LexFrame(FnSpec *env);
@@ -2135,6 +2128,7 @@ struct TypeCheck {
     Frame &CurRealFrame() { return frames[RealFrameIndex()]; }
     int FindBreakScope(bool forcontinue);
     void CheckBreak(Break *b);
+    [[noreturn]] void JumpLeavesDefer(Node *at, const char *what);
     // A loop or block exits in the join of the states at its breaks
     // (NoteBreak) and at its own exit, where it has one (JoinBreakFlow).
     void NoteBreak(int si);
@@ -2343,6 +2337,17 @@ struct TypeCheck {
 
     void CheckStmt(Node *n);
     void CheckStmtExpr(Node *n);
+
+    // `defer` (§6.6). The bodies being checked, as the count of SK_DEFER
+    // scopes open in any frame, so that a program without one pays a test
+    // per identifier; what each body names of the variables declared
+    // outside it (NoteDeferMention), for CheckDefers.
+    int deferbodies = 0;
+    unordered_map<Defer *, vector<VarDef *>> defermentions;
+    void CheckDefer(Defer *d);
+    bool InDeferBody();
+    void NoteDeferMention(VarDef *v);
+    void CheckDefers();
     void CheckVarDecl(VarDecl *vd, bool global);
     void CheckBindingRoot(VarDef *d, const Val &v, Node *at);
     void CheckCycleInit(VarDef *d, int fi, int calls);
@@ -2815,7 +2820,7 @@ struct TypeCheck {
         TypeCheck &tc;
         size_t frames, scopes, vars, localfns, blockpos, outerbodies, cyclerounds, typechain,
                laterpointees, fnspecs, structinsts, enuminsts;
-        int typesbuilding;
+        int typesbuilding, deferbodies;
         BodyState cur;
         struct GlobalFlow { VarDef *v; bool assigned, maybeassigned; TypeExpr *narrowed; };
         vector<GlobalFlow> globals;
@@ -2825,7 +2830,8 @@ struct TypeCheck {
               outerbodies(t.outerbodies.size()), cyclerounds(t.cyclerounds.size()),
               typechain(t.typechain.size()), laterpointees(t.laterpointees.size()),
               fnspecs(t.ast.fnspecs.size()), structinsts(t.ast.structinsts.size()),
-              enuminsts(t.ast.enuminsts.size()), typesbuilding(t.typesbuilding), cur(t.cur) {
+              enuminsts(t.ast.enuminsts.size()), typesbuilding(t.typesbuilding),
+              deferbodies(t.deferbodies), cur(t.cur) {
             for (auto g : tc.ast.globals)
                 for (auto v : g->defs) globals.push_back({ v, v->assigned, v->maybeassigned, v->narrowed });
         }
@@ -2840,6 +2846,7 @@ struct TypeCheck {
             tc.typechain.resize(typechain);
             tc.laterpointees.resize(laterpointees);
             tc.typesbuilding = typesbuilding;
+            tc.deferbodies = deferbodies;
             tc.cur = cur;
             tc.reachable = true;
             tc.fitnode = nullptr;
@@ -3036,6 +3043,7 @@ struct TypeCheck {
         CheckRoot([&] { ResolveGrowConflicts(); });
         CheckRoot([&] { VerifyLiterals(); });
         CheckRoot([&] { ReportRedundantCasts(); });
+        CheckRoot([&] { CheckDefers(); });
         if (ast.exemplars) CheckExemplars();
     }
 

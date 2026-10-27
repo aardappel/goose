@@ -6,5 +6,5 @@ enum Mode { Off, Level { v: i64 } }
 fn count(offs: Mode.Off[:]) -> i64 { offs.len }
 
 fn main() {
-    print(count([]));
+    print(1);
 }

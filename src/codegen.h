@@ -581,6 +581,11 @@ struct CodeGen {
         int kind;
         int stkbase;
         vector<pair<string, string>> saves;   // (stack expr, base var) to restore.
+        // The `defer` bodies registered in this scope (§6.6), each with how
+        // many saves came before it: an exit runs them among the restores,
+        // latest first, each before the release of the storage declared
+        // before it (EmitRestores).
+        vector<pair<size_t, Defer *>> defers;
         SFunction *ibsf = nullptr;            // SC_IB: which returns exit here.
         string brklbl, cntlbl;
         bool usedbrk = false, usedcnt = false;
@@ -761,6 +766,8 @@ struct CodeGen {
     void EmitRestores(const CScope &s);
     void PopSc();
     void EmitExitRestores(int to);
+    void RegisterDefer(Defer *d);
+    void EmitDeferBody(Defer *d);
     string AllocStk(bool forlocal);
     void SaveBase(bool forlocal, const string &stk, const string &basevar);
 
@@ -1022,6 +1029,10 @@ struct CodeGen {
                          const string &r, const string &dst,
                          bool lscalar = false, bool rscalar = false);
     void GenElemwiseNegInto(TypeExpr *t, Line line, const string &x, const string &dst);
+    bool VecShape(TypeExpr *t, FltStorage &fs, int64_t &n);
+    string VecType(FltStorage fs, int64_t n);
+    string VecOperand(TypeExpr *t, FltStorage fs, const string &x, bool scalar);
+    string VecLoad(const string &vt, int64_t n, const string &v, bool scalar);
     void GenElemwiseLeaves(TypeExpr *t, const string &dst,
                            const function<string(TypeExpr *, const string &)> &leaf);
     void ElemwiseOperands(Binary *b, string &l, string &r);
@@ -1408,8 +1419,10 @@ struct CodeGen {
     // a later global's initializer naming one is spelled out from.
     map<const VarDef *, Node *> gstatic;
 
-    // Spelling out more elements than this would trade startup work for source
-    // size; such a value keeps its runtime initialization.
+    // Spelling out more elements of a fill or a string than this would trade
+    // startup work for source size; such a value keeps its runtime
+    // initialization, a loop or a copy. Listed elements are spelled out
+    // either way, so their static initializer has no limit.
     static constexpr int64_t MAXSTATICELEMS = 256;
 
     bool StaticInitX(Node *n, TypeExpr *t, string &out);

@@ -9,7 +9,7 @@ fn invert(p: Pixel) -> Pixel {
 }
 
 // A declaration placed in the global namespace from a namespaced file. The
-// whole declaration is then written as global code, so the key type carries
-// its qualifier. This is the bridge the global dictionary module needs for
-// an image::Key: its `hash(key)` resolves where it is defined, globally.
-fn ::hash(k: image::Key) -> u64 { image::hash(k) }
+// whole declaration is then written as global code: the type carries its
+// qualifier, and the bare `brightness` call is the root file's global one,
+// while the UFCS call resolves in the namespace of the receiver's type.
+fn ::dimmed(p: image::Pixel) -> i64 { brightness(p.brightness()) / 4 }

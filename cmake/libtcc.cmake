@@ -86,6 +86,16 @@ if(APPLE)
     string(APPEND tcc_config
         "#define CONFIG_TCC_SYSINCLUDEPATHS \"{B}/include:${tcc_sdk}/usr/include\"\n")
 endif()
+# For a C library outside the paths above, as in a Nix store: each one set
+# replaces the platform's value. {B} is the staged directory.
+set(GOOSE_TCC_SYSINCLUDEPATHS "" CACHE STRING "TinyCC's include path, ':'-separated")
+set(GOOSE_TCC_LIBPATHS "" CACHE STRING "TinyCC's library path, ':'-separated, {B} first")
+foreach(opt IN ITEMS SYSINCLUDEPATHS LIBPATHS)
+    if(GOOSE_TCC_${opt})
+        string(APPEND tcc_config
+            "#undef CONFIG_TCC_${opt}\n#define CONFIG_TCC_${opt} \"${GOOSE_TCC_${opt}}\"\n")
+    endif()
+endforeach()
 # Written only when it changes, so reconfiguring does not rebuild TinyCC.
 file(CONFIGURE OUTPUT "${TCC_BUILD}/config.h" CONTENT "${tcc_config}" @ONLY)
 

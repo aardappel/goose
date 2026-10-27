@@ -17,7 +17,7 @@ fn f(data: u8[:]) -> i64 {
         dict.push(result[0..1]);
         pos += 1;
     }
-    return dict.len;
+    return 0;
 }
 
 fn main() {

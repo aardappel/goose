@@ -67,7 +67,7 @@ fn main() {
 
 With `[||..]` replaced by `[>..<]`, this program compiles and runs today. A
 column array changes where the elements live and what else may be done with
-them, never what the program means.
+them, but never what the program means.
 
 ## Why a new array kind
 
@@ -82,20 +82,21 @@ var age: i32[>..] = [];
 This requires seven pushes per element and seven parameters per helper.
 The programmer must keep all seven lengths equal. A struct cannot group the
 arrays because it can hold at most one resizable field (§3.4). The layout
-also has a performance cost. Every one of those arrays starts at the same page offset
-of its own stack, which costs 2x on a six-array version of the particles
-kernel through 4K aliasing (measurements below), and nothing tells the
-compiler the arrays are parallel.
+also has a performance cost. Every one of those arrays starts at the same
+page offset of its own stack, and through 4K aliasing this makes a six-array
+version of the particles kernel 2x slower (measurements below). Nothing tells
+the compiler that the arrays are parallel either.
 
-A complete struct-of-arrays feature, where element references and slices
-become proxies that ordinary functions accept, layouts are chosen per
-specialization, and arrays are returned into column destinations, was
-estimated at about 2,300 lines, 90% of it codegen, and most of that is the
-cost of letting an element or a slice escape into code written for ordinary
-arrays. A column array never lets anything escape: it is its own
-array kind, it coerces to nothing, and no reference, slice or view into it
-can exist. The remaining implementation consists of storage handling and a few array
-members, at about a third of the estimated size.
+A complete struct-of-arrays feature was estimated at about 2,300 lines, 90% in
+codegen. That design lets ordinary functions accept element references and
+slices through proxies. It also chooses layouts per specialization and returns
+arrays into column destinations. Most of the code supports using an element or
+slice in functions written for ordinary arrays.
+
+The proposed column array avoids that requirement. It is a separate array kind
+with no implicit conversions and no references, slices, or views into its
+elements. Its implementation needs storage handling and a few array members, at
+about a third of the full design's estimated size.
 
 ## Rules
 
@@ -109,13 +110,13 @@ into its fields, recursively. Any other field is one column: a scalar, a
 or a fixed-mode enum. `pad` fields have no column. A `T` that is not a struct
 is one column, so generic code may write `T[||..]` for any fixed, flat `T`.
 
-**Where it lives.** A local or global `var` or `let`, initialized with `[]` or
-an array literal. It is never a struct field, an array element, an ADT
-payload, a by-value parameter, a return value, a thread argument, a queue
-value, or a global that a thread program uses. Functions take it by
-reference: a `T[||..]&` parameter, or an untyped one, which binds the array by
-reference (§4.1). A reference to the whole array is an ordinary reference
-under the ordinary rules.
+**Where it lives.** A column array is a local or global `var` or `let`,
+initialized with `[]` or an array literal. It is never a struct field, an
+array element, an ADT payload, a by-value parameter, a return value, a thread
+argument, a queue value, or a global that a thread program uses. Functions
+take it by reference: through a `T[||..]&` parameter, or through an untyped
+parameter, which binds the array by reference (§4.1). A reference to the
+whole array is an ordinary reference under the ordinary rules.
 
 **Element access uses paths.** `ps[i]` followed by any field steps and
 fixed-array index steps (`ps[i]`, `ps[i].pos`, `ps[i].pos.y`) is an *element
@@ -127,12 +128,18 @@ path*. A path can be:
 * written (`ps[i] = p`, `ps[i].pos = v`, `ps[i].pos.y = 0.0`), with compound
   assignment and `++`/`--` on a numeric leaf.
 
-Nothing can refer to a path. `&ps[i]`, `var r .= ps[i]`, passing a path where
-a reference is expected (`fn f(p: Particle&)`), slicing (`ps[a..b]`, or a
-slice of a fixed-array leaf), `for` over a leaf array and `for &p in ps` are
-compile errors that point at the copy-out and path forms. A path checks its
-index once against the one length, however many columns it touches, and the
-bounds-check pass elides that check as for any array.
+Nothing can refer to a path. The following are compile errors, and each error
+points at the copy-out and path forms:
+
+* `&ps[i]`;
+* `var r .= ps[i]`;
+* passing a path where a reference is expected (`fn f(p: Particle&)`);
+* slicing (`ps[a..b]`, or a slice of a fixed-array leaf);
+* `for` over a leaf array;
+* `for &p in ps`.
+
+A path checks its index once against the shared length, however many columns
+it touches, and the bounds-check pass elides that check as for any array.
 
 **Members.**
 
@@ -152,18 +159,19 @@ they render `T[>..<]`.
 
 **Shrinking.** `pop`, `resize` and `clear` are legal wherever a grow-shrink
 array's are: on a local, through a reference, on a global (§5.2). The §5.2
-test is kept for what can still involve a column array, an element path of
-the same array held earlier in the statement: `ps[i] = ps.pop()` is rejected
-exactly as it is for `T[>..<]` today, and so is a call that shrinks `ps` in
-the same position. The scan of reference and slice variables is skipped,
-since none can point into a column array.
+test is kept for the one case that can still involve a column array: an
+element path of the same array that is held earlier in the statement. So
+`ps[i] = ps.pop()` is rejected exactly as it is for `T[>..<]` today, and so
+is a call that shrinks `ps` in the same position. The scan of reference and
+slice variables is skipped, since none can point into a column array.
 
 **Not in v1.** `==`, `copy(ps)`, whole assignment, `index_of`, slices and
 views, `to_bytes`, `bytes_of` and `from_bytes`, `reusable`, `in pool`
 references to its elements, and every function that takes `T[:]` (`sort`,
 `find`, `filter` and the other slice functions of `std`) are compile errors.
-To use these operations, copy the elements out: `xs.append(ps)` into an ordinary array, and back
-with `ps.clear(); ps.append(xs)` where needed.
+To use these operations, copy the elements out into an ordinary array with
+`xs.append(ps)`, and copy them back with `ps.clear(); ps.append(xs)` where
+needed.
 
 ## What the checker does not need
 
@@ -188,9 +196,9 @@ a column array:
   globals: one typed pointer per column plus the count, `{ float *pos_x; ...
   int32_t *age; int64_t len; }`. A `T[||..]&` is a plain pointer to it.
 * **Columns** each take a data stack: a local takes N stack indices from its
-  function's block (§10.3), a global N reservations of its own. Column k's
-  first element sits at its own page offset, k × 4096 / N past a page
-  boundary, so parallel columns never share their low 12 address bits at the
+  function's block (§10.3), and a global takes N reservations of its own.
+  Column k's first element sits at its own page offset, k × 4096 / N past a
+  page boundary, so parallel columns never share their low 12 address bits at the
   same index. This costs at most a page of address space per column.
 * **Stack tops are never used.** A column is the only value on its stack for
   the array's whole life, and its elements are fixed-size, so its next slot is
@@ -206,17 +214,19 @@ a column array:
   lvalue (`ps.pos_y[ix]`), so compound assignment, `++`, `match` on an enum
   leaf and indexing into a fixed-array leaf need nothing new. A path spanning
   several columns has two consumers: a load gathers the columns into a C
-  value, and a store scatters one out. Elementwise math between paths of one
-  array goes through `GenElemwiseInto` with column-mapped members, so
+  value, and a store scatters a C value out into the columns. Elementwise
+  math between paths of one array goes through `GenElemwiseInto` with
+  column-mapped members, so
   `ps[i].pos = ps[i].pos + ps[i].vel` compiles to per-column loads and
   stores with no gathered temporaries, as the array-of-structs form does
   today.
 * **Loops.** Column pointers never change while the array lives (growth
   never moves, and there is no whole assignment), so a loop reads each one
   into a local once. They are declared `restrict` where the loop reaches the
-  array through them alone: no growth, shrink or call that can reach the array
-  inside the loop (the `hoistrefs` conditions, implementation.md §5.10), and
-  no second column array that could be the same one.
+  array only through them. That holds when the loop contains no growth,
+  shrink or call that can reach the array (the `hoistrefs` conditions,
+  implementation.md §5.10), and no second column array that could be the
+  same array.
 
 ## Implementation
 
@@ -224,12 +234,13 @@ Estimates are rough (±30%). They come from the inventory of the full design,
 with everything a column array does not have taken out.
 
 * **Parser, AST, dump** (~10 lines): `[` `||` `..` `]` in the type postfix
-  loop (`||` already lexes as `T_OROR`), an `A_COLS` array kind, and its
-  spelling in `--dump`.
+  loop (`||` already lexes as `T_OROR`), an `A_COLS` array kind, and how
+  `--dump` prints it.
 * **Checker** (~150–200):
   * `ValidateType`: the element is fixed-size and flat, and the type appears
     only as a variable's type or a reference's pointee. `ClassOf` makes it
-    resizable. `CanContain` leaves it out, so it is no read-back candidate.
+    resizable. `CanContain` leaves it out, so it is never a read-back
+    candidate.
   * `CheckLValue`: an element-path bit on `LVal`, set at the index step and
     kept through field and fixed-array index steps. `CheckRefOf`,
     `AutoRef`/`BindsRef`, `.=` declarations and rebinds, slices and `for`
@@ -288,8 +299,8 @@ identical, and repeated sessions varied by up to 8%.
 
 * **The 2x at the default targets is 4K aliasing.** Every array starts at
   offset 0 of a fresh stack, so `px[i]` and `vx[i]` share their low 12 address
-  bits, and each load after a store predicts a forward that is not there.
-  Moving the starts apart removes it.
+  bits. For each load after a store, the CPU then predicts a store-to-load
+  forward that is not there. Moving the starts apart removes the aliasing.
 * **Placed apart, the columns stay within 6–11% of the array of structs** at
   the default targets. The loop touches every field on every iteration and
   branches, which is the array-of-structs layout's best case, and at clang's
@@ -306,15 +317,15 @@ identical, and repeated sessions varied by up to 8%.
 
 The stagger belongs in any column layout the compiler controls. Whether
 ordinary data stacks should start at staggered offsets too is a separate
-question, since unrelated arrays that one loop reads and writes meet the same
-aliasing today.
+question, since unrelated arrays that one loop reads and writes run into the
+same aliasing today.
 
 ## Possible extensions, ordered by expected benefit
 
 | Extension | What it adds | Rough cost |
 |---|---|---|
 | `for &p in ps` as a place alias | `p` stands for `ps[i]` in paths and still has no address; kernels then read like their array-of-structs versions | ~100 lines |
-| Column views | a real slice over one column (`ps.pos.x` as an `f32[:]`, in some spelling), for FFI and `std` kernels, held by variables only as §5.2's slices are, which brings back the variable scan at shrinks | ~150 |
+| Column views | a real slice over one column (`ps.pos.x` as an `f32[:]`, in some syntax), for FFI and `std` kernels, held by variables only as §5.2's slices are, which brings back the variable scan at shrinks | ~150 |
 | `==`, `copy`, whole assignment | per-column compares and copies | ~60 |
 | Reference and `in pool` leaves | elements that hold links, checked as element fields of any array are | probably small |
 | Struct tails | a frame object (C.2) whose tail is a column header | ~200 |
@@ -323,7 +334,7 @@ aliasing today.
 
 ## Open questions
 
-1. **Spelling.** `T[||..]` reads as columns with a changing length.
+1. **Syntax.** `T[||..]` reads as columns with a changing length.
    `T[>..||]` would keep the family's `>` for stack growth.
 2. **`push`'s result.** Should `push` return the new index, the counterpart
    of the reference other arrays return?

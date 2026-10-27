@@ -1,4 +1,4 @@
-// error: still used
+// error: cannot call clear_cache, which shrinks bytes while live is still used
 import std;
 reusable[] var pool: u8[>..] = [];
 struct Cache { bytes: u8[>..]& }

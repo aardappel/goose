@@ -315,7 +315,7 @@ fn main() {
             for i in frac { text.push(('0' + r.rand_int(10)) as! u8); }
         }
         let v = parsed(text);
-        if v != json::round_exact(text, 0, text.len, -frac, v) { differ++; print("misread ", text); }
+        if v != float_text::round_exact(text, 0, text.len, -frac, v) { differ++; print("misread ", text); }
     }
     print(differ, " random numbers written or read otherwise");
 

@@ -12,44 +12,47 @@
 
 </details>
 
-A survey, made in October 2026, of the languages, libraries and papers whose
-memory management comes closest to Goose's: all dynamic data on a
-compiler-counted set of stacks, with one growable value on top of each. No
-language or paper was found that combines Goose's ingredients. Each
-ingredient has prior art, and this note ranks it by how much of the model it
-shares, says precisely where each candidate differs, and lists what remains
-without precedent. Scores are out of ten and are a judgement, not a
-measurement.
+This note is a survey, made in October 2026, of the languages, libraries and
+papers whose memory management comes closest to Goose's. In Goose, all
+dynamic data is stored on a set of stacks whose number the compiler
+computes, with one growable value on top of each stack. No language or paper
+was found that combines Goose's ingredients, but each ingredient has prior
+art. This note ranks the candidates by how much of the model they share,
+says where each candidate differs, and lists what has no precedent. Scores
+are out of ten and are a judgement, not a measurement.
 
 ## 1. What is being compared
 
 Goose's model, in the parts that a candidate can share or lack:
 
-1. **Stacks, not a heap.** A program's dynamic data lives on N data stacks,
-   each a large address-space reservation committed on touch, with a bump
-   pointer and a guard gap; values are pushed in lifetime order and popped
-   en masse at scope exit ([spec §1.2](../goose_spec.md#12-memory-model),
+1. **Stacks, not a heap.** A program's dynamic data lives on N data stacks.
+   Each stack is a large address-space reservation that is committed on
+   touch, with a bump pointer and a guard gap. Values are pushed in lifetime
+   order and popped en masse at scope exit
+   ([spec §1.2](../goose_spec.md#12-memory-model),
    [§10.4](../goose_spec.md#104-runtime-environment)).
 2. **One growable value per stack, on top.** At most one resizable value is
    live per stack and it is always the topmost, so growth is a pointer bump,
    nothing moves, and interior references stay valid across growth
    ([§1.3](../goose_spec.md#13-the-stack-invariant)).
 3. **N is a compile-time constant.** The whole-program compiler assigns each
-   growable local a stack index: simultaneously live values get distinct
-   stacks, sequentially live ones reuse one, like register allocation over
-   stacks ([§10.3](../goose_spec.md#103-stack-assignment-deterministic-recipe)).
+   growable local a stack index. Values that are live at the same time get
+   distinct stacks, and values that are live one after the other can share
+   a stack. This works like register allocation, with stacks in place of
+   registers
+   ([§10.3](../goose_spec.md#103-stack-assignment-deterministic-recipe)).
 4. **Static, annotation-free safety.** Every reference has a compile-time
-   root, the variable that bounds its target's lifetime; a reference may not
+   root: the variable that bounds its target's lifetime. A reference may not
    outlive its root, a store is checked by scope nesting, and functions are
-   specialized per root in place of lifetime parameters
-   ([§9.1](../goose_spec.md#91-the-one-rule),
+   specialized per root instead of taking lifetime parameters
+   ([§9.1](../goose_spec.md#91-the-outlives-rule),
    [§9.2](../goose_spec.md#92-roots-and-the-depth-check),
    [§10.2](../goose_spec.md#102-monomorphization)). An array shrinks only
-   where the compiler sees that nothing refers into it
+   where the compiler can tell that nothing refers into it
    ([§5](../goose_spec.md#5-the-resizableshrink-rules)).
 5. **Results built at their destination.** A variable-size result is
    constructed on the stack of the value that receives it, through any depth
-   of calls, the callee knowing the destination stack
+   of calls, and the destination stack is known to the callee
    ([§4.3](../goose_spec.md#43-the-in-place-construction-guarantee),
    [§7.3](../goose_spec.md#73-return-values-and-result-placement)).
 6. **Nested data inline.** An array of strings is one contiguous block, and a
@@ -60,11 +63,11 @@ Goose's model, in the parts that a candidate can share or lack:
    a call into a recursive cycle, so recursion costs native stack only
    ([§7.8](../goose_spec.md#78-recursion)).
 
-The question for each candidate is the same: is its region a contiguous
-stack whose top value grows in place with stable interior references, or an
-arena of separately allocated objects; is the number of regions a
-compile-time constant or one per activation; and is safety static, and at
-what annotation cost.
+The same three questions are asked of each candidate. Is its region a
+contiguous stack whose top value grows in place with stable interior
+references, or an arena of separately allocated objects? Is the number of
+regions a compile-time constant, or one per activation? Is safety static,
+and if so, how many annotations does it need?
 
 ## 2. The closest matches, ranked
 
@@ -85,23 +88,25 @@ what annotation cost.
 
 ### 2.1 Tofte and Talpin's region inference, and the ML Kit
 
-The closest match on the static side. In the region calculus the store "consisted
-of a stack of regions"; `letregion` is the only way to make or drop a region,
-"hence regions were allocated and de-allocated in a stack-like manner"
-([Tofte, Birkedal, Elsman, Hallenberg, "A retrospective on region-based
-memory management", HOSC 2004](https://elsman.com/mlkit/pdf/retro.pdf);
+This is the closest match on the static side. In the region calculus the
+store "consisted of a stack of regions"; `letregion` is the only way to make
+or drop a region, "hence regions were allocated and de-allocated in a
+stack-like manner" ([Tofte, Birkedal, Elsman, Hallenberg, "A retrospective
+on region-based memory management", HOSC 2004](https://elsman.com/mlkit/pdf/retro.pdf);
 [Tofte and Talpin, POPL 1994](https://dl.acm.org/doi/10.1145/174675.177855)).
-Region inference is fully automatic, with no annotations; a region-polymorphic
-function takes the regions for its results as parameters, so a callee allocates
-into storage the caller chose, which is point 5 by a runtime handle. Region
-representation inference ([Birkedal, Tofte, Vejlstrup, POPL
+Region inference is fully automatic and needs no annotations. A
+region-polymorphic function takes the regions for its results as parameters,
+so a callee allocates into storage the caller chose. This is point 5, with the
+destination passed as a runtime handle. Region representation inference
+([Birkedal, Tofte, Vejlstrup, POPL
 1996](https://www.cs.tufts.edu/~nr/cs257/archive/mads-tofte/knormal-final.pdf))
-places "finite" regions, those holding one value, in the activation record, and
-the storage mode analysis of the [ML Kit
+places "finite" regions, those holding one value, in the activation record.
+The storage mode analysis of the [ML Kit
 manual](https://elsman.com/mlkit/pdf/mlkit-4.3.0.pdf) resets a region in place
-(`atbot`) where the compiler proves it holds nothing live at that allocation,
-with `resetRegions` as the checked programmer-visible form: the ancestor of
-Goose's shrink rule, applied to a whole region.
+(`atbot`) where the compiler proves that the region holds nothing live at that
+allocation, and `resetRegions` is the checked form of this reset that the
+programmer can write. This is the ancestor of Goose's shrink rule, applied to
+a whole region.
 
 What differs: an "infinite" region "consisted of a linked list of fixed-size
 region pages, allocated from a free-list of region pages", holding many boxed,
@@ -110,27 +115,28 @@ number of live regions is dynamic, one per `letregion` evaluation and so per
 recursion level. Region parameters are passed at run time rather than
 specialized. The retrospective judges infinite regions to "give fragmentation
 problems" and the storage mode analysis "complicated and vulnerable to program
-changes", and the ML Kit later added a garbage collector for the leaks region
-inference leaves.
+changes", and the ML Kit later added a garbage collector to reclaim the memory
+that region inference leaks.
 
 ### 2.2 GNU obstacks
 
-The one earlier design that states Goose's per-stack invariant as a rule. An
-obstack ([glibc manual](https://sourceware.org/glibc/manual/latest/html_node/Obstacks.html))
+Obstacks are the one earlier design that states Goose's per-stack invariant as
+a rule. An obstack ([glibc manual](https://sourceware.org/glibc/manual/latest/html_node/Obstacks.html))
 is a stack of objects: "the last object allocated must always be the first one
 freed", and `obstack_free` of an object frees it "along with everything
 allocated in obstack-ptr since object". One object at a time may be grown
-incrementally with `obstack_grow`; while it grows, the obstack cannot allocate
-anything else, and `obstack_finish` closes it, after which another may grow.
-C code passes an obstack to a callee that builds its result there, which is
-point 5 as a convention. The ECOOP 2022 paper of §2.6 lowers its shadow stack
-to this API.
+incrementally with `obstack_grow`. While that object grows, the obstack cannot
+allocate anything else. `obstack_finish` closes the object, after which another
+object may grow. C code passes an obstack to a callee that builds its result
+there, which is point 5 as a convention. The ECOOP 2022 paper of §2.6 lowers
+its shadow stack to this API.
 
 What differs: obstacks are a run-time library, the programmer chooses how many
-and which object goes where, and nothing is checked. Storage is chunked, so a
-growing object is copied when it outgrows its chunk ("its address will
-change"): interior pointers into the growing object are not stable until it is
-finished, which is the property Goose's reservations exist to give.
+obstacks there are and which object goes where, and nothing is checked.
+Storage is chunked, so a growing object is copied when it outgrows its chunk
+("its address will change"). Interior pointers into the growing object are
+therefore not stable until it is finished, and stable interior pointers are
+the property that Goose's reservations exist to provide.
 
 ### 2.3 ParaSail
 
@@ -149,59 +155,62 @@ That is Goose's destination placement, decided at run time. Safety follows
 from the absence of pointers: objects are values, and assignment between
 regions copies or moves.
 
-What differs: a region is a local heap with reuse inside it, not a bump stack;
-an expandable object grows by linking new pieces, with "pointers still used
-behind the scenes", so growth is not contiguous and nothing like point 2
-holds; regions are created one per scope entry at run time, so their count is
-dynamic; and every object carries its region's identity at run time.
+What differs: a region is a local heap that reuses space inside it, not a
+bump stack. An expandable object grows by linking new pieces, with "pointers
+still used behind the scenes", so growth is not contiguous and nothing like
+point 2 holds. Regions are created at run time, one per scope entry, so their
+number is dynamic. Every object also carries its region's identity at run
+time.
 
 ### 2.4 Ada, and GNAT without allocators
 
 An Ada program under `pragma Restrictions (No_Allocators)` has two stacks per
 task. GNAT's secondary stack ([`s-secsta.ads`](https://gnu.googlesource.com/gcc.git/+/refs/heads/master/gcc/ada/libgnat/s-secsta.ads))
 is "part of the runtime support for functions that return results of
-caller-unknown size", such as a `String`: the callee pushes the result, the
-caller uses it in place or copies it, and compiler-inserted `SS_Mark` and
-`SS_Release` pairs release it en masse at scope boundaries. Build-in-place
-([RM 7.6](https://ada-lang.io/docs/arm/AA-7/AA-7.6)) constructs a limited
-result directly in the caller's object, the callee receiving the destination
-through hidden extra formals. Accessibility levels ([RM
+caller-unknown size", such as a `String`. The callee pushes the result, the
+caller uses it in place or copies it, and `SS_Mark` and `SS_Release` pairs
+inserted by the compiler release it en masse at scope boundaries.
+Build-in-place ([RM 7.6](https://ada-lang.io/docs/arm/AA-7/AA-7.6)) constructs
+a limited result directly in the caller's object; the callee receives the
+destination through hidden extra formals. Accessibility levels ([RM
 3.10.2](https://ada-lang.io/docs/arm/AA-3/AA-3.10)) are a static scope-depth
 rule with no annotations, "in most cases enforced at compile time by Legality
-Rules", with run-time checks where a level arrives as an implicit parameter:
-the direct ancestor of Goose's depth check.
+Rules", with run-time checks where a level arrives as an implicit parameter.
+They are the direct ancestor of Goose's depth check.
 
 What differs: no Ada array can change its bounds after creation, so there is
-no growth and nothing for point 2 to say; `Bounded_Vectors` ([RM
+no growth, and point 2 does not apply. `Bounded_Vectors` ([RM
 A.18.19](https://www.adaic.org/resources/add_content/standards/12rm/html/RM-A-18-19.html))
-have a fixed capacity, like Goose's `T[..k]`; the stack count is two, not
-computed; an unconstrained non-limited result is built on the secondary stack
-and then copied; and an array of variable-length strings needs access types,
-which need the heap.
+have a fixed capacity, like Goose's `T[..k]`. The number of stacks is fixed at
+two rather than computed. An unconstrained non-limited result is built on the
+secondary stack and then copied. An array of variable-length strings needs
+access types, which need the heap.
 
 ### 2.5 The arena idioms of modern C
 
-The substrate is the same. [Ryan Fleury's "Untangling Lifetimes: The Arena
+These idioms are built on the same substrate as Goose. [Ryan Fleury's
+"Untangling Lifetimes: The Arena
 Allocator"](https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator)
 reserves "a massive upper-bound of contiguous virtual address space, then
-commit[s] physical pages as needed" without relocating anything, marks and
-releases positions like a stack, and has the caller choose the arena a callee
-builds its result in, which is point 5. His scratch-arena conflict, where a
-function's result arena is also its scratch arena so "the result memory is
-actually freed before returning to the caller", is the dynamic form of Goose's
-rule that two live growables never share a stack, and his conclusion that two
-scratch arenas suffice is N computed by hand. [Chris Wellons's "Arena
-allocator tips and tricks"](https://nullprogram.com/blog/2023/09/27/) passes a
-scratch arena by value so a callee's allocations are freed on return, and his
-[dynamic arrays](https://nullprogram.com/blog/2023/10/05/) extend in place
-exactly when the array ends at the arena's next allocation, which is point 2's
-"the growable is topmost". [Our Machinery's "Virtual Memory
+commit[s] physical pages as needed" without relocating anything, and marks and
+releases positions like a stack. It also has the caller choose the arena that
+a callee builds its result in, which is point 5. His scratch-arena conflict
+arises when a function's result arena is also its scratch arena, so that "the
+result memory is actually freed before returning to the caller". This
+conflict is the dynamic form of Goose's rule that two live growables never
+share a stack, and his conclusion that two scratch arenas are enough is N
+computed by hand. [Chris Wellons's "Arena allocator tips and
+tricks"](https://nullprogram.com/blog/2023/09/27/) passes a scratch arena by
+value so that a callee's allocations are freed on return. His [dynamic
+arrays](https://nullprogram.com/blog/2023/10/05/) extend in place exactly when
+the array ends at the arena's next allocation, which is point 2's "the
+growable is topmost". [Our Machinery's "Virtual Memory
 Tricks"](https://ruby0x1.github.io/machinery_blog_archive/post/virtual-memory-tricks/index.html)
 grows arrays in reserved address space so that "the array never moves".
 Varnish's [workspace](https://github.com/varnishcache/varnish-cache/blob/master/bin/varnishd/cache/cache_ws.c)
-is a production case: one reservation at a time hands the caller all
-remaining space to grow into, a release keeps the used prefix, and snapshots
-reset LIFO.
+is an example in production code. One reservation at a time hands the caller
+all remaining space to grow into, a release keeps the used prefix, and
+snapshots reset in LIFO order.
 
 What differs: all of it is convention. The number of arenas, which value lives
 where and whether a reference outlives its arena are the programmer's
@@ -211,151 +220,158 @@ responsibility, and an array of strings is an array of pointers.
 
 [Xhebraj, Bračevac, Wei and Rompf, ECOOP
 2022](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2022.15)
-is the one paper that frames Goose's problem as its own: since every return
-pops the stack, "it is difficult to return stack-allocated data from a callee
-upwards to its caller — especially variable-size data", and the known fixes
-are boxing, reserving space in the parent frame, or "stacks of resizable
-regions (with overall increased complexity and loss of performance
-predictability)". Their answer is to delay the pop: a callee returning a
+is the one paper that sets out to solve the same problem as Goose. Since
+every return pops the stack, "it is difficult to return stack-allocated data
+from a callee upwards to its caller — especially variable-size data", and the
+known fixes are boxing, reserving space in the parent frame, or "stacks of
+resizable regions (with overall increased complexity and loss of performance
+predictability)". Their solution is to delay the pop. A callee that returns a
 stack value leaves its frame in place until an ancestor returns a heap value,
-with a type system of storage modes keeping heap objects from pointing at
-stack ones. Results such as a filtered list are built incrementally on the
-stack, and the implementation, in Scala Native, is a shadow stack that
-"resembles Obstacks". On p. 15:16 they write that "it would be an interesting
-extension to map individual storage levels to separate physical runtime
-stacks", which is the design Goose takes.
+and a type system of storage modes keeps heap objects from pointing at stack
+objects. Results such as a filtered list are built incrementally on the
+stack. The implementation, in Scala Native, is a shadow stack that "resembles
+Obstacks". On p. 15:16 they write that "it would be an interesting extension
+to map individual storage levels to separate physical runtime stacks", which
+is the design Goose uses.
 
-What differs: one stack, a delayed pop in place of a destination stack, no
-in-place growth as a rule, and lightweight annotations where Goose has none.
-The destination-passing-style line of work is the other half of this paper's
-neighbourhood: [Shaikhha, Fitzgibbon, Peyton Jones and Vytiniotis, FHPC
+What differs: the paper uses one stack, delays the pop where Goose uses a
+destination stack, does not make in-place growth a rule, and needs lightweight
+annotations where Goose needs none. Work on destination-passing style is the
+other line of research close to this paper. [Shaikhha, Fitzgibbon, Peyton
+Jones and Vytiniotis, FHPC
 2017](https://www.microsoft.com/en-us/research/publication/using-destination-passing-style-compile-functional-language-efficient-low-level-code)
-have the caller supply every array's output buffer, sized ahead by shape
+have the caller supply every array's output buffer, sized in advance by shape
 inference, and note that this "enables highly-efficient stack-like memory
-allocation discipline"; [Minamide, POPL
+allocation discipline". [Minamide, POPL
 1998](https://dl.acm.org/doi/10.1145/268946.268967) and [Bagrel and
-Spiwack, OOPSLA 2025](https://arxiv.org/abs/2503.07489) type the holes
-and destinations. Goose needs no size ahead of time, since the result grows at
-the stack top.
+Spiwack, OOPSLA 2025](https://arxiv.org/abs/2503.07489) give types to the
+holes and destinations. Goose needs no size ahead of time, since the result
+grows at the stack top.
 
 ### 2.7 Cyclone's LIFO arenas
 
 Cyclone ([Grossman et al., PLDI
 2002](https://www.cs.tufts.edu/comp/150BUGS/cyclone-2002.pdf)) has stack
 regions for blocks, lexically scoped dynamic regions that allow unlimited
-allocation and die at block exit, and a heap; a LIFO discipline on region
-lifetimes gives the "outlives" relation its region subtyping uses, and a
-callee allocates into a region handle the caller passes. Their experience
-report ([Hicks, Morrisett, Grossman, Jim, ISMM
+allocation and are freed at block exit, and a heap. A LIFO discipline on
+region lifetimes gives the "outlives" relation that its region subtyping uses,
+and a callee allocates into a region handle that the caller passes. Their
+experience report ([Hicks, Morrisett, Grossman, Jim, ISMM
 2004](https://homes.cs.washington.edu/~djg/papers/cyclone_ismm04.pdf)) found
 LIFO arenas "useful when callers know object lifetimes but only callees can
-determine object sizes", which is Goose's thesis, and found them "not suited"
-to servers and event loops, which is why Cyclone added unique pointers,
-reference counting and keyed dynamic regions.
+determine object sizes", which is Goose's thesis. It also found them "not
+suited" to servers and event loops, which is why Cyclone added unique
+pointers, reference counting and keyed dynamic regions.
 
 What differs: a dynamic region is a linked list of pages, each twice the size
-of the last, with no in-place growth; pointer types carry region annotations
-with inference inside functions only; region handles are run-time values and
-their number is dynamic ("when throwing an exception, the number of regions to
-deallocate is not known statically").
+of the last, with no in-place growth. Pointer types carry region annotations,
+which are inferred only inside functions. Region handles are run-time values
+and their number is dynamic ("when throwing an exception, the number of
+regions to deallocate is not known statically").
 
 ### 2.8 OxCaml's stack allocation
 
 Jane Street's OCaml ([reference](https://oxcaml.org/documentation/stack-allocation/reference/))
 allocates local values on "a separately-allocated stack that follows the same
-layout as the OCaml minor heap", distinct from the control stack, one per
-domain; a region is a function body or loop body, entering one records the
-stack pointer and leaving resets it; and "the type-checker guarantees that
-local values do not escape their region", with modes inferred inside a
-compilation unit. `exclave_` ends the current region early so a result is
-built in the caller's region, in tail position.
+layout as the OCaml minor heap". This stack is distinct from the control
+stack, and there is one per domain. A region is a function body or loop body:
+entering a region records the stack pointer, and leaving it resets the stack
+pointer. The reference states that "the type-checker guarantees that local
+values do not escape their region", with modes inferred inside a compilation
+unit. `exclave_` ends the current region early so a result is built in the
+caller's region, in tail position.
 
-What differs: one such stack, with the collected heap still the default; no
-value grows; "mutable fields and array elements require their contents to be
-global", a restriction Goose's root tracking avoids; and the result trick
-reaches one level.
+What differs: there is one such stack, and the collected heap is still the
+default. No value grows. The reference states that "mutable fields and array
+elements require their contents to be global", a restriction that Goose's root
+tracking avoids. Building a result in the caller's region with `exclave_`
+reaches only one level up.
 
 ### 2.9 Ruggieri and Murtagh, 1988
 
 ["Lifetime analysis of dynamically allocated objects", POPL
 1988](https://dl.acm.org/doi/10.1145/73560.73585) is the earliest static
-placement of heap objects by lifetime: each object goes into a local heap
+placement of heap objects by lifetime. Each object goes into a local heap
 attached to the activation record of the procedure whose lifetime encloses
-it, found by an interprocedural analysis of which allocations a procedure
-returns. The placement is root-based as Goose's is; the heaps are per
-activation, there is no growth and no safety claim beyond the placement.
+the object's lifetime. That procedure is found by an interprocedural analysis
+of which allocations a procedure returns. The placement is root-based, as
+Goose's is, but the heaps are per activation, there is no growth, and there is
+no safety claim beyond the placement.
 
 ### 2.10 Automatic pool allocation
 
-[Lattner and Adve, PLDI 2005](https://llvm.org/pubs/2005-05-21-PLDI-PoolAlloc.html)
-partition a C program's heap objects into a statically determined set of
-pools, created and destroyed at the entry and exit of the function in which
-each non-escaping data structure lives. It is the nearest precedent for a
-compiler computing a fixed set of allocation areas with scope-bound lifetimes;
-the assignment is by data-structure identity from a points-to analysis rather
-than by liveness, the pools hold separately allocated objects, and the
-transformation adds no safety.
+[Lattner and Adve, PLDI
+2005](https://llvm.org/pubs/2005-05-21-PLDI-PoolAlloc.html) partition a C
+program's heap objects into a statically determined set of pools. Each pool is
+created and destroyed on entry to and exit from the function where its
+non-escaping data structure lives. This is the nearest precedent for a compiler
+computing a fixed set of allocation areas with scope-bound lifetimes. The
+assignment rule differs: it uses data-structure identity from a points-to
+analysis, not liveness. The pools also hold separately allocated objects, and
+the transformation adds no safety.
 
 ### 2.11 Fels
 
-A 2025 hobby language ([repository](https://github.com/fels-lang/fels),
+Fels is a 2025 hobby language ([repository](https://github.com/fels-lang/fels),
 [design post](https://dev.to/chrischtel/checking-at-compile-time-that-arena-memory-cant-escape-its-block-1jie))
-with named, block-tied bump zones freed at block exit and a checker that tags
-every value with its zone's nesting depth, rejecting an assignment to an outer
-variable, a return, or a store of a zone value, with `borrow` on parameters as
-the only marker. It has Goose's depth check by zone rather than by variable;
-the zone count is the programmer's, a result cannot leave its zone, which is
-the opposite of point 5, and there is no in-place growth rule.
+with named bump zones that are tied to blocks and freed at block exit. Its
+checker tags every value with its zone's nesting depth and rejects assigning a
+zone value to an outer variable, returning it, or storing it. The only marker
+is `borrow` on parameters. Fels has Goose's depth check, applied per zone
+rather than per variable. The programmer chooses the number of zones, a result
+cannot leave its zone (the opposite of point 5), and there is no in-place
+growth rule.
 
 ### 2.12 Real-time Java's scoped memory, and its static typings
 
-The RTSJ's [`ScopedMemory`](https://www.rtsj.org/specjavadoc/javax/realtime/ScopedMemory.html)
-areas are entered and left on a scope stack, reclaimed en masse, and bound by
-the rule that an object in an outer, longer-lived area may not reference one
-in an inner area: Goose's store rule, checked at run time on every
-assignment. [Scoped Types (Zhao, Noble, Vitek, RTSS
-2004)](https://janvitek.org/pubs/rtss04.pdf) make the check static at the
-granularity of Java packages, and [Boyapati, Sălcianu, Beebee and Rinard, PLDI
-2003](https://people.csail.mit.edu/rinard/techreport/MIT-LCS-TR-869.pdf) do so
-with ownership and region parameters on classes, whose "last in first out"
-region lifetimes give an outlives relation. None has growth, inline nesting or
-destination placement.
+The RTSJ's
+[`ScopedMemory`](https://www.rtsj.org/specjavadoc/javax/realtime/ScopedMemory.html)
+areas are entered and left on a scope stack, and reclaimed as a whole. An object
+in an outer, longer-lived area may not reference an object in an inner area.
+This is Goose's store rule, checked at run time on every assignment. [Scoped
+Types (Zhao, Noble, Vitek, RTSS 2004)](https://janvitek.org/pubs/rtss04.pdf)
+check it statically at the granularity of Java packages. [Boyapati, Sălcianu,
+Beebee and Rinard, PLDI
+2003](https://people.csail.mit.edu/rinard/techreport/MIT-LCS-TR-869.pdf) use
+static checks with ownership and region parameters on classes. Their "last in
+first out" region lifetimes provide an outlives relation. None of these systems
+has growth, inline nesting, or destination placement.
 
 ## 3. Multiple stacks put to other uses
 
 Several systems have more than one stack, or a stack where objects are freed
-en masse, without any of them being used as Goose uses its data stacks.
+en masse, but none of them uses its stacks the way Goose uses its data stacks.
 
-* **Forth** keeps a data stack, a return stack and a floating-point stack,
-  which hold operands, one cell each. Its dictionary is the Goose-like part:
-  `HERE` is the next free address, `ALLOT` and `,` extend the one region
-  under construction contiguously, a negative `ALLOT` or `MARKER` releases
-  LIFO, and addresses below `HERE` never move ([Forth-2012
+* **Forth** has a data stack, a return stack, and a floating-point stack. They
+  hold operands, one cell each. Its dictionary resembles Goose's storage model:
+  `HERE` is the next free address, while `ALLOT` and `,` extend the region under
+  construction contiguously. A negative `ALLOT` or `MARKER` releases memory in
+  LIFO order. Addresses below `HERE` never move ([Forth-2012
   §3.3.3](https://forth-standard.org/standard/usage),
-  [`MARKER`](https://forth-standard.org/standard/core/MARKER)). One region,
-  nothing checked.
+  [`MARKER`](https://forth-standard.org/standard/core/MARKER)). There is only
+  one region, and nothing is checked.
 * **Prolog's WAM** has a global stack on which structures are built, a local
   stack of environments and choice points, a trail and a push-down list.
   Choice points save the global stack's top so that failure reclaims "all the
   structures and variables constructed during the failed attempt" at once
   ([Aït-Kaci, "Warren's Abstract Machine: A Tutorial
-  Reconstruction"](https://wambook.sourceforge.io/)). Reclamation comes
-  from backtracking, not scope exit; terms are immutable; deterministic
+  Reconstruction"](https://wambook.sourceforge.io/)). Memory is reclaimed
+  on backtracking, not on scope exit. Terms are immutable, and deterministic
   programs need a collector.
 * **PostScript's `save` and `restore`** snapshot virtual memory and reset it
-  to the snapshot, nested, with `invalidrestore` where a newer object is
-  still referenced ([PostScript Language Reference
-  Manual](https://www.adobe.com/jp/print/postscript/pdfs/PLRM.pdf)): a
-  dynamic version of "a reference may not outlive its root" over one stack
-  of levels, with fixed-size objects.
+  to the snapshot. Snapshots can be nested, and an `invalidrestore` error is
+  raised where a newer object is still referenced
+  ([PostScript Language Reference Manual](https://www.adobe.com/jp/print/postscript/pdfs/PLRM.pdf)).
+  This is a dynamic version of "a reference may not outlive its root", over
+  one stack of levels and with fixed-size objects.
 * **Turbo Pascal's `Mark` and `Release`** made the early heap a stack: `New`
   bumped the heap top and `Release` cut it back to a mark, freeing everything
-  above at once. No growth, no checks.
+  above at once. There was no growth and no checking.
 * **Icon's string region** is one contiguous bump region for all strings, and
   concatenation appends in place when the left operand ends at the region's
   free pointer, because it "was the last string allocated and need not be
   re-allocated" ([`ocat.r`](https://github.com/gtownsend/icon/blob/master/src/runtime/ocat.r)).
-  Point 2 for one data type, under a compacting collector.
+  This is point 2 for one data type, under a compacting collector.
 * **Odin, Zig, Jai and C3** offer bump arenas and temporary allocators chosen
   by the programmer. Odin's
   [`virtual.Arena`](https://pkg.odin-lang.org/core/mem/virtual/) reserves
@@ -363,26 +379,26 @@ en masse, without any of them being used as Goose uses its data stacks.
   [`ArenaAllocator`](https://github.com/ziglang/zig/blob/master/lib/std/heap/arena_allocator.zig)
   resize an allocation in place only when it is the most recent one; C3's
   [`@pool`](https://c3-lang.org/language-common/memory/) frees a scope's
-  temporaries at its exit. All dynamic, none checked.
+  temporaries at its exit. All of these are dynamic, and none is checked.
 * **PL/I's `AREA` and `OFFSET`** types are a copyable storage pool and a
   reference relative to it, so an area moved as a whole keeps its links
   valid ([IBM PL/I language
-  reference](https://www.ibm.com/docs/SSY2V3_5.3.0/lr/ofda.html)): a
-  precedent for Goose's pool-relative references
-  ([§3.9](../goose_spec.md#39-relative-references)) only; areas are not
-  stacks.
+  reference](https://www.ibm.com/docs/SSY2V3_5.3.0/lr/ofda.html)). This is
+  a precedent only for Goose's pool-relative references
+  ([§3.9](../goose_spec.md#39-relative-references)); areas are not stacks.
 
 ## 4. Relatives of the lifetime rule
 
-Goose's lifetime rule, that a reference may not outlive the variable owning
-its target, checked by scope nesting with no annotations, has relatives that
-say nothing about where data lives.
+Goose's lifetime rule is that a reference may not outlive the variable that
+owns its target, checked by scope nesting with no annotations. This rule has
+relatives that say nothing about where data lives.
 
-* Algol 68's scope rule, that the scope of an assignment's left side may not
-  exceed that of its right, was the first static check of this shape over
-  stack-allocated (`loc`) objects, with a run-time check where the static one
-  did not decide ([Berry, 1970](https://cs.uwaterloo.ca/~dberry/FTP_SITE/reprints.journals.conferences/Berry1970ImpleModelsA68.pdf)).
-  Ada's accessibility levels (§2.4) are its descendant.
+* Algol 68 requires the scope of an assignment's left side to be no wider than
+  that of its right side. This was the first static check of this kind for
+  stack-allocated (`loc`) objects. A runtime check handles cases that the static
+  check cannot decide ([Berry,
+1970](https://cs.uwaterloo.ca/~dberry/FTP_SITE/reprints.journals.conferences/Berry1970ImpleModelsA68.pdf)).
+  Ada's accessibility levels (§2.4) descend from this rule.
 * Second-class values ([Osvald, Essertel, Wu, González-Alayón, Rompf, OOPSLA
   2016](https://www.cs.purdue.edu/homes/rompf/papers/osvald-oopsla16.pdf))
   may be passed down but never stored or returned, giving "stack-bounded
@@ -407,27 +423,27 @@ say nothing about where data lives.
 * D's [DIP1000](https://github.com/dlang/DIPs/blob/master/DIPs/other/DIP1000.md)
   `scope` keeps a reference inside its lexical scope, inferred for parameters
   and checked in `@safe` code, over the native stack.
-* Replacing lifetime parameters by specialization per root appears outside
-  the literature only, in [Fernando Borretti's essay on type systems for
-  memory safety](https://borretti.me/article/type-systems-memory-safety) and
-  Sean Baxter's [P3444R0, "Memory Safety without Lifetime
+* Replacing lifetime parameters with specialization per root appears only
+  outside the academic literature, in [Fernando Borretti's essay on type
+  systems for memory safety](https://borretti.me/article/type-systems-memory-safety)
+  and Sean Baxter's [P3444R0, "Memory Safety without Lifetime
   Parameters"](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p3444r0.html).
 
-The escape-analysis literature marks the gap from the other side: stack
-allocation of objects in Java compilers stops at variable-sized arrays
+The escape-analysis literature shows the same gap from the other side. Stack
+allocation of objects in Java compilers stops at variable-sized arrays,
 because a frame's size is fixed ([Kotzmann and Mössenböck, VEE
 2005](https://www.usenix.org/legacy/events/vee05/full_papers/p111-kotzmann.pdf);
-[OpenJ9's optimistic stack allocation, 2024](https://dl.acm.org/doi/10.1145/3656389)),
-which is what a growable value's own stack removes.
+[OpenJ9's optimistic stack allocation, 2024](https://dl.acm.org/doi/10.1145/3656389)).
+Giving a growable value its own stack removes that limit.
 
 ## 5. What no precedent was found for
 
 * Assigning growable values to a compile-time number of stacks by liveness,
   as registers are assigned, with sequentially live values sharing a stack.
 * "Exactly one resizable per stack, always on top, interior references stable
-  across growth" as a language invariant rather than a library convention:
-  obstacks state the rule and relocate, the arena idioms keep addresses and
-  leave the rule to the programmer.
+  across growth" as a language invariant rather than a library convention.
+  Obstacks state the rule but relocate objects, and the arena idioms keep
+  addresses stable but leave the rule to the programmer.
 * Specialization per reference root in place of lifetime parameters, as a
   published technique.
 * A restriction on recursion whose purpose is to keep the stack count a
@@ -435,24 +451,29 @@ which is what a growable value's own stack removes.
 * Variable-size data nested inline, an array of strings in one block, on
   stacks of this kind.
 
-Their combination, with destination placement through any depth of calls and
-the shrink rule, is what the survey did not find elsewhere.
+The survey found nothing else that combines these points with destination
+placement through any depth of calls and with the shrink rule.
 
 ## 6. How the survey was done
 
-Five parallel web searches in October 2026, each over a group of candidates:
-dynamic arena and obstack-like designs; static region systems; Ada, OCaml,
-ParaSail and real-time Java; a sweep of production, hobby and research
-languages (Austral, Verona, Cogent, Wuffs, Ivory, occam, Oberon, Mesa, CLU,
-Scopes, Myrddin, Hare, Inko, Carp, Mojo, Koka, Lobster, Nim, V, Bosque, Pony,
-Jakt, Roc, Gleam, Sing#, Deca, Vault, BitC, ATS, Mezzo, SPARK, June, Mercury,
-Ante, Bone Lisp, Hike, Dyon, Vale, Zest, Hume, Virgil, Cone, among others);
-and the academic record under multi-stack allocation, stack allocation of
-variable-sized data, lifetime inference without annotations, destination
-passing and frame-based heaps. The quotations from the ParaSail, ML Kit
-retrospective and ECOOP 2022 papers were checked against the papers' text.
-The [Hacker News discussion of Goose](https://news.ycombinator.com/item?id=49748954)
+The survey consisted of five parallel web searches in October 2026, each
+covering a group of candidates:
+
+* dynamic arena and obstack-like designs;
+* static region systems;
+* Ada, OCaml, ParaSail and real-time Java;
+* a sweep of production, hobby and research languages (Austral, Verona,
+  Cogent, Wuffs, Ivory, occam, Oberon, Mesa, CLU, Scopes, Myrddin, Hare,
+  Inko, Carp, Mojo, Koka, Lobster, Nim, V, Bosque, Pony, Jakt, Roc, Gleam,
+  Sing#, Deca, Vault, BitC, ATS, Mezzo, SPARK, June, Mercury, Ante, Bone
+  Lisp, Hike, Dyon, Vale, Zest, Hume, Virgil, Cone, among others);
+* the academic record under multi-stack allocation, stack allocation of
+  variable-sized data, lifetime inference without annotations, destination
+  passing and frame-based heaps.
+
+The quotations from the ParaSail, ML Kit retrospective and ECOOP 2022 papers
+were checked against the papers' text. The
+[Hacker News discussion of Goose](https://news.ycombinator.com/item?id=49748954)
 surfaced no candidate beyond these. Everything in the sweep not named above
-either allocates on a collected or manually managed heap, allocates nothing
-at all, or is fully static with no recursion, and so shares at most one point
-of §1.
+either allocates on a collected or manually managed heap, allocates nothing,
+or is fully static with no recursion, and so shares at most one point of §1.

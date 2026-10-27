@@ -138,18 +138,6 @@ def gfx_link(exe, cc):
     return native_link(exe, cc, "gfx")
 
 
-def audio_link(exe, cc):
-    return native_link(exe, cc, "audio")
-
-
-def physics_link(exe, cc):
-    return native_link(exe, cc, "physics")
-
-
-def ui_link(exe, cc):
-    return native_link(exe, cc, "ui")
-
-
 # The blessed packages' modules with a native part, and the pattern of a
 # program's own import of one. The ui module draws through gfx, so a program
 # showing its ui imports both.

@@ -13,21 +13,23 @@ LangArena's own Rust and C++ implementations.
 | `docker/goose` | `docker/goose` |
 
 `goose/src/main.goose` is the runner: it reads a configuration (`run.js` or
-`test.js`), runs the benchmarks it lists in order and prints what every other
-language's runner prints. `bench.goose` holds the harness: the configuration,
-read with the standard library's `json`, and the run loop of the other
-languages' Benchmark class. Goose has no classes or traits, so each benchmark
-is a struct with `prepare`, `run` and `checksum` functions, which `main.goose`
-hands to the generic `execute`. `helper.goose` holds LangArena's random number
-generator and checksums, and each other file one benchmark group. JSON, regex,
-Base64 and CSV come from Goose's standard library, as the other languages take
-them from theirs or from a package.
+`test.js`), runs the benchmarks it lists in order and prints the same output
+as every other language's runner. `bench.goose` holds the harness: the
+configuration (read with the standard library's `json`) and the run loop from
+the other languages' Benchmark class. Goose has no classes or traits, so each
+benchmark is a struct with `prepare`, `run` and `checksum` functions, which
+`main.goose` passes to the generic `execute`. `helper.goose` holds
+LangArena's random number generator and checksums, and each of the other
+files holds one benchmark group. JSON, regex, Base64 and CSV come from
+Goose's standard library, as the other languages get them from their own
+standard library or from a package.
 
 LangArena measures how well each compiler handles the same algorithm written
 the same way, so every benchmark follows the reference implementations (Rust
 and Crystal) struct by struct and function by function. Where Goose's memory
-model forces another shape (no heap, no growable arrays inside arrays, no
-shared memory between threads), the comments say what stands in for what.
+model requires a different structure (it has no heap, no growable arrays
+inside arrays and no shared memory between threads), the comments say what
+is used in place of the original.
 
 LangArena itself also needs these entries:
 
@@ -68,11 +70,12 @@ LangArena itself also needs these entries:
 
 `compare.py` builds and runs all three languages, reading Rust and C++ from a
 LangArena checkout next to this repository's checkout (or `$LANGARENA`) and
-writing everything under `bench/kostya/build/`. C++ is built the way
-LangArena's `make prod` builds it, with clang; Rust with `cargo build
---release`; the generated Goose C with clang `-O2`, as LangArena's own C
-and C++ are. On Windows both C and C++ get `-fstrict-aliasing`, which is
-clang's default on Linux, where LangArena runs.
+writing everything under `bench/kostya/build/`. C++ is built with clang, the
+way LangArena's `make prod` builds it, and Rust with `cargo build
+--release`. The generated Goose C is compiled with clang `-O2`, as
+LangArena's own C and C++ are. On Windows both C and C++ get
+`-fstrict-aliasing`, which is clang's default on Linux, where LangArena
+runs.
 
 ```
 python bench/kostya/compare.py build                 # all three languages
@@ -81,13 +84,14 @@ python bench/kostya/compare.py run --reps 3          # run.js timings and a rati
 python bench/kostya/compare.py run --langs goose --only Sort,Json --reps 1
 ```
 
-Runs are pinned to CPUs 16-31 (`--cpus`): on the Ryzen 9950X3D these were
-measured on, that is the core complex without the large L3, the closer match
-to LangArena's Ryzen 3800X; on the other one, cache-bound benchmarks run up
-to 2.5x faster.
+Runs are pinned to CPUs 16-31 (`--cpus`). On the Ryzen 9950X3D these results
+were measured on, those CPUs are the core complex without the large L3,
+which is the closer match to LangArena's Ryzen 3800X. On the other core
+complex, cache-bound benchmarks run up to 2.5x faster.
 
-`ab.py` compares several builds of the Goose suite (for example two
-compilers) interleaved, best of N, each build also as renamed copies:
-Windows places an executable by its file name, and code placement alone
-moves single benchmarks by 10-30%, so only interleaved same-session
-comparisons over several builds are worth reading.
+`ab.py` compares several builds of the Goose suite (for example, from two
+compilers). It interleaves their runs, keeps the best of N, and also runs
+each build as renamed copies. Windows chooses the address an executable is
+loaded at based on its file name, and code placement alone moves single
+benchmarks by 10-30%, so only interleaved comparisons over several builds
+in the same session are worth reading.

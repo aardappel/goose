@@ -56,6 +56,7 @@ fn main() {
         write_stderr(str("gfx: ", gfx::error(), "\n"));
         return;
     }
+    defer gfx::close();   // Closed on every way out, the early return below included.
     // A context holds the ui's state; this one draws with the embedded
     // Roboto, 16 pixels high at a scale of 1 and baked again whenever the
     // scale changes.
@@ -64,6 +65,7 @@ fn main() {
         write_stderr(str("ui: ", ui::error(), "\n"));
         return;
     }
+    defer ui::destroy(ctx);
     // Its style is Nuklear's, but for a brighter mark in ticked check boxes
     // and chosen options.
     var colors = ui::default_color_table();
@@ -187,6 +189,4 @@ fn main() {
     for t in tasks { if t.done { finished++; } }
     print("drew ", drawn, " frames; ", finished, " of ", tasks.len,
           " tasks done; saved ui_todo.png: ", saved);
-    ui::destroy(ctx);
-    gfx::close();
 }

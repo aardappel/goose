@@ -27,19 +27,27 @@ The standard library has sixteen modules under `stdlib/`: `std`,
 `regex`, `audio`, `gfx`, `physics`, `ui`, and `exception`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
-Everything is written in Goose except the C behind `os`
-(`src/runtime/runtime_os.h`), the byte search behind `std`'s `find_any` and
-`find_pair` (`src/runtime/runtime_impl.h`), `std`'s `popcount`, `clz` and
-`ctz` and `ffi`'s two copies (`src/runtime/runtime_ext.h`), libm behind `math`, the graphics layer behind
-`gfx`, the ui layer behind `ui` and the PCM mixer behind `audio` (the
-[goose_gfx](https://github.com/aardappel/goose_gfx) package) and the physics layer
-behind `physics` (the [goose_physics](https://github.com/aardappel/goose_physics)
-package), repositories of their own, all reached through `extern fn` (spec
-§7.10). The design and its rationale are in `design/stdlib_design.md`, and
-the packages' own [docs/gfx.md](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md),
+Everything is written in Goose except the following parts, all reached
+through `extern fn` (spec §7.10):
+
+* the C behind `os` (`src/runtime/runtime_os.h`);
+* the byte search behind `std`'s `find_any` and `find_pair`
+  (`src/runtime/runtime_impl.h`);
+* `std`'s `popcount`, `clz` and `ctz`, and `ffi`'s two copies
+  (`src/runtime/runtime_ext.h`);
+* libm, behind `math`;
+* the graphics layer behind `gfx`, the ui layer behind `ui` and the PCM
+  mixer behind `audio`, which are in the
+  [goose_gfx](https://github.com/aardappel/goose_gfx) package;
+* the physics layer behind `physics`, which is in the
+  [goose_physics](https://github.com/aardappel/goose_physics) package.
+
+Both packages are repositories of their own. The design and its rationale
+are described in `design/stdlib_design.md` and in the packages' own
+[docs/gfx.md](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md),
 [docs/ui.md](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md), [docs/audio.md](https://github.com/aardappel/goose_gfx/blob/main/docs/audio.md) and
-[docs/physics.md](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md);
-this is the reference.
+[docs/physics.md](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md).
+This document is the reference.
 
 For **text rendering, fonts and game HUDs**, start with
 [`ui`](#text-rendering-and-game-huds), which renders over `gfx`. For external
@@ -59,15 +67,16 @@ The library uses these conventions:
   `remove_at(xs, i)` works on a `[>..]` local; the checker rejects the
   call if a live reference or slice could be invalidated.
 * Nothing non-fixed is taken by value (spec §4.1): `f(xs)` binds by
-  reference; a function wanting its own copy says `copy(xs)`.
-* Fresh arrays come back as `T[>..]`, built straight into the caller's
+  reference, and a function that wants its own copy calls `copy(xs)`.
+* Fresh arrays come back as `T[>..]`, built directly in the caller's
   destination: `let ys = filter(xs) { it > 0 };`, `out.append(map(xs) { … })`.
-* "Maybe an element" is a `T?` — a reference into the input, null for none;
-  narrow with `if`/`guard`. Positions are `i64`, `-1` for none. Two-outcome
-  scalars return a trailing `bool`: `let v, ok = parse_int(s);`.
+* "Maybe an element" is a `T?`: a reference into the input, or null for
+  none. Narrow it with `if`/`guard`. Positions are `i64`, `-1` for none.
+  Two-outcome scalars return a trailing `bool`: `let v, ok = parse_int(s);`.
 * Blocks: `xs.find() { it > 3 }`, `sort(xs) { a, b => a.age < b.age }`. A
   comparator is always "a goes before b". Sorting, heap and extremum
-  functions come with and without a block; without one means `<`.
+  functions come with and without a block; without a block they compare
+  with `<`.
 * Text output goes into a `u8[>..]&` builder the caller passes; `str(…)` is
   the fresh-string form.
 * UFCS applies: `xs.sort()`, `d.insert(k, v)`, `r.rand_int(6)`.
@@ -77,27 +86,30 @@ The library uses these conventions:
 * The functions that move elements around (`swap_at`, `reverse`, `shuffle`,
   `sort`, `stable_sort`, `fill`, `copy_into`, `insert_at`, `remove_at`,
   `swap_remove`, `retain`, `dedup`, the heap functions) move the elements
-  themselves, references included: `reverse(refs)` reorders an array of
-  references and leaves what they point to alone, and an array of
-  references to values that cannot be copied (spec §3.9) sorts too. They
-  store whole elements with `.=`, as generic code may (spec §3.8). An array
-  of relative references, self-relative or `in pool`, reorders the same way:
-  a `T` local or parameter holds the plain reference, and each element it is
-  stored back into encodes it again, which for a self-relative link needs it
-  to point within that element's root (spec §3.9), as a link moved within
-  its own array does. `swap(a, b)` exchanges the values `a` and `b` refer
-  to. `remove_at`, `swap_remove` and `heap_pop` return a copy of the value
-  removed, for a reference element its pointee's. A reference element
+  themselves, including references: `reverse(refs)` reorders an array of
+  references and leaves what they point to unchanged, and an array of
+  references to values that cannot be copied (spec §3.9) can be sorted too.
+  They store whole elements with `.=`, as generic code may (spec §3.8). An
+  array of relative references (self-relative or `in pool`) is reordered
+  the same way. A `T` local or parameter holds the plain reference, and
+  each element the reference is stored back into encodes it again. For a
+  self-relative link, this requires the link to point within that
+  element's root (spec §3.9), which a link moved within its own array does.
+  `swap(a, b)` exchanges the values `a` and `b` refer to. `remove_at`,
+  `swap_remove` and `heap_pop` return a copy of the removed value; for a
+  reference element, they return a copy of its pointee. A reference element
   passed by value (`insert_at`, `heap_push`) is written `&x`, which makes
   `T` the reference type. `stable_sort` sorts an array of `in pool` links,
-  but its temporary array cannot hold copies of self-relative ones (spec
+  but its temporary array cannot hold copies of self-relative links (spec
   §3.9).
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
   `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
-  `physics`, `ui` and `exception` use their own namespaces. A local named `fill` or `count`
-  shadows the corresponding global function, causing an error at a call; a
-  global variable of such a name does not, since a call names the functions
-  past it (spec §11.1).
+  `physics`, `ui` and `exception` use their own namespaces, and so do the
+  helpers `std` and `json` read and write float text with, in `float_text`.
+  A local named `fill` or `count` shadows the global function of that name,
+  so a call to that function is an error. A global variable of such a name does not
+  shadow it, because the name in a call resolves past global variables to
+  the functions (spec §11.1).
 
 ## std
 
@@ -118,9 +130,9 @@ fn ctz(x: u64) -> i64               // 64 for 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
-`popcount`, `clz` and `ctz` are the runtime's, one instruction each where
-the C compiler has one (MSVC's `popcount` needs `/arch:AVX` or up for that),
-a loop under TinyCC.
+`popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
+instruction where the C compiler has one (MSVC's `popcount` needs
+`/arch:AVX` or higher for that), and a loop under TinyCC.
 
 `rem` is the remainder of truncating division: `rem(-7, 3) == -1`, paired
 with `-7 / 3 == -2`. `div_euclid` is the quotient paired with Euclidean `%`:
@@ -147,10 +159,14 @@ fn hash(s: u8[:]) -> u64            // 8 bytes per multiply; any u8 array coerce
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
-These hashes mix their whole input into the low 32 bits, which `dictionary`
-masks for the home slot and keeps as the slot's tag, and a user key type's
-overload, which `dictionary` picks up, should do the same (`hash_combine`
-of the fields' hashes does):
+These hashes mix all of their input into the low 32 bits. `dictionary`
+masks those bits to find the home slot and keeps them as the slot's tag.
+A float hashes as its bits, `-0.0` as `0.0`, and an `f32` as the `f64` of
+its value.
+`dictionary` also picks up a `hash` overload for a user key type, declared
+globally or in the key type's namespace (it calls `key.hash()`, §11.1), and
+that overload should do the same, as `hash_combine` of the fields' hashes
+does:
 
 ```goose
 struct key { a: i64, b: i64 }
@@ -162,7 +178,7 @@ fn hash(k: key) -> u64 { hash_combine(hash(k.a), hash(k.b)) }
 ```goose
 struct rng { s: u64 }                    // splitmix64; the seed is the state
 fn rand_u64(r: rng&) -> u64
-fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n)
+fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n), without modulo bias; asserts n > 0
 fn rand_flt(r: rng&) -> f64              // uniform in [0, 1)
 fn shuffle<T>(xs: T[:], r: rng&)         // Fisher-Yates
 ```
@@ -198,8 +214,8 @@ fn starts_with<T>(xs: T[:], p: T[:]) -> bool   fn ends_with<T>(xs: T[:], p: T[:]
 `find`/`rfind`/`starts_with`/`ends_with` are generic over the element, so
 they are the string functions too: `find(line, "://")`. `find` and `rfind`
 compare a whole subsequence only where its first element matches.
-(`position` rather than `index_of`, which is the builtin turning an element
-reference into its index.)
+(The function is named `position` rather than `index_of` because
+`index_of` is the builtin that turns an element reference into its index.)
 
 ```goose
 let big = xs.find() { it > 100 };
@@ -221,16 +237,17 @@ fn find_pair(s: u8[:], a: const ByteSet&, d: i64, b: const ByteSet&) -> i64
                                                 // (i + d < s.len), -1 if none; d >= 0
 ```
 
-These scan in the runtime, 16 bytes at a time on x86-64 (SSE2, which every
-such CPU has; a set that is neither at most three bytes, nor one range, nor
-the complement of either, is looked up in nibble tables, which takes SSSE3,
-checked as the program starts). Elsewhere, and in a JIT run, they test a byte
-at a time, a single byte through the C library's `memchr`. `byte_set` works
-out how to test a set by going over all 256 bytes, so make the set once, in a
-variable, outside the loop that searches: `members` is the set, and the other
-fields belong to the search. `find_pair` is the test of a prefilter that
-knows two of a match's bytes `d` apart, as [`regex`](#regex) uses it with
-the rarest two of a pattern's leading bytes.
+These functions scan in the runtime. On x86-64 they test 16 bytes at a time
+with SSE2, which every such CPU has. A set that is not at most three bytes,
+one range, or the complement of either is looked up in nibble tables, which
+needs SSSE3; the runtime checks for it when the program starts. Elsewhere,
+and in a JIT run, they test one byte at a time, and a set of a single byte
+is searched with the C library's `memchr`. `byte_set` works out how to test
+a set by going over all 256 bytes, so make the set once, in a variable,
+outside the loop that searches. `members` is the set, and the other fields
+are used by the search. `find_pair` is the test for a prefilter that knows
+two bytes of a match that are `d` apart; [`regex`](#regex) uses it this way
+with the two rarest of a pattern's leading bytes.
 
 ```goose
 let special = byte_set(",\"\n");
@@ -272,19 +289,24 @@ fn to_lower(s: u8[:])                           // ASCII, in place
 fn to_upper(s: u8[:])
 ```
 
-`sort` is a pattern-defeating quicksort after pdqsort and Rust's ipnsort:
-unstable (the order it leaves equal elements in is unspecified), in place,
-no allocation. Its partition does not branch on the comparisons, a run of
-equal keys costs a linear pass rather than n log n, and heapsort takes over
-a range that partitioning keeps splitting badly, so the worst case is
-O(n log n). `stable_sort` is a natural merge sort: it finds the runs
-already in order (or in strictly descending order, which it reverses) and
-merges them pass by pass between `xs` and a temporary of `xs.len` elements
-on a fresh data stack. Both take a single pass over input that is in order
-already or strictly descending, and neither allocates for it or for 20
-elements or fewer. A comparator that is no strict weak ordering (`<=`, or
-`<` over floats with NaNs) leaves an unspecified order, but always a
-permutation of the input, and never makes either abort.
+`sort` is a pattern-defeating quicksort based on pdqsort and Rust's
+ipnsort. It is unstable (the order it leaves equal elements in is
+unspecified), works in place and does not allocate. Its partition does not
+branch on the comparisons, and a run of equal keys takes a linear pass
+rather than n log n. Heapsort takes over a range that partitioning keeps
+splitting badly, so the worst case is O(n log n).
+
+`stable_sort` is a
+natural merge sort: it finds the runs already in order (or in strictly
+descending order, which it reverses) and merges them pass by pass between
+`xs` and a temporary of `xs.len` elements on a fresh data stack.
+
+Both make a
+single pass over input that is already in order or strictly descending,
+and neither allocates for such input or for 20 elements or fewer. A
+comparator that is not a strict weak ordering (`<=`, or `<` over floats
+with NaNs) leaves the elements in an unspecified order, but the result is
+always a permutation of the input, and neither function aborts.
 
 A `let` array can be sorted because `let` prevents rebinding, not element
 writes. A `const` array or read-only slice cannot be sorted (spec §9.5).
@@ -307,16 +329,17 @@ A `[>..<]` is the natural heap and queue container; a limited `[..k]` field
 works as well.
 
 The heap is binary, with the children of `i` at `2i + 1` and `2i + 2`. Its
-sifts move a hole instead of swapping: the element being placed waits in a
-local while each level moves one element into the hole, and is stored once
-where the hole stops. `heap_pop` walks the hole from the root down to a leaf
-along the child that goes first and then sifts the last element up from
-there, as libstdc++ and Rust do, which takes about one comparison per level
-where sifting it down from the root takes two. For a comparator that is a
-strict weak order every operation leaves the same layout as the textbook
-swapping sifts, ties included, so elements that tie come out in the same
-order. A comparator that reads the heap while it runs sees one slot holding
-a copy of its neighbour rather than the element waiting outside.
+sifts move a hole instead of swapping elements. The element being placed
+waits in a local while each level moves one element into the hole, and it
+is stored once, where the hole stops. `heap_pop` walks the hole from the
+root down to a leaf, along the child that goes first, and then sifts the
+last element up from there, as libstdc++ and Rust do. This takes about one
+comparison per level, where sifting the element down from the root takes
+two. For a comparator that is a strict weak order, every operation leaves
+the same layout as the textbook swapping sifts, including for ties, so
+elements that tie come out in the same order. A comparator that reads the
+heap while it runs sees one slot holding a copy of its neighbour rather
+than the element waiting outside.
 
 ```goose
 var q: i64[>..<] = [];
@@ -331,7 +354,7 @@ fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8)   // base 2..
 fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>..] or u8[..k]
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64
-fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent
+fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
@@ -346,14 +369,24 @@ fn each_word<F>(s: u8[:])                                  // F(word)
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])
 fn each_utf8<F>(s: u8[:])                                  // F(codepoint); malformed bytes give 0xFFFD
-fn push_utf8(out: u8[>..]&, cp: i64)
+fn push_utf8(out: u8[>..]&, cp: i64)                       // 0xFFFD's bytes for cp outside 0..0x10FFFF
 ```
 
-Plain rendering of scalars and strings is the builtin `format`/`str`/
-`print`; these add control and parsing. In base 10, `format_int` and
-`format_uint` write what `format` does, after any padding, and cost the
-same. Strings are `u8` arrays: input is `u8[:]`, output a `u8[>..]&`
-builder, storage `u8[]`/`u8[..k]`.
+The builtins `format`/`str`/`print` do the plain rendering of scalars and
+strings; the functions here add control over the output, and parsing. In
+base 10, `format_int` and `format_uint` write the same text as `format`
+(after any padding) and run as fast. `parse_flt` gives the double nearest to
+the decimal, as C's `strtod` does, so a float's text from `print` or
+`format` reads back as the same value. Strings are `u8` arrays: input is a
+`u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
+`u8[..k]`.
+
+`each_utf8` decodes as the WHATWG decoder does. A sequence cut short, an
+overlong form, a surrogate or a code point past 0x10FFFF gives one 0xFFFD
+for each maximal subpart (Unicode §3.9), and the byte that broke a sequence
+starts the next one: `[0xC3, 'A']` gives 0xFFFD and then `A`. `push_utf8`
+writes a surrogate as the three bytes of its own code, which is how `json`
+keeps a lone `\u` escape.
 
 ```goose
 var line: u8[>..] = [];
@@ -384,9 +417,10 @@ inspired by [Lobster's exception module](https://github.com/aardappel/lobster/bl
 Import `exception`; its functions are in namespace `exception`.
 
 ```goose
-fn try<E, Body, Catch>()     // Body(); on an error, Catch(error)
-fn try<E, Body>()            // Body(); discard an error
-fn throw(value)             // exit the nearest enclosing handler
+fn try<E, Body, Catch>()            // Body(); on an error, Catch(error)
+fn try<E, Body>()                   // Body(); discard an error
+fn try<E, Body, Catch, Finally>()   // as the first, then Finally() on every way out
+fn throw(value)                    // exit the nearest enclosing handler
 ```
 
 ```goose
@@ -435,10 +469,11 @@ The language's checks and limitations still apply:
 * Only calls to `throw` are caught. Runtime failures, `abort` and `exit`
   remain uncatchable. There is no stack-trace facility.
 
-There is deliberately no `protect`/`finally` helper. A callback can run
-cleanup after normal completion or a caught exception, but a block's
-lexical `return` or a `return ... from` targeting another function bypasses
-that callback. Such a helper cannot guarantee cleanup on all exits.
+`try<E>(body, catch, finally)` runs `finally` after the body completes, after
+a caught throw, and when a throw or a lexical `return` aimed at another
+function leaves through the call. It is `defer finally();` ahead of the try
+(reference, "defer"), so `finally` follows the rules of a defer body: it
+cannot leave, and it may not throw, catch, or call anything that does.
 
 ## dictionary
 
@@ -455,24 +490,24 @@ fn reserve<K, V>(d: dictionary<K, V>&, n: i64)                  // room for n en
 fn each<K, V, F>(d: dictionary<K, V>&)                          // F(key, val&); order unspecified
 ```
 
-Open addressing with linear probing, power-of-two capacity, backward-shift
-deletion. Keys and values are fixed-size; a key type needs `hash` and `==`.
-Each slot keeps 31 bits of its key's hash as a tag, so a lookup compares
-keys only where the tags agree, and growth and removal do not hash keys
-again (in tables of up to 2^31 slots). `insert`, `update` and
-`get_or_insert` look a key up once, whether or not it is there. The table
-doubles in place at 2/3 load; `reserve(n)` sizes it for `n` entries at that
-load.
+The table uses open addressing with linear probing, a power-of-two capacity
+and backward-shift deletion. Keys and values are fixed-size; a key type
+needs `hash` and `==`. Each slot keeps 31 bits of its key's hash as a tag,
+so a lookup compares keys only where the tags agree, and growth and removal
+do not hash keys again (in tables of up to 2^31 slots). `insert`, `update`
+and `get_or_insert` look a key up once, whether or not it is there. The
+table doubles in place at 2/3 load; `reserve(n)` sizes it for `n` entries
+at that load.
 Strings are keyed as `u8[:]` slices into text the caller keeps (`const u8[:]`
 for literals or views of `const` data, §9.5), or as inline
 `u8[..k]`. A set is `dictionary<K, bool>`.
 
-The slot array is grow-shrink, so a reference into it — a `get` or
-`get_or_insert` result, an `each` binder — must be done with before the next
-`insert`, `update`, `remove` or `clear`; the checker reports it against the
-mutation, naming the reference and where it was bound (spec §5.2). Finish
-with the reference first, or use `update`, which does the lookup and the
-change in one:
+The slot array is grow-shrink, so a reference into it (a `get` or
+`get_or_insert` result, or an `each` binder) must have its last use before
+the next `insert`, `update`, `remove` or `clear`. Otherwise the checker
+reports an error at the mutation, naming the reference and where it was
+bound (spec §5.2). Finish with the reference first, or use `update`, which
+does the lookup and the change in one call:
 
 ```goose
 var counts = dictionary<const u8[:], i32> {};
@@ -482,25 +517,25 @@ let n = counts.get("the");
 if n { print(n); }               // the last use of n; counts is free again after it
 ```
 
-It is liveness, not scope, that the checker asks about, so a reference whose
-last use is before the mutation needs no block around it, and one still used
+The checker looks at liveness, not scope: a reference whose last use comes
+before the mutation needs no block around it, and a reference still used
 after the mutation is an error wherever it was declared. The key type is
 `const u8[:]` because literals and the read-only views returned by `split`
 require it (§9.5). A dictionary holding writable slices can use
 `dictionary<u8[:], V>`, whether the underlying buffer is bound with `let`
 or `var`.
 
-A value can be a reference if it is optional, `Cell?` or a link into a
-pool, `Cell&<u32 in cells>?`: the unused slots hold `default<V>()`, which a
-non-optional reference does not have. `insert` over an existing key stores
-the new reference rather than writing through the old one. `get` and
-`get_or_insert` return the stored reference itself, and `update`'s and
-`each`'s blocks receive it (`V?` and `V&` of a reference are that
-reference, §3.8), loaded if relative: writing through it writes the
-pointee, and replacing it takes an `insert`. `get` returns null for a null
-value as for an absent key; `contains` tells them apart. Such a reference
-points at its pointee rather than into the slot array, so it may stay live
-across the next mutation:
+A value can be a reference if it is optional: `Cell?`, or a link into a
+pool such as `Cell&<u32 in cells>?`. The unused slots hold `default<V>()`,
+which a non-optional reference does not have. `insert` over an existing key
+stores the new reference rather than writing through the old one. `get` and
+`get_or_insert` return the stored reference itself, and the blocks of
+`update` and `each` receive it (`V?` and `V&` of a reference are that
+reference, §3.8), loaded if it is relative. Writing through it writes the
+pointee; replacing it requires an `insert`. `get` returns null both for a
+null value and for an absent key; `contains` tells them apart. Such a
+reference points at its pointee rather than into the slot array, so it may
+stay live across the next mutation:
 
 ```goose
 var owner = dictionary<i64, Cell?> {};
@@ -528,8 +563,8 @@ fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T>
 fn xy<T>(v: vec3<T>) -> vec2<T>                 // also xy(vec4), xyz(vec4)
 ```
 
-Elementwise `+ - * /` are the language's: `a + b`, `p - q`, and so is
-unary minus on a float or signed integer vector: `-v`. `*` and `/`
+Elementwise `+ - * /` are built into the language (`a + b`, `p - q`), and
+so is unary minus on a float or signed integer vector (`-v`). `*` and `/`
 also broadcast a scalar in either order: `v * 2.0`, `v / length(v)`,
 `1.0 / v`; `v *= scale` and `v /= scale` update a vector in place. The
 scalar converts to the component type, so an `f64` variable scaling a
@@ -538,23 +573,57 @@ scalar converts to the component type, so an `f64` variable scaling a
 
 ## math
 
-libm, both widths (`sin(x)` picks `sin` or `sinf` by the argument's
-type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10 pow floor
-ceil round trunc`, returning floats as C does (`as i64` converts). `sqrt`
-is the runtime's (`gs_sqrt`, `gs_sqrtf`): the same correctly rounded root,
-NaN below zero, without C's errno, so it is the bare square root
-instruction where the C compiler allows. The others C has set errno
-(`sin` to `pow`) are libm's own functions under runtime names (`gs_exp`,
-`gs_expf`, ...), which gcc and clang are told depend on their arguments
-alone: Goose has no errno, so a call does not make the C compiler load
-again what a loop around it holds in registers. An
-integer argument suits both widths, so it names one (`sqrt(n as f64)`);
-`sqrt(n * 0.5)` is the `f64` one, as `sqrt(0.5)` is. Plus:
+`math` provides libm at both widths (`sin(x)` picks `sin` or `sinf` by the
+argument's type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10
+pow floor ceil round trunc`. These return floats as C does (`as i64`
+converts).
+`sqrt` is implemented in the runtime (`gs_sqrt`, `gs_sqrtf`). It gives the
+same correctly rounded root as C, and NaN below zero, but without C's
+errno, so it is the bare square root instruction where the C compiler
+allows. The other functions for which C sets errno (`sin` to `pow`) are
+libm's own functions under runtime names (`gs_exp`, `gs_expf`, ...), which
+gcc and clang are told depend only on their arguments. Since Goose has no
+errno, a call does not make the C compiler reload values that a loop
+around the call holds in registers. An integer argument converts to both
+widths equally well, so the call has to name one (`sqrt(n as f64)`);
+`sqrt(n * 0.5)` calls the `f64` version, as `sqrt(0.5)` does.
+
+`mul_add(x, y, z)`, at both widths, is `x * y + z` rounded once where the
+code is built for FMA and twice where it is not. Which one a call gets is
+up to the implementation (spec §7.12). The C backend rounds once on arm64,
+on x86-64 built for AVX2 or later (`-march=x86-64-v3`, clang-cl's
+`/arch:AVX2`), and in a `simd fn`'s AVX2 and AVX-512 versions. It rounds
+twice elsewhere, under MSVC and under the JIT. `x * y + z` written out always rounds twice.
+
+The two roundings can give very different results, not just a different
+last bit:
+
+- **Cancellation.** Where `x * y` and `z` nearly cancel, the fused result
+  keeps the product's low bits and the unfused one loses them, so one can
+  be zero where the other isn't. `mul_add(x, x, -(1.0 + 2.0 * (x - 1.0)))`
+  with `x = 1 + 2^-30` is `2^-60` fused and `0.0` unfused, and a branch on
+  it goes either way.
+- **Overflow.** `mul_add(1.0e308, 2.0, -1.0e308)` is `1.0e308` fused, but
+  `inf` unfused, because the product overflows before the add.
+
+Inside a `simd fn`, only the calls Goose emits in that function's own body
+fuse: its own code, and the functions Goose inlines into it. A call in a
+plain helper that the `simd fn` calls keeps the helper's rounding, even if
+the C compiler inlines the helper later. Whether Goose inlines a small
+helper depends on the optimization level, so moving a `mul_add` into a
+helper can change both the result and the speed between `-O0` and `-O2`.
+Marking the helper `inline fn` keeps its calls fused in `simd` callers at
+every level except `-O0`, where Goose inlines nothing. A function value is resolved at compile time, so a `simd fn`
+given `mul_add` as one (`F(x, y, z)` with `F` = `mul_add`) fuses like a
+direct call.
+
+The module also has:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;
-fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64
-fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool
+fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
+fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
+fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
 ```
 
 ## os
@@ -594,51 +663,55 @@ data-stack top in the calling thread program, including its globals and
 scratch from scopes that have ended. It preserves live values, borrowed
 views, limited-array capacity and virtual-address reservations; subsequent
 growth works normally. It affects no other worker. Use it after a large
-workload, such as replacing a document, rather than on every temporary:
-ordinary scope exit still keeps pages available for cheap reuse, while
-trimmed pages cost a fault when the stack grows again. The release is
-eager: Windows decommits the pages, returning their commit charge too, and
-Linux drops them from the resident set at once, so either gives growth
-fresh zeroed pages. macOS marks them reusable, which takes them out of the
-footprint at once, and declares them reused as growth takes them back; a
-page the kernel has not reclaimed by then may still hold its old bytes,
-which nothing above a stack's top ever reads. `false` means at least one OS
-request failed.
+workload, such as replacing a document, rather than after every temporary
+value. Ordinary scope exit keeps pages available for cheap reuse, while a
+trimmed page causes a page fault when the stack grows into it again.
 
-Paths are UTF-8 on every platform: on Windows the runtime converts them to
-UTF-16 for the system's wide APIs. So are environment values, and the
-arguments. A generated Windows executable captures its real process arguments
-in UTF-16 before global initialization and returns their exact UTF-8 forms.
-JIT runs, renamed-main dispatchers and C embedding keep their explicitly supplied
-argument vectors; the narrow Windows C embedding interface retains its ANSI-code-
-page contract. Captured native arguments are kept for the process lifetime.
-Invalid UTF-16 or conversion allocation failure is an error, never a lossy fallback. A path is refused, and the call returns
-`false`, if it is longer than 4095 bytes, contains a NUL byte, or on Windows
-is not valid UTF-8: cut short or read another way, it could name a
-different file.
+The pages are released immediately. Windows decommits them, which also
+returns their commit charge, and Linux drops them from the resident set
+at once. macOS replaces the unused suffix of each reservation with fresh
+anonymous memory at the same addresses. On all three platforms, a stack
+that grows again gets fresh zeroed pages. macOS trimming covers the full
+unused reservation so ordinary growth needs no runtime tracking or signal
+handling. `false` means at least one OS request failed.
 
-`read_file` appends nothing when it fails. `read_stdin` appends the bytes as
-they came, on Windows too, where the C library's text mode would make each
-`\r\n` a `\n` and stop at a Ctrl-Z; `read_line` leaves out a line's `\r`
-before its newline as well.
+Paths are UTF-8 on every platform; on Windows the runtime converts them to
+UTF-16 for the system's wide APIs. Environment values and the program's
+arguments are UTF-8 too. A generated Windows executable captures its real
+process arguments in UTF-16 before global initialization and returns their
+exact UTF-8 forms. JIT runs, renamed-main dispatchers and C embedding keep
+their explicitly supplied vectors; the narrow Windows C embedding interface
+retains its ANSI-code-page contract. Captured native arguments are kept for
+the process lifetime. Invalid UTF-16 or conversion allocation failure is an
+error, never a lossy fallback. A path is refused, and the call returns
+`false`, if it is longer than 4095 bytes, contains a NUL byte, or (on Windows)
+is not valid UTF-8, because a path that was cut short or decoded another way
+could name a different file.
+
+`read_file` appends nothing when it fails. `read_stdin` appends the bytes
+unchanged, on Windows too, where the C library's text mode would turn each
+`\r\n` into a `\n` and stop at a Ctrl-Z. `read_line` strips a `\r` before a
+line's newline, along with the newline.
 
 `write_file_atomic` is for files that must never be seen half-written, such
-as saved games. It writes the data to a new file beside `path`, named after
-it with a random tag and `.tmp` added, flushes that file to disk and renames
-it over `path`, whose permissions it keeps on POSIX. A crash or a failure at
-any point leaves `path` with either its old contents or all of the new ones.
-On a failure the new file is removed; after a crash it can remain, its name
-ending in `.tmp`.
-`rename_file` is the same one-step replacement for a file the program wrote
-itself, within one volume. On Windows no file can be replaced while another
-program has it open, and virus scanners open files just written for a
-moment, so both wait up to about a second for such a file before returning
-`false`.
+as saved games. It writes the data to a new file in the same directory as
+`path`, named after `path` with a random tag and `.tmp` added. It then
+flushes that file to disk and renames it over `path`, keeping the
+permissions of `path` on POSIX. A crash or a failure at any point leaves
+`path` with either its old contents or all of the new ones. On a failure
+the new file is removed; after a crash it can remain, with a name ending in
+`.tmp`.
+`rename_file` does the same one-step replacement for a file the program
+wrote itself, within one volume. On Windows, a file cannot be replaced
+while another program has it open, and virus scanners briefly open files
+that were just written, so both functions wait up to about a second for
+such a file before returning `false`.
 
 `list_dir` leaves out `.` and `..` and sorts the names bytewise, so a
-listing does not depend on the file system. A name that cannot be one line
-of UTF-8, a POSIX name with a newline in it or a Windows name that is not
-valid UTF-16, is left out too. On a failure nothing is appended.
+listing does not depend on the file system. A name that cannot be written
+as one line of UTF-8 (a POSIX name containing a newline, or a Windows name
+that is not valid UTF-16) is left out too. On a failure nothing is
+appended.
 
 ```goose
 var names: u8[>..] = [];
@@ -669,17 +742,17 @@ compilation. In a conventional macOS `.app` bundle it is `Contents/Resources/`.
 Deploy the data relative to that root; moving the executable and its data
 together preserves resource lookup. An AOT program does not depend on its
 original source tree or on the launcher's working directory. A shared
-library an `extern "..." { }` block names with a separator in its spelling,
-`"bin/steam_api64"`, is opened relative to the same root (spec §7.10), so
-a library shipped beside the program is found the same way its data is.
+library that an `extern "..." { }` block names with a path separator, such
+as `"bin/steam_api64"`, is opened relative to the same root (spec §7.10),
+so a library shipped beside the program is found the same way as its data.
 
 The string-returning form aborts if the directory cannot be discovered;
 the builder overload returns false and appends nothing. Native discovery
 supports Windows, Linux and macOS. This directory is for shipped assets;
-it is not promised writable. User-supplied paths, outputs and saves can
-continue to use ordinary file operations and their chosen locations.
+it is not guaranteed to be writable. User-supplied paths, outputs and saves
+can continue to use ordinary file operations and their chosen locations.
 
-`exit(code)` and `abort(msg)` are builtins, since the checker knows they
+`exit(code)` and `abort(msg)` are builtins, so that the checker knows they
 diverge. Subprocesses and networking are not in v1; they arrive as
 `extern fn`s when a program needs them.
 
@@ -692,14 +765,15 @@ fn bytes(p: u64, n: i64, out: u8[>..]&) -> bool   // the n bytes at p; false for
 fn bytes(p: u64, n: i64) -> u8[>..]
 ```
 
-Reading memory a C library owns. A function bound from a shared library
+These functions read memory that a C library owns. A function bound from a
+shared library
 (spec §7.10, [reference.md §24](reference.md#24-calling-c-and-being-called-from-c))
-hands a `const char *` or an array it keeps back as a `u64`, which Goose
-cannot look through; these copy what is there into Goose storage, so
-nothing foreign is ever a Goose value without a copy. They trust the
-pointer and the length as every extern call trusts C: a wrong one is C's
-kind of error, not caught. A null pointer appends nothing and is the
-`false` result.
+returns a `const char *`, or an array that the library keeps, as a `u64`,
+which Goose cannot read through. These functions copy the data into Goose
+storage, so foreign memory never becomes a Goose value without a copy.
+They trust the pointer and the length, as every extern call trusts C: a
+wrong pointer or length is the same kind of error as in C, and it is not
+caught. A null pointer appends nothing and gives the `false` result.
 
 ```goose
 import ffi;
@@ -793,12 +867,12 @@ fn encode(out: u8[>..]&, src: const u8[:])            // appends 4 characters pe
 fn decode(out: u8[>..]&, src: const u8[:]) -> bool    // appends the bytes; false if src is invalid
 ```
 
-`decode` takes whole groups of four characters, the last of which may end
-in `=` or `==`, and nothing else: no line breaks or white space, no
-unpadded text, and no other alphabet (`-` and `_` of the URL-safe one are
-invalid). It does not insist that the bits padding leaves over are zero, so
-`Zh==` decodes as `Zg==` does, as most decoders allow. On invalid input it
-returns `false` and leaves `out` as it was.
+`decode` accepts only whole groups of four characters, the last of which
+may end in `=` or `==`. It rejects line breaks, white space, unpadded text
+and other alphabets (the `-` and `_` of the URL-safe alphabet are invalid).
+It does not require the bits left over before the padding to be zero, so
+`Zh==` decodes the same as `Zg==`; most decoders allow this. On invalid
+input it returns `false` and leaves `out` as it was.
 
 ```goose
 var text: u8[>..] = [];
@@ -808,9 +882,9 @@ if !base64::decode(bytes, text) { abort("not base64"); }
 ```
 
 The codec computes the alphabet rather than looking it up, so the C
-compiler vectorizes both loops, and both are `simd fn`s (spec §7.12): where
-clang builds for x86-64 they run as AVX2 or AVX-512 code on a CPU that has
-it, several times faster than on the baseline's SSE2.
+compiler vectorizes both loops. Both are also `simd fn`s (spec §7.12): when
+clang builds for x86-64, they run as AVX2 or AVX-512 code on a CPU that
+supports it, several times faster than with the baseline SSE2.
 
 ## csv
 
@@ -822,23 +896,26 @@ fn each_record<F>(text: const u8[:], sep: u8 = ',') -> bool    // F(fields: cons
 fn format_field(out: u8[>..]&, s: u8[:], sep: u8 = ',')         // s, quoted where it needs to be
 ```
 
-`each_record` hands each record's fields to its block, in order, as slices
-of the text: nothing is copied, and the slice of fields is the reader's own,
-reused for the next record. A field may be quoted, and a quoted field may
-hold separators, line breaks and doubled quotes, which stand for one quote
-each. It comes without its surrounding quotes and with its doubled quotes
-left as they are; since a field that is not quoted cannot hold a quote,
-`format_replaced(out, field, "\"\"", "\"")` appends any field's text.
-Records end at LF or CRLF, and the last one need not; an empty line is a
-record of one empty field, and a header is a record like any other. Spaces
-around a field belong to it. `sep` may be any byte but a quote or a line
-break: `';'`, or `'\t'` for tab-separated values.
+`each_record` passes each record's fields to its block, in order, as slices
+of the text. Nothing is copied, and the slice of fields belongs to the
+reader and is reused for the next record. A field may be quoted, and a
+quoted field may contain separators, line breaks and doubled quotes, each
+of which stands for one quote. A quoted field is passed without its
+surrounding quotes, with its doubled quotes left as they are. Since a field
+that is not quoted cannot contain a quote,
+`format_replaced(out, field, "\"\"", "\"")` appends the text of any field.
+Records end at LF or CRLF, except that the last record does not need to.
+An empty line is a record of one empty field, and a header is a record like
+any other. Spaces around a field are part of it. `sep` may be any byte
+except a quote or a line break, such as `';'`, or `'\t'` for tab-separated
+values.
 
-`each_record` returns `false` at the first malformed record, which its block
-does not see, having handed it every record before that one: a quote in a
-field that is not quoted, a quoted field with no closing quote, or anything
-but a separator or a line break after a closing quote. A block's `return`
-leaves the function that called `each_record`, as with every block.
+`each_record` returns `false` at the first malformed record, after passing
+every earlier record to its block; the block does not see the malformed
+record. A record is malformed if it has a quote in a field that is not
+quoted, a quoted field with no closing quote, or anything other than a
+separator or a line break after a closing quote. A block's `return` leaves
+the function that called `each_record`, as with every block.
 
 ```goose
 var total = 0.0;
@@ -849,8 +926,8 @@ let ok = csv::each_record(text) { fields =>
 if !ok { abort("malformed CSV"); }
 ```
 
-`format_field` appends `s` as it is, or quoted, with its quotes doubled, if it
-holds the separator, a quote or a line break; the caller writes the
+`format_field` appends `s` as it is or, if `s` contains the separator, a
+quote or a line break, quoted with its quotes doubled. The caller writes the
 separators between fields and the line break after a record.
 
 ```goose
@@ -865,7 +942,7 @@ for row in rows {
 
 JSON as RFC 8259 defines it, three ways: a writer that appends values to a
 builder, a parser that builds a document tree, and a reader that maps the
-text straight onto the caller's own types, the way a serde derive does.
+text directly onto the caller's own types, as a serde derive does.
 `import json;` puts them in namespace `json`.
 
 ### Writing
@@ -879,11 +956,11 @@ fn format_bool(out: u8[>..]&, b: bool)
 ```
 
 The caller writes the brackets and the commas between values. A string's
-bytes from 0x80 up go out as they are, so UTF-8 text stays UTF-8.
+bytes from 0x80 up are written unchanged, so UTF-8 text stays UTF-8.
 `format_number` writes the fewest significant digits that read back as `v`
-exactly, laid out as serde_json lays them out (`1.0`, `0.1`, `1e-7`,
-`1.5e300`, `0.30000000000000004`), and `null` for NaN and the infinities,
-which JSON has no numbers for.
+exactly, in the same layout as serde_json (`1.0`, `0.1`, `1e-7`,
+`1.5e300`, `0.30000000000000004`). It writes `null` for NaN and the
+infinities, which JSON has no numbers for.
 
 ```goose
 out.push('{');
@@ -914,20 +991,28 @@ fn as_bool(n: Node?) -> bool, bool
 fn as_string(n: Node?) -> const u8[:], bool
 ```
 
-`parse` pushes a node for every value onto `doc`, in text order: a link to
-its next sibling, a link to its first child (a container's), its key (empty
-in an array) and its value. Keys and strings are slices of `text`, or, where
-they held escapes, of the text they decode to, which goes onto `decoded`;
-nothing else is copied. A number without a fraction or an exponent that fits
-an `i64` is an `Int`, any other a `Num`, correctly rounded, and infinite
-where it is too large for an `f64`. Escapes decode to UTF-8, a surrogate
-pair to one code point and a lone surrogate to the three bytes of its own;
-strings are not checked to be UTF-8. On malformed text `parse` returns null
-and a message naming the byte at which it found the text malformed, `json:
-expected ',' or '}' at byte 41`, having pushed the nodes before it. The
-parse is one loop with the open containers on a stack of its own, so any
-depth of nesting parses. `member` and the accessors take a null node, so
-lookups chain; duplicate keys stay in the tree, and `member` finds the first.
+`parse` pushes a node for every value onto `doc`, in text order. Each node
+holds a link to its next sibling, a link to its first child (for a
+container), its key (empty in an array) and its value. Keys and strings are
+slices of `text`. Those that contained escapes are instead slices of their
+decoded text, which is pushed onto `decoded`; nothing else is copied. A
+number without a fraction or an exponent that fits an `i64` becomes an
+`Int`. Any other number becomes a `Num`, correctly rounded, and infinite if
+it is too large for an `f64`. Escapes decode to UTF-8: a surrogate pair
+becomes one code point, and a lone surrogate becomes the three bytes that
+encode its own code point. Strings are not checked to be valid UTF-8.
+
+On
+malformed text, `parse` returns null and a message naming the byte at which
+it found the text malformed, such as
+`json: expected ',' or '}' at byte 41`. The nodes before that point have
+already been pushed.
+
+The parser is a single loop
+that keeps the open containers on a stack of its own, so nesting of any
+depth can be parsed. `member` and the accessors accept a null node, so
+lookups can be chained. Duplicate keys stay in the tree, and `member` finds
+the first.
 
 ```goose
 var doc: json::Node[>..] = [];
@@ -961,17 +1046,17 @@ fn finish(r: Reader&) -> bool                // no error, and nothing but white 
 fn message(r: Reader&) -> u8[>..]            // "json: <what> at byte <n>"
 ```
 
-The reader parses as it goes and builds nothing: each block reads the value
-it is handed with the function for the type it expects, and passes over
-what it has no use for with `skip`. `read_string` returns a slice of the
-text, or of `scratch` for a string that held escapes. Keys are handed over
-as written, escapes and all, so a key spelled with an escape never equals a
-plain one. Errors are sticky: a read that meets text it does not expect
-records what it expected and where, and moves the cursor to the end, so
-every read after it fails as well and every loop ends. The caller checks
-once, with `finish`, which also rejects anything but white space after the
-value. A `null` where a value is optional is a `peek(r) == 'n'` and a
-`skip`.
+The reader parses as it goes and builds nothing. Each block reads the value
+it is given with the function for the type it expects, and uses `skip` to
+pass over values it does not need. `read_string` returns a slice of the
+text, or of `scratch` for a string that contained escapes. Keys are passed
+to the block as written, including any escapes, so a key written with an
+escape never equals the same key written without one. Errors are sticky: a
+read that finds text it does not expect records what it expected and
+where, and moves the cursor to the end, so every later read fails as well
+and every loop ends. The caller checks once, with `finish`, which also
+rejects anything but white space after the value. To handle a `null` where
+a value is optional, check `peek(r) == 'n'` and call `skip`.
 
 ```goose
 struct Item { id: i64, price: f64 }
@@ -1012,44 +1097,54 @@ struct Captures { text: const u8[:], slots: const i64[:] }
 fn group(c: Captures, k: i64) -> const u8[:]         // group k's text; empty if it took no part
 ```
 
-Matching is leftmost-first, as in the crate, Perl and most engines: the
-match that starts earliest wins, and of those starting there the one the
-pattern prefers, its alternatives in order, its repetitions greedy unless
-lazy. Searches are unanchored, and the iterating functions find matches that
-do not overlap, left to right, an empty match never where the previous match
-ended: `a*` on `baaa` matches at 0..0 and 1..4. Group 0 is the whole match
-and the others are numbered by their opening parentheses; group k spans
-`slots[2k]..slots[2k + 1]` of the text, both -1 for a group that took no part.
-A group repeated takes its last iteration. The slice `group` returns is
-rooted at the `Captures` the block was handed, so a view of a group that has
-to outlive the block, a dictionary key say, slices the text by the slots
-instead.
+Matching is leftmost-first, as in the crate, Perl and most engines. The
+match that starts earliest is chosen, and among the matches starting there,
+the one the pattern prefers: alternatives are tried in order, and
+repetitions are greedy unless they are lazy. Searches are unanchored. The
+iterating functions find matches that do not overlap, from left to right,
+and never find an empty match where the previous match ended: `a*` on
+`baaa` matches at 0..0 and 1..4. Group 0 is the whole match, and the other
+groups are numbered by their opening parentheses. Group k spans
+`slots[2k]..slots[2k + 1]` of the text; both slots are -1 for a group that
+took no part. A repeated group captures its last iteration. The slice that
+`group` returns is rooted at the `Captures` the block was given. A view of
+a group that has to outlive the block, such as a dictionary key, should
+slice the text by the slots instead.
 
-The syntax: literal bytes; `.` (a newline only under `s`); classes `[a-z]`,
-`[^...]`, where a `]` first or a `-` first or last is literal; `\d \w \s`
-and their complements `\D \W \S`, in classes too; escapes `\n \t \r \f \v
-\xHH` and any punctuation (`\.`, `\\`); groups `(...)`, `(?:...)` and named
-`(?P<name>...)` or `(?<name>...)`, whose names are accepted and not used;
-flags `i` (letters match either case) and `s`, as `(?i)` to the end of the
-group or `(?i:...)` within, `(?-i)` to turn one off; alternation `|`; and
-`* + ? {n} {n,} {n,m}`, each lazy with a `?` after it. The classes and the
-case folding are ASCII, as the crate's are with Unicode off. Anchors and word
-boundaries (`^ $ \A \z \b \B`), class set operations (`&& -- ~~`), nested
-classes, Unicode classes and the other flags are not supported, and
-`compile` reports them as errors: `regex: anchors are not supported at
-offset 0 in ^a`. Two known differences from the crate are in the module's
-header: an alternation whose branches share a repeating prefix means here
-what it says, as in Perl and RE2, and groups at the end of a pattern under a
-`{0}` are kept.
+The supported syntax is:
 
-`compile` builds complete DFAs up front, one that finds where a match ends
-and one over the reversed pattern that finds where it starts, so a search
-costs one table lookup per byte of text it looks at. Where every match has
-rare leading bytes, or a rare byte after a part that cannot hold it, the
-search skips through the text with `find_pair` or `find_any` (above) and
-looks only where a match can be. Groups come from their fixed places in the
-match where the pattern gives them one, and otherwise from a backtracker
-that runs over the match alone; `find`, `matches` and `count` take neither.
+* literal bytes;
+* `.` (which matches a newline only under `s`);
+* classes `[a-z]` and `[^...]`, where a `]` first or a `-` first or last is
+  literal;
+* `\d \w \s` and their complements `\D \W \S`, also inside classes;
+* escapes `\n \t \r \f \v \xHH` and any punctuation (`\.`, `\\`);
+* groups `(...)`, `(?:...)` and named groups `(?P<name>...)` or
+  `(?<name>...)`, whose names are accepted but not used;
+* flags `i` (letters match either case) and `s`, written `(?i)` to apply to
+  the end of the group or `(?i:...)` to apply within, and `(?-i)` to turn
+  one off;
+* alternation `|`;
+* `* + ? {n} {n,} {n,m}`, each made lazy by a `?` after it.
+
+The classes and the case folding are ASCII, as the crate's are with Unicode
+off. Anchors and word boundaries (`^ $ \A \z \b \B`), class set operations
+(`&& -- ~~`), nested classes, Unicode classes and the other flags are not
+supported, and `compile` reports them as errors:
+`regex: anchors are not supported at offset 0 in ^a`. The module's header
+describes two known differences from the crate: an alternation whose
+branches share a repeating prefix is matched as written, as in Perl and
+RE2, and groups at the end of a pattern under a `{0}` are kept.
+
+`compile` builds complete DFAs up front: one that finds where a match ends,
+and one over the reversed pattern that finds where it starts. A search
+therefore takes one table lookup per byte of text it looks at. When every
+match has rare leading bytes, or a rare byte after a part that cannot
+contain that byte, the search skips through the text with `find_pair` or
+`find_any` (above) and only looks where a match can be. Where the pattern
+gives a group a fixed place in the match, the group is taken from that
+place; otherwise it comes from a backtracker that runs over the match
+alone. `find`, `matches` and `count` use neither.
 A DFA can need exponentially many states, and a pattern whose program or
 DFAs would grow too large (`[ab]*a[ab]{20}`, or counted repetitions in the
 thousands) is reported as an error rather than compiled. Make the `Regex`
@@ -1078,11 +1173,12 @@ regex::format_replaced(out, field, template) { caps =>
 
 Graphics on SDL3's GPU API, which draws through Direct3D 12, Vulkan or Metal:
 a window and its input, buffers, textures, samplers, pipelines, render and
-compute passes, and reading results back. Optional: it needs a compiler built
-with the `third_party/SDL` submodule, and a program using it links what `goose
---gfx-link msvc|cc` prints (a response file: `cl game.c @<it>`, `cc game.c -o
-game @<it>`). A compiler without it still typechecks and generates C for such
-a program; only running it in-process fails. Everything is in namespace `gfx`;
+compute passes, and reading results back. The module is optional: it needs a
+compiler built with the `third_party/SDL` submodule, and a program using it
+links what `goose --gfx-link msvc|cc` prints (a response file:
+`cl game.c @<it>`, `cc game.c -o game @<it>`). A compiler built without it
+still typechecks and generates C for such a program; only running the
+program in-process fails. Everything is in namespace `gfx`;
 `samples/27_gfx_cube.goose` is a small complete program, and the package's
 [docs/gfx.md](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md) says how it works.
 
@@ -1108,18 +1204,20 @@ let vs = embed_shader("vert", scene, """
 let fs = embed_shader("lit.frag");
 ```
 
-`embed_shader` is a builtin: the GLSL 450 shader is compiled when the program
-is, into SPIR-V, MSL and HLSL at once, and the result is a `const u8[:]` of
-static data to hand to `pipeline` or `compute_pipeline`. Its source is usually
-a `"""` string (spec §2) written at the call, and may come in parts: each is a
-string literal or a `let` or `const` global initialized with one, and they
-join as lines, in order. A shader that does not compile is a compile error at
-the call, pointing at the offending line of GLSL where there is one: in the
-program, or in the shader's file. `#include "x.glsl"` resolves relative to the
-shader's file, or to the program's for source written in it. The dialect is
-cute_spirv's (`third_party/cute_spirv`): no doubles, no geometry or
-tessellation stages, uniform blocks without instance names, and each storage
-buffer block one runtime array (`buffer B { vec4 items[]; };`).
+`embed_shader` is a builtin. The GLSL 450 shader is compiled when the
+program is, into SPIR-V, MSL and HLSL at once, and the result is a
+`const u8[:]` of static data to pass to `pipeline` or `compute_pipeline`.
+Its source is usually a `"""` string (spec §2) written at the call. It may
+also come in several parts, each a string literal or a `let` or `const`
+global initialized with one; the parts are joined as lines, in order. A
+shader that does not compile is a compile error at the call. Where there is
+an offending line of GLSL, the error points at it, in the program or in the
+shader's file. `#include "x.glsl"` resolves relative to the shader's file,
+or, for source written in the program, relative to the program's file. The
+dialect is that of cute_spirv (`third_party/cute_spirv`): there are no
+doubles and no geometry or tessellation stages, uniform blocks have no
+instance names, and each storage buffer block holds one runtime array
+(`buffer B { vec4 items[]; };`).
 
 Resources go where SDL_GPU expects them, which the compiler checks:
 
@@ -1134,8 +1232,8 @@ Resources go where SDL_GPU expects them, which the compiler checks:
 | compute | 2 | uniform blocks |
 
 The `slot` of a `bind_*` call counts within one kind: the first storage buffer
-is slot 0 however many samplers precede it. A compute shader's read-write
-resources are given to `begin_compute` in binding order instead.
+is slot 0 no matter how many samplers precede it. A compute shader's
+read-write resources are instead passed to `begin_compute` in binding order.
 
 ### Device, window and frames
 
@@ -1156,13 +1254,14 @@ fn time() -> f64            fn delta_time() -> f64            fn frame_count() -
 
 Flags for `open`: `WINDOW_RESIZABLE`, `WINDOW_HIDDEN`, `WINDOW_FULLSCREEN`,
 `NO_VSYNC`, `DEBUG` (validation layers where installed; on in a debug build of
-the layer). With `GOOSE_GFX_HEADLESS=1` in the environment `open` opens no
-window, as the test runners use it. The screen is an RGBA8 texture of the
-window's size in pixels, with a depth texture: a frame draws into it, and
-`frame()` shows it. A window is as wide and high as `open` says in the
-display's own coordinates, and has every pixel the display has there: on a
-high-density display more than that, which `screen_size()` counts and the
-mouse is reported in.
+the layer). With `GOOSE_GFX_HEADLESS=1` in the environment, `open` opens no
+window; the test runners use this. The screen is an RGBA8 texture the size
+of the window in pixels, with a depth texture. A frame draws into it, and
+`frame()` shows it. A window has the width and height that `open` gives, in
+the display's own coordinates, and it has every pixel the display has in
+that area. On a high-density display, that is more pixels than its width
+and height; `screen_size()` counts these pixels, and the mouse position is
+reported in them.
 
 ```goose
 guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
@@ -1175,11 +1274,11 @@ gfx::close();
 ```
 
 Errors: a call that can fail for reasons outside the program returns false or
-a zero handle, and `error()` says why. A call the program should not have made
--- a draw with no pipeline bound, a texture the shader samples left unbound, a
-released handle, a uniform struct of the wrong size -- is printed as it
-happens, skipped, and aborts the program at the next `frame()`, `check()`,
-read back or `close()`.
+a zero handle, and `error()` says why. A call that the program should not
+have made is printed when it happens and skipped, and the program aborts at
+the next `frame()`, `check()`, read back or `close()`. Examples are a draw
+with no pipeline bound, a texture the shader samples left unbound, a
+released handle, and a uniform struct of the wrong size.
 
 ### Input
 
@@ -1205,20 +1304,26 @@ fn clipboard() -> u8[>..]           fn set_clipboard(text: const u8[:]) -> bool
 fn open_count() -> i64              // times gfx was opened: older handles are gone
 ```
 
-The state functions say where things are at a frame; `events()` says what
-happened between two, which text editing needs: key presses and releases
-with their scancode, the character their key types (`keycode`) and the
-`MOD_*` keys held, typed characters, mouse motion, buttons (`MOUSE_*`, with
-X1 and X2) with their click count, and the wheel. Headless, the clipboard is
-gfx's own rather than the system's.
+The state functions report the state at a frame; `events()` reports what
+happened between two frames, which text editing needs. The events are:
 
-`mouse_pos` is the mouse's place from the window's opening, before it
-first moves. `mouse_in_window` is true while the mouse is over the window,
-and while it holds a button pressed there, as SDL tells it: from the
-mouse's first move over a window that opened under it, at the latest.
-Once it leaves, `mouse_pos` stays where it left, off the screen: edge
-scrolling asks both. Headless, the mouse is in the window when the last
-position injected is on the screen.
+* key presses and releases, with their scancode, the character their key
+  types (`keycode`) and the `MOD_*` keys held;
+* typed characters;
+* mouse motion;
+* buttons (`MOUSE_*`, with X1 and X2), with their click count;
+* the wheel.
+
+When headless, gfx uses a clipboard of its own rather than the system's.
+
+`mouse_pos` reports the mouse's position from the moment the window opens,
+even before the mouse first moves. `mouse_in_window` is true while the
+mouse is over the window, and while it holds a button that was pressed
+there, as SDL reports it. For a window that opened under the mouse, SDL
+reports this from the mouse's first move at the latest. Once the mouse
+leaves, `mouse_pos` stays at the point where it left, off the screen, so
+edge scrolling checks both. When headless, the mouse is in the window when
+the last injected position is on the screen.
 
 `set_mouse_relative(true)` confines the mouse to the window and hides its
 cursor. `mouse_delta()` continues to report movement past the window edges,
@@ -1349,23 +1454,26 @@ fn draw_indexed(indices, instances, first_index, vertex_offset, first_instance)
 
 A pipeline is not tied to the formats it draws into; it is made for each
 pass's targets the first time it is bound in one. The vertex shader's inputs
-are read, in location order, one after another from one packed element, as a
-Goose struct lays out its fields: `struct Vertex { pos: float3, uv: float2 }`
-feeds `layout(location = 0) in vec3` and `layout(location = 1) in vec2`.
-From `instance_location` on they come per instance from vertex buffer 1, and
-`formats[location]` overrides a location's format (`VERTEX_UBYTE4_NORM` for a
-color as four bytes, `VERTEX_HALF2`, and the rest of `VERTEX_*`). Primitives
+are read in location order, one after another, from one packed element,
+laid out as a Goose struct lays out its fields:
+`struct Vertex { pos: float3, uv: float2 }` feeds
+`layout(location = 0) in vec3` and `layout(location = 1) in vec2`. The
+inputs from `instance_location` on come per instance from vertex buffer 1,
+and `formats[location]` overrides a location's format
+(`VERTEX_UBYTE4_NORM` for a color as four bytes, `VERTEX_HALF2`, and the
+rest of `VERTEX_*`). Primitives
 `TRIANGLES`, `TRIANGLE_STRIP`, `LINES`, `LINE_STRIP`, `POINTS`; culls
 `CULL_NONE`, `CULL_FRONT`, `CULL_BACK` (front faces counterclockwise unless
 `clockwise`); blends `BLEND_NONE`, `BLEND_ALPHA`, `BLEND_ADD`,
 `BLEND_PREMULTIPLIED`, `BLEND_MULTIPLY`.
 
-Uniform blocks are laid out by std140 and Goose structs are packed: a vec3 or
-vec4 member starts on a multiple of 16 bytes and a block's size rounds up to
-16, so the matching struct pads (`struct Place { rect: float4, depth: f32,
-pad 12 }`); pushing one of another size than the shader's block is a misuse.
-On Direct3D 12 a shader's `gl_InstanceIndex` does not count a draw's
-`first_instance`, so keep that 0 if the shader reads it.
+Uniform blocks are laid out by std140, while Goose structs are packed. In
+std140 a vec3 or vec4 member starts on a multiple of 16 bytes and a block's
+size rounds up to 16, so the matching struct needs padding
+(`struct Place { rect: float4, depth: f32, pad 12 }`). Pushing a struct
+whose size differs from the shader's block is a misuse. On Direct3D 12 a
+shader's `gl_InstanceIndex` does not count a draw's `first_instance`, so
+keep `first_instance` at 0 if the shader reads `gl_InstanceIndex`.
 
 ### Compute
 
@@ -1398,10 +1506,10 @@ coordinates with (0, 0) at the top left.
 ## audio
 
 Procedural PCM sound effects over SDL3, independent of a window or graphics
-device. `import audio;` uses the `audio::` namespace. A module of the `gfx`
-package ([goose_gfx](https://github.com/aardappel/goose_gfx)), compiled into the compiler with
-`-DGOOSE_BUILTIN_LIBS=all` and otherwise built on first use; `goose build`
-links it. See the package's [docs/audio.md](https://github.com/aardappel/goose_gfx/blob/main/docs/audio.md) for the mixer.
+device. `import audio;` uses the `audio::` namespace. It is a module of the
+`gfx` package ([goose_gfx](https://github.com/aardappel/goose_gfx)). It is compiled into the
+compiler with `-DGOOSE_BUILTIN_LIBS=all` and otherwise built on first use;
+`goose build` links it. See the package's [docs/audio.md](https://github.com/aardappel/goose_gfx/blob/main/docs/audio.md) for the mixer.
 
 | Function | Behavior |
 |---|---|
@@ -1439,7 +1547,8 @@ querying a completed voice is normal; updating it returns false. Offline
 `render` needs an even sample count, allows empty output, and advances exactly
 `out.len / 2` frames. Device mode advances automatically; `playing()` describes
 the mixer, so a little audio already buffered by the device can remain after
-completion or stop. No file decoding, streaming input, recording, or effects.
+completion or stop. The module has no file decoding, streaming input,
+recording, or effects.
 
 ```goose
 import audio;
@@ -1467,37 +1576,41 @@ fn main() {
 Rigid body physics on Box3D: worlds, bodies, shapes of every kind Box3D has,
 nine kinds of joints, contact, sensor, hit, move and joint events, ray and
 shape casts and overlap queries, a character mover, and recording and replay.
-Optional like `gfx`: it needs a compiler built with the `third_party/box3d`
-submodule, and a program using it links what `goose --physics-link msvc|cc`
-prints (`cl game.c @<it>`, `cc game.c -o game @<it>`; a program using `gfx`
-too adds that one's). A compiler without it still typechecks and generates C
-for such a program; only running it in-process fails. Everything is in
-namespace `physics`; `samples/28_physics_boxes.goose` is a complete program,
-and the package's [docs/physics.md](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md) says how it works.
+Like `gfx`, the module is optional: it needs a compiler built with the
+`third_party/box3d` submodule, and a program using it links what
+`goose --physics-link msvc|cc` prints (`cl game.c @<it>`,
+`cc game.c -o game @<it>`; a program that also uses `gfx` adds gfx's
+response file). A compiler built without it still typechecks and generates
+C for such a program; only running the program in-process fails.
+Everything is in namespace `physics`; `samples/28_physics_boxes.goose` is a
+complete program, and the package's [docs/physics.md](https://github.com/aardappel/goose_physics/blob/main/docs/physics.md) says how it works.
 
 The API is Box3D's under Goose names: `b3Body_GetPosition` is
 `position(body)`, `b3CreateRevoluteJoint` is `create_revolute_joint`, a
-getter uses the property name and a setter prefixes it with `set_`. Box3D works in meters, kilograms
-and seconds and has no built-in up; the default gravity is -10 along y. What
-Box3D takes as a callback comes back as an array: events and query results
-are fresh arrays (each also has an `_into` form that copies into a slice of
-the caller's and returns how many there are), and friction and restitution
-mixing is one of the `MIX_*` rules. Custom contact filters, pre-solve
-callbacks, debug drawing and the standalone dynamic tree are not part of it.
+getter uses the property name and a setter prefixes it with `set_`. Box3D
+works in meters, kilograms and seconds and has no built-in up direction;
+the default gravity is -10 along y. Where Box3D takes a callback, this API
+uses other forms: events and query results come back as fresh arrays (each
+also has an `_into` form that copies into a slice the caller provides and
+returns how many there are), and friction and restitution mixing is chosen
+from the `MIX_*` rules. Custom contact filters, pre-solve callbacks, debug
+drawing and the standalone dynamic tree are not included.
 
 Physics runs on the main thread; a `thread_fn` reaching it is a compile
 error. Box3D spreads a step over worker threads of its own, as many as
-`WorldDef.workers` asks for, with the same results for any number of them.
+`WorldDef.workers` asks for, and the results are the same for any number of
+workers.
 
 ### Errors
 
-A call that can fail for reasons outside the program -- a file that is not
-there, points that make no hull -- returns false or a zero handle, and
-`error()` says why. A call the program should not have made -- a destroyed
-body, a revolute function on a prismatic joint, a height field on a dynamic
-body -- is reported as it happens, skipped, and aborts the program at the
-next `step()`, `destroy(world)` or `check()`. Every handle carries a
-generation, so a destroyed object is an error to use, not a crash.
+A call that can fail for reasons outside the program, such as a file that
+is not there or points that make no hull, returns false or a zero handle,
+and `error()` says why. A call that the program should not have made is
+reported when it happens and skipped, and the program aborts at the next
+`step()`, `destroy(world)` or `check()`. Examples are a destroyed body, a
+revolute function on a prismatic joint, and a height field on a dynamic
+body. Every handle carries a generation, so using a destroyed object is
+reported as an error instead of crashing.
 
 ```goose
 fn error() -> u8[>..]           fn check()             fn misuse_count() -> i64
@@ -1656,17 +1769,19 @@ fn apply_wind(s, wind: float3, drag: f32, lift: f32, max_speed: f32, wake: bool)
 ```
 
 Shape types `SHAPE_SPHERE`, `SHAPE_CAPSULE`, `SHAPE_HULL`, `SHAPE_MESH`,
-`SHAPE_HEIGHT_FIELD`, `SHAPE_COMPOUND`. Two shapes collide when each one's
-category is in the other's mask, unless they share a group index: a positive
-group always collides, a negative one never does. A mesh collides only with
+`SHAPE_HEIGHT_FIELD`, `SHAPE_COMPOUND`. Two shapes collide when each
+shape's category is in the other's mask, unless they share a group index:
+shapes in a positive group always collide, and shapes in a negative group
+never do. A mesh collides only with
 shapes that are not meshes. The default density is water's, 1000 kg/m³.
 
 ### Geometry
 
 Hulls, meshes, height fields and baked compounds are made once and shared by
-shapes. A shape keeps what it was made from: destroying a mesh, height field
-or compound that shapes use lets go of the handle, and the data goes when its
-last shape does; a hull is copied into each world that uses it.
+shapes. A shape keeps the geometry it was made from. Destroying a mesh,
+height field or compound that shapes use releases the handle, and the data
+is freed when the last shape using it is destroyed. A hull is copied into
+each world that uses it.
 
 ```goose
 struct Hull { id: u32 }      struct Mesh { id: u32 }
@@ -1691,13 +1806,13 @@ fn destroy(h: Hull)   fn is_valid(h: Hull) -> bool   fn info(h: Hull) -> HullInf
 fn vertices(h: Hull) -> float3[>..]    fn triangles(h: Hull) -> int3[>..]    // and for Mesh
 ```
 
-The same geometry answers queries on its own, in its own frame:
+The same geometry can also be queried on its own, in its own frame:
 `compute_mass(g, density)` for spheres, capsules and hulls,
 `compute_aabb(g, transform)`, `ray_cast(g, origin, translation,
 max_fraction) -> CastOutput`, `overlap(g, transform, points, radius) -> bool`
 and `shape_cast(g, points, radius, translation, max_fraction, can_encroach)
 -> CastOutput` for each kind (a mesh takes its scale first). Between two
-point clouds with radii: `shape_distance`, `shape_cast` and
+point clouds with radii, there are `shape_distance`, `shape_cast` and
 `time_of_impact` over two `Sweep`s, with `sweep_transform(sweep, time)`.
 
 ### Joints
@@ -1748,8 +1863,8 @@ kind's function on a joint of another kind is a misuse.
 
 ### Events
 
-Read after the step they happened in, each an array of what the last step
-produced:
+Events are read after the step they happened in. Each function returns an
+array of what the last step produced:
 
 ```goose
 fn contact_begin_events(w) -> ContactEvent[>..]      // shape_a, shape_b, contact
@@ -1816,9 +1931,9 @@ fn destroy(r: Recording)     fn destroy(p: Player)
 ```
 
 A recording holds everything a world does between `start_recording` and
-`stop_recording`; a player replays it into a world of its own, step by step,
-checking it comes out the same. The recorded bodies exist once the replay has
-made them, `body(p, k)` being the k-th made.
+`stop_recording`. A player replays it into a world of its own, step by
+step, and checks that the result is the same. The recorded bodies exist
+once the replay has made them; `body(p, k)` is the k-th body made.
 
 ```goose
 let world = physics::create_world();
@@ -1838,22 +1953,23 @@ Windows and widgets on Nuklear, the immediate-mode GUI library, drawn
 through `gfx`: windows, rows and layout spaces, groups, trees, list views,
 labels, buttons, check boxes, options, selectables, sliders, knobs, progress
 bars, color pickers, properties, text fields and editors, charts, popups,
-combo boxes, contextual menus, tooltips, menus, styles and fonts. Optional
-like `gfx`: it needs a compiler built with the `third_party/nuklear`
-submodule, and a program using it links what `goose --ui-link msvc|cc`
-prints, with gfx's if it renders through gfx (`cl app.c @<ui> @<gfx>`). A
-compiler without it still typechecks and generates C for such a program;
-only running it in-process fails. Everything is in namespace `ui`;
+combo boxes, contextual menus, tooltips, menus, styles and fonts. Like
+`gfx`, the module is optional: it needs a compiler built with the
+`third_party/nuklear` submodule, and a program using it links what
+`goose --ui-link msvc|cc` prints, together with gfx's if it renders through
+gfx (`cl app.c @<ui> @<gfx>`). A compiler built without it still
+typechecks and generates C for such a program; only running the program
+in-process fails. Everything is in namespace `ui`;
 `samples/29_ui_todo.goose` is a complete program, and the package's
 [docs/ui.md](https://github.com/aardappel/goose_gfx/blob/main/docs/ui.md) says how it works.
 
 The API is Nuklear's under Goose names: `nk_button_label` is
-`button_label`. Immediate mode means each frame the program says which
-windows and widgets there are, in order, and learns what the user did from
-the same calls: `button_label` returns true on the frame the button is
-clicked, `checkbox_label` flips the `bool` it is given, `slider_float` moves
-the `f32`. The program's data stays its own; a context keeps only where
-windows are and what is open, active or scrolled.
+`button_label`. In immediate mode, the program declares on each frame which
+windows and widgets there are, in order, and the same calls report what the
+user did: `button_label` returns true on the frame the button is clicked,
+`checkbox_label` flips the `bool` it is given, and `slider_float` moves the
+`f32`. The program keeps its own data; a context stores only where windows
+are and what is open, active or scrolled.
 
 ```goose
 guard gfx::open("sound", 400, 300) else { abort(str("gfx: ", gfx::error())); }
@@ -1876,23 +1992,24 @@ while gfx::frame() {
 ui::destroy(ctx);
 ```
 
-A frame is: input (here from gfx), then windows, each `begin` followed by
-its `end` whether or not it returned true, then drawing what they built.
-Inside a window every widget takes the next place in the current row, so a
-row comes first (`layout_row_*`). The ui runs on the main thread; a
-`thread_fn` reaching it is a compile error.
+A frame consists of input (here from gfx), then the windows, each `begin`
+followed by its `end` whether or not `begin` returned true, and then
+drawing what the windows built. Inside a window every widget takes the next
+place in the current row, so a row must come first (`layout_row_*`). The
+ui runs on the main thread; a `thread_fn` reaching it is a compile error.
 
 ### Errors
 
-A call that can fail for reasons outside the program -- a font file that is
-not there, bytes that are not a font -- returns false or a zero handle, and
-`error()` says why. A call the program should not have made -- a widget
-outside a window, a group ended that was never begun, a window begun inside
-another, a key that is not one, a destroyed handle -- is printed as it
-happens, skipped, and aborts the program at the next `input_begin`,
-`convert`, `render`, `destroy(context)` or `check()`. Contexts, font
-atlases, fonts and text editors are handles with a generation, so a
-destroyed one is an error to use, not a crash.
+A call that can fail for reasons outside the program, such as a font file
+that is not there or bytes that are not a font, returns false or a zero
+handle, and `error()` says why. A call that the program should not have
+made is printed when it happens and skipped, and the program aborts at the
+next `input_begin`, `convert`, `render`, `destroy(context)` or `check()`.
+Examples are a widget outside a window, a group ended that was never begun,
+a window begun inside another, a key that is not a valid key, and a
+destroyed handle. Contexts, font atlases, fonts and text editors are
+handles with a generation, so using a destroyed one is reported as an
+error instead of crashing.
 
 ```goose
 fn error() -> u8[>..]     fn check()     fn misuse_count() -> i64     fn available() -> bool
@@ -1922,25 +2039,25 @@ fn input_key(c, key: i64, down: bool)         // KEY_*: editing keys and shortcu
 fn input_text(c, text: const u8[:])           // and input_char, input_glyph, input_unicode
 ```
 
-The whole ui can be drawn bigger or smaller with `set_scale`, which the
-program picks as it likes -- from the window's size, the display, a
-setting. Layout stays the same: windows, rows, fonts and the style keep
-their sizes in the ui's own units, and the scale is the pixels to each
-unit, which `convert` and `render` draw with and input positions come in.
-A context made by `create` or `create_from_*` has its font baked again at
-the scale, so its text stays sharp -- Nuklear's built-in font imitates a
-bitmap one and scales well only by whole numbers, a TrueType one by any;
-one made on a font of the program's keeps that atlas's, which `bake(atlas,
-scale)` makes sharp at a scale, again at each new one. It changes between
-frames, not during one.
+The whole ui can be drawn bigger or smaller with `set_scale`. The program
+picks the scale as it likes, for example from the window's size, the
+display, or a setting. The layout stays the same: windows, rows, fonts and
+the style keep their sizes in the ui's own units. The scale is the number
+of pixels per unit; `convert` and `render` draw at that scale, and input
+positions are given in those pixels. A context made by `create` or
+`create_from_*` has its font baked again at the scale, so its text stays
+sharp. (Nuklear's built-in font imitates a bitmap font and scales well only
+by whole numbers; a TrueType font scales well by any amount.) A context
+made on a font of the program's own keeps that font's atlas as it is;
+`bake(atlas, scale)` makes the atlas sharp at a scale, and is called again
+at each new scale. `set_scale` is called between frames, not during one.
 
-Input goes between `input_begin` and `input_end`, before any window, one
-batch a frame; `input_from_gfx` below does it all. Positions are pixels. A
-key's press and
-release in the same frame count as a press; Nuklear looks at a frame's keys
-after it, in the order of their `KEY_*` values. A button's press or release
-also zeroes the frame's mouse motion. What widgets see can be asked
-directly:
+Input goes between `input_begin` and `input_end`, before any window, in one
+batch per frame; `input_from_gfx` (below) does all of this. Positions are
+in pixels. A key pressed and released in the same frame counts as a press.
+Nuklear looks at a frame's keys afterwards, in the order of their `KEY_*`
+values. A button's press or release also zeroes the frame's mouse motion.
+The input that widgets see can also be queried directly:
 
 ```goose
 fn input_mouse(c) -> Mouse           // pos, prev, delta, scroll_delta, grab state
@@ -1952,31 +2069,35 @@ fn input_is_mouse_click_in_rect(c, button, r) -> bool   // a release there this 
 fn input_is_mouse_hovering_delay_rect(c, r, timer: f32&, delay: f32) -> bool
 ```
 
-A click is a button going down or up: the `has_` queries look at where the
-button's last one was, the `is_` ones at one this frame. The `_delay`
+A click is a button going down or up. The `has_` queries look at where the
+button's last click was, and the `is_` queries look for a click in this
+frame. The `_delay`
 queries count hovering time in a timer the program keeps between frames
 (also `_still_delay` and `_still_delay_clicked`).
 
-A program that shares its input with the ui -- a game with keys of its own
--- asks whose it is:
+A program that shares its input with the ui, such as a game with keys of
+its own, can ask which of the two the input belongs to:
 
 ```goose
 fn wants_keyboard(c) -> bool     // a text field or a property being typed into has the keys
 fn wants_mouse(c) -> bool        // over a window or popup taking input, or dragging from one
 ```
 
-A text field has the keyboard from the click that focuses it until a click
-outside it, `edit_unfocus`, or its window closing or being left out of a
-frame, wherever the mouse goes meanwhile; its window keeps it focused
-behind another window, under a popup of its own or hidden, but takes no
-keys until it is in front, the popup closed or the window shown again. The
-mouse is the ui's over a window or a popup, and while it holds a button
-that went down over one; a button that went down elsewhere keeps it the
-program's until released. A window or popup begun with `WINDOW_NO_INPUT`
--- a message log, a box of hover information -- lets the mouse through to
-the program: it cannot be moved, scaled, scrolled or brought to the front,
-and its widgets take no clicks. Nuklear's `item_is_any_active` is true whenever
-the mouse is over a window, so it cannot say whose the keys are.
+Clicking a text field gives it keyboard focus. It keeps focus until a click
+outside it, a call to `edit_unfocus`, or its window closing or being omitted
+from a frame. Moving the mouse does not change this. The field also stays
+focused while its window is behind another window, hidden, or covered by its own
+popup. It receives no keys until the window is in front, shown again, or the
+popup is closed.
+
+The ui owns mouse input while the pointer is over a window or popup, or while a
+button pressed there remains held. A button pressed elsewhere keeps mouse input
+with the program until release. A window or popup created with
+`WINDOW_NO_INPUT`, such as a message log or hover information, passes mouse
+input through to the program. It cannot be moved, scaled, scrolled, or brought
+to the front, and its widgets receive no clicks. Nuklear's `item_is_any_active`
+is true whenever the mouse is over a window, so it cannot determine who owns
+keyboard input.
 
 ### Text rendering and game HUDs
 
@@ -2042,16 +2163,16 @@ fn glyph_ranges(which: i64) -> u32[>..]          // RANGE_DEFAULT, _CHINESE, _CY
 ```
 
 An atlas bakes its fonts into one image; a context draws with one of them
-and uses the atlas's white texel for its shapes. `FontConfig` has
-Nuklear's defaults: oversampling, pixel snapping, spacing, the characters
-to bake (`ranges`, a `RANGE_*` set, or pairs of first and last character
-given as an array), the fallback glyph, and `merge_mode`, which adds the
-glyphs to the atlas's first font. Fonts are added before the atlas is
-first baked; it keeps their data, and baking it again at another scale
-replaces their glyphs and image in place, so contexts drawing with its
-fonts keep them and draw sharp at the new scale. A context draws its
-shapes with the atlas of the font it was made with or last given by
-`style_set_font`; destroying an atlas a context still uses is an error.
+and uses the atlas's white texel for its shapes. `FontConfig` holds these
+settings, with Nuklear's defaults: oversampling, pixel snapping, spacing,
+the characters to bake (`ranges`, a `RANGE_*` set, or pairs of first and
+last character given as an array), the fallback glyph, and `merge_mode`,
+which adds the glyphs to the atlas's first font. Fonts are added before the
+atlas is first baked. The atlas keeps their data, and baking it again at
+another scale replaces their glyphs and image in place, so contexts drawing
+with its fonts keep using them and draw sharp at the new scale. A context
+draws its shapes with the atlas of the font it was made with or last given
+by `style_set_font`; destroying an atlas a context still uses is an error.
 
 ### Windows and layout
 
@@ -2076,8 +2197,9 @@ fn layout_set_min_row_height(c, height)   fn spacer(c)   fn spacing(c, cols)
 ```
 
 A row lays out the widgets after it, and repeats until the next row call.
-`begin` is false for a window collapsed or hidden, whose `end` still
-follows. Windows are found by name: two in one frame cannot share one.
+`begin` returns false for a collapsed or hidden window, and its `end` still
+follows. Windows are found by name, so two windows in one frame cannot
+share a name.
 
 ### Groups, trees and list views
 
@@ -2096,8 +2218,8 @@ fn list_view_end(c)          // build rows view.begin until view.end only
 ```
 
 A group is a scrolled panel inside a window, with its own rows; its end
-follows only when it began. A tree node's contents go between a true push
-and its pop.
+follows only when its begin returned true. A tree node's contents go
+between a push that returned true and its pop.
 
 ### Widgets
 
@@ -2130,10 +2252,10 @@ fn widget_is_hovered(c) -> bool      fn widget_is_mouse_clicked(c, button) -> bo
 fn widget_disable_begin(c)           fn widget_disable_end(c)     // shown dimmed, inert
 ```
 
-The `_label` names take any Goose string: a Nuklear `_text` function is the
-same call. A property is dragged, stepped with its arrows or typed into; a
-name starting with `#` is not shown. Sliders and knobs need a non-empty
-range.
+The `_label` functions take any Goose string, so a Nuklear `_text`
+function maps to the same call. A property is dragged, stepped with its
+arrows or typed into; a name starting with `#` is not shown. Sliders and
+knobs need a non-empty range.
 
 ### Text editing
 
@@ -2152,13 +2274,14 @@ fn textedit_undo(e)            fn textedit_redo(e)
 ```
 
 Flags are `EDIT_*`, with the usual sets `EDIT_SIMPLE`, `EDIT_FIELD` (one
-line, selectable, clipboard) and `EDIT_BOX` (several lines); the result
-says `EDIT_ACTIVE` or `_INACTIVE`, `_ACTIVATED` and `_DEACTIVATED` this
-frame, and `_COMMITTED` for Enter with `EDIT_SIG_ENTER`. A field takes what
-fits in its text's capacity, through a `FILTER_*` (`DEFAULT`, `ASCII`,
-`FLOAT`, `DECIMAL`, `HEX`, `OCT`, `BINARY`); a paste takes what typing
-would. A text editor (`TextEdit`) holds its own text, cursor, selection,
-mode and undo history; a field over a buffer keeps no undo between frames.
+line, selectable, clipboard) and `EDIT_BOX` (several lines). The result
+reports `EDIT_ACTIVE` or `_INACTIVE`, `_ACTIVATED` and `_DEACTIVATED` in
+this frame, and `_COMMITTED` for Enter with `EDIT_SIG_ENTER`. A field
+accepts what fits in its text's capacity and passes a `FILTER_*`
+(`DEFAULT`, `ASCII`, `FLOAT`, `DECIMAL`, `HEX`, `OCT`, `BINARY`); a paste
+accepts what typing would. A text editor (`TextEdit`) holds its own text,
+cursor, selection, mode and undo history; a field over a buffer keeps no
+undo between frames.
 Editing keys are `KEY_*`; `KEY_COPY` and `KEY_CUT` hand the selection to
 `copied`, `KEY_PASTE` pastes `set_clipboard`'s text.
 
@@ -2183,9 +2306,10 @@ fn menu_item_label(c, text, align) -> bool        fn menu_close(c)      fn menu_
 ```
 
 A popup, combo box, contextual menu, menu or tooltip is a small window of
-its own, drawn above the one it opens from, with rows inside; each end
-follows only a true begin, and none opens inside another. A tooltip is
-asked for before the widget it is about, when `widget_is_hovered`.
+its own, drawn above the one it opens from, with rows inside. Each end
+follows only a begin that returned true, and none of them opens inside
+another. A tooltip is requested before the widget it is about, when
+`widget_is_hovered` is true.
 
 ### Charts
 
@@ -2218,10 +2342,10 @@ fn rgb_factor(c: Color, factor: f32) -> Color
 
 `Style` mirrors Nuklear's `nk_style` field for field (text, link, buttons,
 toggles, selectables, sliders, knobs, progress bars, properties, edits,
-charts, scroll bars, tabs, combo boxes, windows), less its font and
-cursors: read it, change fields, set it back. A `StyleItem` is a color, an
-image or a nine-slice image, by `kind`. Software cursors are images Nuklear
-draws at the mouse.
+charts, scroll bars, tabs, combo boxes, windows), except for its font and
+cursors. To change the style, read it, change fields, and set it back. A
+`StyleItem` is a color, an image or a nine-slice image, by `kind`. Software
+cursors are images Nuklear draws at the mouse.
 
 ### Images and rectangles
 
@@ -2251,14 +2375,17 @@ fn null_texture(c) -> u32
 ```
 
 The canvas functions draw onto the window being built, in screen
-coordinates, clipped to the scissor: with `widget`, the way to draw a
-widget of the program's own. Once a frame's windows have ended, its drawing
-is available two ways, for any renderer: Nuklear's commands (one `Command`
-per shape, image or text, polygons' points and texts' bytes beside them),
-or triangles from `convert` -- vertices with a position, texture
-coordinate and color, 32-bit indices, and draw calls each with a scissor
-and a texture, shapes using the null texture. Both stay until the next
-frame's input.
+coordinates, clipped to the scissor. Together with `widget`, they are the
+way to draw a widget of the program's own. Once a frame's windows have
+ended, its drawing is available to any renderer in two forms:
+
+* Nuklear's commands: one `Command` per shape, image or text, with the
+  points of polygons and the bytes of texts stored beside them;
+* triangles from `convert`: vertices with a position, texture coordinate
+  and color, 32-bit indices, and draw calls that each have a scissor and a
+  texture (shapes use the null texture).
+
+Both stay available until the next frame's input.
 
 ### Through gfx
 
@@ -2269,16 +2396,23 @@ fn render(c, target, config: ConvertConfig)
 fn input_from_gfx(c: Context)                    // after gfx::frame(), before any window
 ```
 
-`render` converts the frame and draws it with alpha blending, not inside a
-pass, uploading each font atlas to a gfx texture the first time and
-releasing it with the atlas (`released_textures()` lists those destroyed,
-for a renderer of the program's own). What it keeps -- a pipeline, a
-sampler, buffers -- is made once and again after gfx is closed and
-opened. `input_from_gfx` hands the context gfx's last frame
-of input in order: the mouse, editing keys (Delete, Backspace, Enter, Tab,
-Home, End, the arrows, Page Up and Down, Escape), shortcuts with Ctrl or
-Command (A, C, X, V, Z, Y), typed text (it turns gfx's text input on), the
-frame's duration, and the clipboard both ways, pasting the system
-clipboard's text and putting there what a field copied. Both work in the
-screen's pixels, so on a high-density display the ui is as many pixels as
-elsewhere, and smaller, until the program sets a scale.
+`render` converts the frame and draws it with alpha blending; it is called
+outside a pass. It uploads each font atlas to a gfx texture the first time,
+and releases that texture with the atlas (`released_textures()` lists the
+textures destroyed this way, for a renderer of the program's own). The
+resources it keeps (a pipeline, a sampler and buffers) are made once, and
+again after gfx is closed and opened. `input_from_gfx` passes gfx's last
+frame of input to the context, in order:
+
+* the mouse;
+* editing keys (Delete, Backspace, Enter, Tab, Home, End, the arrows, Page
+  Up and Down, Escape);
+* shortcuts with Ctrl or Command (A, C, X, V, Z, Y);
+* typed text (it turns gfx's text input on);
+* the frame's duration;
+* the clipboard in both directions, pasting the system clipboard's text and
+  putting there what a field copied.
+
+`render` and `input_from_gfx` both work in the screen's pixels, so on a
+high-density display the ui has as many pixels as elsewhere, and so looks
+smaller, until the program sets a scale.

@@ -1,7 +1,8 @@
 // error: cannot pop pp.y while s
 // A pop through a reference that the parameter's pointee holds frees an
-// array the argument's root only bounds (§5.2, §9.2): the error names the
-// array s views.
+// array the argument's root only bounds (§5.2, §9.2): f's pop is judged
+// against the view of a its call passes as s, through the reference p was
+// given.
 struct P { y: i64[>..<]& }
 fn f(pp: P&, s: i64[:]) {
     pp.y.pop();

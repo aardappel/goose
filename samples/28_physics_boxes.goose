@@ -214,11 +214,13 @@ fn main() {
         write_stderr(str("gfx: ", gfx::error(), "\n"));
         return;
     }
+    defer gfx::close();
 
     // --- the world -----------------------------------------------------------
     let world = physics::create_world(physics::WorldDef {
         workers: min(hardware_threads(), 8) as i32,
         capacity: physics::Capacity { dynamic_bodies: max_boxes as i32 } });
+    defer physics::destroy(world);   // Before the window closes: defers run latest first.
     // The floor and four walls, all shapes of one static body; the arena's
     // pieces are drawn as boxes too.
     var props: Instance[>..] = [];
@@ -457,6 +459,4 @@ fn main() {
           "; the arm turned ", round(2.0 * acos(arm_turn.w) * 57.29578) as i64,
           " degrees; saved physics_boxes.png: ", saved);
     write_stderr(str(toppled, " of ", pyramid_boxes, " pyramid boxes moving\n"));
-    physics::destroy(world);
-    gfx::close();
 }

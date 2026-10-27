@@ -1,6 +1,7 @@
-// error: storing a reference rooted at x, which does not outlive the destination (§9.2)
-// g passes its own h on, so what f stores into the storage behind it is g's
-// to report to its callers, which check it against theirs (§9.2).
+// error: storing a reference rooted at x, which does not outlive the destination
+// g passes its own h on to f. h names main's local holder, whose node is n,
+// and that record is kept through both calls (§9.5), so f's rebind of the
+// node's field is checked against n, which x does not outlive (§9.2).
 struct Node { p: i64? }
 struct Holder { node: Node& }
 

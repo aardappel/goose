@@ -1,4 +1,4 @@
-// error: storing a reference rooted at x, which does not outlive the destination (§9.2)
+// error: storing a reference rooted at x, which does not outlive the destination
 // The new elements land in the caller's storage, which a reference to a
 // local of the callee does not outlive.
 struct R { n: i64, refs: (i64&)[>..] }

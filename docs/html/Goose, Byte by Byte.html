@@ -604,7 +604,7 @@ pool.free(s0);                                  <span class="tc">// the slot goe
   </section>
 
   <section class="sec" id="costs">
-    <div class="sec-head"><h2>What it asks of you</h2><a class="ref" href="https://github.com/aardappel/goose/blob/master/docs/tutorial.md#18-what-it-costs-you">Tutorial §18</a></div>
+    <div class="sec-head"><h2>What it asks of you</h2><a class="ref" href="https://github.com/aardappel/goose/blob/master/docs/tutorial.md#18-limitations">Tutorial §18</a></div>
     <div class="costs"><div class="cost"><h3>You decide where data lives</h3><p>Usually the function that builds a value owns it. When lifetimes don&#x27;t nest, you use a reusable pool.</p></div><div class="cost"><h3>Recursion takes its storage as a parameter</h3><p>A recursive function can&#x27;t keep growable data across its recursive call, so it is passed a pool or a builder.</p></div><div class="cost"><h3>Variable-size elements are walked, not indexed</h3><p>An array of variable-size records is sequential, unless you keep an index of references beside it.</p></div><div class="cost"><h3>No escaping closures or function pointers</h3><p>Function values exist only at compile time, dispatch is by enum tag, and the whole program compiles at once.</p></div><div class="cost"><h3>Freed pool slots can go stale</h3><p>A slot you gave back and still name reads whatever reuses it. That is a logic bug to avoid, never memory corruption.</p></div><div class="cost"><h3>It is new</h3><p>The specification is a draft and changes most weeks. Prebuilt releases started in October 2026.</p></div></div>
   </section>
 

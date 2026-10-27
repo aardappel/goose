@@ -262,6 +262,9 @@ inline Node *Break::Clone1(Ast &ast) const {
 }
 
 inline Node *Continue::Clone1(Ast &ast) const { return ast.New<Continue>(line); }
+inline Node *Defer::Clone1(Ast &ast) const {
+    return ast.New<Defer>(line, (Block *)body->Clone(ast));
+}
 
 // InlineBlocks exist only after typecheck; the annotation-stripping Clone has
 // no meaning for them (the optimizer's copier in optimize.h preserves them).
@@ -438,6 +441,7 @@ inline void SelfRef::Children(const function<void(Node *)> &) const {}
 inline void StrLit::Children(const function<void(Node *)> &) const {}
 inline void Ident::Children(const function<void(Node *)> &) const {}
 inline void Continue::Children(const function<void(Node *)> &) const {}
+inline void Defer::Children(const function<void(Node *)> &f) const { f(body); }
 inline void FnDecl::Children(const function<void(Node *)> &) const {}
 inline void StructDecl::Children(const function<void(Node *)> &) const {}
 inline void EnumDecl::Children(const function<void(Node *)> &) const {}

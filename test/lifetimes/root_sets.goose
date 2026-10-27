@@ -14,13 +14,13 @@ fn main() {
     var h = H { s: v };
     c.pop();
     print(v, " ", h.s, " ", c);
-    // A slice read out of a container may point into any array in scope that
-    // can hold its elements when it is read: a, b or c, not one declared
-    // later.
+    // A slice read out of a local holder points where the holder's stores put
+    // it, here b alone (§9.5), so another array may shrink while it is used.
     var hs: H[>..] = [];
     hs.push(H { s: b[..] });
     let r = hs[0].s;
     var d: u8[>..] = "dd";
     d.pop();
+    c.pop();
     print(r, " ", d);
 }

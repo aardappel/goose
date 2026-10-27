@@ -17,11 +17,35 @@ struct Import {
     Line end;                        // One past its `;`.
 };
 
+// What a token is, where its kind alone does not say, for the formatter
+// (format.h): a `<` or `>` of a generic list rather than a comparison, a
+// unary operator rather than a binary one, and a bracket whose list may end
+// in a comma. Recorded only where Parser::roles is set.
+enum TokenRole : uint8_t {
+    R_ANGLE_OPEN = 1,     // `<` opening a generic parameter or argument list.
+    R_ANGLE_CLOSE = 2,    // `>` closing one; recorded twice for a `>>` closing two.
+    R_GLUE = 4,           // `>`, `..` and `<` inside an array type's `[>..<]`.
+    R_TYPE_POSTFIX = 8,   // `&`, `?` and `..` after a type.
+    R_UNARY = 16,         // A prefix operator, and `^` in a slice bound.
+    R_GLUE_LEFT = 32,     // The `!` of `as!`.
+    R_LIST = 64,          // A `(`, `[` or `{` whose list may end in a comma.
+    R_FUNVAL = 128,       // The `{` of a trailing block, a function value.
+};
+
 struct Parser {
     Ast &ast;
     Lexer lex;
     int fileidx;
     vector<Import> imports;          // Imports encountered, for the driver.
+
+    // The roles of the tokens parsed (TokenRole), by where each starts in
+    // the source, for the formatter; null, and nothing recorded, in a
+    // compile. A backtrack drops those of what it backtracks over.
+    vector<pair<const char *, uint8_t>> *roles = nullptr;
+    void Role(uint8_t r) { if (roles) roles->push_back({ lex.attr.data(), r }); }
+    void RoleAt(const char *at, uint8_t r) { if (roles) roles->push_back({ at, r }); }
+    size_t RoleMark() const { return roles ? roles->size() : 0; }
+    void DropRoles(size_t mark) { if (roles) roles->resize(mark); }
 
     // Rust-style restriction: no struct literals / trailing blocks directly in
     // if/while/for/match/guard scrutinee position, so `if x {` is unambiguous.
@@ -116,7 +140,7 @@ struct Parser {
             case T_IMPORT: case T_NAMESPACE: case T_STRUCT: case T_ENUM: case T_TYPE:
                 return declaration;
             case T_IF: case T_MATCH: case T_LOOP: case T_WHILE: case T_FOR: case T_GUARD:
-            case T_RETURN: case T_BREAK: case T_CONTINUE:
+            case T_DEFER: case T_RETURN: case T_BREAK: case T_CONTINUE:
                 return !declaration;
             default:
                 return AtInline() || AtCheckfree();
@@ -304,6 +328,7 @@ struct Parser {
 
     // A `>` that may be the first half of a `>>` closing two nested generic lists.
     void ExpectClosingAngle(const char *context) {
+        if (lex.tok == T_SHR || lex.tok == T_GT) Role(R_ANGLE_CLOSE);
         if (lex.tok == T_SHR) { lex.tok = T_GT; return; }
         Expect(T_GT, context);
     }
@@ -485,7 +510,9 @@ struct Parser {
 
     // `kept`, where given, is moved past each whole parameter (ParseMembers).
     void ParseGenerics(vector<GenericParam> &generics, Ast::DeclMark *kept = nullptr) {
-        if (!IsNext(T_LT)) return;
+        if (lex.tok != T_LT) return;
+        Role(R_ANGLE_OPEN);
+        lex.Next();
         for (;;) {
             GenericParam g;
             g.line = CurLine();
@@ -532,6 +559,7 @@ struct Parser {
         CheckFreshTypeName(st->ns, st->name);
         ParseMembers(st->broken, depth, startp, [&](Ast::DeclMark &kept) {
             ParseGenerics(st->generics, &kept);
+            if (lex.tok == T_LCURLY) Role(R_LIST);
             Expect(T_LCURLY, "struct declaration");
             ParseFieldList(st->fields, "struct body", &kept);
             Expect(T_RCURLY, "struct declaration");
@@ -592,6 +620,7 @@ struct Parser {
         CheckFreshTypeName(en->ns, en->name);
         ParseMembers(en->broken, depth, startp, [&](Ast::DeclMark &kept) {
             ParseGenerics(en->generics, &kept);
+            if (lex.tok == T_LCURLY) Role(R_LIST);
             Expect(T_LCURLY, "enum declaration");
             while (lex.tok != T_RCURLY) {
                 SVariant v;
@@ -600,7 +629,9 @@ struct Parser {
                 v.name = ExpectIdent("enum variant");
                 for (auto &prev : en->variants)
                     if (prev.name == v.name) Error(cat("duplicate variant name: ", v.name));
-                if (IsNext(T_LCURLY)) {
+                if (lex.tok == T_LCURLY) {
+                    Role(R_LIST);
+                    lex.Next();
                     v.has_payload = true;
                     ParseFieldList(v.fields, "variant body");
                     Expect(T_RCURLY, "enum variant");
@@ -764,6 +795,7 @@ struct Parser {
         // is lost with the statement it is, as the block recovers.
         auto header = [&](Ast::DeclMark *kept) {
             ParseGenerics(sf->generics, kept);
+            if (lex.tok == T_LPAREN) Role(R_LIST);
             Expect(T_LPAREN, "function declaration");
             while (lex.tok != T_RPAREN) {
                 Param p;
@@ -943,8 +975,12 @@ struct Parser {
                     if (IsNext(T_DOTDOT)) {
                         a->arr->akind = A_LIMITED;
                         if (lex.tok != T_RBRACKET) a->arr->sizeexpr = ParseTypeSizeExpr();
-                    } else if (IsNext(T_GT)) {
+                    } else if (lex.tok == T_GT) {
+                        Role(R_GLUE);
+                        lex.Next();
+                        if (lex.tok == T_DOTDOT) Role(R_GLUE);
                         Expect(T_DOTDOT, "resizable array type");
+                        if (lex.tok == T_LT) Role(R_GLUE);
                         a->arr->akind = IsNext(T_LT) ? A_GROWSHRINK : A_GROW;
                     } else if (IsPrimTypeToken(lex.tok)) {
                         a->arr->akind = A_VAR;
@@ -958,9 +994,11 @@ struct Parser {
                     continue;
                 }
                 case T_BITAND: {
+                    Role(R_TYPE_POSTFIX);
                     lex.Next();
                     auto r = ast.RefTo(t, line);
                     qualify(r);
+                    if (lex.tok == T_LT) Role(R_ANGLE_OPEN);
                     if (IsNext(T_LT)) {
                         r->ref->lenstorage = ParseLengthStorage("relative reference width");
                         // `T&<u32 in pool>`: offsets measured from a named
@@ -975,6 +1013,7 @@ struct Parser {
                     continue;
                 }
                 case T_QUESTION: {
+                    Role(R_TYPE_POSTFIX);
                     lex.Next();
                     if (t->kind == TY_REF) {
                         // T&? is the same type as T?; the reference becomes nullable.
@@ -988,6 +1027,7 @@ struct Parser {
                     continue;
                 }
                 case T_DOTDOT: {
+                    Role(R_TYPE_POSTFIX);
                     lex.Next();
                     // Only ADTs have a variable mode; at parse time those are names.
                     if (t->kind != TY_UNRESOLVED)
@@ -1065,6 +1105,7 @@ struct Parser {
         switch (lex.tok) {
             case T_IDENT: case T_COLONCOLON: {
                 auto t = NewUnresolvedType(ParseQualifiedName("type"), line);
+                if (lex.tok == T_LT) Role(R_ANGLE_OPEN);
                 if (IsNext(T_LT)) {
                     for (;;) {
                         t->named->args.push_back(ParseType());
@@ -1079,6 +1120,7 @@ struct Parser {
                 lex.Next();
                 auto t = ast.NewType(TY_FN, line);
                 t->fn = ast.NewDetail<TypeFn>();
+                if (lex.tok == T_LPAREN) Role(R_LIST);
                 if (IsNext(T_LPAREN)) {
                     t->fn->has_sig = true;
                     while (lex.tok != T_RPAREN) {
@@ -1088,6 +1130,7 @@ struct Parser {
                     Expect(T_RPAREN, "function type");
                     if (IsNext(T_ARROW)) {
                         // Multiple return types in a function *type* need parens.
+                        if (lex.tok == T_LPAREN) Role(R_LIST);
                         if (IsNext(T_LPAREN)) {
                             while (lex.tok != T_RPAREN) {
                                 t->fn->rets.push_back(ParseType());
@@ -1192,6 +1235,8 @@ struct Parser {
             }
             case T_GUARD:
                 Error("guard is a statement: it guards the rest of the block it is in");
+            case T_DEFER:
+                Error("defer is a statement: it runs its body when the block it is in ends");
             case T_RETURN: {
                 lex.Next();
                 auto sub = Sub(no_struct_lit);
@@ -1244,6 +1289,7 @@ struct Parser {
     Node *ParseFor() {
         auto line = CurLine();
         lex.Next();
+        if (lex.tok == T_BITAND) Role(R_UNARY);
         auto byref = IsNext(T_BITAND);
         auto var = ExpectIdent("for binding");
         TypeExpr *vartype = nullptr, *idxtype = nullptr;
@@ -1278,8 +1324,10 @@ struct Parser {
         auto line = CurLine();
         lex.Next();
         auto m = New<MatchExpr>(line, ParseScrutinee());
+        auto open = lex.attr.data();
         Expect(T_LCURLY, "match expression");
         ParseArms(m->arms);
+        if (ArmsTakeComma(m->arms)) RoleAt(open, R_LIST);
         Expect(T_RCURLY, "match expression");
         if (m->arms.empty()) Error("match must have at least one arm");
         return Finish(m);
@@ -1300,6 +1348,23 @@ struct Parser {
             }
             arms.push_back(arm);
             if (!IsNext(T_COMMA)) break;
+        }
+    }
+
+    // Whether a comma may follow the last arm: not where it ends in a
+    // `return` without `from`, whose values a comma would continue, or a
+    // `break` with no value, which would take what follows the comma as its
+    // value; a `break`'s value ends the arm as the arm would.
+    bool ArmsTakeComma(const vector<MatchArm> &arms) {
+        if (arms.empty() || !arms.back().body) return true;
+        for (auto n = arms.back().body;;) {
+            if (auto b = Is<Break>(n)) {
+                if (!b->val) return false;
+                n = b->val;
+                continue;
+            }
+            if (auto r = Is<Return>(n)) return !r->from.empty();
+            return true;
         }
     }
 
@@ -1325,6 +1390,7 @@ struct Parser {
                               "of its own";
                 if (p.items.size() > 1) Error(inlist);
                 // `Variant &b`: an explicit by-reference payload binding.
+                if (lex.tok == T_BITAND) Role(R_UNARY);
                 p.byref = IsNext(T_BITAND);
                 p.binder = ExpectIdent("match binding");
                 if (lex.tok == T_COMMA) Error(inlist);
@@ -1346,6 +1412,7 @@ struct Parser {
     // a constant, either one negated.
     Node *ParsePatternBound() {
         auto line = CurLine();
+        if (lex.tok == T_MINUS) Role(R_UNARY);
         auto neg = IsNext(T_MINUS);
         auto operandline = CurLine();
         if (lex.tok == T_IDENT || lex.tok == T_COLONCOLON) {
@@ -1416,6 +1483,7 @@ struct Parser {
         switch (lex.tok) {
             case T_MINUS: case T_NOT: case T_BITNOT: case T_BITAND: {
                 auto op = lex.tok;
+                Role(R_UNARY);
                 lex.Next();
                 auto sub = Sub(no_struct_lit);
                 return Finish(New<Unary>(line, op, ParseUnary()));
@@ -1433,6 +1501,7 @@ struct Parser {
             switch (lex.tok) {
                 case T_LPAREN:
                     // A call is anchored where its callee is.
+                    Role(R_LIST);
                     lex.Next();
                     e = ParseCallRest(e, {}, e->line);
                     continue;
@@ -1470,6 +1539,7 @@ struct Parser {
                 }
                 case T_AS: {
                     lex.Next();
+                    if (lex.tok == T_NOT) Role(R_GLUE_LEFT);
                     auto unchecked = IsNext(T_NOT);
                     e = Finish(New<AsCast>(line, e, ParseType(), unchecked));
                     continue;
@@ -1507,6 +1577,7 @@ struct Parser {
         auto lo_from_end = false;
         auto isslice = lex.tok == T_DOTDOT;
         if (!isslice) {
+            if (lex.tok == T_XOR) Role(R_UNARY);
             lo_from_end = IsNext(T_XOR);
             lo = ParseExpr();
             isslice = lex.tok == T_DOTDOT;
@@ -1518,6 +1589,7 @@ struct Parser {
             sl->lo = lo;
             sl->lo_from_end = lo_from_end;
             if (lex.tok != T_RBRACKET) {
+                if (lex.tok == T_XOR) Role(R_UNARY);
                 sl->hi_from_end = IsNext(T_XOR);
                 sl->hi = ParseExpr();
             }
@@ -1568,6 +1640,7 @@ struct Parser {
                     // literal Name<T>.Variant { ... }; backtrack if not.
                     vector<TypeExpr *> tyargs;
                     if (TryParseTyArgs(tyargs)) {
+                        if (lex.tok == T_LPAREN) Role(R_LIST);
                         if (IsNext(T_LPAREN))
                             return ParseCallRest(Finish(New<Ident>(line, name, curns), nameend),
                                                  std::move(tyargs), line);
@@ -1598,13 +1671,16 @@ struct Parser {
     bool TryParseTyArgs(vector<TypeExpr *> &tyargs) {
         auto save = lex;
         auto mark = ast.Mark();
+        auto rolemark = RoleMark();
         auto backtrack = [&]() {
             lex = save;
             tyargs.clear();
             ast.DropSince(mark);
+            DropRoles(rolemark);
             return false;
         };
         Tentatively t(*this);
+        Role(R_ANGLE_OPEN);
         lex.Next();  // The '<'.
         try {
             for (;;) {
@@ -1613,8 +1689,10 @@ struct Parser {
                 if (lex.tok == T_GT || lex.tok == T_SHR) break;
             }
             if (lex.tok == T_SHR) {
+                Role(R_ANGLE_CLOSE);
                 lex.tok = T_GT;
             } else if (lex.tok == T_GT) {
+                Role(R_ANGLE_CLOSE);
                 lex.Next();
             } else {
                 return backtrack();
@@ -1639,6 +1717,7 @@ struct Parser {
     }
 
     Node *ParseArrayLit(Line line) {
+        auto open = lex.attr.data();
         lex.Next();
         auto a = New<ArrayLit>(line);
         auto sub = Sub();
@@ -1653,6 +1732,7 @@ struct Parser {
                 a->fillval = first;
                 a->fillcount = ParseExpr();
             } else {
+                RoleAt(open, R_LIST);
                 a->elems.push_back(first);
                 while (IsNext(T_COMMA) && lex.tok != T_RBRACKET)
                     a->elems.push_back(ParseExpr());
@@ -1666,6 +1746,7 @@ struct Parser {
         auto cf = New<ConstFor>(CurLine());
         Expect(T_CONST, "const for");
         Expect(T_FOR, "const for");
+        if (lex.tok == T_LT) Role(R_ANGLE_OPEN);
         Expect(T_LT, "const for bindings");
         do {
             auto name = ExpectIdent("const for binding");
@@ -1676,6 +1757,7 @@ struct Parser {
         } while (lex.tok != T_GT);
         ExpectClosingAngle("const for bindings");
         Expect(T_IN, "const for");
+        if (lex.tok == T_LBRACKET) Role(R_LIST);
         if (IsNext(T_LBRACKET)) {
             cf->source = ES_CONSTANTS;
             auto sub = Sub();
@@ -1689,6 +1771,7 @@ struct Parser {
             if (query != "fields" && query != "types" && query != "variants")
                 Error("const for source must be fields<T>, variants<E>, types<...>, or [constants]");
             cf->source = query == "fields" ? ES_FIELDS : query == "variants" ? ES_VARIANTS : ES_TYPES;
+            if (lex.tok == T_LT) Role(R_ANGLE_OPEN);
             Expect(T_LT, "const for source");
             while (lex.tok != T_GT && lex.tok != T_SHR) {
                 cf->types.push_back(ParseType());
@@ -1708,8 +1791,10 @@ struct Parser {
             ParseInitList(cf->inits, defaults, true);
         } else if (arms) {
             cf->armfragments = true;
+            auto open = lex.attr.data();
             Expect(T_LCURLY, "const for arms");
             ParseArms(cf->arms);
+            if (ArmsTakeComma(cf->arms)) RoleAt(open, R_LIST);
             Expect(T_RCURLY, "const for arms");
         } else {
             cf->body = ParseBlockExpr("const for body");
@@ -1718,6 +1803,7 @@ struct Parser {
     }
 
     void ParseInitList(vector<FieldInit> &inits, bool &defaultall, bool fragment = false) {
+        if (lex.tok == T_LCURLY) Role(R_LIST);
         Expect(T_LCURLY, "constructor initializers");
         auto sub = Sub();
         while (lex.tok != T_RCURLY) {
@@ -1765,6 +1851,7 @@ struct Parser {
 
     FunVal *ParseFunVal() {
         auto line = CurLine();
+        if (lex.tok == T_LCURLY) Role(R_FUNVAL);
         Expect(T_LCURLY, "function value");
         auto b = New<Block>(line);
         auto fv = New<FunVal>(line, b);
@@ -1772,6 +1859,7 @@ struct Parser {
             // Tentative `params =>` prefix; else the body starts right away
             // with an implicit `it` parameter.
             auto save = lex;
+            auto rolemark = RoleMark();
             vector<Param> params;
             auto ok = true;
             // The lexer at a parameter named as an earlier one: raised inside
@@ -1801,6 +1889,7 @@ struct Parser {
                 fv->explicit_params = true;
             } else {
                 lex = save;
+                DropRoles(rolemark);
             }
         }
         ParseBlockBody(b);
@@ -1879,8 +1968,20 @@ struct Parser {
             case T_GUARD:
                 ParseGuard(b);
                 return false;
+            case T_DEFER:
+                b->stmts.push_back(ParseDefer());
+                return true;
             default: break;
         }
+        return ParseExprStatement(b, true);
+    }
+
+    // The statements that start with an expression: an assignment, an
+    // increment, several targets taking a call's results, or the expression
+    // itself for its effect; and the block's tail, where `tailok`, which ends
+    // the block (returns false). Without it the statement must end in a `;`
+    // or be a block-ended construct.
+    bool ParseExprStatement(Block *b, bool tailok) {
         stmt_level = true;
         auto e = ParseExpr();
         stmt_level = false;
@@ -1914,7 +2015,7 @@ struct Parser {
             b->stmts.push_back(e);
             return true;
         }
-        if (IsNext(T_RCURLY)) {
+        if (tailok && IsNext(T_RCURLY)) {
             b->tail = e;  // Trailing expression: the block's value.
             return false;
         }
@@ -1924,6 +2025,33 @@ struct Parser {
             return true;
         }
         Error(cat("\';\' expected after expression, found \'", TokStr(), "\'"));
+    }
+
+    // `defer { ... }` and `defer s;` (§6.6), the latter a body of the one
+    // statement s, which is one of the expression statements: a declaration
+    // would be out of scope as soon as it ran, and a guard guards the rest
+    // of a block, which the body has none of.
+    Node *ParseDefer() {
+        auto line = CurLine();
+        lex.Next();
+        Block *body;
+        if (lex.tok == T_LCURLY) {
+            body = ParseBlockExpr("defer body");
+            IsNext(T_SEMI);  // A redundant ';' after the block.
+        } else {
+            switch (lex.tok) {
+                case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: case T_GUARD: case T_DEFER:
+                case T_FN: case T_RECURSIVE: case T_THREADFN: case T_EXTERN: case T_EXPORT:
+                case T_SIMD:
+                    Error(cat("defer takes a statement or a block, not `", TokStr(), "`"));
+                default: break;
+            }
+            body = New<Block>(line);
+            stmt_ended = false;
+            ParseExprStatement(body, false);
+            Finish(body);
+        }
+        return Finish(New<Defer>(line, body));
     }
 
     // `a, b = f();` assigns a call's results to places that exist (§7.1),

@@ -1,6 +1,8 @@
 // error: cannot call run, which shrinks pool while s is still used
-// A callee emptying one field of its struct parameter before the pool it
-// refers to leaves what the caller stored into another (§5.1).
+// A callee emptying one field of its struct parameter before shrinking the
+// pool another field refers to does not cover the rest (§5.1): run leaves h,
+// which may hold a view into pool, so every store into s still counts, the
+// construction that takes pool included.
 struct H { r: (i64&)? }
 struct S { pool: i64[>..]&, h: H, refs: (i64&)[>..] }
 fn run(s: S&) {

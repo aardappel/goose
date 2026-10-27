@@ -238,6 +238,14 @@ inline const Call *SpecializedCall(const Analysis &an, const Call *call) {
     return c ? Is<Call>(c) : nullptr;
 }
 
+// The overloads a UFCS call's name resolves to past the scopes around it,
+// which depend on its receiver's type where a check gave it one.
+inline const vector<SFunction *> &MethodsOf(const Analysis &an, const Dot *d) {
+    auto t = an.TypeOf(d->obj);
+    while (t && t->kind == TY_REF && t->ref->sub) t = t->ref->sub;
+    return t ? an.ast->LookupMethods(d->name, d->ns, t) : an.ast->LookupFunctions(d->name, d->ns);
+}
+
 // The field a struct literal's initializer names, in the literal's type as
 // the first clone that resolved it has it.
 inline const Field *FieldOfInit(const Analysis &an, const Occurrence &occ) {
@@ -518,7 +526,7 @@ inline HoverText HoverDot(const Located &loc, const Occurrence &occ) {
             return h;
         }
     }
-    auto &fns = ast.LookupFunctions(d->name, d->ns);
+    auto &fns = MethodsOf(an, d);
     if (occ.callee && !fns.empty()) return OverloadsHover(fns);
     h.header = cat(".", d->name);
     h.doc = NotChecked(an, occ.node);
@@ -750,7 +758,7 @@ inline Place DefinitionOf(const Located &loc, const Occurrence &occ) {
             }
             if (occ.callee)
                 if (auto sf = CalleeOf(ResolvedCall(loc, occ))) return PlaceOfFn(an, sf);
-            auto &fns = ast.LookupFunctions(d->name, d->ns);
+            auto &fns = MethodsOf(an, d);
             if (occ.callee && !fns.empty()) return PlaceOfFn(an, fns[0]);
             return {};
         }
@@ -1108,19 +1116,20 @@ inline bool SignatureHelp(Workspace &ws, const Json &params, JsonOut &j) {
             active++;
         }
     }
-    string_view name, ns;
+    string_view name;
+    const vector<SFunction *> *found;
     auto ufcs = false;
     if (auto id = Is<Ident>(span->call->callee)) {
         name = id->name;
-        ns = id->ns;
+        found = &ast.LookupFunctions(name, id->ns);
     } else if (auto d = Is<Dot>(span->call->callee)) {
         name = d->name;
-        ns = d->ns;
+        found = &MethodsOf(an, d);
         ufcs = true;
     } else {
         return false;
     }
-    auto &fns = ast.LookupFunctions(name, ns);
+    auto &fns = *found;
     auto b = fns.empty() ? LookupBuiltin(GlobalLeaf(name)) : nullptr;
     if (fns.empty() && !b) return false;
     auto activesig = 0;
@@ -1982,6 +1991,54 @@ inline bool CodeLenses(Workspace &ws, const Json &params, JsonOut &j) {
     }
     j.EndArray();
     return true;
+}
+
+// --- formatting --------------------------------------------------------------
+
+// `textDocument/formatting`: the open document's text as `goose format`
+// writes it, as the changes to its lines (LineChanges), none where it is
+// formatted. The editor's text is formatted, not the analysis's, so no
+// analysis is waited for. 0 for null: a document not open, or one that does
+// not parse, whose errors the diagnostics show already; 1 for the edits in
+// `j`; 2 for a result that failed the formatter's check, `error` saying why.
+inline int FormatDocument(Workspace &ws, const Json &params, JsonOut &j, string &error) {
+    auto td = params.Get("textDocument");
+    auto uri = JsonStr(td ? td->Get("uri") : nullptr);
+    auto it = ws.open.find(PathKey(PathOfUri(uri)));
+    if (uri.empty() || it == ws.open.end()) return 0;
+    auto &text = it->second.text;
+    auto res = Format(text, it->second.path);
+    if (!res.ok) {
+        if (res.internal.empty()) return 0;
+        error = cat("internal error formatting ", it->second.path, ": ", res.internal);
+        return 2;
+    }
+    TextIndex t;
+    t.Index(text);
+    // A byte-order mark the editor kept in the text is no line's.
+    auto bom = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? (size_t)3 : 0;
+    auto changes = LineChanges(string_view(text).substr(bom), res.text);
+    j.BeginArray();
+    auto place = [&](const char *key, size_t offset) {
+        auto [line, character] = t.PositionOf(offset);
+        j.Key(key);
+        j.BeginObject();
+        j.Member("line", (int64_t)line);
+        j.Member("character", (int64_t)character);
+        j.EndObject();
+    };
+    for (auto &c : changes) {
+        j.BeginObject();
+        j.Key("range");
+        j.BeginObject();
+        place("start", c.start ? c.start + bom : 0);
+        place("end", c.end + bom);
+        j.EndObject();
+        j.Member("newText", c.text);
+        j.EndObject();
+    }
+    j.EndArray();
+    return 1;
 }
 
 }  // namespace goose

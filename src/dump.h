@@ -184,6 +184,9 @@ inline bool EndsInBlock(const Node *n) {
         Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<FnDecl>(n) || Is<Block>(n) ||
         Is<InlineBlock>(n) || Is<ConstFor>(n)) return true;
     if (auto c = Is<Call>(n)) return c->trailing != nullptr;
+    // As Defer::Dump writes it: the block form, or its one statement.
+    if (auto d = Is<Defer>(n))
+        return d->body->stmts.size() != 1 || d->body->tail || EndsInBlock(d->body->stmts[0]);
     return false;
 }
 
@@ -559,6 +562,18 @@ inline void Break::Dump(string &s, int ind) const {
 
 inline void Continue::Dump(string &s, int) const { s += "continue"; }
 
+// The statement form where the body is one statement (a block of its own
+// stays the block form), the block form otherwise; both parse back to the
+// same body.
+inline void Defer::Dump(string &s, int ind) const {
+    s += "defer ";
+    if (body->stmts.size() == 1 && !body->tail && !Is<Block>(body->stmts[0])) {
+        body->stmts[0]->Dump(s, ind);
+        return;
+    }
+    body->Dump(s, ind);
+}
+
 // Optimizer output only (--specs); this form does not reparse.
 inline void InlineBlock::Dump(string &s, int ind) const {
     Append(s, "inline ", sf->qname, "#", spec->id, " ");
@@ -739,6 +754,52 @@ inline void Ast::Dump(string &s) const {
         s += "\n";
     }
     if (!openlib.empty()) s += "}\n";
+}
+
+// What --dump-docs prints: the documentation comments (Lexer::doc) of the
+// top-level declarations, in source order, and of their fields and
+// variants: a line naming each one that has one (`fn add`, `field
+// Point.x`, `variant Shape.Circle`), then the comment's lines, each less
+// its indentation and indented by four spaces.
+inline void DumpDocs(Ast &ast, string &s) {
+    auto doc = [&](const string &head, string_view text) {
+        if (text.empty()) return;
+        Append(s, head, "\n");
+        for (size_t pos = 0; pos <= text.size();) {
+            auto end = text.find('\n', pos);
+            if (end == string_view::npos) end = text.size();
+            auto line = text.substr(pos, end - pos);
+            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            auto first = line.find_first_not_of(" \t");
+            Append(s, "    ", first == string_view::npos ? string_view() : line.substr(first),
+                   "\n");
+            pos = end + 1;
+        }
+    };
+    auto fields = [&](const string &owner, const vector<Field> &fs) {
+        for (auto &f : fs)
+            if (!f.ispad) doc(cat("field ", owner, ".", f.name), f.doc);
+    };
+    for (auto d : ast.topdecls) {
+        if (auto fd = Is<FnDecl>(d)) {
+            doc(cat("fn ", fd->sf->qname), fd->sf->doc);
+        } else if (auto sd = Is<StructDecl>(d)) {
+            doc(cat("struct ", sd->st->qname), sd->st->doc);
+            fields(string(sd->st->qname), sd->st->fields);
+        } else if (auto ed = Is<EnumDecl>(d)) {
+            doc(cat("enum ", ed->en->qname), ed->en->doc);
+            for (auto &v : ed->en->variants) {
+                auto name = cat(ed->en->qname, ".", v.name);
+                doc(cat("variant ", name), v.doc);
+                fields(name, v.fields);
+            }
+        } else if (auto ad = Is<AliasDecl>(d)) {
+            doc(cat("type ", ad->al->qname), ad->al->doc);
+        } else if (auto vd = Is<VarDecl>(d)) {
+            doc(cat(vd->isconst ? "const " : vd->isvar ? "var " : "let ",
+                    ast.QualifiedName(vd->ns, vd->names[0])), vd->doc);
+        }
+    }
 }
 
 }  // namespace goose

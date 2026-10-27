@@ -43,6 +43,7 @@ namespace goose {
     F(T_IF,       "if")        F(T_ELSE,     "else")    F(T_WHILE,  "while") \
     F(T_FOR,      "for")       F(T_IN,       "in")      F(T_LOOP,   "loop") \
     F(T_BLOCK,    "block")     F(T_GUARD,    "guard")   F(T_MATCH,  "match") \
+    F(T_DEFER,    "defer") \
     F(T_RETURN,   "return")    F(T_BREAK,  "break") \
     F(T_CONTINUE, "continue")  F(T_AS,       "as") \
     F(T_TRUE,     "true")      F(T_FALSE,    "false")   F(T_NULLLIT, "null") \

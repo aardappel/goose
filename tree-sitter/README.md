@@ -35,8 +35,8 @@ The tree-sitter CLI is the version `package.json` pins. `build.py` installs it
 into `node_modules/` on first use, so Node.js is the only requirement.
 
 `--check` parses every `.goose` file in the repository. Each must parse, except
-the files that are malformed on purpose, which `MALFORMED` in `build.py` lists:
-the error and recovery tests, and the token soup in
+the files that are deliberately malformed, which are listed in `MALFORMED` in
+`build.py`: the error and recovery tests, and the token soup in
 `test/syntax/lexer_tokens.goose`. When the compiler's syntax changes, update
 `grammar.js` in the same change, and `--check` should still pass. To update
 the corpus's expected trees after a grammar change, run

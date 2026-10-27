@@ -296,9 +296,9 @@ BENCHMARKS = [
         summary=(
             "Goose stores child references inline in each 117-byte node and composes "
             "transforms directly through references. The Rust arena uses child indices "
-            "and a temporary transform to work within its borrowing rules. Goose compose "
-            "and recursive update are checkfree, protecting the matrix kernel and its "
-            "traversal against bounds-check regressions."),
+            "and a temporary transform to work within its borrowing rules. The Goose "
+            "compose and recursive update functions are checkfree, which protects the "
+            "matrix kernel and its traversal against bounds-check regressions."),
     ),
     dict(
         name="calc",
@@ -727,16 +727,16 @@ def main():
     W()
     W("## How to read this")
     W()
-    W("* Start with **Across all benchmarks**: it is the whole suite in one table. The")
-    W("  per-benchmark sections below it are the detail, each ending in a sentence or two")
-    W("  of what that row means.")
-    W("* One table per benchmark. Rows are implementations, the three time columns are the")
-    W("  data sizes -- the small one is meant to fit in cache, the large one is meant not")
-    W("  to -- and the last column is peak memory at the large size.")
+    W("* Start with **Across all benchmarks**: it shows the whole suite in one table. The")
+    W("  per-benchmark sections below it give the details, and each ends with a sentence or")
+    W("  two on what that row means.")
+    W("* There is one table per benchmark. Rows are implementations. The three time columns")
+    W("  are the data sizes (the small one is meant to fit in cache, the large one is meant")
+    W("  not to), and the last column is peak memory at the large size.")
     if len(active) > 1:
         W(f"* Every Goose and C++ time cell is `{' / '.join(active)}`: the same source built by")
-        W("  each of the toolchains in the table below, so a gap between those numbers is the")
-        W("  backend and nothing else. Goose is compiled to C once per size and every")
+        W("  each of the toolchains in the table below, so a gap between those numbers comes")
+        W("  from the backend alone. Goose is compiled to C once per size and every")
         W("  toolchain builds that same C. Rust rows carry a single time, because rustc is")
         W("  the only Rust backend here; it is LLVM, so it is the clang column they are most")
         W("  directly comparable with.")
@@ -746,9 +746,9 @@ def main():
     W(f"* Times are the best of {args.reps} whole-process wall clocks, after two discarded warm-up")
     W("  runs. Memory is the peak working set, the larger of the toolchains (they")
     W("  rarely differ).")
-    W("* Everything a program does -- generating its input, building its structure,")
-    W("  tearing it down -- is inside the measurement. Whole-process timing measures")
-    W("  these lifecycle costs together; input generation can dilute differences in")
+    W("* Everything a program does, including generating its input, building its")
+    W("  structure and tearing it down, is inside the measurement. Whole-process timing")
+    W("  measures these lifecycle costs together; input generation can dilute differences in")
     W("  the phase under study. Goose now has `os.clock_ns` for separate kernel")
     W("  experiments, but this suite retains its whole-process measurement policy.")
     W("* Every implementation of a benchmark, under every toolchain, prints the same")
@@ -768,7 +768,7 @@ def main():
     if jit_measured:
         W("| Goose JIT | `goose -O2 --jit`: TinyCC in the compiler's own process, no C file |")
     W("| Rust | " + (f"{rust_version}, `-O -C codegen-units=1`" if have_rust
-                     else "not installed -- rows pending") + " |")
+                     else "not installed (rows pending)") + " |")
     W()
     if baseline:
         W(f"Startup floor (an empty program, best of 5): "
@@ -854,12 +854,12 @@ def main():
         W("(`unique_ptr`, `vector<string>`, `unordered_map`, `std::variant`);")
         W("*expert* is the hand-built version (exactly-reserved arena with indices,")
         W("`string_view`, flat offsets, open addressing, CSR); *rust* is the best safe")
-        W("Rust row for that benchmark, whichever shape won. Above 1.00 means Goose")
-        W(f"wins. The suite figure is the geometric mean over the {len(per_bench)} benchmarks.")
+        W("Rust row for that benchmark, whichever implementation that is. Above 1.00 means")
+        W(f"Goose is ahead. The suite figure is the geometric mean over the {len(per_bench)} benchmarks.")
         W()
         if len(active) > 1:
-            W("The Rust number is the same in every toolchain column -- there is only one")
-            W("rustc -- so those columns differ only in which Goose build they are against.")
+            W("There is only one rustc build, so the Rust number is the same in every toolchain")
+            W("column; those columns differ only in which Goose build they compare against.")
             W()
         hdr, sep = "| benchmark |", "|---|"
         for tier in tiers:
@@ -987,16 +987,16 @@ def main():
     if jit_rows and aot_tc:
         W("## Goose: compiled vs JIT")
         W()
-        W(f"The same Goose source two ways: built by `{aot_tc}` from the generated C and")
-        W("run, against the compiler compiling and running it in one process through")
+        W(f"The same Goose source is run two ways: built by `{aot_tc}` from the generated C")
+        W("and then run, and compiled and run by the compiler in one process through")
         W("TinyCC. Each cell is `compiled / JIT` in ms.")
         W()
-        W("The JIT number covers the compiler's own front end and TinyCC compiling the")
-        W("program as well as running it, and TinyCC is a one-pass compiler with no")
-        W("optimizer, so this is not a measurement of Goose against another language --")
-        W("it is what the convenience of needing no C toolchain costs. The memory columns")
-        W("are the peak working set; the JIT one holds the compiler, the generated C and")
-        W("the program at once.")
+        W("The JIT number includes the compiler's own front end and TinyCC compiling the")
+        W("program, as well as running it, and TinyCC is a one-pass compiler with no")
+        W("optimizer. So this does not measure Goose against another language; it measures")
+        W("the cost of not needing a C toolchain. The memory columns are the peak working")
+        W("set; the JIT process holds the compiler, the generated C and the program at the")
+        W("same time.")
         W()
         hdr, sep = "| benchmark | implementation |", "|---|---|"
         for sz in active_sizes:
@@ -1028,8 +1028,8 @@ def main():
         if baseline and baseline.get("jit"):
             W(f"Floor for a JIT row (an empty program compiled and run, best of 5): "
               f"{tc.num(baseline['jit']['ms'])} ms / "
-              f"{tc.num(baseline['jit']['peak'] / (1 << 20))} MB. That is almost all")
-            W("compilation, and every JIT cell above carries it.")
+              f"{tc.num(baseline['jit']['peak'] / (1 << 20))} MB. That time is almost all")
+            W("compilation, and it is included in every JIT cell above.")
             W()
 
     # The numbers above are generated; what they mean is written by hand in

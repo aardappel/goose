@@ -477,34 +477,22 @@ long long __ashldi3(long long a, int b)
 #endif /* __i386__ */
 
 /* XXX: fix tcc's code generator to do this instead */
+/* From 2^63 up, convert half the value with the shifted-out bit kept as a
+   sticky bit, which rounds as the whole value does (63 bits are more than
+   either format holds), and double it exactly. Going through XFtype instead
+   rounds twice where long double is no wider than double (Windows). */
 float __floatundisf(unsigned long long a)
 {
-    DWunion uu; 
-    XFtype r;
-
-    uu.ll = a;
-    if (uu.s.high >= 0) {
-        return (float)uu.ll;
-    } else {
-        r = (XFtype)uu.ll;
-        r += 18446744073709551616.0;
-        return (float)r;
-    }
+    if ((long long)a >= 0)
+        return (float)(long long)a;
+    return (float)(long long)((a >> 1) | (a & 1)) * 2.0f;
 }
 
 double __floatundidf(unsigned long long a)
 {
-    DWunion uu; 
-    XFtype r;
-
-    uu.ll = a;
-    if (uu.s.high >= 0) {
-        return (double)uu.ll;
-    } else {
-        r = (XFtype)uu.ll;
-        r += 18446744073709551616.0;
-        return (double)r;
-    }
+    if ((long long)a >= 0)
+        return (double)(long long)a;
+    return (double)(long long)((a >> 1) | (a & 1)) * 2.0;
 }
 
 long double __floatundixf(unsigned long long a)

@@ -1,14 +1,13 @@
-// runtime-debug: std parse_flt reads up to 19 digits without an exponent
-// on a path of its own. reference_parse_flt below is the general algorithm
-// alone, counting only significant mantissa digits; the two must agree to
-// the bit, and on the flag, for every input: edge cases, then a few hundred
-// thousand generated ones biased to what the parser decides on (signs,
-// points, exponents, lengths around 18 and 19 digits, runs of 0 and 9, a
-// stray byte).
+// runtime-debug: std parse_flt rounds correctly, through several paths
+// (an exact multiply or divide, a whole part plus fraction sum, Eisel-Lemire,
+// 128-bit and big-integer rounding). reference_parse_flt below reads the
+// same text the plainest way and rounds it with float_text::round_exact
+// alone, exact big-integer comparisons stepping from an estimate a few ulps
+// off. The two must agree to the bit, and on the flag, for every input:
+// edge cases, then a few hundred thousand generated ones biased to what the
+// parser decides on (signs, points, exponents, lengths around 16 to 19
+// digits, runs of 0 and 9, a stray byte).
 import std;
-
-let reference_pow10: f64[23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
-                                1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
 
 fn reference_parse_flt(s: u8[:]) -> f64, bool {
     var i = 0;
@@ -17,29 +16,25 @@ fn reference_parse_flt(s: u8[:]) -> f64, bool {
         neg = s[0] == '-';
         i = 1;
     }
-    var mant: u64 = 0;
-    var mdigits = 0;
-    var exp10 = 0;
+    let start = i;
     var digits = 0;
+    var frac_digits = 0;
     while i < s.len && s[i] >= '0' && s[i] <= '9' {
-        if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); if mant != 0 { mdigits += 1; } }
-        else { exp10 += 1; }
         digits += 1;
         i += 1;
     }
     if i < s.len && s[i] == '.' {
         i += 1;
         while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            if mdigits < 19 {
-                mant = mant * 10 + (s[i] - '0');
-                if mant != 0 { mdigits += 1; }
-                exp10 -= 1;
-            }
             digits += 1;
+            frac_digits += 1;
             i += 1;
         }
     }
     if digits == 0 { return 0.0, false; }
+    let end = i;
+    // The value is D * 10^e10, D the digits in s[start..end].
+    var e10 = -frac_digits;
     if i < s.len && (s[i] == 'e' || s[i] == 'E') {
         i += 1;
         var eneg = false;
@@ -55,14 +50,35 @@ fn reference_parse_flt(s: u8[:]) -> f64, bool {
             i += 1;
         }
         if edigits == 0 { return 0.0, false; }
-        exp10 += if eneg { -e } else { e };
+        e10 += if eneg { -e } else { e };
     }
-    var v: f64 = mant;
-    var e = exp10;
-    while e > 22 { v *= 1e22; e -= 22; }
-    while e < -22 { v /= 1e22; e += 22; }
-    if e > 0 { v *= reference_pow10[e]; } else if e < 0 { v /= reference_pow10[-e]; }
     if i != s.len { return 0.0, false; }
+    // The first 19 significant digits, scaled by the rest and e10, are the
+    // estimate. D * 10^e10 is below 10^(sig + e10) and at least a tenth of
+    // that, which settles the values far beyond the doubles' range.
+    var mant: u64 = 0;
+    var kept = 0;
+    var sig = 0;
+    for c in s[start..end] {
+        if c == '.' || (sig == 0 && c == '0') { continue; }
+        sig += 1;
+        if kept < 19 {
+            mant = mant * 10 + (c - '0');
+            kept += 1;
+        }
+    }
+    var v = 0.0;
+    if sig > 0 && sig + e10 > 310 {
+        v = 1.0 / 0.0;
+    } else if sig > 0 && sig + e10 >= -324 {
+        var est: f64 = mant;
+        var e = e10 + sig - kept;
+        while e > 22 { est *= 1e22; e -= 22; }
+        while e < -22 { est /= 1e22; e += 22; }
+        while e > 0 { est *= 10.0; e -= 1; }
+        while e < 0 { est /= 10.0; e += 1; }
+        v = float_text::round_exact(s, start, end, e10, est);
+    }
     if neg { v = -v; }
     return v, true;
 }
@@ -142,7 +158,13 @@ fn main() {
                                   "9223372036854775807", "9999999999999999999",
                                   "18446744073709551615", "1234567890123456789012345",
                                   "0.1234567890123456789", "1e22", "1e23", "2.5e-3", "1e400",
-                                  "-1e400", "1e-400", "12a", " 1", "1 ", "1.2.3", "--1", "0x10"];
+                                  "-1e400", "1e-400", "12a", " 1", "1 ", "1.2.3", "--1", "0x10",
+                                  "98.91739066979865", "110.35759859866259", "114.80299819254557",
+                                  "103.56484075001073", "9223372036854775808", "9539625884325383047",
+                                  "1.7976931348623157e308", "1.7976931348623159e308",
+                                  "2.2250738585072011e-308", "4.9406564584124654e-324",
+                                  "2.4703282292062327e-324", "2.4703282292062328e-324",
+                                  "+000123.4560000", "9007199254740993.00000000000000000001"];
     var bad = 0;
     for c in cases {
         let v, ok = parse_flt(c);

@@ -1,9 +1,9 @@
 // error: storing a reference rooted at mine, which does not outlive the destination
-// A real return the cycle's scan did not predict (§7.8), checked before any
-// back edge has used the prediction, joins it: the scan resolves both calls
-// of `pick` to the first nested function of that name, a global's element,
-// but the second is `mine`'s, so the back edge after it is rooted at `mine`
-// and may not be stored in a global.
+// A back edge's result has every root the cycle's returns give (§7.8): the
+// first `pick` returns a global's element and the second, returned before
+// the back edge, an element of `mine`, which dies with `walk`; the last
+// return hands on the back edge's own result. So that result may not be kept
+// in the global kept.
 struct Cell { v: i64 }
 var cells: Cell[>..] = [];
 var kept: Cell&? = null;

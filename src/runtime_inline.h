@@ -37,6 +37,16 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
      GS_RUNTIME_VERSION names gs_rt_start after the runtime's text, so a
      program linked with another compiler's runtime fails to link. */
 
+/* SRW locks, condition variables, and GetTickCount64 require Windows Vista.
+   Set the target before any system header can supply an older default. */
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#elif _WIN32_WINNT < 0x0600
+#error "Goose requires Windows Vista or later (_WIN32_WINNT >= 0x0600)"
+#endif
+#endif
+
 /* The OS layer (runtime_os.h) opens files on Windows with _wfopen, which the
    Microsoft CRT deprecates in favour of its own _s variant. */
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -190,13 +200,13 @@ GS_API GS_NORETURN void gs_panic(const char *msg);
 GS_API GS_NORETURN void gs_abort(int err, const char *file, int line);
 /* The program's own abort(msg) (§9.3): the message is Goose bytes, not a C
    string, so it goes out with an explicit length. */
-GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+)GSRT"
+R"GSRT(GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
                                      int line);
 GS_API GS_NORETURN void gs_exit(int64_t code);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
-)GSRT"
-R"GSRT(GS_API GS_NORETURN void gs_divovf(const char *file, int line);
+GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line);
@@ -234,13 +244,45 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    instruction-set level, the baseline under the function's name, and the
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
-   BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
-   are built by clang on x86-64, through its target attribute and inline
-   assembly for cpuid; the contraction pragma above keeps their float
-   results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
-   the versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers
-   the level; nothing raises it. */
+   FMA, BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by
+   one), 2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The
+   versions are built by clang on x86-64, through its target attribute and
+   inline assembly for cpuid; the contraction pragma above keeps their float
+   results the baseline's, though both have FMA: only math's mul_add uses
+   it (GS_MUL_ADD_MODE, below). Elsewhere the versions are left out, and so
+   is the choice. -DGS_SIMD=0 or 1 lowers the level; nothing raises it. */
+/* Whole-vector elementwise arithmetic (spec §6.1). Where the C compiler has
+   GCC's vector extensions, an elementwise operation on a struct or fixed
+   array of 2 to 16 floats of one width, 16, 32 or 64 bytes with no padding,
+   is one operation on a vector type of the same layout. Lane by lane it
+   computes what the members do. Elsewhere (MSVC, TinyCC, or -DGS_VEC=0) the
+   operation stays member by member.
+
+   The vector types are aligned(1), since such a value may sit at any
+   address (structs are packed), and may_alias, since the generated code
+   reads and writes the value's memory through them. It uses them only
+   inside expressions: GS_VLD, GS_VST and vector literals, never as a local
+   (the generated code gathers declarations at the top of a function,
+   outside the GS_VEC test) and never as a parameter or result, so code
+   built for one instruction set never hands a vector to code built for
+   another, which the x86-64 ABI forbids for wide vectors. */
+#if !defined(GS_VEC) && (defined(__clang__) || defined(__GNUC__)) && !defined(__TINYC__)
+#define GS_VEC 1
+#endif
+#if GS_VEC
+typedef double gs_vf64_2 __attribute__((vector_size(16), aligned(1), may_alias));
+typedef double gs_vf64_4 __attribute__((vector_size(32), aligned(1), may_alias));
+typedef double gs_vf64_8 __attribute__((vector_size(64), aligned(1), may_alias));
+typedef float gs_vf32_4 __attribute__((vector_size(16), aligned(1), may_alias));
+typedef float gs_vf32_8 __attribute__((vector_size(32), aligned(1), may_alias));
+typedef float gs_vf32_16 __attribute__((vector_size(64), aligned(1), may_alias));
+#define GS_VLD(V, p) (*(const V *)(const void *)(p))
+#define GS_VST(V, p, x) ((void)(*(V *)(void *)(p) = (x)))
+#else
+#undef GS_VEC
+#define GS_VEC 0
+#endif
+
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
@@ -250,9 +292,9 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_SIMD 0
 #endif
 #if GS_SIMD >= 1
-#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,fma,bmi,bmi2,lzcnt,popcnt")))
 #define GS_SIMD_TARGET2 \
-    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,fma,bmi,bmi2,lzcnt,popcnt")))
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -265,8 +307,10 @@ static inline int gs_simd_detect(void) {
     gs_cpuid(0, r);
     if (r[0] < 7) return 0;
     gs_cpuid(1, r);
-    /* OSXSAVE, AVX, POPCNT. */
-    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    /* OSXSAVE, AVX, POPCNT, FMA. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23 | 1u << 12)) !=
+        (1u << 27 | 1u << 28 | 1u << 23 | 1u << 12))
+        return 0;
     __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
     (void)xhi;
     if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
@@ -299,7 +343,27 @@ static inline int gs_simd_level(void) {
 }
 #endif
 
-/* The generated code's memcpy and memset of zeros. Most move or clear the
+/* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
+   is built for FMA and twice where it is not, so its results are the
+   implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
+   the target as a whole: fused on arm64 and on x86-64 built for AVX2 or
+   past it (-march=x86-64-v3, clang-cl's /arch:AVX2), separate everywhere
+   else, under TinyCC and under MSVC. MSVC compiles fma() to a call into the
+   C library, even with /arch:AVX2, which also keeps a loop around it from
+   vectorizing: a matrix multiply ran 2.7x slower fused than separate. A
+   simd function's AVX2 and AVX-512 versions have FMA whatever the target,
+   so the compiler sets GS_MUL_ADD_MODE to fused around them, and back to
+   the base after (EmitSimdVersions). */
+#if !defined(__TINYC__) && !(defined(_MSC_VER) && !defined(__clang__)) && \
+    (defined(__FMA__) || defined(__aarch64__) || defined(_M_ARM64))
+#define GS_MUL_ADD_BASE fused
+#else
+#define GS_MUL_ADD_BASE separate
+#endif
+#define GS_MUL_ADD_MODE GS_MUL_ADD_BASE
+
+)GSRT"
+R"GSRT(/* The generated code's memcpy and memset of zeros. Most move or clear the
    1 to 32 bytes of a field, an element or a reference, a constant size the
    optimizing backends turn into a few moves. TinyCC calls the C library for
    every memcpy and memset, so under it a constant size of up to 32 bytes
@@ -356,8 +420,7 @@ static uint64_t gs_bytemask(int64_t k) {
 }
 
 /* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
-)GSRT"
-R"GSRT(   pointer is NULL where the slice was zero-filled (default<T>(), a default
+   pointer is NULL where the slice was zero-filled (default<T>(), a default
    element), and C leaves all three undefined on a null pointer even for
    zero bytes. A copy of up to 16 bytes loads both overlapping halves before
    it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
@@ -455,7 +518,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
     ((T)(b) ? (T)((T)(a) % (T)(b)) : (gs_divfail((f), (l)), (T)0))
 #define GS_DIVS(T, a, b, f, l) \
     ((T)(b) ? (T)((int64_t)(T)(a) / (int64_t)(T)(b)) : (gs_divfail((f), (l)), (T)0))
-#define GS_MODS(T, t, a, b, f, l) \
+)GSRT"
+R"GSRT(#define GS_MODS(T, t, a, b, f, l) \
     ((T)(b) == 0 ? (gs_divfail((f), (l)), (T)0) \
      : (T)(((t) = (int64_t)(T)(a) % (int64_t)(T)(b)) < 0 \
                ? (t) + ((T)(b) < 0 ? -(int64_t)(T)(b) : (int64_t)(T)(b)) : (t)))
@@ -523,8 +587,7 @@ static T gs_neg_##SFX(T a, const char *file, int line) { \
     if (r < MIN || r > MAX) gs_ovf_neg(a, #SFX, file, line); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
-)GSRT"
-R"GSRT(    return (T)((uint64_t)a << (n & (BITS - 1))); } \
+    return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
     return (T)((int64_t)a >> (n & (BITS - 1))); }
 
@@ -620,7 +683,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
 
 #define gs_add_i64(a, b, f, l) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
-#define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
+)GSRT"
+R"GSRT(#define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
 #define gs_mul_i64(a, b, f, l) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_neg_i64(a, f, l)    ((int64_t)(0u - (uint64_t)(a)))
 #define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
@@ -711,8 +775,7 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
     return q >> more;
 #else
     (void)magic;
-)GSRT"
-R"GSRT(    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
+    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
 #endif
 }
 
@@ -824,7 +887,8 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
    runtime's (runtime_impl.h). */
 
 typedef struct {
-    uint8_t *top;
+)GSRT"
+R"GSRT(    uint8_t *top;
 } gs_stack;
 
 /* The program defines what goose.h gives C compiled on its own (gs_stack
@@ -887,8 +951,7 @@ GS_API int64_t gs_hardware_threads(void);
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
                                const void *args, int64_t argsize, int contained);
-)GSRT"
-R"GSRT(/* Whether the worker returned rather than aborted, once it has ended. Where
+/* Whether the worker returned rather than aborted, once it has ended. Where
    `msg` is not NULL, the first such wait for a worker that aborted takes its
    message: `msg` and `len` are set to it, which the caller frees with
    gs_free_msg, or to NULL and no bytes. */
@@ -1005,7 +1068,8 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
    freelist: for alloc_slice, and for a slice realloc_slice moves. */
 GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                               int64_t cnt);
-/* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
+)GSRT"
+R"GSRT(/* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
    end the array, to cnt elements: where it starts now. The caller copies
    the elements where that moved. */
 GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
@@ -1083,8 +1147,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
-)GSRT"
-R"GSRT(    uint64_t v = 0;
+    uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
     for (;;) {
@@ -1363,15 +1426,11 @@ typedef struct {
     uint8_t *base;
     size_t usable, size;    /* size: with the guard gap */
     gs_stack *stack;       /* Stable descriptor of the owning data stack. */
-    /* Windows and macOS: one past the highest page the fault handler has
+    /* Windows: one past the highest page the fault handler has
        committed, so gs_trim_memory releases only what was ever committed
-       rather than walking the whole reservation. Unused on Linux, which
-       commits on touch with no fault to note it. */
+       rather than walking the whole reservation. Unused on POSIX, where
+       the kernel supplies pages on touch. */
     uint8_t *committed;
-    /* macOS: pages gs_trim_memory marked reusable that growth has not
-       committed again yet, or both NULL. The fault handler declares them
-       reused (MADV_FREE_REUSE) as it reopens them. */
-    uint8_t *reuse_lo, *reuse_hi;
 } gs_region;
 static GS_TLS gs_region *gs_regions;
 static GS_TLS volatile long gs_nregions;
@@ -1559,8 +1618,7 @@ static void gs_release_region(const gs_region *r) {
         gs_panic("cannot release data stack address space");
 }
 
-)GSRT"
-R"GSRT(/* Whether this is the first call of gs_end; and where the later ones wait. */
+/* Whether this is the first call of gs_end; and where the later ones wait. */
 static int gs_end_first(void) {
     static volatile LONG ended;
     return !InterlockedExchange(&ended, 1);
@@ -1572,7 +1630,8 @@ static GS_NORETURN void gs_park(void) {
 #else  /* posix */
 
 #include <sys/mman.h>
-#include <unistd.h>
+)GSRT"
+R"GSRT(#include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
 
@@ -1589,42 +1648,8 @@ static GS_TLS void *gs_sigstack;
 /* What the fault handler replaced, for the faults that are not its own. */
 static struct sigaction gs_prev_segv, gs_prev_bus;
 
-/* For gs_trim_memory, which discards whole pages only, and the commit. */
+/* For gs_trim_memory, which discards whole pages only. */
 static size_t gs_page_size = 0;
-
-/* macOS commits as Windows does: a region's usable part starts PROT_NONE
-   (gs_os_reserve) and the fault handler opens it a chunk at a time. XNU's
-   madvise visits every page of its range, populated or not, so without a
-   commit mark a trim would cost time in proportion to the reservation; and
-   pages trimmed as reusable have to be declared reused when growth takes
-   them back, or the footprint goes on leaving them out. Opening them
-   through the handler is what gives growth that point. Runtime C only ever
-   writes a stack from user mode (memcpy, gs_bld_append), as Windows
-   already requires, so a system call never meets an unopened page. */
-#if defined(__APPLE__) && defined(MADV_FREE_REUSABLE) && defined(MADV_FREE_REUSE)
-#define GS_POSIX_COMMIT_ON_FAULT 1
-#define GS_COMMIT_CHUNK (1u << 20)
-
-/* Opens the chunk at hit (clamped to the region), declaring any of it
-   gs_trim_memory left reusable reused; whether it could. */
-static int gs_commit_chunk(gs_region *r, uint8_t *hit) {
-    uint8_t *page = (uint8_t *)((uintptr_t)hit & ~(uintptr_t)(gs_page_size - 1));
-    size_t n = GS_COMMIT_CHUNK;
-    if (page + n > r->base + r->usable) n = (size_t)(r->base + r->usable - page);
-    /* Writable first: XNU refuses reuse advice on a page that is not. */
-    if (mprotect(page, n, PROT_READ | PROT_WRITE)) return 0;
-    if (page < r->reuse_hi && page + n > r->reuse_lo) {
-        uint8_t *lo = page > r->reuse_lo ? page : r->reuse_lo;
-        uint8_t *hi = page + n < r->reuse_hi ? page + n : r->reuse_hi;
-        /* Only the accounting depends on it: the pages are usable either way. */
-        madvise(lo, (size_t)(hi - lo), MADV_FREE_REUSE);
-        if (lo == r->reuse_lo) r->reuse_lo = hi;
-        if (r->reuse_lo >= r->reuse_hi) r->reuse_lo = r->reuse_hi = NULL;
-    }
-    if (page + n > r->committed) r->committed = page + n;
-    return 1;
-}
-#endif
 
 static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     (void)ctx;
@@ -1632,11 +1657,6 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     for (long i = 0; i < gs_nregions; i++) {
         gs_region *r = &gs_regions[i];
         if ((uintptr_t)hit - (uintptr_t)r->base < r->size) {
-            /* Within the usable part: open another chunk and resume. Within
-               the gap, or where it cannot be opened: a data stack overran. */
-#ifdef GS_POSIX_COMMIT_ON_FAULT
-            if (hit < r->base + r->usable && gs_commit_chunk(r, hit)) return;
-#endif
             char msg[GS_OVERFLOW_TEXT];
             ssize_t w = write(2, msg, gs_overflow_text(msg, r));
             (void)w;
@@ -1735,15 +1755,8 @@ static void gs_native_stack_free(void) {
 /* Address space for one region, or NULL where the platform has none left
    to give: its address space or an address-space limit exhausted, or
    strict overcommit accounting, which counts even a MAP_NORESERVE mapping.
-   Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. On
-   macOS all of it starts PROT_NONE, and the fault handler opens the usable
-   part as the stack grows (GS_POSIX_COMMIT_ON_FAULT). */
+   Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
 static uint8_t *gs_os_reserve(size_t usable, size_t size) {
-#ifdef GS_POSIX_COMMIT_ON_FAULT
-    void *p = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    (void)usable;
-#else
     void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
                    #ifdef MAP_NORESERVE
@@ -1755,10 +1768,8 @@ static uint8_t *gs_os_reserve(size_t usable, size_t size) {
         munmap(p, size);
         gs_panic("cannot protect data stack guard gap");
     }
-#endif
     /* Most stacks hold a few bytes, which a transparent huge page at the
-)GSRT"
-R"GSRT(       start would commit 2 MB for. */
+       start would commit 2 MB for. */
     #ifdef MADV_NOHUGEPAGE
         madvise(p, usable < (2u << 20) ? usable : (2u << 20), MADV_NOHUGEPAGE);
     #endif
@@ -1823,7 +1834,6 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     gs_regions[i].size = usable + gs_region_gap;
     gs_regions[i].stack = stack;
     gs_regions[i].committed = p;
-    gs_regions[i].reuse_lo = gs_regions[i].reuse_hi = NULL;
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
     return p;
 }
@@ -1835,12 +1845,15 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
    the synchronized top and remain intact. Each worker has its own registry.
 
    Eager on purpose: Windows decommits, which returns the commit charge as
-   well as the physical pages (DiscardVirtualMemory and MEM_RESET keep the
+)GSRT"
+R"GSRT(   well as the physical pages (DiscardVirtualMemory and MEM_RESET keep the
    charge), and Linux's MADV_DONTNEED drops the pages from RSS at once,
    where MADV_FREE leaves them counted until the kernel is short of memory.
-   On macOS MADV_DONTNEED reclaims nothing reliably; MADV_FREE_REUSABLE is
-   what makes the footprint drop there, paired with MADV_FREE_REUSE when
-   the fault handler reopens the pages (gs_commit_chunk).
+   On macOS MADV_DONTNEED reclaims nothing reliably, so replace the unused
+   suffix with fresh anonymous memory. MAP_FIXED replaces it atomically,
+   without making the address range available to another thread. Trimming
+   covers the full unused reservation; ordinary growth needs no tracking
+   or signal handler, and neither does growth into the replacement mapping.
 
    Only generated code may call this, through os.trim_memory, whose callers
    publish their cached tops first (SFunction::readsalltops). C reached
@@ -1858,7 +1871,7 @@ GS_API uint8_t gs_trim_memory(void) {
             gs_panic("data stack top outside its region in trim_memory");
         uintptr_t start = (top + page - 1) / page * page;
         uintptr_t end = (base + r->usable) / page * page;
-#if defined(_WIN32) || defined(GS_POSIX_COMMIT_ON_FAULT)
+#ifdef _WIN32
         /* Nothing above the commit mark was ever committed (base is
            allocation-aligned and the mark page-aligned). */
         if ((uintptr_t)r->committed < end) end = (uintptr_t)r->committed;
@@ -1871,31 +1884,10 @@ GS_API uint8_t gs_trim_memory(void) {
             r->committed = (uint8_t *)start;
         else
             ok = 0;
-#elif defined(GS_POSIX_COMMIT_ON_FAULT)
-        /* Reusable while writable, which XNU requires; then closed, so that
-           growth faults and gs_commit_chunk declares them reused. A growth
-           that skipped pages can leave a closed stretch below the mark, so
-           the range is opened first (which commits nothing). */
-        if (mprotect((void *)start, len, PROT_READ | PROT_WRITE) ||
-            madvise((void *)start, len, MADV_FREE_REUSABLE)) {
+#elif defined(__APPLE__)
+        if (mmap((void *)start, len, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
             ok = 0;
-            continue;
-        }
-        if (mprotect((void *)start, len, PROT_NONE)) {
-            /* Still open, so nothing would declare them reused: undo. */
-            madvise((void *)start, len, MADV_FREE_REUSE);
-            ok = 0;
-            continue;
-        }
-        r->committed = (uint8_t *)start;
-        if (!r->reuse_hi) {
-            r->reuse_lo = (uint8_t *)start;
-            r->reuse_hi = (uint8_t *)end;
-        } else {
-            /* A cover of both: declaring a page reused twice is harmless. */
-            if ((uint8_t *)start < r->reuse_lo) r->reuse_lo = (uint8_t *)start;
-            if ((uint8_t *)end > r->reuse_hi) r->reuse_hi = (uint8_t *)end;
-        }
 #else
         /* Linux walks only the page tables that were ever populated, so the
            untouched rest of the reservation costs it little. */
@@ -1935,8 +1927,7 @@ typedef struct { int64_t root, height, chain; } gs_sphead;
 
 /* A freelist, and a path down it: the node and entry taken at each level,
    the leaf's last. */
-)GSRT"
-R"GSRT(typedef struct {
+typedef struct {
     uint8_t *base;
     int64_t *n;
     uint8_t **top;
@@ -2047,7 +2038,8 @@ static void gs_sp_fix(gs_sppath *p, int64_t l, int64_t was, int64_t now) {
 
 /* Descends to the leaf holding the last span that starts at or before idx,
    and returns its position there, or -1 where no span does. */
-static int64_t gs_sp_find(gs_sppath *p, int64_t idx) {
+)GSRT"
+R"GSRT(static int64_t gs_sp_find(gs_sppath *p, int64_t idx) {
     int64_t l, i = GS_SPHEAD(p)->root, k;
     gs_spleaf *lf;
     p->h = GS_SPHEAD(p)->height;
@@ -2178,8 +2170,7 @@ static void gs_sp_delete(gs_sppath *p, int64_t k) {
            every root has two or more. */
         gs_sp_dropnode(p, p->node[l]);
     }
-)GSRT"
-R"GSRT(    while (GS_SPHEAD(p)->height > 0 && GS_SPINNER(p, GS_SPHEAD(p)->root)->n == 1) {
+    while (GS_SPHEAD(p)->height > 0 && GS_SPINNER(p, GS_SPHEAD(p)->root)->n == 1) {
         int64_t r = GS_SPHEAD(p)->root;
         GS_SPHEAD(p)->root = GS_SPINNER(p, r)->child[0];
         GS_SPHEAD(p)->height--;
@@ -2279,7 +2270,8 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
         if (c == mx) {
             const int64_t *v = l == p.h ? lf->cnt : GS_SPINNER(&p, p.node[l])->max;
             int64_t w = l == p.h ? lf->n : GS_SPINNER(&p, p.node[l])->n;
-            nm = before[l] > now ? before[l] : now;
+)GSRT"
+R"GSRT(            nm = before[l] > now ? before[l] : now;
             for (; j < w && nm < c; j++)
                 if (v[j] > nm) nm = v[j];
         }
@@ -2402,8 +2394,7 @@ GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t
     if (s.nl && s.nl->idx[s.nk] == end &&
         (s.nl->cnt[s.nk] >= cnt - ol || end + s.nl->cnt[s.nk] == len)) {
         gs_sp_take(s.np, s.nk, cnt - ol);
-)GSRT"
-R"GSRT(        return idx;
+        return idx;
     }
     gs_sp_release(&p, &s, idx, ol);
     return gs_spans_alloc(base, n, top, len, cnt);
@@ -2501,7 +2492,8 @@ static void gs_scan_init(void) {
 
 /* A set's block test, held in registers: the bytes or range it compares
    with and all ones where the result is complemented, or its tables. */
-typedef struct { __m128i a, b, c, flip; } gs_bsm;
+)GSRT"
+R"GSRT(typedef struct { __m128i a, b, c, flip; } gs_bsm;
 
 static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
     if (tables) {
@@ -2580,8 +2572,7 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
 #define GS_TEST_A(x) gs_bsm_test(&ma, ka, x)
 #define GS_TEST_B(x) gs_bsm_test(&mb, kb, x)
 #define GS_TABLES_S(x) gs_bsm_tables(&ms, x)
-)GSRT"
-R"GSRT(#define GS_TABLES_A(x) gs_bsm_tables(&ma, x)
+#define GS_TABLES_A(x) gs_bsm_tables(&ma, x)
 #define GS_TABLES_B(x) gs_bsm_tables(&mb, x)
 
 static GS_INLINE int64_t gs_scan_any_k(const uint8_t *p, int64_t n, const gs_byteset *s, int ks) {
@@ -2671,7 +2662,8 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     gs_argc = argc;
     gs_argv = argv;
     /* A region's usable part is whole pages: the guard gap behind it has to
-       start on a page to be protected, and on Windows a stack would run on
+)GSRT"
+R"GSRT(       start on a page to be protected, and on Windows a stack would run on
        unseen through the rest of a part page committed at its end, past the
        GS_STACK_RESERVE bytes the compiler's checks go by. */
     gs_region_page = gs_os_page_size();
@@ -2773,8 +2765,7 @@ GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
    rounded spelling of that length, below it, does not read back.
 
    The numbers are naturals in 32-bit limbs, least significant first. The
-)GSRT"
-R"GSRT(   denominator s stays below 2^1079 (ten times 2^1075, for the smallest
+   denominator s stays below 2^1079 (ten times 2^1075, for the smallest
    doubles), and the others below eleven times s. */
 typedef struct { int n; uint32_t d[36]; } gs_big;
 
@@ -2874,7 +2865,8 @@ static int gs_float_digits(uint64_t f, int e, int bits, int emin, char *dig, int
     /* Each digit d leaves the remainder r: stop where the digits so far
        followed by d (r within *mm) or by d + 1 (r + mp past s) read back. */
     for (;;) {
-        int d = 0, low, high;
+)GSRT"
+R"GSRT(        int d = 0, low, high;
         gs_big_mul(&r, 10);
         gs_big_mul(&mp, 10);
         if (asym) gs_big_mul(&mlo, 10);
@@ -2998,8 +2990,7 @@ GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     return (int64_t)(d - dst);
 }
 
-)GSRT"
-R"GSRT(/* stdout is unbuffered (gs_rt_start): each print is this one write. */
+/* stdout is unbuffered (gs_rt_start): each print is this one write. */
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 )GSRT"
     ) },
@@ -3508,6 +3499,39 @@ static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
+/* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
+   where the code is built for FMA, as two roundings elsewhere
+   (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the
+   mode where the call is written: a simd function's AVX2 and AVX-512
+   versions fuse whatever the target. A function value is resolved at
+   compile time, so its calls name the macro too. The function of the same
+   name, in the target's mode, is only for C that names it without the
+   macro. The fused form is inlined into its caller, so that it is built
+   with the caller's FMA. */
+static inline double gs_mul_add_separate(double x, double y, double z) { return x * y + z; }
+static inline float gs_mul_addf_separate(float x, float y, float z) { return x * y + z; }
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+static inline __attribute__((always_inline)) double gs_mul_add_fused(double x, double y, double z) {
+    return __builtin_fma(x, y, z);
+}
+static inline __attribute__((always_inline)) float gs_mul_addf_fused(float x, float y, float z) {
+    return __builtin_fmaf(x, y, z);
+}
+#else
+static inline double gs_mul_add_fused(double x, double y, double z) { return fma(x, y, z); }
+static inline float gs_mul_addf_fused(float x, float y, float z) { return fmaf(x, y, z); }
+#endif
+#define GS_MUL_ADD_CAT2(a, b) a##b
+#define GS_MUL_ADD_CAT(a, b) GS_MUL_ADD_CAT2(a, b)
+static double gs_mul_add(double x, double y, double z) {
+    return GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_BASE)(x, y, z);
+}
+static float gs_mul_addf(float x, float y, float z) {
+    return GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_BASE)(x, y, z);
+}
+#define gs_mul_add(x, y, z) GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_MODE)(x, y, z)
+#define gs_mul_addf(x, y, z) GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_MODE)(x, y, z)
+
 /* math's other libm functions (stdlib/math.goose). C has them set errno on a
    domain or range error, so a C compiler takes each call for a write to
    memory: a loop around one loads again after it whatever it had hoisted
@@ -3591,7 +3615,8 @@ static int64_t gs_clz(uint64_t x) {
         x <<= 1;
         n++;
     }
-    return n;
+)GSRT"
+R"GSRT(    return n;
 #endif
 }
 static int64_t gs_ctz(uint64_t x) {
@@ -3638,8 +3663,7 @@ GS_API uint64_t gs_os_random_u64(void);
 /* os.trim_memory: discards unused complete pages of this thread program's
    data stacks. Defined with the region registry it walks (runtime_impl.h),
    but declared here like the other os primitives, so that no prototype is
-)GSRT"
-R"GSRT(   emitted for it. For generated code only, whose callers write back their
+   emitted for it. For generated code only, whose callers write back their
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);

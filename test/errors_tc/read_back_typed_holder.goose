@@ -1,4 +1,4 @@
-// error: storing a reference rooted at c, which does not outlive the destination (§9.2)
+// error: storing a reference rooted at c, which does not outlive the destination
 // A reference to a struct holding an i64 by value, stored beside them, may
 // be where an i64 reference read back out of the holder points (§9.5).
 struct Cell { v: i64 }

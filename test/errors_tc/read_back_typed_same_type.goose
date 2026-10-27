@@ -1,4 +1,4 @@
-// error: storing a reference rooted at text, which does not outlive the destination (§9.2)
+// error: storing a reference rooted at text, which does not outlive the destination
 // A reference read back out of a local holder may point at anything stored
 // there whose storage can hold its pointee: here a u8 of the shorter-lived
 // text the holder also views (§9.5).

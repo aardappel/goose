@@ -1,4 +1,6 @@
-// error: cannot clear
+// error: cannot clear data while holders is still used: a reference into it was stored there
+// The store through the slice parameter's element lands in holders, which
+// the clear then finds (§5.1).
 struct Holder { p: i64? }
 fn save(xs: Holder[:], p: i64&) { xs[0].p .= p; }
 fn main() {

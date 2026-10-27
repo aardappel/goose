@@ -1434,7 +1434,9 @@ fn main() {
     reset_game();
 
     require(gfx::open("Goose: Mini Doom / Freedoom E1M1", 960, 600, gfx::WINDOW_RESIZABLE), gfx::error());
+    defer gfx::close();
     load_sounds(quiet || frames > 0);
+    defer if sound_ready { audio::close(); }   // Before the window: defers run latest first.
     let atlas = gfx::texture2d(ATLAS_W, ATLAS_H);
     require(atlas.id != 0 && gfx::update_texture(atlas, atlas_pixels), gfx::error());
     let sampler = gfx::sampler(gfx::NEAREST, gfx::CLAMP);
@@ -1548,6 +1550,4 @@ fn main() {
         require(saved, gfx::error());
         print("drew ", drawn, " frames; saved mini_doom.png: ", saved);
     }
-    if sound_ready { audio::close(); }
-    gfx::close();
 }

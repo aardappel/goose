@@ -85,6 +85,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
     if (!expansionerror.empty()) tc.Error(this, string(expansionerror));
     if (auto vd = tc.LookupVar(name, ns, this)) {
         vdef = vd;
+        if (tc.deferbodies) tc.NoteDeferMention(vd);
         tc.RequireAssigned(vd, this);
         Val v;
         auto t = vd->narrowed ? vd->narrowed : vd->type;
@@ -625,6 +626,11 @@ inline Val Break::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val Continue::Check(TypeCheck &tc, TypeExpr *) {
     tc.CheckContinue(this);
+    return tc.VoidVal();
+}
+
+inline Val Defer::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckDefer(this);
     return tc.VoidVal();
 }
 

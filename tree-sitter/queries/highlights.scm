@@ -72,6 +72,7 @@
   "reusable"
   "namespace"
   "block"
+  "defer"
   "fields"
   "variants"
   "types"

@@ -386,6 +386,7 @@ inline string ForLoop::CgX(CodeGen &cg) { cg.Fail(line, "internal: ForLoop as va
 inline string Return::CgX(CodeGen &cg) { cg.Fail(line, "internal: Return as value"); }
 inline string Break::CgX(CodeGen &cg) { cg.Fail(line, "internal: Break as value"); }
 inline string Continue::CgX(CodeGen &cg) { cg.Fail(line, "internal: Continue as value"); }
+inline string Defer::CgX(CodeGen &cg) { cg.Fail(line, "internal: Defer as value"); }
 inline string RangeExpr::CgX(CodeGen &cg) { cg.Fail(line, "internal: RangeExpr as value"); }
 inline string FunVal::CgX(CodeGen &cg) { cg.Fail(line, "internal: FunVal as value"); }
 inline string SelfRef::CgX(CodeGen &cg) { cg.Fail(line, "internal: self as value"); }
@@ -792,6 +793,7 @@ inline void ForLoop::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Return::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Break::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Continue::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
+inline void Defer::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void FunVal::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: FunVal emitted"); }
 inline void SelfRef::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: self emitted"); }
 inline void VarDecl::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
@@ -1223,6 +1225,7 @@ inline void Return::CgStmt(CodeGen &cg) {
 }
 
 inline void Break::CgStmt(CodeGen &cg) { cg.GenBreakPath(val); }
+inline void Defer::CgStmt(CodeGen &cg) { cg.RegisterDefer(this); }
 inline void Continue::CgStmt(CodeGen &cg) {
     auto si = -1;
     for (auto i = (int)cg.cscopes.size() - 1; i >= 0; i--) {

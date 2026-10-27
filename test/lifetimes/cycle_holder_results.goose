@@ -1,8 +1,9 @@
 // A recursive cycle's result may hold references (§7.8, §9.2): a struct with
-// slice fields is predicted and checked by the roots of what it holds, as a
-// returned reference is. The first return checked stands in for the
-// prediction, inexact: a field read out of a back edge's holder re-derives
-// its root (§9.5), and the returns built from it are no more exact than that.
+// slice fields is checked by the roots of what it holds, as a returned
+// reference is. The cycle is checked in rounds, each giving a back edge the
+// union of the roots its callee's returns gave in the round before; a field
+// read out of a back edge's holder re-derives its root (§9.5), and the
+// returns built from it are no more exact than that.
 
 struct Fragment { text: const u8[:] }
 
@@ -26,8 +27,8 @@ recursive fn deepest(n: i64) -> Fragment {
     return child;
 }
 
-// A string literal first, the arena as well later: a root a later return
-// adds joins what the back edges after it are given.
+// A string literal in the base case, the arena in a later return: the back
+// edges are given both roots.
 recursive fn mixed(n: i64) -> Fragment {
     if n == 0 { return Fragment { text: "static" }; }
     let child = mixed(n - 1);
@@ -76,8 +77,8 @@ recursive fn lowered(n: i64) -> Value {
                    stack: a.stack };
 }
 
-// Mutual recursion: the entry's first return stands in for its prediction
-// before the function it recurses through calls back.
+// Mutual recursion: the back edge through inner is given the union of
+// outer's returns, as a direct back edge is.
 recursive fn outer(n: i64) -> Fragment {
     if n == 0 { return saved("o"); }
     let i = inner(n - 1);

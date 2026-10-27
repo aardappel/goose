@@ -1,7 +1,7 @@
 """A package's native part, built into one directory under GOOSE_HOME for
 every program that uses it: concurrent first builds compile its C once, the
 others waiting for that build and linking what it made, and a warm build
-compiles nothing. The controlled C compiler of runtime_cache.py holds the
+compiles nothing. The controlled C compiler, runtime_cache_cc.c, holds the
 first compile until the test releases it."""
 import os
 from pathlib import Path

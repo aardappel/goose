@@ -3,13 +3,14 @@
 The compiler is its own language server: `goose lsp` speaks the Language
 Server Protocol on stdin and stdout, so any editor with an LSP client can
 use it. VS Code has an [extension](../vscode/README.md) that starts it for
-you. For Neovim, Helix and Emacs, the configuration below is all it takes.
+you. For Neovim, Helix and Emacs, the configuration below is all that is
+needed.
 
-Every snippet starts `goose lsp` with the compiler on PATH; where it is
-not, put the executable's full path in place of `goose`. The server finds
+Every snippet starts `goose lsp` assuming the compiler is on PATH; if it
+is not, replace `goose` with the executable's full path. The server finds
 the standard library the way `goose check` does (`GOOSE_STDLIB`, or the
-`stdlib/` directory near the executable). For a compiler away from its
-checkout, add `--stdlib` and the directory to the command:
+`stdlib/` directory near the executable). For a compiler that is not in
+its source checkout, add `--stdlib` and the directory to the command:
 `goose lsp --stdlib /path/to/goose/stdlib`.
 
 Each open file is analyzed as a program of its own, with the files it
@@ -20,8 +21,9 @@ file in the client's initialization options, as an absolute path:
 where these options go.
 
 The server's semantic tokens color names by what they resolve to
-(functions, types, fields, variants, parameters, variables), not keywords,
-strings or comments; the TextMate grammar is VS Code's alone.
+(functions, types, fields, variants, parameters, variables). They do not
+cover keywords, strings or comments, and the TextMate grammar is only part
+of the VS Code extension.
 
 ## Neovim
 
@@ -50,16 +52,16 @@ vim.api.nvim_create_autocmd('FileType', {
 })
 ```
 
-What it shows: diagnostics, hover (`K`), go to definition (`CTRL-]`),
-references (`grr`), rename (`grn`), document symbols (`gO`), signature
-help (`CTRL-S` in Insert mode), completion (`CTRL-X CTRL-O`, or as you type
-with `vim.lsp.completion.enable`) and semantic highlighting, by default;
-inlay hints with `vim.lsp.inlay_hint.enable()`, folding with
-`foldmethod=expr` and `foldexpr=v:lua.vim.lsp.foldexpr()`, and code lenses with
-`vim.lsp.codelens.refresh()` (on `BufEnter` and `InsertLeave`, say). The
-lenses above generic functions count their instantiations; to list them
-with `vim.lsp.codelens.run()`, give Neovim the command and tell the server
-it has it:
+By default, Neovim shows diagnostics, hover (`K`), go to definition
+(`CTRL-]`), references (`grr`), rename (`grn`), document symbols (`gO`),
+signature help (`CTRL-S` in Insert mode), completion (`CTRL-X CTRL-O`, or
+as you type with `vim.lsp.completion.enable`) and semantic highlighting.
+Inlay hints need `vim.lsp.inlay_hint.enable()`, folding needs
+`foldmethod=expr` and `foldexpr=v:lua.vim.lsp.foldexpr()`, and code lenses
+need `vim.lsp.codelens.refresh()` (called on `BufEnter` and `InsertLeave`,
+for example). The lenses above generic functions count their
+instantiations. To list the instantiations with `vim.lsp.codelens.run()`,
+give Neovim the command and tell the server that the client has it:
 
 ```lua
 vim.lsp.commands['goose.showInstantiations'] = function(command)
@@ -92,13 +94,13 @@ language-servers = ["goose"]
 
 (`config` is what Helix sends as the initialization options.)
 
-What it shows: diagnostics, hover (`space k`), go to definition (`gd`),
+Helix shows diagnostics, hover (`space k`), go to definition (`gd`),
 references (`gr`), rename (`space r`), document and workspace symbols
 (`space s`, `space S`), signature help and completion as you type, and
 inlay hints with `display-inlay-hints = true` under `[editor.lsp]` in
-`config.toml`. Helix highlights with tree-sitter grammars, of which Goose
-has none, and has no semantic tokens, folding or code lenses, so files
-show uncolored.
+`config.toml`. Helix highlights with tree-sitter grammars, and Goose has
+none. Helix also has no semantic tokens, folding or code lenses, so Goose
+files are shown without colors.
 
 ## Emacs
 
@@ -116,9 +118,60 @@ With Eglot (built in since Emacs 29), in `init.el`:
 For entry files, the server program takes the options after the command:
 `'(goose-mode "goose" "lsp" :initializationOptions (:entryFiles ["/path/to/project/main.goose"]))`.
 
-What it shows: diagnostics through Flymake, hover and signature help in
+Eglot shows diagnostics through Flymake, hover and signature help in
 ElDoc, go to definition (`M-.`), references (`M-?`), rename
 (`eglot-rename`), document symbols in Imenu, workspace symbols
 (`xref-find-apropos`), completion (`completion-at-point`) and inlay hints;
 the newest Eglot, from GNU ELPA, highlights with semantic tokens too
 (`eglot-semantic-tokens-mode`). Eglot has no folding or code lenses.
+
+## Formatting
+
+`goose format` rewrites files in the standard layout: indentation, the
+spaces between tokens, blank lines and trailing commas, with the line
+breaks left where they are. It takes files and directories (a directory
+stands for the `.goose` files under it), and with none, or `-`, formats
+standard input to standard output. A file that does not parse is left as
+it is and its errors printed, with exit status 2; `goose format --check`
+writes nothing and lists the files that are not formatted, with exit
+status 1, for a CI step or a commit hook.
+
+The language server formats too (`textDocument/formatting`), the editor's
+text rather than the file on disk, with edits to the lines that change
+only, so the cursor and marks on the others stay. A document that does not
+parse gets no edits; its diagnostics say why.
+
+In Neovim, `vim.lsp.buf.format()` formats; to format on save, in the
+configuration above:
+
+```lua
+vim.api.nvim_create_autocmd('BufWritePre', {
+  pattern = '*.goose',
+  callback = function() vim.lsp.buf.format() end,
+})
+```
+
+In Helix, `:format` formats, and `auto-format = true` in the `[[language]]`
+entry above formats on save.
+
+In Emacs, `eglot-format-buffer` formats; to format on save:
+
+```elisp
+(add-hook 'goose-mode-hook
+          (lambda () (add-hook 'before-save-hook #'eglot-format-buffer nil t)))
+```
+
+Without the language server, an editor can run `goose format -` on the
+buffer instead: with [conform.nvim](https://github.com/stevearc/conform.nvim)
+in Neovim, say,
+
+```lua
+require('conform').setup({
+  formatters = { goose = { command = 'goose', args = { 'format', '-' }, stdin = true } },
+  formatters_by_ft = { goose = { 'goose' } },
+  format_on_save = { timeout_ms = 2000 },
+})
+```
+
+or `formatter = { command = "goose", args = ["format", "-"] }` in Helix's
+`[[language]]` entry.

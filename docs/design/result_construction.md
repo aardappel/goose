@@ -21,18 +21,19 @@ Three facts remain separate:
   result's destination.
 
 A named return has a symbolic receiver. Relative initializers add
-requirements relating that receiver to the roots their targets inhabit.
+requirements relating that receiver to the roots that contain their targets.
 Calls map those roots through their arguments and check the requirements
 against the actual receiver. A forwarding return carries the requirement
 on to its own caller. Captured roots in trailing blocks use the same
 mechanism when the receiving array is a parameter of a higher-order
 function.
 
-Requirements are part of the function's checked summary, not a promise
-deduced from its first caller. Every call validates them, including cached
-specializations, dispatch cases, and recursive rounds. A local root that
-dies with a returning activation cannot satisfy a result requirement.
-Nonlocal returns map through each intervening call to their actual target.
+The checker records these requirements in the function's summary and validates
+them at every call, including cached specializations, dispatch cases, and
+recursive rounds. It does not infer a guarantee from the first caller alone. A
+local root that ends with the returning activation cannot satisfy a result
+requirement. Nonlocal returns map requirements through each intervening call to
+their actual target.
 
 Existing proofs within a parameter class remain local to that activation:
 an argument whose precise outer root is unknown can still link two
@@ -47,12 +48,12 @@ inlined blocks and nonlocal returns use that address directly. The ABI for
 ordinary fixed results is unchanged, and no optimizer is needed for
 correct placement.
 
-Self-contained `self` and null links remain valid in representation
-conversions that preserve their region. A result requiring its receiver's
-root cannot pass through an adapter that stages or relocates its bytes.
-Identical representations and constructing a variant directly behind its
-ADT tag are supported. Such a result also cannot be a resize fill, which
-constructs a value once and copies it to multiple slots.
+Representation conversions preserve self-contained `self` and null links when
+they preserve the links' region. If a result depends on its receiver's root, an
+adapter cannot stage or relocate its bytes. The result can use an identical
+representation or construct a variant directly behind its ADT tag. It cannot be
+used as a resize fill, because that operation constructs a value once and copies
+it to multiple slots.
 
 The existing growth, shrink, lifetime and partial-construction rules remain
 in force. A callback executes once at the construction site. A push exposes

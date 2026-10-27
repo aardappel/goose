@@ -1,10 +1,10 @@
 // A recursive function returning views into an arena it reaches through a
-// context (§7.8). The cycle's scan cannot follow a view read out of the
-// context's arena, so the base case's return, checked first, stands in for
-// the prediction, and each call back into the cycle gives a result rooted at
-// the context it passed on. The context is threaded -- every call back into
-// the cycle passes it on -- so that result may be stored into the context's
-// table inside the cycle, besides being kept in a variable rebound to it.
+// context (§7.8). The cycle is checked in rounds: a call back into it is
+// given the roots its returns gave in the round before, the arena behind the
+// context it passed on, so its result is rooted at that context. The context
+// is threaded -- every call back into the cycle passes it on -- so that
+// result may be stored into the context's table inside the cycle, besides
+// being kept in a variable rebound to it.
 struct Ctx { arena: u8[>..]&, pieces: (const u8[:])[>..]& }
 
 fn saved(c: Ctx&, s: const u8[:]) -> const u8[:] {
