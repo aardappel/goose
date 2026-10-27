@@ -57,10 +57,10 @@ struct Builder {
     }
 
     // The system libraries a program links beyond the C library, in the cc
-    // style: none on Windows, where they live in the C runtime.
+    // style: Shell32 supplies native Unicode arguments on Windows.
     vector<string> SystemLibs() const {
         #ifdef _WIN32
-            return {};
+            return { "-lshell32" };
         #else
             if (tc.style == "msvc") return {};
             vector<string> libs = { "-lm", "-pthread" };

@@ -2,6 +2,26 @@
    runtime_ext.h declares them, which this follows. */
 
 #include <time.h>
+#if defined(_WIN32) && !defined(GS_JIT)
+#include <shellapi.h>
+#include <wchar.h>
+#ifdef _MSC_VER
+/* Present in both the separate runtime object and standalone runtime. */
+#pragma comment(lib, "shell32.lib")
+#endif
+
+GS_API void gs_rt_native_argv(int *argc) {
+    int count = 0;
+    if (gs_native_wargv) gs_panic("native arguments initialized twice");
+    wchar_t **words = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!words || count < 1) {
+        if (words) LocalFree(words);
+        gs_panic("cannot read native Unicode arguments");
+    }
+    gs_native_wargv = words;
+    *argc = count;
+}
+#endif
 #ifndef _WIN32
 #include <errno.h>
 #include <fcntl.h>
@@ -616,6 +636,16 @@ GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *bin
 
 GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
+#if defined(_WIN32) && !defined(GS_JIT)
+    if (gs_native_wargv) {
+        /* The OS command line is bounded by 32767 UTF-16 units, so the
+           per-argument length fits the conversion API's int parameter. */
+        const wchar_t *w = gs_native_wargv[i];
+        if (!gs_os_append_wide(out, w, (int)wcslen(w)))
+            gs_panic("cannot convert native Unicode argument to UTF-8");
+        return;
+    }
+#endif
     const char *a = gs_argv[i];
 #ifdef _WIN32
     /* main's argv is in the ANSI code page. The program gets it in UTF-8,

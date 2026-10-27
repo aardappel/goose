@@ -607,8 +607,12 @@ request failed.
 
 Paths are UTF-8 on every platform: on Windows the runtime converts them to
 UTF-16 for the system's wide APIs. So are environment values, and the
-arguments, which on Windows arrive through the ANSI code page first and so
-keep only the characters it has. A path is refused, and the call returns
+arguments. A generated Windows executable captures its real process arguments
+in UTF-16 before global initialization and returns their exact UTF-8 forms.
+JIT runs, renamed-main dispatchers and C embedding keep their explicitly supplied
+argument vectors; the narrow Windows C embedding interface retains its ANSI-code-
+page contract. Captured native arguments are kept for the process lifetime.
+Invalid UTF-16 or conversion allocation failure is an error, never a lossy fallback. A path is refused, and the call returns
 `false`, if it is longer than 4095 bytes, contains a NUL byte, or on Windows
 is not valid UTF-8: cut short or read another way, it could name a
 different file.

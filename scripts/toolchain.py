@@ -307,6 +307,8 @@ class CC:
             # asking for them by name fails.
             if not IS_WINDOWS:
                 argv += ["-pthread", "-lm"] + (["-ldl"] if sys.platform.startswith("linux") else [])
+            else:
+                argv += ["-lshell32"]
         r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         output = (r.stdout or "") + (r.stderr or "")
         if log:
@@ -360,6 +362,8 @@ class CC:
         else:
             argv += [f"-I{i}" for i in includes]
             argv += ["-shared", "-fPIC", *map(str, sources), "-o", str(out)]
+            if IS_WINDOWS:
+                argv += ["-lshell32"]
         r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
 

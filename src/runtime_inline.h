@@ -837,6 +837,11 @@ typedef struct {
    budgeted for regions over the whole program, and the most regions the
    main program and any one worker hold (the compiler's static counts),
    which size their registries and give hardware_threads() its cap. */
+#ifdef _WIN32
+/* Only the real AOT process entry captures native arguments. JIT, renamed
+   entries and C embedding retain the caller-supplied narrow vector. */
+GS_API void gs_rt_native_argv(int *argc);
+#endif
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
@@ -882,12 +887,12 @@ GS_API int64_t gs_hardware_threads(void);
 GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
                                const void *args, int64_t argsize, int contained);
-/* Whether the worker returned rather than aborted, once it has ended. Where
+)GSRT"
+R"GSRT(/* Whether the worker returned rather than aborted, once it has ended. Where
    `msg` is not NULL, the first such wait for a worker that aborted takes its
    message: `msg` and `len` are set to it, which the caller frees with
    gs_free_msg, or to NULL and no bytes. */
-)GSRT"
-R"GSRT(GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
                                const char *file, int line);
 GS_API void gs_free_msg(uint8_t *msg);
 
@@ -1078,7 +1083,8 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
-    uint64_t v = 0;
+)GSRT"
+R"GSRT(    uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
     for (;;) {
@@ -1087,8 +1093,7 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
         v |= (uint64_t)(b & 0x7f) << shift;
-)GSRT"
-R"GSRT(        if (!(b & 0x80)) {
+        if (!(b & 0x80)) {
             if (shift && !b) return 0;  /* Redundant high zero group. */
             break;
         }
@@ -1329,6 +1334,12 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 /* The program's arguments, for stdlib/os.goose (runtime_os.h). */
 static int gs_argc;
 static char **gs_argv;
+#ifdef _WIN32
+/* CommandLineToArgvW owns one contiguous allocation, retained for this
+   process's lifetime as the CRT retains main's original argv. The real
+   process entry sets it before runtime/global/worker initialization. */
+static wchar_t **gs_native_wargv;
+#endif
 
 /* What a new region reserves: the usable part, which halves whenever the
    platform refuses one (gs_reserve_region), and the guard gap behind it;
@@ -1339,15 +1350,15 @@ static size_t gs_region_usable, gs_region_gap, gs_region_reserve, gs_region_page
 static GS_TLS int64_t gs_current_thread_id = -1;
 /* The program's address space budget for regions and the most regions its
    main program and any one worker can hold, as gs_rt_start was told, and
-   the workers that leaves room for: what hardware_threads() reports at
+)GSRT"
+R"GSRT(   the workers that leaves room for: what hardware_threads() reports at
    most. */
 static uint64_t gs_stack_budget;
 static int64_t gs_mainregions, gs_workerregions;
 static int64_t gs_thread_cap = INT64_MAX;
 
 /* A region's own sizes travel with it: those reserved before a refusal
-)GSRT"
-R"GSRT(   halved the size are larger than those after. */
+   halved the size are larger than those after. */
 typedef struct {
     uint8_t *base;
     size_t usable, size;    /* size: with the guard gap */
@@ -1548,7 +1559,8 @@ static void gs_release_region(const gs_region *r) {
         gs_panic("cannot release data stack address space");
 }
 
-/* Whether this is the first call of gs_end; and where the later ones wait. */
+)GSRT"
+R"GSRT(/* Whether this is the first call of gs_end; and where the later ones wait. */
 static int gs_end_first(void) {
     static volatile LONG ended;
     return !InterlockedExchange(&ended, 1);
@@ -1561,8 +1573,7 @@ static GS_NORETURN void gs_park(void) {
 
 #include <sys/mman.h>
 #include <unistd.h>
-)GSRT"
-R"GSRT(#include <signal.h>
+#include <signal.h>
 #include <pthread.h>
 
 /* The calling thread's native stack, from GS_NATIVE_SLOP below its lowest
@@ -1746,7 +1757,8 @@ static uint8_t *gs_os_reserve(size_t usable, size_t size) {
     }
 #endif
     /* Most stacks hold a few bytes, which a transparent huge page at the
-       start would commit 2 MB for. */
+)GSRT"
+R"GSRT(       start would commit 2 MB for. */
     #ifdef MADV_NOHUGEPAGE
         madvise(p, usable < (2u << 20) ? usable : (2u << 20), MADV_NOHUGEPAGE);
     #endif
@@ -1757,8 +1769,7 @@ static void gs_release_region(const gs_region *r) {
     if (munmap(r->base, r->size)) gs_panic("cannot release data stack address space");
 }
 
-)GSRT"
-R"GSRT(/* Whether this is the first call of gs_end; and where the later ones wait.
+/* Whether this is the first call of gs_end; and where the later ones wait.
    TinyCC names the memory orders in its stdatomic.h alone. */
 #ifndef __ATOMIC_SEQ_CST
 #define __ATOMIC_SEQ_CST 5
@@ -1924,7 +1935,8 @@ typedef struct { int64_t root, height, chain; } gs_sphead;
 
 /* A freelist, and a path down it: the node and entry taken at each level,
    the leaf's last. */
-typedef struct {
+)GSRT"
+R"GSRT(typedef struct {
     uint8_t *base;
     int64_t *n;
     uint8_t **top;
@@ -1935,8 +1947,7 @@ typedef struct {
 #define GS_SPLEAF(p, i) ((gs_spleaf *)((p)->base + (i) * GS_SPAN_NODE))
 #define GS_SPINNER(p, i) ((gs_spinner *)((p)->base + (i) * GS_SPAN_NODE))
 
-)GSRT"
-R"GSRT(static int64_t gs_sp_newnode(gs_sppath *p) {
+static int64_t gs_sp_newnode(gs_sppath *p) {
     int64_t i = GS_SPHEAD(p)->chain;
     if (i) {
         GS_SPHEAD(p)->chain = GS_SPLEAF(p, i)->link;
@@ -2167,7 +2178,8 @@ static void gs_sp_delete(gs_sppath *p, int64_t k) {
            every root has two or more. */
         gs_sp_dropnode(p, p->node[l]);
     }
-    while (GS_SPHEAD(p)->height > 0 && GS_SPINNER(p, GS_SPHEAD(p)->root)->n == 1) {
+)GSRT"
+R"GSRT(    while (GS_SPHEAD(p)->height > 0 && GS_SPINNER(p, GS_SPHEAD(p)->root)->n == 1) {
         int64_t r = GS_SPHEAD(p)->root;
         GS_SPHEAD(p)->root = GS_SPINNER(p, r)->child[0];
         GS_SPHEAD(p)->height--;
@@ -2176,8 +2188,7 @@ static void gs_sp_delete(gs_sppath *p, int64_t k) {
 }
 
 /* Takes cnt elements off the front of the span at position k of the path's
-)GSRT"
-R"GSRT(   leaf, or the whole span where it holds no more. */
+   leaf, or the whole span where it holds no more. */
 static void gs_sp_take(gs_sppath *p, int64_t k, int64_t cnt) {
     gs_spleaf *lf = GS_SPLEAF(p, p->node[p->h]);
     int64_t c = lf->cnt[k];
@@ -2391,7 +2402,8 @@ GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t
     if (s.nl && s.nl->idx[s.nk] == end &&
         (s.nl->cnt[s.nk] >= cnt - ol || end + s.nl->cnt[s.nk] == len)) {
         gs_sp_take(s.np, s.nk, cnt - ol);
-        return idx;
+)GSRT"
+R"GSRT(        return idx;
     }
     gs_sp_release(&p, &s, idx, ol);
     return gs_spans_alloc(base, n, top, len, cnt);
@@ -2399,8 +2411,7 @@ GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t
 
 /* ---------------------------------------------------------------------------
    Byte search: std's find_any and find_pair (docs/stdlib.md). A set arrives
-)GSRT"
-R"GSRT(   as std's ByteSet, made by its byte_set, which gs_byteset lays out as the
+   as std's ByteSet, made by its byte_set, which gs_byteset lays out as the
    Goose struct is (spec C.2: packed, in declaration order). `members` is
    the set. `kind` says how a block of bytes is tested for it: by comparing
    with 1 to 3 of `bytes` (kinds 1-3), or as the range bytes[0] .. bytes[0] +
@@ -2569,7 +2580,8 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
 #define GS_TEST_A(x) gs_bsm_test(&ma, ka, x)
 #define GS_TEST_B(x) gs_bsm_test(&mb, kb, x)
 #define GS_TABLES_S(x) gs_bsm_tables(&ms, x)
-#define GS_TABLES_A(x) gs_bsm_tables(&ma, x)
+)GSRT"
+R"GSRT(#define GS_TABLES_A(x) gs_bsm_tables(&ma, x)
 #define GS_TABLES_B(x) gs_bsm_tables(&mb, x)
 
 static GS_INLINE int64_t gs_scan_any_k(const uint8_t *p, int64_t n, const gs_byteset *s, int ks) {
@@ -2578,8 +2590,7 @@ static GS_INLINE int64_t gs_scan_any_k(const uint8_t *p, int64_t n, const gs_byt
     GS_ANY_LOOP(GS_TEST_S)
 }
 
-)GSRT"
-R"GSRT(static GS_SSSE3 int64_t gs_scan_any_tables(const uint8_t *p, int64_t n, const gs_byteset *s) {
+static GS_SSSE3 int64_t gs_scan_any_tables(const uint8_t *p, int64_t n, const gs_byteset *s) {
     gs_bsm ms;
     gs_bsm_init(&ms, s, 1);
     GS_ANY_LOOP(GS_TABLES_S)
@@ -2762,15 +2773,15 @@ GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
    rounded spelling of that length, below it, does not read back.
 
    The numbers are naturals in 32-bit limbs, least significant first. The
-   denominator s stays below 2^1079 (ten times 2^1075, for the smallest
+)GSRT"
+R"GSRT(   denominator s stays below 2^1079 (ten times 2^1075, for the smallest
    doubles), and the others below eleven times s. */
 typedef struct { int n; uint32_t d[36]; } gs_big;
 
 /* a = v << sh, for v > 0. */
 static void gs_big_set(gs_big *a, uint64_t v, int sh) {
     int w = sh >> 5, b = sh & 31, i;
-)GSRT"
-R"GSRT(    uint64_t lo = v << b, hi = b ? v >> (64 - b) : 0;
+    uint64_t lo = v << b, hi = b ? v >> (64 - b) : 0;
     for (i = 0; i < w; i++) a->d[i] = 0;
     a->d[w] = (uint32_t)lo;
     a->d[w + 1] = (uint32_t)(lo >> 32);
@@ -2987,7 +2998,8 @@ GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     return (int64_t)(d - dst);
 }
 
-/* stdout is unbuffered (gs_rt_start): each print is this one write. */
+)GSRT"
+R"GSRT(/* stdout is unbuffered (gs_rt_start): each print is this one write. */
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 )GSRT"
     ) },
@@ -3638,6 +3650,26 @@ R"GSRT(/* Goose runtime: the OS primitives behind stdlib/os.goose (spec §7.10),
    runtime_ext.h declares them, which this follows. */
 
 #include <time.h>
+#if defined(_WIN32) && !defined(GS_JIT)
+#include <shellapi.h>
+#include <wchar.h>
+#ifdef _MSC_VER
+/* Present in both the separate runtime object and standalone runtime. */
+#pragma comment(lib, "shell32.lib")
+#endif
+
+GS_API void gs_rt_native_argv(int *argc) {
+    int count = 0;
+    if (gs_native_wargv) gs_panic("native arguments initialized twice");
+    wchar_t **words = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!words || count < 1) {
+        if (words) LocalFree(words);
+        gs_panic("cannot read native Unicode arguments");
+    }
+    gs_native_wargv = words;
+    *argc = count;
+}
+#endif
 #ifndef _WIN32
 #include <errno.h>
 #include <fcntl.h>
@@ -3845,7 +3877,8 @@ GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
     int64_t left = data.len;
     for (int tries = 0; tries < 8; tries++) {
         uint64_t tag = gs_os_random_u64();
-        int k = n;
+)GSRT"
+R"GSRT(        int k = n;
         memcpy(t, p, (size_t)n * sizeof *t);
         t[k++] = '.';
         for (int s = 60; s >= 0; s -= 4) t[k++] = "0123456789abcdef"[(tag >> s) & 15];
@@ -3862,8 +3895,7 @@ GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
             return 0;
         }
         while (ok && left > 0) {
-)GSRT"
-R"GSRT(            DWORD chunk = left > (1 << 30) ? (DWORD)1 << 30 : (DWORD)left, wrote = 0;
+            DWORD chunk = left > (1 << 30) ? (DWORD)1 << 30 : (DWORD)left, wrote = 0;
             ok = WriteFile(h, d, chunk, &wrote, NULL) && wrote == chunk;
             d += chunk;
             left -= chunk;
@@ -4095,7 +4127,8 @@ static int gs_os_resource_native(gs_os_char *buf) {
 #else
     char *path = buf;
     size_t n;
-    #ifdef __APPLE__
+)GSRT"
+R"GSRT(    #ifdef __APPLE__
         uint32_t capacity = GS_OS_PATH_MAX;
         if (_NSGetExecutablePath(path, &capacity) != 0) return 0;
         /* Resolve the loader's possible relative path and symlinks. */
@@ -4107,8 +4140,7 @@ static int gs_os_resource_native(gs_os_char *buf) {
         free(resolved);
     #elif defined(__linux__)
         ssize_t count = readlink("/proc/self/exe", path, (size_t)GS_OS_PATH_MAX);
-)GSRT"
-R"GSRT(        if (count <= 0 || (size_t)count >= (size_t)GS_OS_PATH_MAX) return 0;
+        if (count <= 0 || (size_t)count >= (size_t)GS_OS_PATH_MAX) return 0;
         n = (size_t)count;
     #else
         return 0;
@@ -4254,6 +4286,16 @@ GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *bin
 
 GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
+#if defined(_WIN32) && !defined(GS_JIT)
+    if (gs_native_wargv) {
+        /* The OS command line is bounded by 32767 UTF-16 units, so the
+           per-argument length fits the conversion API's int parameter. */
+        const wchar_t *w = gs_native_wargv[i];
+        if (!gs_os_append_wide(out, w, (int)wcslen(w)))
+            gs_panic("cannot convert native Unicode argument to UTF-8");
+        return;
+    }
+#endif
     const char *a = gs_argv[i];
 #ifdef _WIN32
     /* main's argv is in the ANSI code page. The program gets it in UTF-8,
@@ -4299,7 +4341,8 @@ GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
 #endif
 }
 
-/* Wall-clock time in nanoseconds since the Unix epoch. */
+)GSRT"
+R"GSRT(/* Wall-clock time in nanoseconds since the Unix epoch. */
 GS_API int64_t gs_os_time_ns(void) {
     /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
        links against does not have it, and glibc hides it from a compiler
@@ -4326,8 +4369,7 @@ GS_API int64_t gs_os_clock_ns(void) {
     QueryPerformanceCounter(&c);
     return (int64_t)((double)c.QuadPart * (1000000000.0 / (double)f.QuadPart));
 #else
-)GSRT"
-R"GSRT(    struct timespec ts;
+    struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 #endif

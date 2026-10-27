@@ -82,7 +82,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     auto root = filesystem::absolute(filesystem::path(progname), patherror).parent_path();
     if (patherror) fail("cannot locate the entry source directory");
     auto bytes = root.generic_u8string();
-    string source = "#define GS_JIT_RESOURCE_DIR \"";
+    string source = "#define GS_JIT 1\n#define GS_JIT_RESOURCE_DIR \"";
     // Fixed-width octal escapes are unambiguous even for quotes, control
     // characters, UTF-8 and a hex digit immediately after an escaped byte.
     for (auto ch : bytes) {
