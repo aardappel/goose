@@ -16,6 +16,7 @@ fails the build on a broken one, which is how the Pages workflow runs it.
 """
 import argparse
 import glob
+import hashlib
 import html
 import os
 import re
@@ -59,6 +60,9 @@ COPIES += sorted(os.path.relpath(p, ROOT).replace(os.sep, "/")
                  for p in glob.glob(os.path.join(ROOT, "docs", "html", "**", "*"), recursive=True)
                  if os.path.isfile(p))
 
+# Hashed search file names, set in main()
+SEARCH_ARGS = []
+
 
 def title_of(md_text, fallback):
     for line in md_text.split("\n"):
@@ -74,7 +78,7 @@ def pandoc(args, pandoc_exe, stdin_text=None, src=None, out=None):
            "--template", os.path.join(SITE, "template.html"),
            "--lua-filter", os.path.join(SITE, "links.lua"),
            "--syntax-definition", os.path.join(SITE, "goose.xml"),
-           "--highlight-style", "tango"] + args
+           "--highlight-style", "tango"] + SEARCH_ARGS + args
     if src:
         cmd.append(src)
     if out:
@@ -154,6 +158,7 @@ def check(out_dir):
             if re.match(r"^[a-z][a-z0-9+.-]*:", href):
                 continue
             target, _, frag = href.partition("#")
+            target = target.partition("?")[0]
             frag = html.unescape(frag)
             if target == "":
                 if frag and frag not in s.ids:
@@ -183,6 +188,12 @@ def main():
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
     shutil.copy(os.path.join(SITE, "style.css"), os.path.join(out_dir, "style.css"))
+    sys.path.insert(0, SITE)
+    from generate_search import build_index
+    SEARCH_ARGS.extend(["--metadata", "searchfile=" + build_index(out_dir)])
+    with open(os.path.join(SITE, "search.js"), "rb") as f:
+        SEARCH_ARGS.extend(["--metadata", "searchver=" + hashlib.sha256(f.read()).hexdigest()[:10]])
+    shutil.copy(os.path.join(SITE, "search.js"), os.path.join(out_dir, "search.js"))
     for src_rel, out_rel in PAGES:
         if os.path.exists(os.path.join(ROOT, src_rel)):
             build_page(src_rel, out_rel, out_dir, a.pandoc)

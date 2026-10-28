@@ -51,9 +51,91 @@ header.top .brand {
   color: var(--text);
 }
 header.top .brand img { height: 1.6rem; width: auto; }
-header.top nav { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; }
+header.top nav { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; align-items: center; margin-right: auto; }
 header.top nav a { color: var(--muted); }
 header.top nav a:hover { color: var(--text); text-decoration: none; }
+
+/* Search */
+.search-container {
+  position: relative;
+  margin-left: auto;
+}
+.search-kbd {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  pointer-events: none;
+}
+.search-input:focus + .search-kbd,
+.search-input:not(:placeholder-shown) + .search-kbd { display: none; }
+.search-input {
+  box-sizing: border-box;
+  padding: 0.35rem 2rem 0.35rem 0.6rem;
+  font-size: 0.9rem;
+  font-family: inherit;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: white;
+  color: var(--text);
+  width: 250px;
+}
+.search-input:focus {
+  outline: 2px solid var(--link);
+  outline-offset: -1px;
+  border-color: var(--link);
+}
+.search-results {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: 500px;
+  max-width: 90vw;
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  max-height: 400px;
+  overflow-y: auto;
+  display: none;
+  z-index: 1000;
+  margin-top: 4px;
+}
+.search-result {
+  display: block;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+  color: var(--text);
+  text-decoration: none;
+}
+.search-result:last-child {
+  border-bottom: none;
+}
+.search-result:hover {
+  background: var(--code-bg);
+  text-decoration: none;
+}
+.search-result-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 0.2rem;
+}
+.search-result-snippet {
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.search-no-results {
+  padding: 0.5rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
 
 /* The page: an optional table of contents beside the text. */
 .page { display: flex; align-items: flex-start; }
