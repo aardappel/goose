@@ -997,6 +997,13 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
             FixedLitAtStk(init, stk);
             return;
         }
+        // A call, if, match or block giving such a value builds it at the
+        // stack top too, as a pushed element does, rather than in a
+        // temporary whose links would then be copied to another slot.
+        if (HasRelRef(ft) && IsFix(ft)) {
+            GenConstruct(init, stk, ft);
+            return;
+        }
         EmitValStore(stk, ft, GenX(init));
     };
     if (auto al = Is<ArrayLit>(n)) {
