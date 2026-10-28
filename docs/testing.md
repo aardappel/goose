@@ -385,7 +385,9 @@ additional roots in order:
 1. A burst of edits introduces an error and removes it. Diagnostics must reflect
    the latest text, and a change must cancel an interrupted analysis. The test then
    inserts a line at the top and immediately requests a hover at the shifted
-   position. The answer must use the new text.
+   position. The answer must use the new text. An incremental edit (a range plus
+   its fragment, as a client with incremental sync sends) inserts a comment line
+   above the file: the hint below it must stand, shifted down a line.
 2. `recovery.goose` and `broken_decls.goose` are opened as separate roots. Every
    error must be published, and queries must still receive answers. Document
    symbols requested immediately after opening `recovery.goose` must come from its

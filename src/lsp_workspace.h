@@ -200,11 +200,39 @@ struct Workspace {
         Touch(key);
     }
 
-    void Change(const string &uri, const string &text) {
+    // An incremental edit: the range (protocol positions) in `text` that
+    // `replacement` replaces. Clamped to the text, like OffsetOfPosition.
+    static string Splice(const string &text, const Json &range, const string &replacement) {
+        TextIndex t;
+        t.Index(text);
+        auto pos = [&](const Json *p) {
+            return t.OffsetOfPosition(JsonInt(p ? p->Get("line") : nullptr), JsonInt(p ? p->Get("character") : nullptr));
+        };
+        auto from = range.kind == Json::OBJECT ? pos(range.Get("start")) : 0;
+        auto to = range.kind == Json::OBJECT ? pos(range.Get("end")) : text.size();
+        from = min(from, text.size());
+        to = min(max(to, from), text.size());
+        auto out = text;
+        return out.replace(from, to - from, replacement);
+    }
+
+    // Applies one didChange notification: every incremental edit (one with
+    // a range) spliced into the overlay text in order, else the last full
+    // text (textDocumentSync Full, and a client that batches a save behind
+    // its edits), so that a client sending fragments never reads as the
+    // whole file.
+    void ChangeEdits(const string &uri, const Json &changes) {
+        if (changes.kind != Json::ARRAY || changes.arr.empty()) return;
         auto key = PathKey(PathOfUri(uri));
         auto it = open.find(key);
         if (it == open.end()) return;
-        it->second.text = text;
+        for (auto &c : changes.arr) {
+            if (c.kind != Json::OBJECT) continue;
+            if (auto r = c.Get("range"); r && r->kind == Json::OBJECT)
+                it->second.text = Splice(it->second.text, *r, JsonStr(c.Get("text")));
+            else
+                it->second.text = JsonStr(c.Get("text"));
+        }
         Touch(key);
     }
 

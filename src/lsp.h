@@ -53,7 +53,7 @@ struct Server {
         j.Key("capabilities");
         j.BeginObject();
         j.Member("positionEncoding", "utf-16");
-        j.Member("textDocumentSync", (int64_t)1);   // Full: each change carries the text.
+        j.Member("textDocumentSync", (int64_t)1);   // Full, with incremental edits spliced where a client sends them.
         j.Member("hoverProvider", true);
         j.Member("definitionProvider", true);
         j.Member("referencesProvider", true);
@@ -163,8 +163,7 @@ struct Server {
         } else if (method == "textDocument/didChange") {
             auto td = p.Get("textDocument");
             auto changes = p.Get("contentChanges");
-            if (td && changes && changes->kind == Json::ARRAY && !changes->arr.empty())
-                ws.Change(JsonStr(td->Get("uri")), JsonStr(changes->arr.back().Get("text")));
+            if (td && changes) ws.ChangeEdits(JsonStr(td->Get("uri")), *changes);
         } else if (method == "textDocument/didClose") {
             if (auto td = p.Get("textDocument")) ws.Close(JsonStr(td->Get("uri")));
         } else if (method == "workspace/didChangeConfiguration") {
