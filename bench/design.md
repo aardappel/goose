@@ -1,3 +1,9 @@
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../docs/stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../docs/stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 Goose tests whether inline data structures and language-level memory
 management can outperform C++ and Rust while preserving memory safety.
 
@@ -5,6 +11,12 @@ The benchmarks cover common algorithms that may benefit from this design,
 as well as workloads where Goose is likely to struggle. The aim is to
 measure both the benefits and the limitations and identify possible
 language improvements.
+
+The separate [slot_pool comparison](slot_pool.md) measures a root-struct
+stdlib allocator against the existing `reusable` builtin with identical
+allocation policies and workloads; run it with `bench/slot_pool.py`.
+The [slice_pool comparison](slice_pool.md) covers first-fit span reuse,
+coalescing and relocation against `reusable[]`; run `bench/slice_pool.py`.
 
 The suite tests the effects of these features:
 

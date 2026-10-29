@@ -119,6 +119,11 @@ def debug_fixture(f, line):
     return f.stem == "codegen_exec" or "runtime-debug" in line
 
 
+def fixture_levels(levels, line):
+    """Selected optimizer regressions exercise O1 as well as the profile levels."""
+    return tuple(sorted(set(levels) | {"1"})) if "all-levels" in line else levels
+
+
 def has_bce_annotations(f):
     return bool(re.search(r"//\s*bce:(?:elide|keep)\b", f.read_text(encoding="utf-8")))
 
@@ -760,11 +765,11 @@ class Runner:
         program in-process: --jit with -o."""
         name = f.stem
         res.modules = modules = native_modules(f, self.native)
-        levels = self.levels if self.cc else ()
+        levels = fixture_levels(self.levels, line) if self.cc else ()
         # A native module's fixture runs in-process only where the package
         # is compiled in; the compiler would otherwise build the package.
         available = all(self.native[m] for m in modules)
-        res.jitlevels = jitlevels = ("0", "2") if self.jit and available and \
+        res.jitlevels = jitlevels = fixture_levels(("0", "2"), line) if self.jit and available and \
             "no-jit" not in line else ()
         gen, cfiles = res.gen, res.c
         with self.into(res.cgen):
@@ -819,7 +824,7 @@ class Runner:
         judges the program's TinyCC runs."""
         name = f.stem
         modules = res.modules
-        levels = self.levels if self.cc else ()
+        levels = fixture_levels(self.levels, first_line(f)) if self.cc else ()
         jitlevels, gen, cfiles = res.jitlevels, res.gen, res.c
         if levels:
             with self.into(res.cgen):
@@ -1016,6 +1021,7 @@ class Runner:
         # Guarded base-case inlining: a copy of the body's first statement
         # per self-call site the rewrite took.
         copies = {
+            "gb_callback": 3 if optimized else 1,
             "gb_build": 3 if optimized else 1,
             "gb_walk": 2 if optimized else 1,
             "gb_count": 3 if optimized else 1,
@@ -1748,6 +1754,149 @@ def main():
         else:
             r.ok(f"member parameters {f.name}")
     r.show_task(member_params)
+    # Root descriptors expose ordinary component metadata to top caching and
+    # loop-view hoisting, even when Goose leaves the helper out of line.
+    def root_owner_caches():
+        cfile = gendir / "root_owner_caches-shapes.c"
+        code, out, err = r.goose("-O0", "-o", cfile, HERE / "codegen" / "root_owner_caches.goose")
+        if code != 0:
+            r.fail("root owner caches", out + err)
+            return
+        text = cfile.read_text()
+        def body(name):
+            match = re.search(rf"^static [^\n;]*\b{name}_g\w*\([^\n]*\) \{{\n(.*?)^\}}\n",
+                              text, re.MULTILINE | re.DOTALL)
+            return match[1] if match else ""
+        grow, summation = body("grow"), body("sum")
+        prefix, _, loop = grow.partition("for (")
+        cached = all(re.search(rf"uint8_t \*\w+ = .*\.{f}_g\.stk->top;", prefix)
+                     and re.search(rf"int64_t \w+ = .*\.{f}_g\.hdr->len;", prefix)
+                     for f in ("first", "second"))
+        hoisted = all(s in summation.partition("for (")[0] for s in ("hdr->base", "hdr->len"))
+        # All header reads/writes in grow's loop use the caches, and sum's
+        # indexed load no longer goes through a descriptor or bounds check.
+        growth_body = loop.partition("\n    }")[0]
+        read_body = summation.partition("for (")[2].partition("\n    }")[0]
+        if not cached or not hoisted or "hdr->" in growth_body or "hdr->" in read_body:
+            r.fail("root owner caches", grow + summation)
+        else:
+            r.ok("root owner caches")
+    r.show_task(root_owner_caches)
+    def bulk_default_loops():
+        cfile = gendir / "bulk-default-loops-shapes.c"
+        code, out, err = r.goose("-O0", "-o", cfile, HERE / "codegen" / "bulk_default_loops.goose")
+        if code != 0:
+            r.fail("bulk default loops", out + err)
+            return
+        text = cfile.read_text()
+        bodies = re.findall(r"^static [^\n;]*\b(?:grow|fill)_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
+                            text, re.MULTILINE | re.DOTALL)
+        bulk = [b for b in bodies if "GS_MEMZERO" in b and "for (" not in b]
+        effects = [b for b in bodies if "next_g" in b and "for (" in b]
+        if len(bulk) != 4 or len(effects) != 2:
+            r.fail("bulk default loops", "\n".join(bodies))
+        else:
+            r.ok("bulk default loops")
+    r.show_task(bulk_default_loops)
+    # Inlined helpers and chains of immutable root aliases keep one spelling
+    # of each component. This caller remains out of line (multiple results).
+    def root_alias_caches():
+        cfile = gendir / "root_alias_caches-shapes.c"
+        code, out, err = r.goose("-O2", "-o", cfile, HERE / "codegen" / "root_alias_caches.goose")
+        if code != 0:
+            r.fail("root alias caches", out + err)
+            return
+        text = cfile.read_text()
+        match = re.search(r"^static [^\n;]*\bgrow_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
+                          text, re.MULTILINE | re.DOTALL)
+        body = match[1] if match else ""
+        prefix, _, loop = body.partition("for (")
+        cached = all(re.search(rf"uint8_t \*\w+ = .*\.{f}_g\.stk->top;", prefix)
+                     and re.search(rf"int64_t \w+ = .*\.{f}_g\.hdr->len;", prefix)
+                     for f in ("first", "second"))
+        # No aliases or metadata traffic in the inlined loop; bounds/runtime
+        # checks elsewhere are unaffected by this representation change.
+        loop = loop.partition("\n    }")[0]
+        if not cached or "hdr->" in loop or "stk->" in loop or "State_g *" in loop:
+            r.fail("root alias caches", body)
+        else:
+            r.ok("root alias caches")
+    r.show_task(root_alias_caches)
+    # A known owner survives out-of-line calls and recursive forwarding;
+    # merged, mutable and local owners still use the descriptor interface.
+    def root_call_identity():
+        for opt in (0, 2):
+            cfile = gendir / f"root_call_identity-O{opt}-shapes.c"
+            code, out, err = r.goose(f"-O{opt}", "-o", cfile, HERE / "codegen" / "root_call_identity.goose")
+            if code != 0:
+                r.fail(f"root call identity O{opt}", out + err)
+                continue
+            text = cfile.read_text()
+            def bodies(name):
+                return re.findall(rf"^static [^\n;]*\b{name}_g\w*\([^\n]*\) \{{\n(.*?)^\}}\n",
+                                  text, re.MULTILINE | re.DOTALL)
+            direct = bodies("known") + bodies("descend")
+            generic = bodies("shared") + bodies("shared_recursive") + bodies("dynamic")
+            if (len(direct) < 2 or not all("gs_component_one_g_" in b and "hdr->" not in b for b in direct)
+                    or len(generic) < 3 or not all("hdr->" in b for b in generic)):
+                r.fail(f"root call identity O{opt}", "\n".join(direct + generic))
+            else:
+                r.ok(f"root call identity O{opt}")
+    r.show_task(root_call_identity)
+    def root_call_caches():
+        cfile = gendir / "root_call_caches-shapes.c"
+        code, out, err = r.goose("-O2", "-o", cfile, HERE / "codegen" / "root_call_caches.goose")
+        if code != 0:
+            r.fail("root call caches", out + err)
+            return
+        text = cfile.read_text()
+        def body(name):
+            match = re.search(rf"^static [^\n;]*\b{name}_g\w*\([^\n]*\) \{{\n(.*?)^\}}\n",
+                              text, re.MULTILINE | re.DOTALL)
+            return match[1] if match else ""
+        ok = True
+        for name in ("pair", "direct"):
+            prefix, _, loop = body(name).partition("for (")
+            ok &= len(re.findall(r"uint8_t \*\w+ = .*->top;", prefix)) == 1
+            ok &= len(re.findall(r"int64_t \w+ = .*\.len;", prefix)) == 1
+            ok &= "GS_GL" not in loop.partition("\n    }")[0]
+        outer = body("outer")
+        before, call, after = outer.partition(" = inner_g(")
+        ok &= bool(call)
+        for component in (0, 1):
+            stack = rf"\(&GS_GL->gs_gstk_gs_component_state_g_{component}\)->top"
+            length = rf"GS_GL->gs_component_state_g_{component}\.len"
+            ok &= bool(re.search(stack + r" = \w+;", before) and re.search(length + r" = \w+;", before))
+            ok &= bool(re.search(r"\w+ = " + stack + ";", after) and re.search(r"\w+ = " + length + ";", after))
+        mixed = body("mixed").partition("for (")[2].partition("\n    }")[0]
+        ok &= "gs_gstk_gs_component_state_g_0)->top" in mixed and ".stk->top" in mixed
+        if ok:
+            r.ok("root call caches")
+        else:
+            r.fail("root call caches", "\n".join(body(n) for n in ("pair", "outer", "mixed", "direct")))
+    r.show_task(root_call_caches)
+    # A root reference the callee only projects or forwards arrives as its
+    # descriptor's members; one it returns, stores or captures, or that is
+    # forwarded to such a callee, as the descriptor's address.
+    def root_split_params():
+        for opt in (0, 2):
+            cfile = gendir / f"root_split_params-O{opt}-shapes.c"
+            code, out, err = r.goose(f"-O{opt}", "-o", cfile, HERE / "codegen" / "root_split_params.goose")
+            if code != 0:
+                r.fail(f"root split params O{opt}", out + err)
+                continue
+            text = cfile.read_text()
+            sigs = {m[1]: m[2] for m in re.finditer(r"^static [^\n;(]*\b(\w+?)_g(?:_\d+)?\(([^\n]*)\) \{$",
+                                                    text, re.MULTILINE)}
+            split = ("fill", "forward", "aliased", "deep")
+            whole = ("via_same", "stored", "captured")
+            ok = all(n in sigs and "_first_g_hdr" in sigs[n] and "r_S_g" not in sigs[n] for n in split)
+            ok &= all(n in sigs and "r_S_g s_g" in sigs[n] and "_first_g_hdr" not in sigs[n] for n in whole)
+            if ok:
+                r.ok(f"root split params O{opt}")
+            else:
+                r.fail(f"root split params O{opt}", "\n".join(f"{n}: {s}" for n, s in sigs.items()))
+    r.show_task(root_split_params)
     # Fields nothing can move are member stores, not stores through a
     # pointer taken first (StableDest).
     def member_stores():
@@ -1785,7 +1934,7 @@ def main():
     r.show_task(static_arrays)
 
     # Every annotated regression, including the expected-abort cases. These
-    # describe the default O1 pass; O0/O2 execution checks semantics.
+    # describe the O1 pass; O0/O2 execution checks semantics.
     r.section("bounds-check annotations")
     for f in tests:
         r.show(lambda f=f: fixtures[f].result().bce)

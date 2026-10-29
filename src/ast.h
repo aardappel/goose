@@ -507,6 +507,11 @@ struct RootAlt {
     // where every value has it, and a bound, a reference crossed and a back
     // edge's result drop it.
     bool classread = false;
+    // Within this root component's own storage, even when its owner is only
+    // lifetime-bounded (for example an owner loaded from a caller's holder).
+    // This excludes sibling fields without claiming one exact owner instance.
+    // Reading an ordinary reference out of the component loses this proof.
+    bool projected = false;
     bool operator==(const RootAlt &) const = default;
 };
 
@@ -538,7 +543,7 @@ struct Roots {
             return false;
         auto key = [how](RootAlt a) {
             if (how == Compare::Cycle) a.from = nullptr;
-            if (how == Compare::GlobalReach) a.slotread = a.classread = false;
+            if (how == Compare::GlobalReach) a.slotread = a.classread = a.projected = false;
             return a;
         };
         for (auto &a : alts)
@@ -580,6 +585,7 @@ struct Roots {
             b.exact = b.exact && a.exact;
             b.slotread = b.slotread && a.slotread;
             b.classread = b.classread && a.classread;
+            b.projected = b.projected && a.projected;
             if (b.from != a.from) b.from = nullptr;
             return b != before;
         }
@@ -598,6 +604,7 @@ struct Roots {
         for (auto &a : alts) {
             a.exact = false;
             a.classread = false;
+            a.projected = false;
         }
     }
     // Where a value was read out of (slotread, classread): nothing a
@@ -1107,9 +1114,12 @@ NODE(Call)
     // them, and checking the call again starts from it as written.
     int firstdefault = 0;
     int ndefaults = 0;
-    // free_slice/realloc_slice: the slice handed back is not provably the pool's,
+    // range_index/free_slice/realloc_slice: the slice is not provably the receiver's,
     // so codegen checks at run time that it lies inside the pool (§5.4).
     bool poolcheck = false;
+    // pop: the array is provably non-empty here (bce.h); codegen omits the
+    // emptiness check.
+    bool nobc = false;
     TypeExpr *qtype = nullptr;  // qlimit<T>: T, which names the queue (§11.2).
     const string *shaderblob = nullptr;  // embed_shader's compiled blob or embed_file's bytes, in Ast::shaders.
     Call(Line l, Node *_callee) : Node(l, NKind), callee(_callee) {}
@@ -1481,6 +1491,10 @@ struct SFunction {
     // (os.trim_memory): each caller, and transitively theirs, publishes all
     // of its cached tops before the call (CodeGen::CollectSpecs, SyncReach).
     bool readsalltops = false;
+    // A runtime entry point that reports a failure where the program called
+    // the standard library: it takes a trailing const gs_loc * (runtime.h),
+    // which its callers pass as they do a library function's (CodeGen::CallerLoc).
+    bool takesloc = false;
     bool isnested = false;
     SFunction *outer = nullptr;     // The function a nested one is declared in.
     Block *body = nullptr;
@@ -1512,6 +1526,7 @@ struct SStruct {
     Line line;
     Line end;                   // As SFunction::end.
     string_view doc;            // As SFunction::doc.
+    bool isroot = false;       // Explicit owning layout (docs/design/root_structs.md).
     vector<GenericParam> generics;
     vector<Field> fields;
     vector<StructInst *> insts;  // Instantiations (typecheck), owned by Ast.
@@ -1628,7 +1643,10 @@ NODE_END
 // because later phases (optimization/codegen) consume it alongside the AST.
 
 // Size classes (§1.1): the max over a compound's parts, subject to placement.
-enum SizeClass { SC_FIXED, SC_VARIABLE, SC_RESIZABLE };
+// A root owner is not a packed value of any size. Its control record can
+// have a fixed native size while its components occupy independent stacks.
+// Keep that distinction even for roots with no resizable fields.
+enum SizeClass { SC_FIXED, SC_VARIABLE, SC_RESIZABLE, SC_ROOT };
 
 // One checked variable: a global, local, parameter, or binding (for/match/
 // function value). Created per specialization, so generic code has concrete
@@ -1647,6 +1665,15 @@ struct VarDef {
     // A global's position in ast.globals' definitions (TypeCheck::NoteNarrowed).
     int globalindex = 0;
     bool isparam = false;
+    // Independently owned fields of a root declaration. These synthetic
+    // variables have the owner's scope and stable identities across loop
+    // checking passes, but are not source-level bindings.
+    vector<VarDef *> components;
+    VarDef *componentowner = nullptr;
+    int componentfield = -1;
+    // The root-owner type projected here. A parameter class has no concrete
+    // storage type; its components remain classes, with this path attached.
+    TypeExpr *componentbase = nullptr;
     // One of the results of `a, b = f();` (VarDecl::results), which its one
     // assignment takes as the call's value: constructed at the target, as
     // `a = f()` would construct it (TypeCheck::CheckAssign).
@@ -1686,8 +1713,8 @@ struct VarDef {
     // from the cycle store rule.
     VarDef *classfrom = nullptr;
     bool poolclass = false;
-    // The global pool every call site's argument for this class is rooted in
-    // (§3.9); null where there is none, which is the usual case.
+    // The global pool, or owner of named pool components, every call site's
+    // argument for this class is rooted in (§3.9); usually null.
     VarDef *classpool = nullptr;
     // Synthetic class roots only: the call-site root holds a grow-shrink
     // array, so the shrink rules follow the class into the body (§5.2);
@@ -1877,12 +1904,39 @@ template<typename R> bool HasRelRefOf(TypeExpr *t, bool inpool, R runs) {
     }
 }
 
+// Named storage used implicitly by a checked type: relative-reference bases
+// and index/bound lengths. The callback's flag distinguishes mutable lengths
+// from stable bases. The caller retains seen across a body if desired.
+template<typename F> void NamedArraysIn(TypeExpr *t, set<TypeExpr *> &seen, F f) {
+    if (!t || !seen.insert(t).second) return;
+    auto visit = [&](TypeExpr *ft) { NamedArraysIn(ft, seen, f); };
+    switch (t->kind) {
+        case TY_INT: if (t->ix && t->ix->arr) f(t->ix->arr, true); break;
+        case TY_REF:
+            if (t->ref->pool) f(t->ref->pool, false);
+            visit(t->ref->sub);
+            break;
+        case TY_SLICE: visit(t->sub); break;
+        case TY_ARRAY: visit(t->arr->sub); break;
+        case TY_STRUCT:
+            if (t->struc->inst) EachFieldOf(RunsOf(t->struc->inst), visit);
+            break;
+        case TY_ENUM:
+            if (t->enu->inst) EachFieldOf(RunsOf(t->enu->inst), visit);
+            break;
+        case TY_VARIANT: visit(t->var->adt); break;
+        default: break;
+    }
+}
+
 // Call-site facts about one reference/slice or holder parameter, part of the
 // specialization key (§10.2): the relative-outlives class of its root among
 // the call's reference arguments (0 = static, 1 = outermost, ...), where
 // its depth stands, and the provenance bits.
 struct RootArg {
     int cls = 0;
+    int ownerparam = -1;
+    int ownerfield = -1;
     bool writable = true;
     int reusable = 0;
     // The argument may point into a grow-shrink array (§5.2): some root of
@@ -1950,8 +2004,9 @@ struct RootArg {
     // concrete and exact, which SettleParamRootExactness settles.
     vector<pair<FnSpec *, int>> via;
     // The global pool the argument is exactly rooted in, where that global is
-    // named by some `T&<w in pool>` type in the program (§3.9); null
-    // otherwise, which is every argument of a program that has no such type.
+    // named by some `T&<w in pool>` type in the program (§3.9), or the owner
+    // of named pool components; null otherwise, which is every argument of
+    // a program that has no such type.
     // Unlike `exact` this *is* part of the key: a relative store measures from
     // this pool's base, so a call site passing a different one is a different
     // specialization rather than a fact to weaken afterwards.
@@ -1971,7 +2026,8 @@ struct RootArg {
     // whose classes differ only here still passes the arrays they describe.
     int depthkey = 0;
     bool operator==(const RootArg &o) const {
-        return cls == o.cls && writable == o.writable && reusable == o.reusable &&
+        return cls == o.cls && ownerparam == o.ownerparam && ownerfield == o.ownerfield &&
+               writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && gsvia == o.gsvia && slotread == o.slotread &&
                byteview == o.byteview && pool == o.pool && heldexact == o.heldexact &&
                unknown == o.unknown;
@@ -2054,6 +2110,7 @@ struct LiveShrink {
     TypeExpr *bound = nullptr;
     VarDef *live = nullptr;      // The root of what is still used.
     bool liveexact = true;
+    bool liveprojected = false;
     TypeExpr *pointee = nullptr; // What it points at; null: unknown.
     bool byteview = false;
     bool growonly = false;       // The shrink is §5.1's, else §5.2's.
@@ -2465,6 +2522,11 @@ struct Ast {
     }
     vector<Package> packages;
     vector<int> filepkg;                                // Per source, its package.
+    bool StdlibFile(int fileidx) const {
+        if (fileidx < 0 || fileidx >= (int)filepkg.size()) return false;
+        auto pkg = filepkg[fileidx];
+        return pkg >= 0 && pkg < (int)packages.size() && packages[pkg].stdlib;
+    }
 
     vector<Node *> allnodes;
     vector<TypeExpr *> alltypes;

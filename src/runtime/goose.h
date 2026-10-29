@@ -1,9 +1,10 @@
 /* goose.h -- for C compiled on its own, a package's or a program's sidecar
    C (docs/packages.md): the Goose values an extern fn hands it that C
-   cannot spell from the layouts alone (spec §7.10, C.2). A `u8[>..]&`
+   cannot spell from the layouts alone (spec §7.10, C.2). A `T[>..]&`
    parameter arrives as a gs_rref, the resizable's header and its data
-   stack, and C appends to it with gs_bld_append; the stack's top is where
-   the bytes go, and nothing else of it is C's to touch.
+   stack. C may write its elements and append whole ones at the stack's
+   top, moving the top and the header's count together, as gs_bld_append
+   does for the bytes of a `u8[>..]&`; nothing else of it is C's to touch.
 
    The compiler writes this header beside every native part it builds and
    puts it on that part's include path, `#include "goose.h"`, and builds

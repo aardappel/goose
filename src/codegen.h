@@ -214,7 +214,14 @@ struct CodeGen {
 
     // Abort locations: the file path becomes one static string per source
     // file in the generated code; call sites pass it plus the line number.
+    // A check in a standard library function fails where the program called
+    // the library: such a function takes that call's location, a static
+    // gs_loc, as its last parameter, gs_at, reports its own lines there, and
+    // passes it on to the library functions it calls (SpecInfo::located).
+    // Library code inlined into the program's is anchored at the call
+    // already (Inliner::AtCallSite).
     map<int, string> filerefs;
+    map<pair<int, int>, string> locrefs;
 
     string FileRef(Line l) {
         auto it = filerefs.find(l.fileidx);
@@ -228,7 +235,23 @@ struct CodeGen {
         }
         return it->second;
     }
-    string LocArgs(Line l) { return cat(FileRef(l), ", ", l.line); }
+    bool AtCaller(Line l) { return curinfo && curinfo->located && ast.StdlibFile(l.fileidx); }
+    string LocFile(Line l) { return AtCaller(l) ? string("gs_at->file") : FileRef(l); }
+    string LocLine(Line l) { return AtCaller(l) ? string("gs_at->line") : cat(l.line); }
+    string LocArgs(Line l) { return cat(LocFile(l), ", ", LocLine(l)); }
+    // What a call at l hands a callee that takes its caller's location.
+    string CallerLoc(Line l) {
+        if (AtCaller(l)) return "gs_at";
+        auto key = make_pair(l.fileidx, l.line);
+        auto it = locrefs.find(key);
+        if (it == locrefs.end()) {
+            auto file = FileRef(l);
+            auto name = Unique(cat("gs_loc", locrefs.size()));
+            Append(data, "static const gs_loc ", name, " = { ", file, ", ", l.line, " };\n");
+            it = locrefs.emplace(key, name).first;
+        }
+        return cat("&", it->second);
+    }
 
     // The trailing arguments of a gs_add/sub/mul/neg helper call: a signed
     // type's operation takes its location, for the debug build's overflow
@@ -267,12 +290,16 @@ struct CodeGen {
 
     bool IsFix(TypeExpr *t)  { return Cls(t) == SC_FIXED; }
     bool IsResz(TypeExpr *t) { return Cls(t) == SC_RESIZABLE; }
-    bool IsBytesT(TypeExpr *t) { return Cls(t) != SC_FIXED; }
+    bool IsRoot(TypeExpr *t) { return Cls(t) == SC_ROOT; }
+    bool IsBytesT(TypeExpr *t) { auto c = Cls(t); return c == SC_VARIABLE || c == SC_RESIZABLE; }
     // This is a C backend storage/ABI choice, not a language size class:
     // packed layout, copying, indexing and lifetime rules stay unchanged.
     static constexpr int64_t NATIVE_VALUE_LIMIT = 4096;
     bool IsLargeFixed(TypeExpr *t) { return IsFix(t) && FixedSize(t) > NATIVE_VALUE_LIMIT; }
-    bool NeedsStack(TypeExpr *t) { return IsBytesT(t) || IsLargeFixed(t); }
+    bool NeedsStack(TypeExpr *t) {
+        return IsBytesT(t) || IsLargeFixed(t) ||
+               (IsRoot(t) && AnyField(t, [&](TypeExpr *ft) { return NeedsStack(ft); }));
+    }
     // Declare a value, replacing name with its C lvalue when stored on a
     // data stack. A binding survives its block; a temporary its statement.
     void FixedLocal(TypeExpr *t, string &name, const string &init = "", bool forlocal = false);
@@ -306,7 +333,7 @@ struct CodeGen {
 
     static int64_t IntSize(IntStorage s) { return IntBits(s) / 8; }
 
-    static const char *IntCT(IntStorage s);
+    static const char *IntCT(IntStorage s, bool unaligned = true);
     static const char *IntSfx(IntStorage s);
     static const char *RelCT(IntStorage s, bool uns = false);
     static const char *RelCT(TypeExpr *rt);
@@ -357,7 +384,7 @@ struct CodeGen {
     bool corebuiltins = false;
 
     void EmitCoreTypes();
-    string CT(TypeExpr *t);
+    string CT(TypeExpr *t, bool unaligned = true);
     static bool StructLike(TypeExpr *t);
     string NameCT(TypeExpr *t);
     set<string> cdefined;    // Mangled names whose C body has been emitted.
@@ -418,6 +445,7 @@ struct CodeGen {
     // builds as a literal of the call's own (Call::defaultinit).
 
     bool HasFieldDefaults(TypeExpr *t);
+    bool ZeroDefaultValue(Node *n, TypeExpr *t);
     void EmitDefaultInto(const string &lv, TypeExpr *t);
 
     // ------------------------------------------------------------------
@@ -440,7 +468,8 @@ struct CodeGen {
     //   [free-variable references, §7.5]
     //   [out-pointers for fixed returns after the first]
     //   [destination stacks for nonfixed returns]
-    //   [int64_t gs_sp].
+    //   [int64_t gs_sp]
+    //   [const gs_loc *gs_at, for a standard library function].
     // The C return value is the first fixed return, else void; a `return ...
     // from` discriminant travels in the thread-local gs_rf, not the signature.
 
@@ -451,6 +480,7 @@ struct CodeGen {
         bool needssp = false;
         bool hasrf = false;
         bool readsalltops = false;   // Transitively reads every data-stack top.
+        bool located = false;        // Takes its caller's location (CallerLoc).
         int cret = -1;               // Ret index returned as the C value.
     };
     unordered_map<FnSpec *, SpecInfo> sinfo;
@@ -704,7 +734,7 @@ struct CodeGen {
         string root;      // The header's spelling, which other mentions would share.
     };
     vector<LenSlot> lenslots;
-    void NoteLen(const string &stk, const string &lenlv);
+    void NoteLen(const string &stk, const string &lenlv, const string &component = {});
     static bool LenRoot(const string &lenlv, string &root);
     bool cachetops = false;             // Any class below is cached.
     bool topown = false;                // Own indexed stacks, `GS(gs_sp + k)`.
@@ -811,21 +841,23 @@ struct CodeGen {
         // reference itself) -- so evaluating s later may reach other storage.
         bool viaref = false;
         string stk, lenlv, fl, flstk;
+        string lenroot;         // Stable root-component header for length caching.
         string hdr;            // The resizable's own header/frame-object lvalue, when it has one.
         // A loop-hoisted view of the array behind this reference (see `views`):
         // set on the reference by VarLoc, and, for the length, carried across
         // the deref to the pointee, where ArrayView reads it instead of memory.
         string hbase, hlen;
-        // A reference variable standing for a resizable variable or a frame
-        // object's tail (refalias): its pointee is that location.
+        // A reference variable standing for a resizable/root variable or a
+        // frame object's tail (refalias): its pointee is that location.
         const VarDef *aliasof = nullptr;
         Node *aliaspath = nullptr;
+        VarDef *rootowner = nullptr; // Direct owner: project to its component's normal Loc.
     };
 
     bool PrefVar(const VarDef *vd);
 
-    // A fat reference variable that cannot be rebound, bound to a resizable
-    // variable or to another such reference -- an inlined callee's `A&`
+    // A fat or root reference variable that cannot be rebound, bound to a
+    // resizable/root variable or another such reference -- an inlined callee's `A&`
     // parameter, a base-case inlining's copy of a reference argument, a
     // function value's reference parameter -- names exactly what its
     // initializer names for its whole life. It is emitted as no C variable
@@ -838,6 +870,16 @@ struct CodeGen {
     unordered_map<const VarDef *, Node *> aliaspath;
     set<const VarDef *> aliasbound;          // The aliases whose binding has been emitted.
     set<const VarDef *> capturedvars;        // Every live specialization's free variables.
+    // Root parameters whose incoming calls all name one global owner. Locals,
+    // mutable/captured references and merged owners retain their descriptors.
+    unordered_map<const VarDef *, VarDef *> knownrootparams;
+    void FindKnownRootParams();
+    // Root parameters passed as their descriptor's members (SigParams), whose
+    // body rebuilds the descriptor in a local of its own.
+    set<const VarDef *> splitroots;
+    void FindSplitRootParams();
+    static string NamedRootDesc(const string &v);
+    void PushRootMembers(vector<string> &args, TypeExpr *t, string v);
     void FindRefAliases(FnSpec *sp);
     const VarDef *AliasTarget(VarDef *d, Node *init, Node *&path);
     static bool HandedRef(Node *n);
@@ -947,6 +989,13 @@ struct CodeGen {
     bool SameCheck(Index *a, Index *b);
     void EmitHoistedCheck(Index *ta, Index *ea, const string &c);
     Loc GenLoc(Node *n);
+    // Set while GenLoc builds a location its caller uses before emitting
+    // any statement, over a path that emits none itself: an index held in a
+    // variable then stays the variable, where it is otherwise read into a
+    // temporary that later statements cannot change (IndexLoc).
+    bool locnow = false;
+    Loc GenLocNow(Node *n);
+    bool QuietValue(Node *n);
     bool StableDest(Node *n);
     string BytesTemp(string &stk);
     string RzTemp(TypeExpr *t, string &stk);
@@ -974,6 +1023,7 @@ struct CodeGen {
     string GenTruth(Node *n);
     bool SpeculativeForm(Binary *b);
     Binary *ChainOp(Node *n);
+    bool RangeTest(Binary *b, Node *&x, Node *&y);
     InlineBlock *BranchCall(Node *n);
     bool BranchChain(Node *n);
     void GenBranch(Node *n, bool when, string lbl, int exitscope = -1);
@@ -1048,6 +1098,7 @@ struct CodeGen {
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x);
     void StoreWhole(const string &p, TypeExpr *t, const string &x);
+    bool WholeStore(TypeExpr *t);
     void EmitLenCheck(IntStorage ls, const string &n);
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
     void EmitArrayCount(const string &stk, TypeExpr *at, const string &lenlv, const string &n,
@@ -1374,9 +1425,12 @@ struct CodeGen {
     vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);
     string SpanArgs(const Loc &lv);
     string PlaceRun(const Loc &lv, const string &n);
-    string SliceLen(Node *n, TypeExpr *elem, Line ln);
+    string SliceLen(Node *n, TypeExpr *elem, Line ln, const char *error = "GS_E_SLICELEN",
+                    Node *msg = nullptr);
+    string FailCall(const char *error, Node *msg, Line ln);
     void EmitSliceExtend(const Loc &lv, const string &end, int64_t esz);
     void EmitDefaultElems(const ArrView &v, const string &first, const string &count, Node *init);
+    bool BulkDefaultLoop(ForLoop *loop);
 
     // thread_spawn(worker, args...): pack the flat arguments contiguously on
     // a scratch stack, hand them to the runtime, unpack in a per-worker thunk.
@@ -1427,6 +1481,7 @@ struct CodeGen {
 
     bool StaticInitX(Node *n, TypeExpr *t, string &out);
     void EmitGlobalDecls();
+    void InitGlobalValue(VarDef *d, Node *init);
     void EmitGlobalInit();
     string GlobalLenLv(VarDef *d);
     void InitGlobalStack(VarDef *d);
@@ -1457,6 +1512,8 @@ struct CodeGen {
         CollectSpecs();
         for (auto sp : livespecs)
             for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);
+        FindKnownRootParams();
+        FindSplitRootParams();
         // Zero means "no long-distance return in flight", which is also the
         // state every propagating function's ordinary exit leaves behind.
         if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";

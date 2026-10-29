@@ -3,6 +3,7 @@
 // walking the trie breadth first from the prefix's node.
 
 import std;
+import slice_pool;
 import os;
 
 extern fn notify_start(variant: const u8[:]) = "goose_notify_start";
@@ -94,14 +95,14 @@ fn child(n: Node&, ch: u8) -> Node? {
     return null;
 }
 
-fn new_node(nodes: Node[>..]&, runs: Child[>..]&) -> Node& {
+fn new_node(nodes: Node[>..]&, runs: slice_pool<Child>&) -> Node& {
     return nodes.push(Node { children: runs.alloc_slice(0), terminal: false });
 }
 
 // The trie's nodes go in `nodes` and their maps in `runs`, which the caller
 // owns. A map grows in place where there is room after it, and otherwise
 // moves to where a new run of its size would go.
-fn generate_trie(l: i64[:], nodes: Node[>..]&, runs: Child[>..]&) -> Node& {
+fn generate_trie(l: i64[:], nodes: Node[>..]&, runs: slice_pool<Child>&) -> Node& {
     let root .= new_node(nodes, runs);
     for el in l {
         var head .= root;
@@ -132,7 +133,7 @@ fn find(upper_bound: i64, prefix: i64) -> i64[>..] {
     let primes = sieve.to_list();
     let str_prefix = str(prefix);
     var nodes: Node[>..] = [];
-    reusable[] var runs: Child[>..] = [];
+    var runs = slice_pool<Child> {};
     var head .= generate_trie(primes, nodes, runs);
 
     for ch in str_prefix {

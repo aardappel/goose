@@ -1,0 +1,4131 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "n": 1000000,
+  "grow_n": 262144,
+  "live": 4096,
+  "reps": 7,
+  "warmups": 2,
+  "affinity": 4294901760,
+  "executable": "WORKTREE\\build\\Release\\goose.exe",
+  "compiler_sha256": "3cacac6b370577baea4ee92b2adc3531db471f2957188b1f408b8bcbd5328e3c",
+  "compilers": [
+    "clang",
+    "tcc",
+    "jit"
+  ],
+  "slice_pool_sha256": "d8b0cd9a05fadf613b3ecb126d641ca527414d62229533ee4c8f641fc3287857",
+  "internal_sha256": "488048c4e67754c878aa24ae25a941833a4a1a36ba679a2444b13806e7d42e15",
+  "workload_sha256": "9f6a828d892ed88d2a38c5287a4f74fdb94e29198bfebd0caeff99e75651af92",
+  "runs": [
+    {
+      "case": "append-8B-O1-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "append",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.016476800199598074,
+          0.01676269993185997,
+          0.016502999933436513,
+          0.015948799904435873,
+          0.01808149996213615,
+          0.01614179997704923,
+          0.016630700090900064
+        ],
+        "slice_pool": [
+          0.01562339998781681,
+          0.015306900022551417,
+          0.01564809982664883,
+          0.015930899884551764,
+          0.01807829993776977,
+          0.01615010015666485,
+          0.015466599958017468
+        ],
+        "previous_slice_pool": [
+          0.016892299987375736,
+          0.015783200040459633,
+          0.016370599856600165,
+          0.12326480005867779,
+          0.016326599987223744,
+          0.015581399900838733,
+          0.01538469991646707
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.016502999933436513,
+        "slice_pool": 0.01564809982664883,
+        "previous_slice_pool": 0.016326599987223744
+      },
+      "cycles": {
+        "reusable": [
+          47390546,
+          49813381,
+          46949328,
+          47295267,
+          52798895,
+          45802507,
+          47187966
+        ],
+        "slice_pool": [
+          43180096,
+          42308392,
+          43912741,
+          45555290,
+          47917604,
+          46122693,
+          44154807
+        ],
+        "previous_slice_pool": [
+          46993966,
+          43321731,
+          45109777,
+          49864456,
+          43451782,
+          42350025,
+          42432857
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 0.9335988525025136,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.030082899844273925,
+          "c_bytes": 204376,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.40955049986951053,
+          "exe_bytes": 163328,
+          "exe_sha256": "d068b1fb2c21a7358359ce28e953a4838f2412639c4c1bdc80f24987ff64a19a"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024265200132504106,
+          "c_bytes": 212280,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.41188899986445904,
+          "exe_bytes": 165888,
+          "exe_sha256": "393d3079ceb016881a25bf330e6ad362a75dece804e93632159e02eb10fa0715"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.035900500137358904,
+          "c_bytes": 236592,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.41440350003540516,
+          "exe_bytes": 167936,
+          "exe_sha256": "c54f8bf51d4016251ce0ab4d1aebf8d28b21ccdd7c27baac7d767598afa0d9ed"
+        }
+      },
+      "port_ratio": 1.0161794284984675
+    },
+    {
+      "case": "append-8B-O1-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "append",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.023376200115308166,
+          0.024384499993175268,
+          0.023725299863144755,
+          0.023761700140312314,
+          0.0230447999201715,
+          0.023135200142860413,
+          0.022312199929729104
+        ],
+        "slice_pool": [
+          0.023632099851965904,
+          0.023201199946925044,
+          0.027735000010579824,
+          0.02438699989579618,
+          0.02342260000295937,
+          0.02368029998615384,
+          0.023253600113093853
+        ],
+        "previous_slice_pool": [
+          0.024570200126618147,
+          0.023599799955263734,
+          0.02455269987694919,
+          0.022970000049099326,
+          0.025911299977451563,
+          0.023009599884971976,
+          0.02455220022238791
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.023376200115308166,
+        "slice_pool": 0.023632099851965904,
+        "previous_slice_pool": 0.02455220022238791
+      },
+      "cycles": {
+        "reusable": [
+          78050880,
+          79488267,
+          78700686,
+          77182177,
+          77138402,
+          77231963,
+          74253319
+        ],
+        "slice_pool": [
+          79787420,
+          78005382,
+          80950548,
+          80844539,
+          77511375,
+          79747936,
+          76461548
+        ],
+        "previous_slice_pool": [
+          79165942,
+          78642746,
+          81614095,
+          76328069,
+          88258969,
+          76283862,
+          81028238
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.032576836095698,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.030082899844273925,
+          "c_bytes": 204376,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.0279770998749882,
+          "exe_bytes": 72192,
+          "exe_sha256": "804be0b081af5ef2fd1fda9e792854da2fa7d3c85cbc5348d8df9535c013f7f9"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024265200132504106,
+          "c_bytes": 212280,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02651200001128018,
+          "exe_bytes": 75264,
+          "exe_sha256": "9dacd67ed21c56e2762315333f26c3fcec5b3aeaf810e6a0bea2d10233bc98c8"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.035900500137358904,
+          "c_bytes": 236592,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02655009995214641,
+          "exe_bytes": 88064,
+          "exe_sha256": "4e304b492bab06131722061908062bd6eab370c002f01f632ffb9d35e7e72909"
+        }
+      },
+      "port_ratio": 1.0073515704518492
+    },
+    {
+      "case": "append-8B-O1-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "append",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.02795609994791448,
+          0.03351219999603927,
+          0.029105099849402905,
+          0.027708499925211072,
+          0.028500600019469857,
+          0.02743060002103448,
+          0.028638199903070927
+        ],
+        "slice_pool": [
+          0.03010439989157021,
+          0.03306389995850623,
+          0.032752699917182326,
+          0.1397923999466002,
+          0.031814799876883626,
+          0.02993729989975691,
+          0.03090350003913045
+        ],
+        "previous_slice_pool": [
+          0.03438990004360676,
+          0.03556210012175143,
+          0.03480280004441738,
+          0.03384409984573722,
+          0.033966299844905734,
+          0.034061199985444546,
+          0.033880600007250905
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.028500600019469857,
+        "slice_pool": 0.031814799876883626,
+        "previous_slice_pool": 0.034061199985444546
+      },
+      "cycles": {
+        "reusable": [
+          99720329,
+          115525188,
+          103227748,
+          99057212,
+          103033320,
+          98479081,
+          101892935
+        ],
+        "slice_pool": [
+          110415130,
+          120199611,
+          118703412,
+          118364348,
+          112095881,
+          107622332,
+          110161041
+        ],
+        "previous_slice_pool": [
+          128010612,
+          132755426,
+          129781067,
+          125616966,
+          125009216,
+          127509742,
+          126074062
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1001339886813546,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.030082899844273925,
+          "c_bytes": 204376,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024265200132504106,
+          "c_bytes": 212280,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.035900500137358904,
+          "c_bytes": 236592,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.8791162090187588
+    },
+    {
+      "case": "append-8B-O2-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "append",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.016757800010964274,
+          0.01821060013025999,
+          0.016160800121724606,
+          0.01663450011983514,
+          0.02331640012562275,
+          0.016497200122103095,
+          0.015826900023967028
+        ],
+        "slice_pool": [
+          0.016108199954032898,
+          0.016082199988886714,
+          0.01610059989616275,
+          0.015400099800899625,
+          0.01603540009818971,
+          0.015295099932700396,
+          0.015858099795877934
+        ],
+        "previous_slice_pool": [
+          0.016142899869009852,
+          0.015791599871590734,
+          0.016116100130602717,
+          0.016962700057774782,
+          0.015426399884745479,
+          0.015749200014397502,
+          0.015487000113353133
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.01663450011983514,
+        "slice_pool": 0.01603540009818971,
+        "previous_slice_pool": 0.015791599871590734
+      },
+      "cycles": {
+        "reusable": [
+          47028737,
+          54838027,
+          47214144,
+          46456610,
+          50306960,
+          48215469,
+          45983202
+        ],
+        "slice_pool": [
+          46914564,
+          45712375,
+          45343263,
+          42937167,
+          44944966,
+          43781405,
+          45420516
+        ],
+        "previous_slice_pool": [
+          45996934,
+          44601174,
+          44363830,
+          45975047,
+          42298519,
+          44494305,
+          44238934
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 0.9603745648761524,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.022239600075408816,
+          "c_bytes": 204376,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.42898490000516176,
+          "exe_bytes": 163328,
+          "exe_sha256": "f978d5df23dfbd0b8706676d5b7cde108434f436c8392052b119af36f2ee8bae"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024929899955168366,
+          "c_bytes": 212280,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4509659002069384,
+          "exe_bytes": 165888,
+          "exe_sha256": "5b0bb077192013beb958ddf0f0a4c0ff12a4070e1c2e418604ebc802a879ff03"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.026874099858105183,
+          "c_bytes": 236907,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.41431750007905066,
+          "exe_bytes": 167936,
+          "exe_sha256": "55e904eb46abd65962440686521452b8e4494dd515b6170d42767207daf80b54"
+        }
+      },
+      "port_ratio": 1.0190801496955622
+    },
+    {
+      "case": "append-8B-O2-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "append",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.023569799959659576,
+          0.023937900085002184,
+          0.023607000010088086,
+          0.02290969993919134,
+          0.023076900048181415,
+          0.022854499984532595,
+          0.023495399858802557
+        ],
+        "slice_pool": [
+          0.023567700060084462,
+          0.023152900161221623,
+          0.02450580010190606,
+          0.02430699998512864,
+          0.022694700164720416,
+          0.022675500018522143,
+          0.023467199876904488
+        ],
+        "previous_slice_pool": [
+          0.023891299962997437,
+          0.024091399973258376,
+          0.024777600076049566,
+          0.02327160001732409,
+          0.023271500132977962,
+          0.023608800023794174,
+          0.023146599996834993
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.023495399858802557,
+        "slice_pool": 0.023467199876904488,
+        "previous_slice_pool": 0.023608800023794174
+      },
+      "cycles": {
+        "reusable": [
+          78277068,
+          80530792,
+          76055958,
+          75688563,
+          76166690,
+          76326355,
+          78329858
+        ],
+        "slice_pool": [
+          79316589,
+          76870578,
+          82154890,
+          79750512,
+          76254247,
+          76407045,
+          77595500
+        ],
+        "previous_slice_pool": [
+          77632406,
+          79532905,
+          81026952,
+          77189905,
+          76501038,
+          76316909,
+          77106212
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.016627873818945,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.022239600075408816,
+          "c_bytes": 204376,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026325799990445375,
+          "exe_bytes": 72192,
+          "exe_sha256": "d0f2209080d8ad6784ab3f91e017eb608b6f4ff216796d4d8a947ec6fc94df68"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024929899955168366,
+          "c_bytes": 212280,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02597529999911785,
+          "exe_bytes": 75264,
+          "exe_sha256": "fbdcdb9fe450aa1af8bd1410cbc1ed0bf3e9d91c392afcfe66e4dcf03bac0ca1"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.026874099858105183,
+          "c_bytes": 236907,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.025442900136113167,
+          "exe_bytes": 88064,
+          "exe_sha256": "1589c0fab6e0564f72cef1c9308a25a027056274449707fea8c7f4a94dcfa5c7"
+        }
+      },
+      "port_ratio": 1.0052545083453595
+    },
+    {
+      "case": "append-8B-O2-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "append",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.027532099978998303,
+          0.027278600027784705,
+          0.02851019985973835,
+          0.029123000102117658,
+          0.02787810005247593,
+          0.02810749993659556,
+          0.027192399837076664
+        ],
+        "slice_pool": [
+          0.029263100121170282,
+          0.03005849989131093,
+          0.029046099865809083,
+          0.030956000089645386,
+          0.02912389999255538,
+          0.029493700014427304,
+          0.029443399980664253
+        ],
+        "previous_slice_pool": [
+          0.033906899858266115,
+          0.03468120004981756,
+          0.03668290004134178,
+          0.03386200009845197,
+          0.03324540005996823,
+          0.0329154001083225,
+          0.03374530002474785
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.02787810005247593,
+        "slice_pool": 0.029443399980664253,
+        "previous_slice_pool": 0.03386200009845197
+      },
+      "cycles": {
+        "reusable": [
+          98973523,
+          97757599,
+          102379653,
+          104152246,
+          100097597,
+          100566281,
+          98646900
+        ],
+        "slice_pool": [
+          106958786,
+          108979460,
+          105728274,
+          110648192,
+          106472074,
+          107081107,
+          106757063
+        ],
+        "previous_slice_pool": [
+          126992118,
+          129664753,
+          137272324,
+          125909675,
+          123958538,
+          123332336,
+          123686428
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.068544992144017,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.022239600075408816,
+          "c_bytes": 204376,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024929899955168366,
+          "c_bytes": 212280,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.026874099858105183,
+          "c_bytes": 236907,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.8494882224102318
+    },
+    {
+      "case": "append-128B-O1-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "append",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.0938311000354588,
+          0.0934625999070704,
+          0.09402570012025535,
+          0.20444330014288425,
+          0.09396050008945167,
+          0.09371590008959174,
+          0.09586680005304515
+        ],
+        "slice_pool": [
+          0.09808830008842051,
+          0.09626569994725287,
+          0.09538899990729988,
+          0.0939024998806417,
+          0.09886419982649386,
+          0.09450839995406568,
+          0.09387059998698533
+        ],
+        "previous_slice_pool": [
+          0.09549219999462366,
+          0.09953040000982583,
+          0.09366960008628666,
+          0.09529890003614128,
+          0.09490599995478988,
+          0.0946498999837786,
+          0.09518210007809103
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.09396050008945167,
+        "slice_pool": 0.09538899990729988,
+        "previous_slice_pool": 0.09518210007809103
+      },
+      "cycles": {
+        "reusable": [
+          375474461,
+          373713888,
+          376160320,
+          382316332,
+          376276205,
+          373335333,
+          384007811
+        ],
+        "slice_pool": [
+          393122739,
+          381918470,
+          379387047,
+          375714383,
+          378896900,
+          378870295,
+          376967226
+        ],
+        "previous_slice_pool": [
+          379519665,
+          378272419,
+          375488196,
+          377998591,
+          380743317,
+          375603645,
+          379580183
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0072750363462046,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.027494900161400437,
+          "c_bytes": 204413,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4108496999833733,
+          "exe_bytes": 163840,
+          "exe_sha256": "a16f9d619ac5ed64b107dcf40a9c20de7cf90b1315b12d0b27bd7d00649b40b0"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024824899854138494,
+          "c_bytes": 212321,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.40784660005010664,
+          "exe_bytes": 166400,
+          "exe_sha256": "eec056168bb2e984baf5ce0cedc26d5d1577d3d5868de21bba4873a797eb79ac"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.02860679989680648,
+          "c_bytes": 236633,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.42299559991806746,
+          "exe_bytes": 168448,
+          "exe_sha256": "4d625715365dcfee9530b683707676eca258d73225f92bb50500004711bd434a"
+        }
+      },
+      "port_ratio": 1.0016508763754197
+    },
+    {
+      "case": "append-128B-O1-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "append",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.17514549987390637,
+          0.17491010017693043,
+          0.18243560008704662,
+          0.1776966000907123,
+          0.1777031000237912,
+          0.17648569983430207,
+          0.17697179992683232
+        ],
+        "slice_pool": [
+          0.1804418999236077,
+          0.18533740006387234,
+          0.1818942001555115,
+          0.18196820002049208,
+          0.181521600112319,
+          0.18624439998529851,
+          0.18435949995182455
+        ],
+        "previous_slice_pool": [
+          0.18042429978959262,
+          0.18047070014290512,
+          0.18101820000447333,
+          0.18349600001238286,
+          0.17961500003002584,
+          0.18107270007021725,
+          0.18122470006346703
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.17697179992683232,
+        "slice_pool": 0.18196820002049208,
+        "previous_slice_pool": 0.18101820000447333
+      },
+      "cycles": {
+        "reusable": [
+          725683640,
+          724658281,
+          754459351,
+          734755212,
+          735581412,
+          729209081,
+          733609672
+        ],
+        "slice_pool": [
+          746928179,
+          767564114,
+          753637436,
+          753315533,
+          752102615,
+          769849604,
+          762143311
+        ],
+        "previous_slice_pool": [
+          745741003,
+          745954321,
+          746084793,
+          757468899,
+          743276116,
+          747851814,
+          752339524
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0273002998248366,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.027494900161400437,
+          "c_bytes": 204413,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.0271588999312371,
+          "exe_bytes": 72192,
+          "exe_sha256": "a7b12181b0abec0c986aadf3922caa0da484bc612ed0031e1824ac7bdc9fd55f"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024824899854138494,
+          "c_bytes": 212321,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02593560004606843,
+          "exe_bytes": 75264,
+          "exe_sha256": "47d8bea0723f924ccd0e176b8d27d51d60bd941fc1e333a9f9ffc9f65a36c4e0"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.02860679989680648,
+          "c_bytes": 236633,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02672949992120266,
+          "exe_bytes": 88064,
+          "exe_sha256": "b4c9435e7aa6fa1f8d7f57ca7ae67857fff7cdc4d2186d23d1d313ee3a9b16c9"
+        }
+      },
+      "port_ratio": 1.0101230357070152
+    },
+    {
+      "case": "append-128B-O1-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "append",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.18015830009244382,
+          0.18343000020831823,
+          0.17711040005087852,
+          0.17639719997532666,
+          0.17665469995699823,
+          0.18083409988321364,
+          0.1787849001120776
+        ],
+        "slice_pool": [
+          0.18013700004667044,
+          0.18204759992659092,
+          0.18404589989222586,
+          0.17812880012206733,
+          0.18754700012505054,
+          0.1853712999727577,
+          0.179765900131315
+        ],
+        "previous_slice_pool": [
+          0.18396369996480644,
+          0.1895904999691993,
+          0.1879159000236541,
+          0.18649140000343323,
+          0.19205679977312684,
+          0.18519129999913275,
+          0.18775629997253418
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.1787849001120776,
+        "slice_pool": 0.18204759992659092,
+        "previous_slice_pool": 0.18775629997253418
+      },
+      "cycles": {
+        "reusable": [
+          750072929,
+          764246398,
+          737716255,
+          732743970,
+          733622121,
+          752648984,
+          743481273
+        ],
+        "slice_pool": [
+          749605102,
+          756250832,
+          763360523,
+          741606531,
+          781081337,
+          771326048,
+          746545326
+        ],
+        "previous_slice_pool": [
+          766166634,
+          792929828,
+          781842733,
+          777421972,
+          799271267,
+          771495152,
+          781674918
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0171753606496017,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.027494900161400437,
+          "c_bytes": 204413,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024824899854138494,
+          "c_bytes": 212321,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.02860679989680648,
+          "c_bytes": 236633,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.9674748601822222
+    },
+    {
+      "case": "append-128B-O2-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "append",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.09376000007614493,
+          0.09422859991900623,
+          0.09680650010704994,
+          0.0942673000972718,
+          0.0939982000272721,
+          0.09338350011967123,
+          0.10282979998737574
+        ],
+        "slice_pool": [
+          0.09508580015972257,
+          0.09526029997505248,
+          0.09566319989971817,
+          0.10229579987935722,
+          0.09535429999232292,
+          0.09522500005550683,
+          0.09471450001001358
+        ],
+        "previous_slice_pool": [
+          0.09546550014056265,
+          0.0954668999183923,
+          0.09539539995603263,
+          0.09554730006493628,
+          0.09580220002681017,
+          0.09463639999739826,
+          0.09822809998877347
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.09422859991900623,
+        "slice_pool": 0.09526029997505248,
+        "previous_slice_pool": 0.0954668999183923
+      },
+      "cycles": {
+        "reusable": [
+          373931914,
+          377352203,
+          386946974,
+          376717855,
+          373930629,
+          373902730,
+          405739067
+        ],
+        "slice_pool": [
+          379620535,
+          379648433,
+          380111109,
+          410320772,
+          380484510,
+          380659193,
+          379451858
+        ],
+        "previous_slice_pool": [
+          379116226,
+          379496496,
+          378314049,
+          378652257,
+          378630363,
+          378353106,
+          389647075
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0090074148463177,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.023893000092357397,
+          "c_bytes": 204413,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.40868150000460446,
+          "exe_bytes": 163840,
+          "exe_sha256": "7988781443c8d367048cf14135ff2bb5794adf77dbc2176a7fe6d6ded2735705"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024182500084862113,
+          "c_bytes": 212321,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4053962000180036,
+          "exe_bytes": 166400,
+          "exe_sha256": "562bc1c8505bb74512945aab98ba5aba8531c7cda6ff9e5f55acce911309046e"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.027239100076258183,
+          "c_bytes": 236948,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4157992999535054,
+          "exe_bytes": 168448,
+          "exe_sha256": "2aa1e568874d17a728a0eeeb20820c6a64ffa438bbf2e07698c0b0c91b13b1a9"
+        }
+      },
+      "port_ratio": 1.0038527487240094
+    },
+    {
+      "case": "append-128B-O2-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "append",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.17457529995590448,
+          0.18163350014947355,
+          0.17731920001097023,
+          0.1834322998765856,
+          0.2807535999454558,
+          0.18032689997926354,
+          0.17738900007680058
+        ],
+        "slice_pool": [
+          0.18043170007877052,
+          0.18330730008892715,
+          0.18516959995031357,
+          0.18541660020127892,
+          0.17993000010028481,
+          0.18221409991383553,
+          0.18471159995533526
+        ],
+        "previous_slice_pool": [
+          0.1829157001338899,
+          0.18151180003769696,
+          0.181208600057289,
+          0.18126780004240572,
+          0.1821829997934401,
+          0.18674940010532737,
+          0.18318459996953607
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.18032689997926354,
+        "slice_pool": 0.18330730008892715,
+        "previous_slice_pool": 0.1821829997934401
+      },
+      "cycles": {
+        "reusable": [
+          724252688,
+          749666042,
+          731942667,
+          758113991,
+          729611240,
+          738882394,
+          729478195
+        ],
+        "slice_pool": [
+          745628989,
+          757996815,
+          764115487,
+          767576994,
+          744002754,
+          751572550,
+          764990627
+        ],
+        "previous_slice_pool": [
+          756042665,
+          749829997,
+          748687047,
+          748285300,
+          753523687,
+          747520470,
+          751100438
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.03559588636469,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.023893000092357397,
+          "c_bytes": 204413,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026675899978727102,
+          "exe_bytes": 72192,
+          "exe_sha256": "8d9417b80589c2842a6e512a9440214285f5c128d8d81a2d1ca6bd710ce69d7c"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024182500084862113,
+          "c_bytes": 212321,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.025917699793353677,
+          "exe_bytes": 75264,
+          "exe_sha256": "7d10f108d9bda0a154c447db78f095ad137b9674c20bdbfc98349a10e9b6d4f1"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.027239100076258183,
+          "c_bytes": 236948,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027245899895206094,
+          "exe_bytes": 88064,
+          "exe_sha256": "2d2f4ac90781819b77d19fe4afa9dcb7c53e3c917307be1dcb83e04b9e1f2fd1"
+        }
+      },
+      "port_ratio": 1.0108915594637113
+    },
+    {
+      "case": "append-128B-O2-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "append",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "343595548672 42949692094 4194306",
+      "seconds": {
+        "reusable": [
+          0.17764890007674694,
+          0.18217759998515248,
+          0.18233669991604984,
+          0.1816082000732422,
+          0.17827480006963015,
+          0.18153430009260774,
+          0.17922359984368086
+        ],
+        "slice_pool": [
+          0.18052159994840622,
+          0.1840394998434931,
+          0.18431840022094548,
+          0.1836312001105398,
+          0.1826547000091523,
+          0.1827563000842929,
+          0.18284079991281033
+        ],
+        "previous_slice_pool": [
+          0.18398609990254045,
+          0.18504929984919727,
+          0.19118160009384155,
+          0.1875579000916332,
+          0.18810379994101822,
+          0.19108589994721115,
+          0.18866200000047684
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.18153430009260774,
+        "slice_pool": 0.18284079991281033,
+        "previous_slice_pool": 0.18810379994101822
+      },
+      "cycles": {
+        "reusable": [
+          739193132,
+          759092989,
+          758265495,
+          755023753,
+          740921514,
+          755936217,
+          745367603
+        ],
+        "slice_pool": [
+          749502091,
+          766070492,
+          767252513,
+          765262318,
+          761357876,
+          759389131,
+          762014976
+        ],
+        "previous_slice_pool": [
+          766034017,
+          771592584,
+          794514008,
+          781625130,
+          782013130,
+          796463871,
+          781044864
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0092596066974333,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.023893000092357397,
+          "c_bytes": 204413,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.024182500084862113,
+          "c_bytes": 212321,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.027239100076258183,
+          "c_bytes": 236948,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.9749110497509209
+    },
+    {
+      "case": "fragmented-8B-O1-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "fragmented",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.10706840013153851,
+          0.10631690011359751,
+          0.10780609981156886,
+          0.10591650009155273,
+          0.10602870001457632,
+          0.10732249985449016,
+          0.10589230014011264
+        ],
+        "slice_pool": [
+          0.10648180008865893,
+          0.10487539996393025,
+          0.1073741998989135,
+          0.10599700012244284,
+          0.10676590004004538,
+          0.10593720013275743,
+          0.1050744999665767
+        ],
+        "previous_slice_pool": [
+          0.1188177999574691,
+          0.11832990008406341,
+          0.11970419995486736,
+          0.11730209994129837,
+          0.11873740004375577,
+          0.11787840002216399,
+          0.1176973998080939
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.10631690011359751,
+        "slice_pool": 0.10599700012244284,
+        "previous_slice_pool": 0.11832990008406341
+      },
+      "cycles": {
+        "reusable": [
+          433231471,
+          431266598,
+          435244419,
+          428878523,
+          429295715,
+          432226288,
+          429278114
+        ],
+        "slice_pool": [
+          430211200,
+          424252616,
+          434840123,
+          428808997,
+          432193669,
+          427411952,
+          424734603
+        ],
+        "previous_slice_pool": [
+          481115174,
+          481697596,
+          482296759,
+          477164816,
+          480929329,
+          477983294,
+          476366933
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 0.9943014343995173,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02416980010457337,
+          "c_bytes": 210678,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4812654999550432,
+          "exe_bytes": 171008,
+          "exe_sha256": "b5468e8fc87170a09fde3613f92da2196a1cfbfe1366c8b1f268053465c2a6af"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.025514600099995732,
+          "c_bytes": 233838,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.49656209978275,
+          "exe_bytes": 173568,
+          "exe_sha256": "c3793fbd0954d181a5593d99375b524fdf1bb572f5c1e6d39dcef4c0b5586235"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030026799999177456,
+          "c_bytes": 286313,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.48401160002686083,
+          "exe_bytes": 175616,
+          "exe_sha256": "24b7970cd89775e2f8794268b843ebcc53cb70364015296882e63e3af6d60486"
+        }
+      },
+      "port_ratio": 0.8916257985172703
+    },
+    {
+      "case": "fragmented-8B-O1-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "fragmented",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.2126635001040995,
+          0.21226639999076724,
+          0.21179670002311468,
+          0.21181449992582202,
+          0.21732980012893677,
+          0.21302589983679354,
+          0.21189870010130107
+        ],
+        "slice_pool": [
+          0.23233119980432093,
+          0.23068080004304647,
+          0.229226800147444,
+          0.2299705999903381,
+          0.23110070009715855,
+          0.22939169988967478,
+          0.23057879996486008
+        ],
+        "previous_slice_pool": [
+          0.3139137998223305,
+          0.31298980000428855,
+          0.31223440007306635,
+          0.3131885000038892,
+          0.31355750001966953,
+          0.41883919993415475,
+          0.31269600009545684
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.21226639999076724,
+        "slice_pool": 0.23057879996486008,
+        "previous_slice_pool": 0.3131885000038892
+      },
+      "cycles": {
+        "reusable": [
+          885952923,
+          885094094,
+          883039087,
+          882149783,
+          904726134,
+          886223323,
+          883437386
+        ],
+        "slice_pool": [
+          969934918,
+          963320085,
+          956133554,
+          959763301,
+          963343685,
+          956585937,
+          959646140
+        ],
+        "previous_slice_pool": [
+          1319086103,
+          1314131434,
+          1310523997,
+          1315325469,
+          1315966700,
+          1312554970,
+          1314988966
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0843630157586386,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02416980010457337,
+          "c_bytes": 210678,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026609400054439902,
+          "exe_bytes": 76288,
+          "exe_sha256": "4a09526be55c50fdb0b0f87286e8f030b793242a44c54932955b1df1c05802fa"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.025514600099995732,
+          "c_bytes": 233838,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026375300018116832,
+          "exe_bytes": 83456,
+          "exe_sha256": "cea3f98562f6f5079dda5183494169ecfed5e9fe3d51e52d9126d08cf5e7013a"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030026799999177456,
+          "c_bytes": 286313,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027062700130045414,
+          "exe_bytes": 110592,
+          "exe_sha256": "da21b1a534555770cfeabfdc88dbd2bb34266fb5760dd35d949c8e500cf24877"
+        }
+      },
+      "port_ratio": 0.7298641477726285
+    },
+    {
+      "case": "fragmented-8B-O1-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "fragmented",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.1284973998554051,
+          0.12847019988112152,
+          0.12866499996744096,
+          0.12791919987648726,
+          0.12798640015535057,
+          0.12752179987728596,
+          0.12907440005801618
+        ],
+        "slice_pool": [
+          0.15342470002360642,
+          0.15230539999902248,
+          0.15269850008189678,
+          0.1541761001572013,
+          0.15453459997661412,
+          0.15304149989970028,
+          0.15431559993885458
+        ],
+        "previous_slice_pool": [
+          0.3307864998932928,
+          0.3290541998576373,
+          0.3278733999468386,
+          0.32999620004557073,
+          0.3298597000539303,
+          0.3304872999433428,
+          0.33518910012207925
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.12847019988112152,
+        "slice_pool": 0.15342470002360642,
+        "previous_slice_pool": 0.32999620004557073
+      },
+      "cycles": {
+        "reusable": [
+          530664168,
+          528378250,
+          529358111,
+          527807844,
+          527300524,
+          524860525,
+          530440120
+        ],
+        "slice_pool": [
+          637411364,
+          633118067,
+          634085917,
+          638850033,
+          638563330,
+          635467944,
+          636507891
+        ],
+        "previous_slice_pool": [
+          1396646416,
+          1388478301,
+          1383844675,
+          1392585757,
+          1390698566,
+          1395004296,
+          1415749246
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.2046443830721647,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02416980010457337,
+          "c_bytes": 210678,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.025514600099995732,
+          "c_bytes": 233838,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030026799999177456,
+          "c_bytes": 286313,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.45706908016293896
+    },
+    {
+      "case": "fragmented-8B-O2-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "fragmented",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.10644029988907278,
+          0.10490099992603064,
+          0.10489670000970364,
+          0.10561219998635352,
+          0.10537809995003045,
+          0.10578770004212856,
+          0.10638250014744699
+        ],
+        "slice_pool": [
+          0.21265839994885027,
+          0.10488720005378127,
+          0.10381689993664622,
+          0.10514560015872121,
+          0.10400970000773668,
+          0.10457319999113679,
+          0.10774110001511872
+        ],
+        "previous_slice_pool": [
+          0.11569699994288385,
+          0.11577220004983246,
+          0.11564469989389181,
+          0.11699160002171993,
+          0.11536770011298358,
+          0.11541680013760924,
+          0.11602420010603964
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.10561219998635352,
+        "slice_pool": 0.10488720005378127,
+        "previous_slice_pool": 0.11569699994288385
+      },
+      "cycles": {
+        "reusable": [
+          432189371,
+          427070732,
+          426388739,
+          428508986,
+          425942375,
+          425428191,
+          430966583
+        ],
+        "slice_pool": [
+          424801991,
+          424734606,
+          422499330,
+          426409339,
+          423743577,
+          424407549,
+          435914404
+        ],
+        "previous_slice_pool": [
+          471426418,
+          471266322,
+          471786943,
+          473228619,
+          469792019,
+          468861944,
+          472898574
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 0.9945298850402139,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024192800046876073,
+          "c_bytes": 210678,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.483294399920851,
+          "exe_bytes": 171008,
+          "exe_sha256": "75cba01f278fadee151808055dcd1cbf4d3092f216e83175e8da80a8779976f6"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02643349999561906,
+          "c_bytes": 233838,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.49371850001625717,
+          "exe_bytes": 173568,
+          "exe_sha256": "2583951f702ac86b80610dd5ccdb77bf2491f0528e50df6283d86018fdfc142a"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03010200010612607,
+          "c_bytes": 291302,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4856236001942307,
+          "exe_bytes": 175104,
+          "exe_sha256": "e3de6cd07fab437b1a2b2dd4876552b4e6b411bd1c5ce5549e6d6e1b73d98f81"
+        }
+      },
+      "port_ratio": 0.9009563100046718
+    },
+    {
+      "case": "fragmented-8B-O2-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "fragmented",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.2121077999472618,
+          0.21230869996361434,
+          0.2150320999789983,
+          0.21512629999779165,
+          0.21424450003542006,
+          0.2116499999538064,
+          0.21135309990495443
+        ],
+        "slice_pool": [
+          0.22901819995604455,
+          0.23029879992827773,
+          0.23009020020253956,
+          0.2329937000758946,
+          0.2290475000627339,
+          0.22911760001443326,
+          0.33581760013476014
+        ],
+        "previous_slice_pool": [
+          0.3145831001456827,
+          0.31302960007451475,
+          0.31328699993900955,
+          0.31284789997152984,
+          0.312829100061208,
+          0.3135621000546962,
+          0.31566329998895526
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.21230869996361434,
+        "slice_pool": 0.23009020020253956,
+        "previous_slice_pool": 0.31328699993900955
+      },
+      "cycles": {
+        "reusable": [
+          884200500,
+          881954926,
+          895556279,
+          893425723,
+          890292136,
+          880451871,
+          881293960
+        ],
+        "slice_pool": [
+          957574389,
+          961299414,
+          961562947,
+          966885027,
+          957434031,
+          954897887,
+          963179737
+        ],
+        "previous_slice_pool": [
+          1319931644,
+          1314967938,
+          1315735778,
+          1313864455,
+          1315059362,
+          1316527230,
+          1320939832
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0871961890996442,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024192800046876073,
+          "c_bytes": 210678,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02612060005776584,
+          "exe_bytes": 76288,
+          "exe_sha256": "8994d38a3b7d828b11b11b56ecba2fb8eeabfe1bedf5132d3f72fb7ea09b9d92"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02643349999561906,
+          "c_bytes": 233838,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027819900074973702,
+          "exe_bytes": 83456,
+          "exe_sha256": "ce9338e96482fa3abc09ff8ae1170c41b2c7f549b5b37b7295016750ef3f6a9a"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03010200010612607,
+          "c_bytes": 291302,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.029105700086802244,
+          "exe_bytes": 112128,
+          "exe_sha256": "b3ffd35f5062a457c85b2bc7142f0acffc5c7b5b865ac29c45b805d740ce7e16"
+        }
+      },
+      "port_ratio": 0.7306173701996876
+    },
+    {
+      "case": "fragmented-8B-O2-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "fragmented",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.12880280008539557,
+          0.12940960004925728,
+          0.12903230008669198,
+          0.1290114999283105,
+          0.1283599000889808,
+          0.1285447000991553,
+          0.12956009991467
+        ],
+        "slice_pool": [
+          0.15321290004067123,
+          0.15503970021381974,
+          0.1567632001824677,
+          0.15346949989907444,
+          0.15256830002181232,
+          0.15210269996896386,
+          0.15536949993111193
+        ],
+        "previous_slice_pool": [
+          0.3460729999933392,
+          0.33229160006158054,
+          0.3321813999209553,
+          0.3313528001308441,
+          0.33320620004087687,
+          0.33225440001115203,
+          0.33378129987977445
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.1290114999283105,
+        "slice_pool": 0.15346949989907444,
+        "previous_slice_pool": 0.33229160006158054
+      },
+      "cycles": {
+        "reusable": [
+          530321668,
+          532781413,
+          532293842,
+          532925194,
+          529153387,
+          528381689,
+          533130780
+        ],
+        "slice_pool": [
+          633982473,
+          640963843,
+          648503605,
+          636731507,
+          632815058,
+          631239892,
+          643410278
+        ],
+        "previous_slice_pool": [
+          1461361180,
+          1402568514,
+          1400297188,
+          1398685545,
+          1405519255,
+          1404310639,
+          1410300567
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.196203030656139,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024192800046876073,
+          "c_bytes": 210678,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02643349999561906,
+          "c_bytes": 233838,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03010200010612607,
+          "c_bytes": 291302,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.4534121506431171
+    },
+    {
+      "case": "fragmented-128B-O1-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "fragmented",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.14288019994273782,
+          0.25360130006447434,
+          0.14530209987424314,
+          0.14290240011177957,
+          0.14462629985064268,
+          0.14633610006421804,
+          0.14464369998313487
+        ],
+        "slice_pool": [
+          0.14522959990426898,
+          0.14917099988088012,
+          0.14591929991729558,
+          0.14381289994344115,
+          0.14744090009480715,
+          0.14557010005228221,
+          0.14394900016486645
+        ],
+        "previous_slice_pool": [
+          0.15693069994449615,
+          0.15954819996841252,
+          0.15596969984471798,
+          0.15605049999430776,
+          0.15661099995486438,
+          0.15686660003848374,
+          0.15320239984430373
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.14464369998313487,
+        "slice_pool": 0.14557010005228221,
+        "previous_slice_pool": 0.15661099995486438
+      },
+      "cycles": {
+        "reusable": [
+          586029683,
+          592292133,
+          591929026,
+          587508270,
+          589164987,
+          592405028,
+          593643259
+        ],
+        "slice_pool": [
+          592315746,
+          606058727,
+          591180505,
+          586827990,
+          590962057,
+          592341930,
+          591080935
+        ],
+        "previous_slice_pool": [
+          639297695,
+          652099442,
+          634762768,
+          636446087,
+          643481964,
+          640027765,
+          630024392
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 0.9987354548144763,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.029484600061550736,
+          "c_bytes": 210757,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.48319309996441007,
+          "exe_bytes": 172032,
+          "exe_sha256": "100724e0c0f2aa78372a27d3079e46214904c0262b6ed17477bb1f27b5d9b751"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02525550010614097,
+          "c_bytes": 233929,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.5127091000322253,
+          "exe_bytes": 174080,
+          "exe_sha256": "2a65703e8ec8b9ea919c9f5e258f4ae09f300891bbc13215c281cfcbfce2df63"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.031748600071296096,
+          "c_bytes": 286404,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4940909000579268,
+          "exe_bytes": 176128,
+          "exe_sha256": "88473b31fe0590e3479d385a3f4b7ad136da2c355ff5d925d5d00f43c61ebcbd"
+        }
+      },
+      "port_ratio": 0.9247342976889663
+    },
+    {
+      "case": "fragmented-128B-O1-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "fragmented",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.2662098999135196,
+          0.2649968999903649,
+          0.27503969985991716,
+          0.2694935998879373,
+          0.2675034999847412,
+          0.2639095999766141,
+          0.2666037001181394
+        ],
+        "slice_pool": [
+          0.28715360001660883,
+          0.2942313998937607,
+          0.2888358999043703,
+          0.2846798999235034,
+          0.28928669984452426,
+          0.28372299997135997,
+          0.28322799992747605
+        ],
+        "previous_slice_pool": [
+          0.38228129991330206,
+          0.38982219994068146,
+          0.38424629997462034,
+          0.37627540016546845,
+          0.3782804000657052,
+          0.3794204001314938,
+          0.3735158001072705
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.2666037001181394,
+        "slice_pool": 0.28715360001660883,
+        "previous_slice_pool": 0.3794204001314938
+      },
+      "cycles": {
+        "reusable": [
+          1112975263,
+          1106790916,
+          1152948373,
+          1126385616,
+          1118307622,
+          1102743129,
+          1115054300
+        ],
+        "slice_pool": [
+          1203834331,
+          1233685607,
+          1206830999,
+          1192189264,
+          1207277801,
+          1184381265,
+          1186608380
+        ],
+        "previous_slice_pool": [
+          1601802287,
+          1640429001,
+          1618125646,
+          1583852288,
+          1590138783,
+          1595975481,
+          1570383569
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0796194687559162,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.029484600061550736,
+          "c_bytes": 210757,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026062400080263615,
+          "exe_bytes": 76288,
+          "exe_sha256": "5382c2ee97c1511ab09a86d01fab07c21cab3f92f1ce5e11be8900e99770ab27"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02525550010614097,
+          "c_bytes": 233929,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02627350017428398,
+          "exe_bytes": 83456,
+          "exe_sha256": "9f8e032954016f3fee685fea53aec471f20539e72dae97b032502154165a24f1"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.031748600071296096,
+          "c_bytes": 286404,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027811399893835187,
+          "exe_bytes": 110592,
+          "exe_sha256": "bf185a932ef70bbb9731185360a5d36793272c73b199192b54935c01cc6f79aa"
+        }
+      },
+      "port_ratio": 0.754293750331118
+    },
+    {
+      "case": "fragmented-128B-O1-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "fragmented",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.2398392998147756,
+          0.17708819988183677,
+          0.17937169992364943,
+          0.17991770012304187,
+          0.18061450007371604,
+          0.1793080000206828,
+          0.1762184000108391
+        ],
+        "slice_pool": [
+          0.20650459988974035,
+          0.202413700055331,
+          0.20482750004157424,
+          0.20599650009535253,
+          0.20407320000231266,
+          0.20298509998247027,
+          0.20286950003355742
+        ],
+        "previous_slice_pool": [
+          0.3964451998472214,
+          0.3937113001011312,
+          0.40071859979070723,
+          0.39865710004232824,
+          0.40706339990720153,
+          0.39278410002589226,
+          0.3882536001037806
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.17937169992364943,
+        "slice_pool": 0.20407320000231266,
+        "previous_slice_pool": 0.3964451998472214
+      },
+      "cycles": {
+        "reusable": [
+          747333346,
+          736673730,
+          739575980,
+          742241313,
+          746631177,
+          742304396,
+          728120236
+        ],
+        "slice_pool": [
+          860809525,
+          845957503,
+          853879240,
+          851706202,
+          845987969,
+          842101127,
+          845375069
+        ],
+        "previous_slice_pool": [
+          1676020857,
+          1665490414,
+          1686320782,
+          1668689264,
+          1717425767,
+          1652581378,
+          1639413951
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.139774833578955,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.029484600061550736,
+          "c_bytes": 210757,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02525550010614097,
+          "c_bytes": 233929,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.031748600071296096,
+          "c_bytes": 286404,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.5069775345543303
+    },
+    {
+      "case": "fragmented-128B-O2-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "fragmented",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.14472350012511015,
+          0.14468950009904802,
+          0.14381769997999072,
+          0.1430512999650091,
+          0.14461500011384487,
+          0.143212900031358,
+          0.14587550004944205
+        ],
+        "slice_pool": [
+          0.14415109995752573,
+          0.14555190014652908,
+          0.14523470005951822,
+          0.14529499993659556,
+          0.1443799000699073,
+          0.1457219000440091,
+          0.14491429994814098
+        ],
+        "previous_slice_pool": [
+          0.15807750006206334,
+          0.15605859993956983,
+          0.1577188998926431,
+          0.1563114000018686,
+          0.26193620008416474,
+          0.15730049996636808,
+          0.1565455999225378
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.14461500011384487,
+        "slice_pool": 0.14523470005951822,
+        "previous_slice_pool": 0.15730049996636808
+      },
+      "cycles": {
+        "reusable": [
+          590401093,
+          587762785,
+          588657239,
+          587123713,
+          589079989,
+          587474797,
+          592663404
+        ],
+        "slice_pool": [
+          592335489,
+          593594758,
+          596536921,
+          591698553,
+          590098496,
+          593599055,
+          589158131
+        ],
+        "previous_slice_pool": [
+          644652397,
+          641710657,
+          642323982,
+          637427675,
+          638438005,
+          643147624,
+          640751824
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0062485428808257,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.025019200053066015,
+          "c_bytes": 210757,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4851645000744611,
+          "exe_bytes": 172032,
+          "exe_sha256": "5d0d05539514c0d1a2b322bf08d1c7de1f7941b095f2c636b95b13678048a6a7"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.026245899964123964,
+          "c_bytes": 233929,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4996007999870926,
+          "exe_bytes": 174080,
+          "exe_sha256": "8f56040ef0ff661de084ded5e2d75477a4b0f06f70ab201fb5ce599a1063795b"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03206619992852211,
+          "c_bytes": 291393,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4794573001563549,
+          "exe_bytes": 176128,
+          "exe_sha256": "cfac10eaf41e2c7e258e97cb304541a22d892968ddebd9758e410b40b3df48e2"
+        }
+      },
+      "port_ratio": 0.9230569611687156
+    },
+    {
+      "case": "fragmented-128B-O2-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "fragmented",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.26377389999106526,
+          0.26459719985723495,
+          0.2638385999016464,
+          0.2626923001371324,
+          0.26502480008639395,
+          0.263540199957788,
+          0.26565620000474155
+        ],
+        "slice_pool": [
+          0.28550950018689036,
+          0.2956750001758337,
+          0.2866410000715405,
+          0.2858190000988543,
+          0.28509569982998073,
+          0.28343089995905757,
+          0.2825131001882255
+        ],
+        "previous_slice_pool": [
+          0.37542739999480546,
+          0.39390940009616315,
+          0.37580999988131225,
+          0.3982708000112325,
+          0.3781584999524057,
+          0.3755270999390632,
+          0.37508650007657707
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.2638385999016464,
+        "slice_pool": 0.28550950018689036,
+        "previous_slice_pool": 0.37580999988131225
+      },
+      "cycles": {
+        "reusable": [
+          1102682191,
+          1107796541,
+          1103346163,
+          1096557064,
+          1103340573,
+          1102931129,
+          1101627223
+        ],
+        "slice_pool": [
+          1184781702,
+          1227190966,
+          1190781049,
+          1184793271,
+          1194405227,
+          1187920887,
+          1184149931
+        ],
+        "previous_slice_pool": [
+          1581298125,
+          1659333977,
+          1578589459,
+          1678279292,
+          1591522098,
+          1581262511,
+          1574421055
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.077058082563195,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.025019200053066015,
+          "c_bytes": 210757,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027807299979031086,
+          "exe_bytes": 76288,
+          "exe_sha256": "dc8966b0c0e3c6e4c2ca37c353be2fc4cd96f6b2be771ccb2fa33ff178e0d4d2"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.026245899964123964,
+          "c_bytes": 233929,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026804100023582578,
+          "exe_bytes": 83456,
+          "exe_sha256": "8897f49d675c5f694bc20c8ea5ad61ab667739e104c86e6665c330667f03d693"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03206619992852211,
+          "c_bytes": 291393,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027423700084909797,
+          "exe_bytes": 112128,
+          "exe_sha256": "ece23e34ca4017454cee9c0bb51aca87649c9b9aecb2c26e2fc0769571029ecc"
+        }
+      },
+      "port_ratio": 0.7512314523233878
+    },
+    {
+      "case": "fragmented-128B-O2-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "fragmented",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "82531070829 33996832 385514",
+      "seconds": {
+        "reusable": [
+          0.17969400016590953,
+          0.18095589987933636,
+          0.17789779999293387,
+          0.28730819979682565,
+          0.17779830005019903,
+          0.1760124999564141,
+          0.17815289995633066
+        ],
+        "slice_pool": [
+          0.2062129001133144,
+          0.20035349996760488,
+          0.20812730002216995,
+          0.20133160008117557,
+          0.20160200004465878,
+          0.2102431000676006,
+          0.20281620020978153
+        ],
+        "previous_slice_pool": [
+          0.3932802998460829,
+          0.39572439994663,
+          0.3964403998106718,
+          0.4002053998410702,
+          0.3937932001426816,
+          0.47523199999704957,
+          0.398956400109455
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.17815289995633066,
+        "slice_pool": 0.20281620020978153,
+        "previous_slice_pool": 0.3964403998106718
+      },
+      "cycles": {
+        "reusable": [
+          748766874,
+          744428094,
+          740466146,
+          745647871,
+          740490179,
+          731940080,
+          741441711
+        ],
+        "slice_pool": [
+          852506214,
+          835907776,
+          860755445,
+          839906625,
+          840384333,
+          872412959,
+          845545461
+        ],
+        "previous_slice_pool": [
+          1661066234,
+          1672534028,
+          1670137380,
+          1675445722,
+          1663444861,
+          2000381012,
+          1672501416
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1404071937895062,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.025019200053066015,
+          "c_bytes": 210757,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.026245899964123964,
+          "c_bytes": 233929,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03206619992852211,
+          "c_bytes": 291393,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.505557396191765
+    },
+    {
+      "case": "resize-8B-O1-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "resize",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.07894379994831979,
+          0.0829434001352638,
+          0.08064709999598563,
+          0.0809053999837488,
+          0.08057869994081557,
+          0.07952110003679991,
+          0.0819093999452889
+        ],
+        "slice_pool": [
+          0.07957320008426905,
+          0.08211280009709299,
+          0.0825261001009494,
+          0.08106549992226064,
+          0.08139689988456666,
+          0.08204409992322326,
+          0.20239109988324344
+        ],
+        "previous_slice_pool": [
+          0.08633759990334511,
+          0.08781649987213314,
+          0.089370499830693,
+          0.08902900014072657,
+          0.08852849993854761,
+          0.08937319996766746,
+          0.08957209996879101
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.08064709999598563,
+        "slice_pool": 0.08204409992322326,
+        "previous_slice_pool": 0.08902900014072657
+      },
+      "cycles": {
+        "reusable": [
+          314683859,
+          328549160,
+          320532143,
+          321784975,
+          320344142,
+          315694631,
+          325370935
+        ],
+        "slice_pool": [
+          315289890,
+          326643094,
+          325376952,
+          321939058,
+          321421013,
+          324164462,
+          341352624
+        ],
+        "previous_slice_pool": [
+          345708149,
+          350166685,
+          355388764,
+          352980094,
+          350486440,
+          354681437,
+          358251519
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.011332152108065,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024556599790230393,
+          "c_bytes": 211583,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.45921839983202517,
+          "exe_bytes": 171520,
+          "exe_sha256": "e6a6a4dca5c96ebfb43851bbabc3d3b4ea6f7e58313036da661dc30a669118fd"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.025514999870210886,
+          "c_bytes": 236955,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.47728260001167655,
+          "exe_bytes": 174592,
+          "exe_sha256": "2d2bc0041456e16bcc5b559d42460cee94f9ad18b8710c5ae0b7de2477af7251"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03136989986523986,
+          "c_bytes": 293195,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.49088239995762706,
+          "exe_bytes": 177664,
+          "exe_sha256": "13f6d611794d75229708b84d77d4f04992331c03e4737f3a32607343f1a7cef3"
+        }
+      },
+      "port_ratio": 0.9183647109573266
+    },
+    {
+      "case": "resize-8B-O1-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "resize",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.1557220001704991,
+          0.15362939983606339,
+          0.15440179989673197,
+          0.15471270005218685,
+          0.15514310006983578,
+          0.15446709981188178,
+          0.154827699996531
+        ],
+        "slice_pool": [
+          0.1757093002088368,
+          0.17610269994474947,
+          0.18041040003299713,
+          0.17644389998167753,
+          0.1768875999841839,
+          0.1758884999435395,
+          0.1770526000764221
+        ],
+        "previous_slice_pool": [
+          0.23944439995102584,
+          0.23907539993524551,
+          0.23904130002483726,
+          0.23842230020090938,
+          0.23890039999969304,
+          0.24081730004400015,
+          0.2405413999222219
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.15471270005218685,
+        "slice_pool": 0.17644389998167753,
+        "previous_slice_pool": 0.23907539993524551
+      },
+      "cycles": {
+        "reusable": [
+          641559574,
+          634425415,
+          637599344,
+          636921216,
+          640971146,
+          637913528,
+          638266750
+        ],
+        "slice_pool": [
+          728232654,
+          729214661,
+          746842767,
+          729277327,
+          731193272,
+          728533519,
+          734670657
+        ],
+        "previous_slice_pool": [
+          999776766,
+          1001352359,
+          999142838,
+          996216555,
+          998644535,
+          1005761955,
+          1005586410
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1432228585690065,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024556599790230393,
+          "c_bytes": 211583,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.030963100027292967,
+          "exe_bytes": 76800,
+          "exe_sha256": "2a1737232dd62d511c4b7f36fc55a60c7c1282790786ba7574b640db3d7de01f"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.025514999870210886,
+          "c_bytes": 236955,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.028139600064605474,
+          "exe_bytes": 84992,
+          "exe_sha256": "4991230178cc631b272a7d3bf44a68dc84b9a8f9b7f07278831f13bcd5f0db50"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03136989986523986,
+          "c_bytes": 293195,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02783439983613789,
+          "exe_bytes": 114176,
+          "exe_sha256": "a6c552670a5048aa5148a8d5ba43cac4b50f5d3ab226cc163d714fed575cd8e1"
+        }
+      },
+      "port_ratio": 0.7294401628453127
+    },
+    {
+      "case": "resize-8B-O1-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "resize",
+      "item_bytes": 8,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.10403900011442602,
+          0.10129820019938052,
+          0.1005619999486953,
+          0.10301660001277924,
+          0.09973619994707406,
+          0.10335079999640584,
+          0.09929949999786913
+        ],
+        "slice_pool": [
+          0.12852469994686544,
+          0.12297010002657771,
+          0.1992534000892192,
+          0.12475860002450645,
+          0.12177339987829328,
+          0.12291969987563789,
+          0.1230625999160111
+        ],
+        "previous_slice_pool": [
+          0.2581023001112044,
+          0.2596527999266982,
+          0.25487140007317066,
+          0.2559002998750657,
+          0.2569355999585241,
+          0.25628579990006983,
+          0.25385440001264215
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.10129820019938052,
+        "slice_pool": 0.1230625999160111,
+        "previous_slice_pool": 0.25628579990006983
+      },
+      "cycles": {
+        "reusable": [
+          424129865,
+          412207541,
+          409045207,
+          415735989,
+          407662750,
+          420074354,
+          404812004
+        ],
+        "slice_pool": [
+          523115824,
+          504190680,
+          511851472,
+          508143621,
+          502775606,
+          503738310,
+          506623391
+        ],
+        "previous_slice_pool": [
+          1083747592,
+          1090514788,
+          1069137628,
+          1072773396,
+          1079234562,
+          1076871804,
+          1063244720
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.2290493031033607,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024556599790230393,
+          "c_bytes": 211583,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.025514999870210886,
+          "c_bytes": 236955,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03136989986523986,
+          "c_bytes": 293195,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.47045840472205364
+    },
+    {
+      "case": "resize-8B-O2-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "resize",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.07919760001823306,
+          0.07937519997358322,
+          0.07921890006400645,
+          0.07956039998680353,
+          0.07888670009560883,
+          0.07872150000184774,
+          0.07931159995496273
+        ],
+        "slice_pool": [
+          0.079860599944368,
+          0.08017630013637245,
+          0.190277999965474,
+          0.0802191998809576,
+          0.08152559981681406,
+          0.08012120006605983,
+          0.08100670017302036
+        ],
+        "previous_slice_pool": [
+          0.09058899991214275,
+          0.09069500002078712,
+          0.09141179989092052,
+          0.09062170004472136,
+          0.09390030009672046,
+          0.09165420010685921,
+          0.09248670004308224
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.07921890006400645,
+        "slice_pool": 0.0802191998809576,
+        "previous_slice_pool": 0.09141179989092052
+      },
+      "cycles": {
+        "reusable": [
+          315301051,
+          315522521,
+          313682964,
+          315843982,
+          314382132,
+          312693662,
+          316225975
+        ],
+        "slice_pool": [
+          318199010,
+          319578882,
+          322961408,
+          318575418,
+          324690661,
+          318894746,
+          323194033
+        ],
+        "previous_slice_pool": [
+          365253061,
+          363507074,
+          366676288,
+          365211430,
+          369696572,
+          368445884,
+          368468633
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0135674492248996,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024978799978271127,
+          "c_bytes": 211583,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4703128000255674,
+          "exe_bytes": 171520,
+          "exe_sha256": "09593612ae83002670544c470cb5a4973dca892e24977219201927f2e22ac53f"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02693699998781085,
+          "c_bytes": 239025,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4880282999947667,
+          "exe_bytes": 174592,
+          "exe_sha256": "2e72db092ba1ad53a1eeb2343a81c3d887b44f22bd7d56ca2c5ab407379005fb"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03085010009817779,
+          "c_bytes": 296310,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4820538000203669,
+          "exe_bytes": 177664,
+          "exe_sha256": "00be08e2cde92eebb3815b695116be65198f33836fa7a156991d8e5b68025dcc"
+        }
+      },
+      "port_ratio": 0.8715558994641072
+    },
+    {
+      "case": "resize-8B-O2-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "resize",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.15662760008126497,
+          0.15416139992885292,
+          0.1555903002154082,
+          0.15477719996124506,
+          0.15523030003532767,
+          0.1544831998180598,
+          0.15521520003676414
+        ],
+        "slice_pool": [
+          0.17287600017152727,
+          0.17244230001233518,
+          0.17171400017105043,
+          0.17219060007482767,
+          0.1740490000229329,
+          0.1734001999720931,
+          0.17309849988669157
+        ],
+        "previous_slice_pool": [
+          0.24177249986678362,
+          0.24995950004085898,
+          0.24121729983016849,
+          0.2402185001410544,
+          0.2421480999328196,
+          0.24123480007983744,
+          0.24158509983681142
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.15521520003676414,
+        "slice_pool": 0.17287600017152727,
+        "previous_slice_pool": 0.24158509983681142
+      },
+      "cycles": {
+        "reusable": [
+          644083701,
+          635728461,
+          640545805,
+          638670625,
+          640352236,
+          636301875,
+          640592159
+        ],
+        "slice_pool": [
+          714475934,
+          715643355,
+          711438913,
+          709553441,
+          716339956,
+          716350680,
+          713257009
+        ],
+        "previous_slice_pool": [
+          1010368138,
+          1044933326,
+          1007141831,
+          1003360590,
+          1009637202,
+          1007007502,
+          1008611424
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1157545704267675,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024978799978271127,
+          "c_bytes": 211583,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.028918599942699075,
+          "exe_bytes": 76800,
+          "exe_sha256": "be76d32b52733948b90db78df29ca3c40993b22b246d979feb0d1897ea6ee9d8"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02693699998781085,
+          "c_bytes": 239025,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02632070006802678,
+          "exe_bytes": 84992,
+          "exe_sha256": "21a35fd07c77194ec440cd760a85ec0ab70b2158e04e40dfe0a1c4ef63eb8716"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03085010009817779,
+          "c_bytes": 296310,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.027281699934974313,
+          "exe_bytes": 115200,
+          "exe_sha256": "bd8d5ce811b646df5692f81d08bddecdcf9c489909a3c20e3ee97578540b4c04"
+        }
+      },
+      "port_ratio": 0.7083758095525993
+    },
+    {
+      "case": "resize-8B-O2-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "resize",
+      "item_bytes": 8,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.10100040002726018,
+          0.10109130013734102,
+          0.09984420007094741,
+          0.1002082999330014,
+          0.10098330001346767,
+          0.10055069997906685,
+          0.10131320008076727
+        ],
+        "slice_pool": [
+          0.119652200024575,
+          0.11935479985550046,
+          0.11902790004387498,
+          0.11937869992107153,
+          0.11938930000178516,
+          0.11948530003428459,
+          0.11905480013228953
+        ],
+        "previous_slice_pool": [
+          0.2554360998328775,
+          0.257311400026083,
+          0.25215770001523197,
+          0.25228919996879995,
+          0.2530798998195678,
+          0.25435850000940263,
+          0.2578821999486536
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.10098330001346767,
+        "slice_pool": 0.11937869992107153,
+        "previous_slice_pool": 0.25435850000940263
+      },
+      "cycles": {
+        "reusable": [
+          410439246,
+          409609592,
+          405594003,
+          406480294,
+          410836253,
+          408834461,
+          412147880
+        ],
+        "slice_pool": [
+          489185848,
+          489060091,
+          487650164,
+          489446373,
+          490109488,
+          488248048,
+          488341614
+        ],
+        "previous_slice_pool": [
+          1071457888,
+          1081509325,
+          1059961334,
+          1060865651,
+          1062031377,
+          1061454520,
+          1083031260
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1939664025250658,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.024978799978271127,
+          "c_bytes": 211583,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.02693699998781085,
+          "c_bytes": 239025,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.03085010009817779,
+          "c_bytes": 296310,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.46049495484915415
+    },
+    {
+      "case": "resize-128B-O1-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "resize",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.12361649982631207,
+          0.12311809998936951,
+          0.12454620003700256,
+          0.12593759992159903,
+          0.12180590000934899,
+          0.12501630000770092,
+          0.12660959991626441
+        ],
+        "slice_pool": [
+          0.12549549993127584,
+          0.12344329990446568,
+          0.12245710007846355,
+          0.12471610005013645,
+          0.1225838998798281,
+          0.12191059999167919,
+          0.12314169993624091
+        ],
+        "previous_slice_pool": [
+          0.1342335999943316,
+          0.13879360002465546,
+          0.13497160002589226,
+          0.14034419995732605,
+          0.13572210003621876,
+          0.14099789992906153,
+          0.13882809993810952
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.12454620003700256,
+        "slice_pool": 0.12314169993624091,
+        "previous_slice_pool": 0.13879360002465546
+      },
+      "cycles": {
+        "reusable": [
+          503878656,
+          501846393,
+          508914466,
+          513537374,
+          497010590,
+          510287468,
+          501315036
+        ],
+        "slice_pool": [
+          512604291,
+          502833983,
+          500592695,
+          508858231,
+          500617163,
+          498119216,
+          501332635
+        ],
+        "previous_slice_pool": [
+          550170452,
+          568191269,
+          551370056,
+          573567429,
+          555462054,
+          576750371,
+          569259119
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 0.9949471544990387,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02500029979273677,
+          "c_bytes": 211668,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4672242000233382,
+          "exe_bytes": 172544,
+          "exe_sha256": "5702166aa97e90f4791678027cf01c673291d1ea34ee749b87ed8c87dd2780af"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.031180100049823523,
+          "c_bytes": 237052,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4832760998979211,
+          "exe_bytes": 175104,
+          "exe_sha256": "47e806ccb788dbe2dfa827fd0396ff611059be30e51065c872db729bd2edbdf5"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030121600022539496,
+          "c_bytes": 293292,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.47933769994415343,
+          "exe_bytes": 178176,
+          "exe_sha256": "d2c005b81fe7ff565682dc2e7ed63a05c299b613055df563996bad256a477d44"
+        }
+      },
+      "port_ratio": 0.8823307614042201
+    },
+    {
+      "case": "resize-128B-O1-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "resize",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.2230106999631971,
+          0.22438869997859,
+          0.22468940005637705,
+          0.22090850002132356,
+          0.2266039999667555,
+          0.23507070005871356,
+          0.2410975000821054
+        ],
+        "slice_pool": [
+          0.25315760006196797,
+          0.25678549986332655,
+          0.24860100005753338,
+          0.3600606999825686,
+          0.2655269999522716,
+          0.26389920013025403,
+          0.28720990009605885
+        ],
+        "previous_slice_pool": [
+          0.3296676001045853,
+          0.3190230999607593,
+          0.31935079977847636,
+          0.3219421000685543,
+          0.3254643001127988,
+          0.3387500001117587,
+          0.3431603000499308
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.22468940005637705,
+        "slice_pool": 0.26389920013025403,
+        "previous_slice_pool": 0.3254643001127988
+      },
+      "cycles": {
+        "reusable": [
+          919026207,
+          927520944,
+          928064314,
+          920631425,
+          936895965,
+          971065859,
+          995541846
+        ],
+        "slice_pool": [
+          1056593398,
+          1073772558,
+          1038851986,
+          1058327796,
+          1099283362,
+          1092061632,
+          1201383593
+        ],
+        "previous_slice_pool": [
+          1372043370,
+          1340352545,
+          1338913862,
+          1339739213,
+          1354353052,
+          1423020317,
+          1429079340
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.157002313096159,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02500029979273677,
+          "c_bytes": 211668,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026037799892947078,
+          "exe_bytes": 76800,
+          "exe_sha256": "efe6f6e15f9e46826103e3536ae4ba27d536cb772bf91cc029cddd9f3a943bcc"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.031180100049823523,
+          "c_bytes": 237052,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026066800113767385,
+          "exe_bytes": 84992,
+          "exe_sha256": "a86c36f1f852956104778f285f009f21034ae1c670585f9f5cf9f24d1b6243a5"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030121600022539496,
+          "c_bytes": 293292,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.02756810002028942,
+          "exe_bytes": 114176,
+          "exe_sha256": "30308c5c0a68d0fb2d64a786a46186b1c20cc048bc178143155f331ba3a72736"
+        }
+      },
+      "port_ratio": 0.7928306112016648
+    },
+    {
+      "case": "resize-128B-O1-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "resize",
+      "item_bytes": 128,
+      "goose_level": 1,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.18324240017682314,
+          0.18399220006540418,
+          0.18504579993896186,
+          0.1658121000509709,
+          0.1650524002034217,
+          0.16670729988254607,
+          0.1695015002042055
+        ],
+        "slice_pool": [
+          0.21134710009209812,
+          0.21081479988060892,
+          0.2134060999378562,
+          0.21158090000972152,
+          0.1978205000050366,
+          0.19244299991987646,
+          0.31069270009174943
+        ],
+        "previous_slice_pool": [
+          0.3569342999253422,
+          0.33335860003717244,
+          0.34817840019240975,
+          0.3420148000586778,
+          0.33838320011273026,
+          0.3342192000709474,
+          0.3502396000549197
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.1695015002042055,
+        "slice_pool": 0.21134710009209812,
+        "previous_slice_pool": 0.3420148000586778
+      },
+      "cycles": {
+        "reusable": [
+          754176938,
+          758326016,
+          769959907,
+          681868324,
+          678230857,
+          682564919,
+          694242149
+        ],
+        "slice_pool": [
+          880346725,
+          869658770,
+          881520136,
+          877524714,
+          813968773,
+          791828933,
+          838112995
+        ],
+        "previous_slice_pool": [
+          1492183326,
+          1392157405,
+          1459524651,
+          1408478589,
+          1413832894,
+          1397646449,
+          1468935274
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.252673539416576,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02500029979273677,
+          "c_bytes": 211668,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.031180100049823523,
+          "c_bytes": 237052,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030121600022539496,
+          "c_bytes": 293292,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.615107183947016
+    },
+    {
+      "case": "resize-128B-O2-natural",
+      "compiler": "clang-cl 22.1.3 (bundled with VS)",
+      "mode": "resize",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.13001169986091554,
+          0.13102380000054836,
+          0.12941200006753206,
+          0.12537309993058443,
+          0.12729199999012053,
+          0.12768459995277226,
+          0.12303970009088516
+        ],
+        "slice_pool": [
+          0.12684050016105175,
+          0.1318806998897344,
+          0.13419750006869435,
+          0.1285488000139594,
+          0.1292590000666678,
+          0.12597559997811913,
+          0.13093230011872947
+        ],
+        "previous_slice_pool": [
+          0.14233279996551573,
+          0.139869200065732,
+          0.1422170998994261,
+          0.13787530013360083,
+          0.1415466999169439,
+          0.14193070004694164,
+          0.13925110013224185
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.12768459995277226,
+        "slice_pool": 0.1292590000666678,
+        "previous_slice_pool": 0.1415466999169439
+      },
+      "cycles": {
+        "reusable": [
+          525188440,
+          528312158,
+          522173743,
+          504836625,
+          519420843,
+          522555289,
+          502563154
+        ],
+        "slice_pool": [
+          513772153,
+          530429395,
+          542036680,
+          517952555,
+          523769068,
+          515142148,
+          530557728
+        ],
+        "previous_slice_pool": [
+          576133624,
+          564810897,
+          575714719,
+          554880053,
+          575594106,
+          581698204,
+          565501909
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.0030551612779963,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02441280009225011,
+          "c_bytes": 211668,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.47225679992698133,
+          "exe_bytes": 172544,
+          "exe_sha256": "fe45b353fe3047372858267dffbf2c5e0b93732159f312baaf47935cfe92a7f2"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.027135899988934398,
+          "c_bytes": 239122,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4848784999921918,
+          "exe_bytes": 175616,
+          "exe_sha256": "96a9b1de9dee59d7d93fcdc6decb15f81776d4e4f61b73353e4dd90a18afc6d0"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030656500020995736,
+          "c_bytes": 296407,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.4874607000965625,
+          "exe_bytes": 178176,
+          "exe_sha256": "f81e8855e68476a0ce663bf6f53c212144284a9e84f338174070a0361adbf8ea"
+        }
+      },
+      "port_ratio": 0.9099625283515325
+    },
+    {
+      "case": "resize-128B-O2-natural",
+      "compiler": "WORKTREE\\build\\tcc\\tcc.exe",
+      "mode": "resize",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.23225250001996756,
+          0.23154699988663197,
+          0.23857119982130826,
+          0.23076929990202188,
+          0.23732290021143854,
+          0.25925139989703894,
+          0.2304830001667142
+        ],
+        "slice_pool": [
+          0.25745440018363297,
+          0.2573510999791324,
+          0.2560594000387937,
+          0.2598172000143677,
+          0.25477140001021326,
+          0.2545907001476735,
+          0.25477140001021326
+        ],
+        "previous_slice_pool": [
+          0.3320555998943746,
+          0.33121369988657534,
+          0.33956360002048314,
+          0.3397519998252392,
+          0.3361019999720156,
+          0.34334789984859526,
+          0.33150780014693737
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.23225250001996756,
+        "slice_pool": 0.2560594000387937,
+        "previous_slice_pool": 0.3361019999720156
+      },
+      "cycles": {
+        "reusable": [
+          955689758,
+          953730038,
+          983080457,
+          949259491,
+          977284546,
+          1079353881,
+          956770497
+        ],
+        "slice_pool": [
+          1061045071,
+          1069405016,
+          1058020056,
+          1077057662,
+          1050927951,
+          1066035368,
+          1064284661
+        ],
+        "previous_slice_pool": [
+          1380796920,
+          1377205818,
+          1413341861,
+          1414846637,
+          1397014236,
+          1437759919,
+          1391081414
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1123719474389269,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02441280009225011,
+          "c_bytes": 211668,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026628099847584963,
+          "exe_bytes": 76800,
+          "exe_sha256": "cdddba53ccf86d6b44af8e1a07f3508affe0142ef7c226923459e28719c0ec55"
+        },
+        "slice_pool": {
+          "goose_seconds": 0.027135899988934398,
+          "c_bytes": 239122,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.026865100022405386,
+          "exe_bytes": 84992,
+          "exe_sha256": "39b657e1f8fa19374f4a52016fabf5dd9e4f067a29829c276ada561cfc9f3d35"
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030656500020995736,
+          "c_bytes": 296407,
+          "exercise_declarations": 0,
+          "c_policy": "natural",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "execution",
+          "cc_seconds": 0.028491799952462316,
+          "exe_bytes": 115200,
+          "exe_sha256": "e2cdfbfa2196457b6427ad251c5f04bd43cb322bbead44413dcb9b40c2171f53"
+        }
+      },
+      "port_ratio": 0.7618280713067838
+    },
+    {
+      "case": "resize-128B-O2-natural",
+      "compiler": "Goose compile + TinyCC JIT + execution",
+      "mode": "resize",
+      "item_bytes": 128,
+      "goose_level": 2,
+      "calls": "natural",
+      "checksum": "119237448420 36343383 575646",
+      "seconds": {
+        "reusable": [
+          0.16026900010183454,
+          0.16229919996112585,
+          0.20536809996701777,
+          0.16362660005688667,
+          0.1655639000236988,
+          0.16069349995814264,
+          0.1665672000963241
+        ],
+        "slice_pool": [
+          0.1813159000594169,
+          0.18194229993969202,
+          0.1849984999280423,
+          0.18542150012217462,
+          0.18781869998201728,
+          0.19259629980660975,
+          0.18296710005961359
+        ],
+        "previous_slice_pool": [
+          0.35340750007890165,
+          0.3372901000548154,
+          0.33452300005592406,
+          0.3355421000160277,
+          0.339263399830088,
+          0.3268750999122858,
+          0.3472603000700474
+        ]
+      },
+      "median_seconds": {
+        "reusable": 0.16362660005688667,
+        "slice_pool": 0.1849984999280423,
+        "previous_slice_pool": 0.3372901000548154
+      },
+      "cycles": {
+        "reusable": [
+          663112707,
+          674457761,
+          666699971,
+          679898294,
+          676740252,
+          666382792,
+          684967143
+        ],
+        "slice_pool": [
+          753904392,
+          756605347,
+          769111369,
+          772476726,
+          778943067,
+          772776744,
+          758209275
+        ],
+        "previous_slice_pool": [
+          1491446392,
+          1420583326,
+          1408761014,
+          1399374400,
+          1430078088,
+          1376342250,
+          1459279137
+        ]
+      },
+      "ratio_metric": "cycles",
+      "ratio": 1.1403403051655299,
+      "metrics": {
+        "reusable": {
+          "goose_seconds": 0.02441280009225011,
+          "c_bytes": 211668,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "slice_pool": {
+          "goose_seconds": 0.027135899988934398,
+          "c_bytes": 239122,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        },
+        "previous_slice_pool": {
+          "goose_seconds": 0.030656500020995736,
+          "c_bytes": 296407,
+          "exercise_declarations": 0,
+          "c_policy": "unmodified JIT output",
+          "stacks": [
+            "main program: 5 data stacks + 0 global stacks = 5 regions"
+          ],
+          "timing": "compile-and-run",
+          "exe_bytes": null
+        }
+      },
+      "port_ratio": 0.5414053191554917
+    }
+  ],
+  "previous_slice_pool_sha256": "d8b0cd9a05fadf613b3ecb126d641ca527414d62229533ee4c8f641fc3287857",
+  "previous_internal_sha256": "61a14d67dfd48fde77926ea92528bca0af56cf0bc50f606c7e6f2a2b1ac1f2c7",
+  "measured_on": "2026-10-28",
+  "cpu": "AMD Ryzen 9 9950X3D",
+  "previous_library": "stdlib/slice_pool.goose and slice_pool_internal.goose at 06a6300f (the checked Goose span tree), measured as previous_slice_pool",
+  "note": "Comments in stdlib/slice_pool_internal.goose and the runtime changed after this run; the generated code did not."
+}

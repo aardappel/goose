@@ -357,6 +357,7 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     if (IsLargeFixed(pt)) args.push_back(arg);
     else PushArg(args, pt, pool, arg);
     if (ki.needssp) args.push_back(SpTop());
+    if (ki.located) args.push_back(CallerLoc(ln));
     string argstr;
     for (auto &a : args) Append(argstr, argstr.empty() ? "" : ", ", a);
     L(ki.cname, "(", argstr, ");");

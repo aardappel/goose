@@ -548,6 +548,13 @@ var gb_visits = 0;
 var gb_limit = 0;
 var gb_pool: RecNode[>..];
 
+fn gb_give<F>() -> i64 { F() }
+recursive fn gb_callback(depth: i64) -> i64 {
+    gb_visits += 1;
+    if depth > 0 { return gb_callback(depth - 1) + gb_callback(depth - 1); }
+    return gb_give() { 1 };
+}
+
 recursive fn gb_build(depth: i64, v: i64) -> RecNode& {
     gb_visits += 1;
     let n .= gb_pool.push(RecNode { v: v });
@@ -675,6 +682,7 @@ fn guarded_op() {
     for s in arena { sum += s.v + s.l + s.r; }
     print(arena.len, " ", sum, " ", arena[0].l, " ", arena[0].r); // 15 209 1 8
     print(root.gb_method(3), " ", gb_visits);        // 120 126
+    assert(gb_callback(3) == 8 && gb_visits == 141);
 }
 
 // --- min/max chains -------------------------------------------------------------

@@ -1,5 +1,11 @@
 # Serialization of relative-reference structures: a verified loader
 
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 <details>
 <summary>Table of contents</summary>
 

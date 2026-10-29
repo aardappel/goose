@@ -4,9 +4,10 @@
    stack). The runtime object has no generated types, and lays out the ones
    it uses here as codegen does (CodeGen::EmitCoreTypes, CT). An --include
    header follows this and may use what it defines. The generated program
-   calls the OS primitives behind stdlib/os.goose (spec §7.10, defined in
-   runtime_os.h) and std's byte search directly from `extern "gs_..." fn`
-   declarations; no prototype is emitted for a function declared here. */
+   calls the OS primitives behind stdlib/os.goose (spec §7.10), slice_pool's
+   span tree (both defined in runtime_os.h) and std's byte search directly
+   from `extern "gs_..." fn` declarations; no prototype is emitted for a
+   function declared here. */
 
 #ifdef GS_RUNTIME_OBJECT
 #pragma pack(push, 1)
@@ -228,3 +229,14 @@ GS_API uint64_t gs_os_random_u64(void);
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);
+/* std's slice_pool (stdlib/slice_pool_internal.goose) keeps its freelist in
+   a checked copy of the runtime's span tree (runtime_os.h): `nodes` is a
+   node[>..] of GS_SPAN_NODE-byte nodes, and `tree` its header, a field
+   beside it. A corrupt tree is reported at `at`, where the program called
+   slice_pool (SFunction::takesloc). */
+GS_API int64_t gs_slice_pool_place(gs_rref nodes, void *tree, int64_t len, int64_t cnt,
+                                   const gs_loc *at);
+GS_API void gs_slice_pool_free(gs_rref nodes, void *tree, int64_t idx, int64_t cnt,
+                               const gs_loc *at);
+GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int64_t idx,
+                                    int64_t ol, int64_t cnt, const gs_loc *at);

@@ -1,5 +1,11 @@
 ## October 16, 2026 refresh
 
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../docs/stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../docs/stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 The main tables are a fresh run of all sixteen benchmarks, at all three
 sizes, under MSVC, clang-cl, rustc and Goose's TinyCC backend. The compiler
 was rebuilt in Release from `f6d31d0e`, with the benchmark source changes in

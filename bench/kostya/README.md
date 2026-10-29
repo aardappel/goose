@@ -5,6 +5,12 @@ A Goose implementation of the 50 benchmarks of
 directory of that repository, plus the tools to run it here against
 LangArena's own Rust and C++ implementations.
 
+Matmul, Game of Life, Graph and Maze use the stdlib `slice_pool`. The
+[paired pool measurements](../pool_workloads.md) include work outside LangArena's
+reported timing window: the library adds about 10% to graph preparation and
+about 2 ms to maze construction, an estimated 1% of total suite elapsed time.
+These small application-level costs are accepted for the library API.
+
 ## Layout
 
 | here | in a LangArena checkout |

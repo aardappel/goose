@@ -287,7 +287,7 @@ inline string Dot::CgX(CodeGen &cg) {
 }
 
 inline string Index::CgX(CodeGen &cg) {
-    auto lv = cg.GenLoc(this);
+    auto lv = cg.GenLocNow(this);
     return cg.LoadLoc(lv, exprtype, line);
 }
 
@@ -831,17 +831,20 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
 }
 
 inline void Assign::CgStmt(CodeGen &cg) {
-    auto lv = cg.GenLoc(lval);
+    // A plain store of a value that runs nothing (QuietValue) uses its
+    // destination as soon as it is resolved.
+    auto quiet = op == T_ASSIGN && !pointee && cg.QuietValue(rhs) && !cg.HasStmts(lval);
+    auto lv = quiet || !cg.StableDest(lval) ? cg.GenLocNow(lval) : cg.GenLoc(lval);
     if (pointee) cg.DerefLoc(lv);
     // Resolve the destination before the RHS can rebind a reference or
     // change an index used by its C lvalue expression. A resizable one is
     // also its count and its stack, which a reference that can be rebound
     // spells as `r.hdr->len` and `r.stk`. Stacks that top caching names
     // cannot move and keep their spelling, so the cached tops still apply.
-    // A destination neither can move is stored to as it is spelled
-    // (StableDest).
+    // A destination neither can move, or that a quiet value cannot move, is
+    // stored to as it is spelled (StableDest).
     if (lv.val) {
-        if (lv.viaref || lv.ispref || !cg.StableDest(lval)) {
+        if (!quiet && (lv.viaref || lv.ispref || !cg.StableDest(lval))) {
             auto p = cg.T();
             cg.L(lv.ispref ? string("gs_pref") : cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
             lv.s = cat("(*", p, ")");
@@ -922,6 +925,16 @@ inline void Assign::CgStmt(CodeGen &cg) {
           cg.FixedSize(t->arr->sub), "));");
         return;
     }
+    // A small aggregate variable goes out as one store of its width, as a
+    // pushed element does (StoreWhole); TinyCC copies a struct assignment
+    // with string moves.
+    if (Is<Ident>(rhs) && !lv.ispref && cg.WholeStore(t) &&
+        (t->kind != TY_ARRAY || t->arr->akind == A_FIXED)) {
+        auto x = cg.GenXD(rhs, t);
+        if (CodeGen::IsCName(x)) cg.StoreWhole(cat("&", lv.s), t, x);
+        else cg.L(lv.s, " = ", x, ";");
+        return;
+    }
     cg.GenAny(rhs, Dst { DK_LVALUE, lv.s, lv.t });
 }
 
@@ -963,6 +976,7 @@ inline void While::CgStmt(CodeGen &cg) {
 }
 
 inline void ForLoop::CgStmt(CodeGen &cg) {
+    if (cg.BulkDefaultLoop(this)) return;
     auto d = Dst {};
     CodeGen::ViewScope vs(cg, hoistrefs, hoistfields);
     auto iv = cg.LocalName(vdef);

@@ -123,6 +123,20 @@ def check_diagnostics_json(exe, base):
                 related[1]["line"] == 3,
                 "the instantiation chain at its calls", json.dumps(diags))
 
+        library = ("import slot_pool;\n"
+                   "struct Node { next: Node&<u32>? }\n"
+                   "fn main() {\n"
+                   "    var pool = slot_pool<Node> {};\n"
+                   "    pool.alloc_ref(Node { null });\n"
+                   "}\n")
+        diags, err = both("library.goose", library)
+        require(len(diags) == 1 and diags[0]["line"] == 5 and
+                "contains self-relative references" in diags[0]["message"] and
+                any(r["file"].endswith("slot_pool.goose") and
+                    r["message"] == "while checking this standard library expression"
+                    for r in diags[0].get("related", [])),
+                "stdlib errors point to the user's call and retain the definition", err)
+
         # A warning, with the program accepted.
         warn = ("fn main() {\n"
                 "    let x: i64 = 1;\n"

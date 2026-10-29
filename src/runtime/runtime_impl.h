@@ -23,6 +23,9 @@ static const char *gs_errmsgs[] = {
     "non-null relative reference encodes as null",
     "pop_n count negative or beyond the array's length",
     "queue limit of zero or less",
+    "invalid array length",
+    "slice not within this array",
+    "slice pool span tree is corrupt",
 };
 
 /* Ends the process with `code`, its streams flushed: exit() and every
@@ -64,22 +67,25 @@ static GS_TLS gs_contained *gs_contain;
    bytes at `msg` and the location after it. A contained worker's keeps the
    message, without the "goose runtime error: " every printed one starts
    with, and ends that worker; anything else's prints it and ends the
-   process. */
+   process. A NULL file is a check the runtime makes on its own, which has
+   no Goose location to print. */
 static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, int line) {
     static const char lead[] = "goose runtime error: ";
     int64_t pre = sizeof lead - 1;
-    int64_t loc = snprintf(NULL, 0, " (%s:%d)\n", file, line);
+    int64_t loc = file ? snprintf(NULL, 0, " (%s:%d)\n", file, line) : 1;
     uint8_t *text = (uint8_t *)malloc((size_t)(pre + len + loc + 1));
     if (!text) {
         if (gs_contain) gs_panic("out of memory recording an aborted thread");
         fputs(lead, stderr);
         fwrite(msg, 1, (size_t)len, stderr);
-        fprintf(stderr, " (%s:%d)\n", file, line);
+        if (file) fprintf(stderr, " (%s:%d)\n", file, line);
+        else fputc('\n', stderr);
         gs_end(1);
     }
     memcpy(text, lead, (size_t)pre);
     if (len) memcpy(text + pre, msg, (size_t)len);
-    snprintf((char *)text + pre + len, (size_t)loc + 1, " (%s:%d)\n", file, line);
+    if (file) snprintf((char *)text + pre + len, (size_t)loc + 1, " (%s:%d)\n", file, line);
+    else memcpy(text + pre + len, "\n", 2);
     if (gs_contain) {
         memmove(text, text + pre, (size_t)(len + loc - 1));
         gs_contain->msg = text;
@@ -267,6 +273,18 @@ static size_t gs_overflow_text(char *buf, const gs_region *r) {
     p = gs_text(p, "; --stack-reserve or -DGS_STACK_RESERVE raises the reservation, "
                    "up to 256 TB\n");
     return (size_t)(p - buf);
+}
+
+GS_API GS_NORETURN void gs_stack_overflow(const void *at) {
+    for (long i = 0; i < gs_nregions; i++) {
+        const gs_region *r = &gs_regions[i];
+        if ((uintptr_t)at - (uintptr_t)r->base < r->size) {
+            char msg[GS_OVERFLOW_TEXT];
+            fwrite(msg, 1, gs_overflow_text(msg, r), stderr);
+            gs_end(1);
+        }
+    }
+    gs_panic("data stack overflow");
 }
 
 /* The calling thread program's registry, empty, as it starts. */

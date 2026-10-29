@@ -8,6 +8,7 @@ an embed_file, which a POSIX system opens and then fails to read; and
 --gen-runtime-header from a compiler with no source tree around it, which
 says it cannot find the runtime's sources."""
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -75,6 +76,18 @@ def check_cli_paths(exe, cc, base):
         require(code == 1 and "missing.goose:2: error: cannot find the module no_such_module, "
                               "looked for" in text and
                 text.count("no_such_module.goose") >= 2, "an import resolving nowhere", text)
+        # A standard library found from the compiler's directory is named by
+        # its normalized path, which diagnostics and runtime errors print for
+        # its files.
+        tc.write_text(root / "libdiag.goose", "import slot_pool;\nfn main() {\n"
+                                              "    var pool = slot_pool<i64> {};\n"
+                                              "    let r = pool.alloc_ref(1);\n"
+                                              "    pool.free_ref(r);\n}\n")
+        code, text = run([exe, "check", "--diagnostics", "json", root / "libdiag.goose"])
+        files = [f.replace("\\\\", "/") for f in re.findall(r'"file": *"([^"]*)"', text)]
+        require(code == 1 and any(f.endswith("/slot_pool.goose") for f in files) and
+                not any("/../" in f or "/./" in f for f in files),
+                "a standard library file's path in a diagnostic", text)
         # The source tree's standard library, named by --stdlib, as stdlib/ in
         # the working directory and, for a compiler in its build tree, beside
         # the compiler: it is looked in once. An installed compiler's own

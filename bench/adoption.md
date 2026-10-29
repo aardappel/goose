@@ -1,5 +1,11 @@
 # Results of the compiler changes proposed in plan.md
 
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../docs/stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../docs/stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 *This document records a completed round of compiler changes, their
 measurements, and the reasons for adopting or rejecting each one. See
 `results.md` for the benchmark report.*

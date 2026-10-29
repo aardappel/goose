@@ -574,7 +574,9 @@ optimizer inlines calls and drops constants, which would lose their clones.
 Completion is in as well (`docs/implementation.md` §12,
 `test/lsp/complete.goose`). Names in scope come from the parse tree;
 members come from the type carried by the clone of the value before the
-`.`, including UFCS functions and builtin members; and after `::`
+`.`, including UFCS functions and builtin members (among them generic
+functions whose first parameter is a generic struct, as the stdlib pools'
+are, `test/lsp/pools.goose`); and after `::`
 completion offers a namespace's declarations. With that, phase 2 is
 complete.
 

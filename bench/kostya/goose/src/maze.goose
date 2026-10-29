@@ -5,6 +5,7 @@
 namespace maze;
 
 import std;
+import slice_pool;
 import bench;
 import helper;
 
@@ -45,12 +46,11 @@ fn reset(cell: Cell&) {
 }
 
 // An array cannot hold growable arrays, so the rows are runs of a slice pool.
-// A struct can't hold a pool (a pool is a variable, which pairs the array
-// with its freelist), and the maze's links into it could not be returned from
-// the constructor if it did, so the pool is a local of the code that makes
-// the benchmark, declared before it and handed to its constructor. The array
-// of rows is sized at construction, which leaves a benchmark's one growable
-// field to its path.
+// Root owners cannot be nested, so the pool is a local of the code that
+// makes the benchmark, declared before it and handed to its constructor.
+// The returned maze's links borrow from that longer-lived pool. The array
+// of rows is sized at construction, leaving the benchmark's growable field
+// for its path.
 //
 // The rows follow Crystal's and C++'s array of arrays as closely as Goose
 // allows, for the sake of comparing like with like, but this is not idiomatic
@@ -59,7 +59,7 @@ fn reset(cell: Cell&) {
 // 1.15-1.3x faster.
 struct Maze { w: i32, h: i32, start: Cell&, finish: Cell&, cells: (Cell[:])[] }
 
-fn new_maze(pool: Cell[>..]&, width: i32, height: i32) -> Maze {
+fn new_maze(pool: slice_pool<Cell>&, width: i32, height: i32) -> Maze {
     let w = max(width, 5);
     let h = max(height, 5);
     // The rows come first, since start and finish are bound at construction.
@@ -164,7 +164,7 @@ fn checksum(maze: Maze&) -> u32 {
 
 struct MazeGenerator { maze: Maze, result_val: u32 }
 
-fn new_maze_generator(pool: Cell[>..]&) -> MazeGenerator {
+fn new_maze_generator(pool: slice_pool<Cell>&) -> MazeGenerator {
     let width = config_i64("Maze::Generator", "w") as i32;
     let height = config_i64("Maze::Generator", "h") as i32;
     return MazeGenerator { maze: new_maze(pool, width, height), result_val: 0 };
@@ -185,7 +185,7 @@ fn checksum(s: MazeGenerator&) -> u32 { s.result_val + s.maze.checksum() }
 // The path, a growable array, is the last field.
 struct MazeBFS { maze: Maze, result_val: u32, path: (Cell&)[>..] }
 
-fn new_maze_bfs(pool: Cell[>..]&) -> MazeBFS {
+fn new_maze_bfs(pool: slice_pool<Cell>&) -> MazeBFS {
     let width = config_i64("Maze::BFS", "w") as i32;
     let height = config_i64("Maze::BFS", "h") as i32;
     return MazeBFS { maze: new_maze(pool, width, height), result_val: 0, path: [] };
@@ -201,7 +201,7 @@ fn bfs(s: MazeBFS&, start: Cell&, target: Cell&) -> (Cell&)[>..] {
     // The queue's front is `head`: std has no deque.
     var queue: i32[>..] = [];
     var head = 0;
-    reusable[] var visited_rows: bool[>..] = [];
+    var visited_rows = slice_pool<bool> {};
     var visited: (bool[:])[>..] = [];
     for y in s.maze.h { visited.push(visited_rows.alloc_slice(s.maze.w)); }
     var path: PathNode[>..] = [];
@@ -270,7 +270,7 @@ fn before(a: Node, b: Node) -> bool {
 
 struct MazeAStar { maze: Maze, result_val: u32, path: (Cell&)[>..] }
 
-fn new_maze_astar(pool: Cell[>..]&) -> MazeAStar {
+fn new_maze_astar(pool: slice_pool<Cell>&) -> MazeAStar {
     let width = config_i64("Maze::AStar", "w") as i32;
     let height = config_i64("Maze::AStar", "h") as i32;
     return MazeAStar { maze: new_maze(pool, width, height), result_val: 0, path: [] };

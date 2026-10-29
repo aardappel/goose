@@ -673,6 +673,20 @@ struct Inliner {
     // the call it copied, for Finish; and how deep in Cp that copy is.
     vector<pair<const Call *, Call *>> nestedcopies;
     int cpdepth = 0;
+    // Set where a standard library body is copied into the program's own
+    // code (AtCallSite): the copy's library nodes are anchored at the call,
+    // so a check they make fails where the program called the library, as
+    // one in a call left standing does (CodeGen::CallerLoc). Not into a
+    // checkfree function, whose own lines are the checks it may not keep
+    // (BCE::KeptInCheckfree), and the library's are not.
+    bool atsite = false;
+    Line site;
+
+    void AtCallSite(const Call *c) {
+        atsite = ast.StdlibFile(src->sf->line.fileidx) && !ast.StdlibFile(c->line.fileidx) &&
+                 !(dst && dst->sf->checkfree);
+        site = c->line;
+    }
 
     VarDef *Remap(VarDef *v) {
         if (!v) return v;
@@ -689,6 +703,8 @@ struct Inliner {
         // Otherwise every use of the copy lives in the copied tree.
         nv->captured = keepcaptured && v->captured;
         vmap[v] = nv;
+        nv->componentowner = Remap(v->componentowner);
+        for (auto &c : nv->components) c = Remap(c);
         auto fit = o.facts.find(v);
         if (fit != o.facts.end()) o.facts[nv] = fit->second;
         return nv;
@@ -729,6 +745,10 @@ struct Inliner {
         cpdepth++;
         auto r = n->Cp1(*this);
         r->end = n->end;
+        if (atsite && ast.StdlibFile(r->line.fileidx)) {
+            r->line = site;
+            r->end = Line {};
+        }
         r->exprtype = n->exprtype;
         r->expansiontrace = n->expansiontrace;
         if (!--cpdepth) Finish();
@@ -809,6 +829,7 @@ inline Node *Optimizer::TryInline(Call *c) {
     }
     Inliner inl { *this, ast, K, curspec, {}, {} };
     inl.keepcaptured = info.nestedcalls;
+    inl.AtCallSite(c);
     for (auto &p : c->fvremap) inl.outer[p.first] = p.second;
     vector<Node *> decls;
     for (size_t i = 0; i < K->params.size(); i++) {

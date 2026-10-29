@@ -2,6 +2,7 @@
 // product gathers a[i][k] times row k of b, for k in order.
 
 import std;
+import slice_pool;
 import os;
 
 extern fn notify_start(variant: const u8[:]) = "goose_notify_start";
@@ -9,13 +10,13 @@ extern fn notify_stop() = "goose_notify_stop";
 
 // A matrix is an array of rows. An array cannot hold growable arrays, so the
 // rows are runs of one pool, which the caller owns, laid end to end.
-fn new_mat(pool: f64[>..]&, x: i64, y: i64) -> (f64[:])[>..] {
+fn new_mat(pool: slice_pool<f64>&, x: i64, y: i64) -> (f64[:])[>..] {
     var m: (f64[:])[>..] = [];
     for i in x { m.push(pool.alloc_slice(y)); }
     return m;
 }
 
-fn mat_gen(pool: f64[>..]&, n: i64, seed: f64) -> (f64[:])[>..] {
+fn mat_gen(pool: slice_pool<f64>&, n: i64, seed: f64) -> (f64[:])[>..] {
     var m = new_mat(pool, n, n);
     let tmp = seed / n / n;
     for row, i in m {
@@ -29,7 +30,7 @@ fn mat_gen(pool: f64[>..]&, n: i64, seed: f64) -> (f64[:])[>..] {
 // it comes out the same to the bit as the transposed dot products of plb's
 // version, but the innermost loop walks rows of b and c, which vectorizes,
 // where a dot product is one long chain of adds.
-fn mat_mul(pool: f64[>..]&, a: (f64[:])[:], b: (f64[:])[:]) -> (f64[:])[>..] {
+fn mat_mul(pool: slice_pool<f64>&, a: (f64[:])[:], b: (f64[:])[:]) -> (f64[:])[>..] {
     let m = a.len;
     let p = b[0].len;
     var c = new_mat(pool, m, p);
@@ -45,7 +46,7 @@ fn mat_mul(pool: f64[>..]&, a: (f64[:])[:], b: (f64[:])[:]) -> (f64[:])[>..] {
 
 fn calc(n: i64) -> f64 {
     let size = n / 2 * 2;
-    reusable[] var pool: f64[>..] = [];
+    var pool = slice_pool<f64> {};
     let a = mat_gen(pool, size, 1.0);
     let b = mat_gen(pool, size, 2.0);
     let c = mat_mul(pool, a, b);

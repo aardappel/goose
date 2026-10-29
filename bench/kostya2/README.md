@@ -1,5 +1,11 @@
 # kostya/benchmarks in Goose
 
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../../docs/stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../../docs/stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 Goose versions of the five tests of
 [kostya/benchmarks](https://github.com/kostya/benchmarks) (Brainfuck,
 Base64, Json, Matmul, Primes), laid out the way that repository lays out a
@@ -21,8 +27,13 @@ Goose's memory model and library provide:
 | Base64 | `base64/test.goose` | `base64.rs`: the library codec, a new buffer per call | `std`'s `base64`, whose loops the C compiler vectorizes; each buffer is a data-stack bump, freed at the closing brace of the loop body |
 | Json | `json/test.goose` | `json_struct.rs` (serde, typed) | `json::Reader` maps the text onto `Coordinate`s as serde's derive does, without building a tree |
 | Json | `json/test_dom.goose` | `json_value.rs` (serde `Value`), RapidJSON's `Document` | `json::parse`'s tree: fixed-size nodes in one array, linked by 4-byte self-relative offsets, strings as views of the text |
-| Matmul | `matmul/matmul.goose` | `matmul.jl` without threads: `c[i][j] += a[i][k] * b[k][j]` with j innermost, no transpose | a matrix is an array of row slices, and the rows are runs of one `reusable[]` pool; one `assert` per row removes the bounds checks from every index in the inner loop |
-| Primes | `primes/primes.goose` | `primes.rs`: sieve of Atkin, a trie of the primes' digits, a breadth-first walk | trie nodes in one array; each node's map is a run of (digit, node) pairs in a `reusable[]` pool; queue entries hold their prefix inline in a `u8[..16]` |
+| Matmul | `matmul/matmul.goose` | `matmul.jl` without threads: `c[i][j] += a[i][k] * b[k][j]` with j innermost, no transpose | a matrix is an array of row slices, and the rows are runs of one `slice_pool<f64>`; one `assert` per row removes the bounds checks from every index in the inner loop |
+| Primes | `primes/primes.goose` | `primes.rs`: sieve of Atkin, a trie of the primes' digits, a breadth-first walk | trie nodes in one array; each node's map is a run of (digit, node) pairs in a `slice_pool<Child>`; queue entries hold their prefix inline in a `u8[..16]` |
+
+The [paired pool measurements](../pool_workloads.md) found Matmul at parity
+with `slice_pool` and Primes about 7% slower in its timed trie-building workload.
+Both use the library pool; the small Primes cost is accepted. The historical
+Linux results below predate these pool migrations.
 
 The Goose tests depart from the other languages' tests in two ways. Both
 are forced by the memory model, which puts them in the same category as

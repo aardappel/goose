@@ -1,5 +1,11 @@
 # Programming-Language-Benchmarks in Goose
 
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../../docs/stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../../docs/stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 Goose programs for the problems of
 [Programming-Language-Benchmarks](https://github.com/hanabi1224/Programming-Language-Benchmarks)
 (PLB), one directory per problem, named as PLB names its sources: `1.goose`
@@ -108,7 +114,9 @@ and 2-m 39 ms at 8000, and mandelbrot/1-m 21 ms at 5000.
   iterations on workers.
 * **merkletrees** forbids arenas ("every tree node needs to be either
   separately freed or GCed"), so its nodes come one at a time from a
-  `reusable` pool with a freelist, and each tree is freed node by node.
+  `slot_pool` with a freelist, and each tree is freed node by node. The
+  [pool workload comparison](../pool_workloads.md) measures the library port
+  against its original `reusable` version.
 * **coro-prime-sieve**: Goose has no coroutines, and its queues are one per
   element type, so the chain of thousands of filters cannot be a chain of
   threads either. The program builds the same chain as the generator

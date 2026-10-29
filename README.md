@@ -245,11 +245,18 @@ fn insert(pool: Node[>..]&, key: i32) {
 References are transparent (there is no `*` or `->`). `.=` binds or retargets
 a reference, and `Node?` is a nullable reference that `if`, `guard` and
 `assert` narrow. The insert is one push and one store, and the push cannot
-invalidate `cur`. When lifetimes are not nested, a `reusable` pool pairs a
-grow-only array with a hidden freelist. `alloc_ref` reuses a free slot or
+invalidate `cur`. When lifetimes are not nested, the standard library's
+[`slot_pool<T>`](docs/stdlib.md#slot_pool) pairs a grow-only `items` array
+with a freelist. `alloc_ref` reuses a free slot or
 pushes a new one, and `free` returns a slot to the pool. Since a slot's memory
 is never actually freed, a stale slot reads a *different value of the correct
 type* rather than corrupting memory.
+
+[`slice_pool<T>`](docs/stdlib.md#slice_pool) provides contiguous runs with
+allocation, free and resize operations. The language features `reusable` and
+`reusable[]` are **deprecated** in favor of these pool types. They remain
+available for existing code and the [remaining migration gaps](docs/design/root_structs.md#separate-follow-up-reusable-pools-in-the-stdlib);
+removal is a later step.
 
 ### Saving and loading data as bytes
 
@@ -416,7 +423,7 @@ The [summary](bench/summary.md) explains the gains and losses;
 
 * You have to think about where data lives: who owns it, and how long its
   scope lasts. Usually the owner is the function that builds the data, which
-  needs no extra work; when it is not, the data goes in a `reusable` pool.
+  needs no extra work; when it is not, use a `slot_pool` or `slice_pool`.
 * Recursive functions cannot keep growable data across a recursive call.
   Scratch data must end before the call, and data that outlives the call is
   passed in as a pool.
@@ -426,7 +433,7 @@ The [summary](bench/summary.md) explains the gains and losses;
   choice per container.
 * There are no escaping closures, no function pointers and no dynamic
   dispatch beyond ADT tags, and only whole-program compilation is supported.
-* A slot that was returned to a `reusable` pool but is still referenced
+* A slot that was returned to a pool but is still referenced
   reads whatever its next owner put there. That is a logic bug, but never
   memory corruption.
 

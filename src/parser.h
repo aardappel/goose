@@ -354,6 +354,12 @@ struct Parser {
         return ast.Intern(cat(name, "::", ExpectIdent(context)));
     }
 
+    string_view ParseStorageName(const char *context) {
+        auto name = ParseQualifiedName(context);
+        while (IsNext(T_DOT)) name = ast.Intern(cat(name, ".", ExpectIdent(context)));
+        return name;
+    }
+
     // A top-level declaration's name: `name` in the file's namespace, or
     // `ns::name` / `::name` placing it in that namespace instead, which is
     // how a dump carries every file's namespace in one file. The rest of
@@ -444,6 +450,11 @@ struct Parser {
             default: break;
         }
         declseen = true;
+        // Contextual: a variable, field or function named root remains a name.
+        if (lex.tok == T_IDENT && lex.attr == "root" && lex.PeekTok() == T_STRUCT) {
+            ParseStructDecl(true);
+            return;
+        }
         if (AtInline() || AtCheckfree()) goto fndecl;
         switch (lex.tok) {
             case T_STRUCT: ParseStructDecl(); return;
@@ -542,14 +553,16 @@ struct Parser {
         }
     }
 
-    void ParseStructDecl() {
+    void ParseStructDecl(bool isroot = false) {
         auto firsttype = ast.alltypes.size();
         auto line = CurLine();
         auto doc = lex.doc;
         auto depth = lex.DepthBefore();
         auto startp = lex.attr.data();
-        lex.Next();
+        if (isroot) lex.Next();
+        Expect(T_STRUCT, "struct declaration");
         auto st = new SStruct();
+        st->isroot = isroot;
         ast.structs.push_back(st);
         st->name = ParseDeclName("struct declaration");
         st->ns = curns;
@@ -854,6 +867,9 @@ struct Parser {
                 // The runtime entry points that read every stack top through
                 // the registry rather than through their arguments.
                 sf->readsalltops = sf->cname == "gs_trim_memory";
+                sf->takesloc = sf->cname == "gs_slice_pool_place" ||
+                               sf->cname == "gs_slice_pool_free" ||
+                               sf->cname == "gs_slice_pool_regrow";
                 Expect(T_SEMI, "extern declaration");
             } else if (lex.tok == T_ASSIGN) {
                 Error("only an extern fn takes a symbol after its signature: = \"symbol\" (§7.10)");
@@ -1004,7 +1020,7 @@ struct Parser {
                         // `T&<u32 in pool>`: offsets measured from a named
                         // global pool rather than from the field (§3.9).
                         if (IsNext(T_IN)) {
-                            r->ref->poolname = ParseQualifiedName("relative reference pool");
+                            r->ref->poolname = ParseStorageName("relative reference pool");
                             r->ref->poolns = curns;
                         }
                         ExpectClosingAngle("relative reference width");
@@ -1089,7 +1105,7 @@ struct Parser {
                 it->intstorage = t->intstorage;
                 it->ix = ast.NewDetail<TypeIndex>();
                 it->ix->upto = upto;
-                it->ix->name = ParseQualifiedName(upto ? "bound type" : "index type");
+                it->ix->name = ParseStorageName(upto ? "bound type" : "index type");
                 it->ix->ns = curns;
                 // It takes no postfix: `u32 in nodes[>..]` would read as an
                 // index into `nodes[>..]`.

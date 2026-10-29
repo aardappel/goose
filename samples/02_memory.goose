@@ -6,6 +6,7 @@
 // Build and run (from this directory):
 //   goose -o memory.c 02_memory.goose && cl memory.c && memory
 
+import slot_pool;
 import std;
 
 struct Item { id: i32, weight: f32 }
@@ -89,16 +90,16 @@ fn main() {
     for row in rows { print(row.label, ": ", row.cells, " (", row.cells.len, "/", row.cells.cap, ")"); }
 
     // 8. When lifetimes really are not nested -- a cache, a mutable graph --
-    //    a `reusable` pool keeps a freelist of slots. Every slot stays a
+    //    a `slot_pool` keeps a freelist of slots. Every slot stays a
     //    valid Item forever, so a stale reference can read a wrong value but
     //    never corrupt memory; that is the whole extent of unsafety.
-    reusable var pool: Item[>..] = [];
+    var pool = slot_pool<Item> {};
     let s0 = pool.alloc_index(Item { 10, 1.0 });
     let s1 = pool.alloc_index(Item { 11, 1.0 });
     pool.free(s0);
     let s2 = pool.alloc_index(Item { 12, 2.0 });   // takes slot s0 back
-    print("slots ", s0, " ", s1, " ", s2, ", pool length ", pool.len);
+    print("slots ", s0, " ", s1, " ", s2, ", pool length ", pool.items.len);
     let node: Item& = pool.alloc_ref(Item { 13, 3.0 });
-    pool.free(pool.index_of(node));                // a reference turned back into its slot
-    print("pool length ", pool.len);
+    pool.free_ref(node);
+    print("pool length ", pool.items.len);
 }

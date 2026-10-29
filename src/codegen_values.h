@@ -134,6 +134,7 @@ inline void CodeGen::DerefLoc(Loc &lv) {
         nl.s = lv.hbase.empty() ? cat(rv, ".hdr->base") : lv.hbase;
         // Growth writes the header even where the reads come from a hoist.
         nl.lenlv = cat(rv, ".hdr->len");
+        nl.lenroot = lv.lenroot;
         nl.hlen = lv.hlen;
         nl.viaref = lv.viaref;
         nl.stk = cat(rv, ".stk");
@@ -158,6 +159,9 @@ inline void CodeGen::DerefLoc(Loc &lv) {
     nl.t = r.sub;
     nl.val = true;
     nl.s = PointeeLv(rv, r.sub);
+    if (IsRoot(r.sub)) {
+        if (auto desc = NamedRootDesc(rv); !desc.empty()) nl.s = desc;
+    }
     nl.hlen = lv.hlen;
     nl.viaref = lv.viaref;
     lv = nl;
@@ -196,6 +200,7 @@ inline void CodeGen::PinLoc(Loc &lv) {
 inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
     Loc l;
     l.t = vd->type;
+    if (IsRoot(l.t) && !fvptr.count(vd)) l.rootowner = vd;
     if (auto ait = refalias.find(vd); ait != refalias.end()) {
         auto tg = const_cast<VarDef *>(ait->second);
         if (auto pit = aliaspath.find(vd); pit != aliaspath.end()) {
@@ -205,6 +210,10 @@ inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
             l.aliaspath = pit->second;
         } else if (tg->type->kind == TY_REF) {
             l = VarLoc(tg);
+        } else if (IsRoot(tg->type)) {
+            l.val = true;
+            l.s = cat("(&", VarLoc(tg).s, ")");
+            l.aliasof = tg;
         } else {
             // The reference value is made where one is needed; its pointee
             // is the variable's own location (DerefLoc).
@@ -277,7 +286,8 @@ inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
         return l;
     }
     l.val = true;
-    l.s = fvptr.count(vd) ? cat("(*", name, ")") : name;
+    // A split root parameter's name is the body's copy of the descriptor.
+    l.s = splitroots.count(vd) ? cat("(&", name, ")") : fvptr.count(vd) ? cat("(*", name, ")") : name;
     l.viaref = vd->isvar && vd->type->kind == TY_REF;
     if (PrefVar(vd)) {
         l.ispref = true;
@@ -642,7 +652,13 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
         v.elems = elems;
         v.len = len;
     }
-    auto idx = GenPure(idxnode);
+    string idx;
+    if (locnow && Is<Ident>(idxnode)) {
+        idx = GenX(idxnode);
+        if (!IsCName(idx)) idx = Snapshot(idxnode->exprtype, idx);
+    } else {
+        idx = GenPure(idxnode);
+    }
     if (lv.t->kind == TY_SLICE) {
         // MSVC /O2 can discard stores through a copied slice header while
         // retaining earlier values in its fixed-array owner (typecheck's
@@ -746,10 +762,10 @@ inline void CodeGen::EmitHoistedCheck(Index *ta, Index *ea, const string &c) {
     while (lv.t->kind == TY_REF) DerefLoc(lv);
     auto v = ArrayView(lv);
     auto idx = GenPure(ta->idx);
-    auto tl = ta->line, el = ea->line;
-    auto file = tl.fileidx == el.fileidx
-                    ? FileRef(tl) : cat("(", c, ") ? ", FileRef(tl), " : ", FileRef(el));
-    auto line = tl.line == el.line ? cat(tl.line) : cat("(", c, ") ? ", tl.line, " : ", el.line);
+    auto tf = LocFile(ta->line), ef = LocFile(ea->line);
+    auto tl = LocLine(ta->line), el = LocLine(ea->line);
+    auto file = tf == ef ? tf : cat("(", c, ") ? ", tf, " : ", ef);
+    auto line = tl == el ? tl : cat("(", c, ") ? ", tl, " : ", el);
     L("(void)GS_IDX((int64_t)(", idx, "), ", v.len, ", ", file, ", ", line, ");");
 }
 
@@ -797,6 +813,29 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
         l.val = true;
     }
     return l;
+}
+
+// GenLoc for a caller that uses the location before emitting any statement
+// (locnow). A path that emits statements of its own may change an index
+// variable between reading it and using the location, so it takes the
+// ordinary form.
+inline CodeGen::Loc CodeGen::GenLocNow(Node *n) {
+    auto saved = locnow;
+    locnow = !HasStmts(n);
+    auto lv = GenLoc(n);
+    locnow = saved;
+    return lv;
+}
+
+// Whether evaluating n emits no statement, writes nothing and cannot fail,
+// so that it can be evaluated after a destination it is stored to: a
+// variable of a fixed type, a constant, or what Speculatable accepts
+// without any bounds check.
+inline bool CodeGen::QuietValue(Node *n) {
+    if (auto id = Is<Ident>(n)) return id->vdef && n->exprtype && IsFix(n->exprtype);
+    if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n) || Is<NullLit>(n)) return true;
+    int budget = 16;
+    return Speculatable(n, false, false, budget);
 }
 
 // Whether a destination's C lvalue names the same storage wherever in its
@@ -903,6 +942,18 @@ inline CodeGen::Loc CodeGen::FieldLocAt(Loc lv, int fieldidx) {
     if (lv.t->kind == TY_STRUCT) {
         auto si = SI(lv.t);
         auto ft = si->ftypes[fieldidx];
+        if (si->st->isroot) {
+            if (lv.rootowner) return VarLoc(lv.rootowner->components[fieldidx]);
+            assert(lv.val);
+            Loc r;
+            r.t = ast.RefTo(ft, lv.t->line);
+            r.val = true;
+            r.s = cat(lv.s, ".", Sanitize(si->st->fields[fieldidx].name));
+            if (ft->kind == TY_ARRAY && IsResz(ft)) r.lenroot = cat(r.s, ".hdr");
+            r.viaref = lv.viaref || ft->kind == TY_REF;
+            DerefLoc(r);
+            return r;
+        }
         if (lv.val) {
             Loc r = lv;
             r.t = ft;
@@ -911,6 +962,7 @@ inline CodeGen::Loc CodeGen::FieldLocAt(Loc lv, int fieldidx) {
             r.hbase.clear();
             r.hlen.clear();
             r.lenlv.clear();
+            r.lenroot.clear();
             if (IsResz(ft)) {
                 // A frame object's tail: its own header (or a nested
                 // frame object) is the member.
@@ -1217,6 +1269,43 @@ inline bool CodeGen::BranchChain(Node *n) {
     return ChainOp(n) || BranchCall(n);
 }
 
+// Whether b is a range test of a signed variable x against a count y that
+// cannot be negative -- `x < 0 || x >= y`, or `x >= 0 && x < y` -- which is
+// one unsigned comparison of the two: a negative x converts to above any
+// such y. y is a constant or a length (or capacity) read along a path that
+// cannot fail.
+inline bool CodeGen::RangeTest(Binary *b, Node *&x, Node *&y) {
+    auto ors = b->op == T_OROR;
+    auto cmp = [&](Node *n, TType op, TType flipped, Node *&l, Node *&r) {
+        auto c = Is<Binary>(n);
+        if (!c || (c->op != op && c->op != flipped)) return false;
+        auto t = c->left->exprtype ? OperandT(c->left->exprtype) : nullptr;
+        if (!t || t->kind != TY_INT || IntRange(t->intstorage).first >= 0 ||
+            t->intstorage == IS_VARINT)
+            return false;
+        l = c->op == op ? c->left : c->right;
+        r = c->op == op ? c->right : c->left;
+        return true;
+    };
+    Node *x0, *z, *x1, *n;
+    if (!cmp(b->left, ors ? T_LT : T_GTEQ, ors ? T_GT : T_LTEQ, x0, z) ||
+        !cmp(b->right, ors ? T_GTEQ : T_LT, ors ? T_LTEQ : T_GT, x1, n))
+        return false;
+    auto zero = Is<IntLit>(z);
+    auto xi = Is<Ident>(x0);
+    if (!zero || zero->val != 0 || !xi || !xi->vdef || !SamePath(x0, x1)) return false;
+    if (auto k = Is<IntLit>(n); k && !k->uns && k->val >= 0) {
+        x = x0;
+        y = n;
+        return true;
+    }
+    auto d = Is<Dot>(n);
+    if (!d || (d->member != B_LEN && d->member != B_CAP) || !CheckFreePath(d->obj)) return false;
+    x = x0;
+    y = n;
+    return true;
+}
+
 // A branch to `lbl` taken where n's truth value is `when`, falling through
 // where it is not. A && or || (ChainOp) is a chain of branches on its
 // operands, the right one's statements running only where the left did not
@@ -1232,7 +1321,9 @@ inline bool CodeGen::BranchChain(Node *n) {
 inline void CodeGen::GenBranch(Node *n, bool when, string lbl, int exitscope) {
     if (auto u = Is<Unary>(n); u && u->op == T_NOT)
         return GenBranch(u->child, !when, lbl, exitscope);
-    if (auto b = ChainOp(n)) {
+    auto b = ChainOp(n);
+    Node *rx = nullptr, *ry = nullptr;
+    if (b && !RangeTest(b, rx, ry)) {
         // A && is false, and a || true, as soon as one operand is.
         if ((b->op == T_ANDAND) != when) {
             GenBranch(b->left, when, lbl, exitscope);
@@ -1280,6 +1371,14 @@ inline void CodeGen::GenBranch(Node *n, bool when, string lbl, int exitscope) {
     };
     if (auto bl = Is<BoolLit>(n)) {
         if (bl->val == when) jump("");
+        return;
+    }
+    if (rx) {
+        // Both operands read without effect or failure, so they are taken
+        // whatever the left comparison gave.
+        auto x = cat("(uint64_t)(int64_t)(", GenX(rx), ") ", b->op == T_OROR ? ">=" : "<",
+                     " (uint64_t)(int64_t)(", GenX(ry), ")");
+        jump(when ? x : cat("!(", x, ")"));
         return;
     }
     PushSc(SC_PLAIN);

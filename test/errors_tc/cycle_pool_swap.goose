@@ -1,4 +1,4 @@
-// error: recursive call passes a rooted differently from the cycle's entry call, which stored references into it
+// error: recursive call passes a rooted differently from the cycle's entry call; this parameter must keep the same storage throughout the cycle
 // A recursive cycle may store references rooted at a pool parameter (no
 // cycle function can own the pool, so it outlives every activation), but
 // only while every back edge passes the same pools the entry call did (§7.8):

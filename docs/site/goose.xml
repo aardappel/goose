@@ -47,6 +47,7 @@
         <StringDetect String="&quot;&quot;&quot;" attribute="String" context="RawString"/>
         <DetectChar char="&quot;" attribute="String" context="String"/>
         <DetectChar char="'" attribute="Char" context="Char"/>
+        <RegExpr String="\broot\b(?=\s+struct\b)" attribute="Keyword"/>
         <keyword String="keywords" attribute="Keyword"/>
         <keyword String="types" attribute="DataType"/>
         <keyword String="constants" attribute="Constant"/>

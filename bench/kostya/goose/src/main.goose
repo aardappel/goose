@@ -5,6 +5,7 @@
 //   benchmark [config.js] [name-substring]
 
 import std;
+import slice_pool;
 import os;
 import bench;
 import helper;
@@ -58,22 +59,22 @@ fn dispatch(b: Bench&) -> u32, bool {
                                    brainfuck_recursion::run, brainfuck_recursion::checksum), true;
     }
     if n == "Matmul::Single" {
-        reusable[] var pool: f64[>..] = [];
+        var pool = slice_pool<f64> {};
         var s = matmul::new_matmul1t(pool);
         return execute(b, s, matmul::prepare, matmul::run, matmul::checksum), true;
     }
     if n == "Matmul::T4" {
-        reusable[] var pool: f64[>..] = [];
+        var pool = slice_pool<f64> {};
         var s = matmul::new_matmul4t(pool);
         return execute(b, s, matmul::prepare, matmul::run, matmul::checksum), true;
     }
     if n == "Matmul::T8" {
-        reusable[] var pool: f64[>..] = [];
+        var pool = slice_pool<f64> {};
         var s = matmul::new_matmul8t(pool);
         return execute(b, s, matmul::prepare, matmul::run, matmul::checksum), true;
     }
     if n == "Matmul::T16" {
-        reusable[] var pool: f64[>..] = [];
+        var pool = slice_pool<f64> {};
         var s = matmul::new_matmul16t(pool);
         return execute(b, s, matmul::prepare, matmul::run, matmul::checksum), true;
     }
@@ -121,7 +122,7 @@ fn dispatch(b: Bench&) -> u32, bool {
         return execute(b, s, cache_simulation::prepare, run, cache_simulation::checksum), true;
     }
     if n == "Etc::GameOfLife" {
-        reusable[] var pool: game_of_life::Cell[>..] = [];
+        var pool = slice_pool<game_of_life::Cell> {};
         var s = game_of_life::new_game_of_life(pool);
         return execute(b, s, game_of_life::prepare, game_of_life::run, game_of_life::checksum), true;
     }
@@ -139,8 +140,8 @@ fn dispatch(b: Bench&) -> u32, bool {
     if n == "Sort::Self" { var s = sort::new_sort_self(); return execute(b, s, sort::prepare, sort::run, sort::checksum), true; }
     if n == "Graph::BFS" || n == "Graph::DFS" || n == "Graph::AStar" {
         // The slice pool of the graph's adjacency lists, which outlives the
-        // benchmark that keeps them (a struct can't hold a pool).
-        reusable[] var edges: i32[>..] = [];
+        // benchmark that keeps them; root owners cannot be nested in it.
+        var edges = slice_pool<i32> {};
         fn prepare(s) { graph_path::prepare(s, edges); }
         if n == "Graph::BFS" { var s = graph_path::new_graph_path_bfs(); return execute(b, s, prepare, graph_path::run, graph_path::checksum), true; }
         if n == "Graph::DFS" { var s = graph_path::new_graph_path_dfs(); return execute(b, s, prepare, graph_path::run, graph_path::checksum), true; }
@@ -174,8 +175,8 @@ fn dispatch(b: Bench&) -> u32, bool {
     }
     if n == "Maze::Generator" || n == "Maze::BFS" || n == "Maze::AStar" {
         // The slice pool of the maze's rows, which outlives the benchmark
-        // that keeps them (a struct can't hold a pool).
-        reusable[] var cells: maze::Cell[>..] = [];
+        // that keeps them; root owners cannot be nested in it.
+        var cells = slice_pool<maze::Cell> {};
         if n == "Maze::Generator" { var s = maze::new_maze_generator(cells); return execute(b, s, maze::prepare, maze::run, maze::checksum), true; }
         if n == "Maze::BFS" { var s = maze::new_maze_bfs(cells); return execute(b, s, maze::prepare, maze::run, maze::checksum), true; }
         if n == "Maze::AStar" { var s = maze::new_maze_astar(cells); return execute(b, s, maze::prepare, maze::run, maze::checksum), true; }

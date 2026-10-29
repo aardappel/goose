@@ -1493,6 +1493,20 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (ra.exact) ra.pool = PoolOf(r);
         classify(ra, r);
     }
+    // Preserve an owner's relationship to a separately supplied component.
+    // This is a storage path, not a uniqueness assumption about the owner type.
+    for (size_t i = 0; i < roots.size(); i++) {
+        auto r = argroots[i];
+        if (!r || !r->componentowner || !roots[i].exact) continue;
+        for (size_t j = 0; j < roots.size(); j++) {
+            auto pt = mi.paramtypes[j];
+            if (!roots[j].exact || argroots[j] != r->componentowner ||
+                pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_ROOT) continue;
+            roots[i].ownerparam = (int)j;
+            roots[i].ownerfield = r->componentfield;
+            break;
+        }
+    }
     // The contents of an argument only the callee's parameters reach get
     // a class of their own, which a load through that parameter sees.
     auto reach = EnvReach(mi);
@@ -1570,7 +1584,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     for (size_t i = 0; i < roots.size(); i++)
         for (auto fi = (int)frames.size() - 1; argroots[i] && !classes[i].first && fi >= 0; fi--)
             for (size_t j = 0; frames[fi].spec && j < frames[fi].spec->params.size(); j++)
-                if (frames[fi].spec->params[j]->ref.Root() == argroots[i]) {
+                if (ProjectedFrom(argroots[i], frames[fi].spec->params[j]->ref.Root())) {
                     classes[i] = { frames[fi].spec, (int)j };
                     break;
                 }
@@ -1581,7 +1595,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     auto fat = [&](size_t i) {
         auto pt = mi.paramtypes[i];
         return argroots[i] && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
-               ClassOf(pt->ref->sub) == SC_RESIZABLE;
+               (ClassOf(pt->ref->sub) == SC_RESIZABLE || ClassOf(pt->ref->sub) == SC_ROOT);
     };
     FnSpec *owner = nullptr;
     auto external = false;
@@ -1708,7 +1722,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         // A member of a cycle whose next round has yet to check it again.
         if (spec->stale) {
             spec->stale = false;
-            CheckSpecBodyOnce(spec, &argvals, callnode->line);
+            CheckSpecBodyOnce(spec, &argvals, callnode->line, Is<Call>(callnode));
         } else if (!spec->inprogress) {
             ReplayOuterExits(spec);
             ReplayEnvExits(spec);
@@ -1741,7 +1755,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     // site's: it leaves no specialization behind for a later call to reuse.
     NoteLitArgs(spec, argvals, callnode);
     sf->specs.push_back(spec);
-    CheckSpecBody(spec, &argvals, callnode->line);
+    CheckSpecBody(spec, &argvals, callnode->line, Is<Call>(callnode));
     NoteCalleeEnvReads(spec);
     return spec;
 }
@@ -2072,7 +2086,7 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
         auto end = i < last ? frames[i + 1].varbase : (int)vars.size();
         for (auto vi = frames[i].varbase; vi < end; vi++) {
             auto v = vars[vi];
-            if (!v->type || ClassOf(v->type) == SC_FIXED) continue;
+            if (!v->type || !NeedsCycleStack(v->type)) continue;
             if (v->isparam)
                 Error(frames[i].cyclecall,
                       cat(FrameFnName(i), " calls into its recursive cycle while by-value "
@@ -2102,7 +2116,7 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
 // block's arguments and body run (EmitFvCall), so the calls into the cycle
 // among them hold it unless it is in place.
 inline void TypeCheck::NoteTemp(Node *n, const Val &v, int cyclecalls) {
-    auto nonfixed = v.type && ClassOf(v.type) != SC_FIXED;
+    auto nonfixed = v.type && NeedsCycleStack(v.type);
     n->nftemp = nonfixed && !v.lvalue && !v.pointee;
     auto fi = (int)frames.size() - 1;
     if (frames[fi].cyclecalls == cyclecalls) return;
@@ -2361,8 +2375,8 @@ inline void TypeCheck::ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node
         if (!pr->poolclass) continue;
         if (!argvals[i].Exact() || UltimateRoot(pr) != UltimateRoot(argvals[i].Root()))
             Error(callnode, cat("recursive call passes ", spec->params[i]->name,
-                                " rooted differently from the cycle's entry call, which "
-                                "stored references into it (§7.8)"));
+                                " rooted differently from the cycle's entry call; this "
+                                "parameter must keep the same storage throughout the cycle (§7.8)"));
     }
 }
 
@@ -2553,7 +2567,9 @@ inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why) {
             return false;
         }
         auto s = t->ref->sub;
-        if (s->kind == TY_ARRAY && s->arr->akind == A_GROW && IsU8(s->arr->sub)) return true;
+        // A resizable crosses as its header and stack (gs_rref), and C sees
+        // its elements as blocks of their packed size.
+        if (s->kind == TY_ARRAY && s->arr->akind == A_GROW) return ExternValueOk(s->arr->sub, why);
         return ExternValueOk(s, why);
     }
     if (t->kind == TY_SLICE) return ExternValueOk(t->sub, why);
@@ -2759,14 +2775,15 @@ inline int TypeCheck::EnvReach(const MatchInfo &mi) {
 // it broken. A member the last round no longer reaches stays stale: its
 // record, read by no call of that round, settled with nothing, so a call
 // after the cycle is checked does not reuse it (GetOrCreateSpec).
-inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
+inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline,
+                                     Call *call) {
     ast.CheckCancel();
     struct RoundScope {
         TypeCheck &tc;
         RoundScope(TypeCheck &t) : tc(t) { tc.cyclerounds.push_back({ tc.CurDepth(), false }); }
         ~RoundScope() { tc.cyclerounds.pop_back(); }
     } roundscope(*this);
-    CheckSpecBodyOnce(spec, argvals, callline);
+    CheckSpecBodyOnce(spec, argvals, callline, call);
     while (spec->incycle && CycleHead(spec) == spec) {
         // Bound cycles that do not settle. Completion proofs accumulate, but
         // pruning a newly unreachable continuation can remove other effects.
@@ -2784,7 +2801,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             m->stale = m != spec;
         }
         cyclerounds.back().changed = false;
-        CheckSpecBodyOnce(spec, argvals, callline);
+        CheckSpecBodyOnce(spec, argvals, callline, call);
         for (auto &[cls, tc] : threadedclasses) broken -= tc.broken;
         auto outer = cyclerounds.back().changed;
         if (outer && getenv("GOOSE_ROUNDS"))
@@ -2858,7 +2875,8 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
     for (size_t i = 0; i < a.liveshrinks.size(); i++) {
         auto &p = a.liveshrinks[i], &q = b.liveshrinks[i];
         if (p.shrunk != q.shrunk || p.shrunkexact != q.shrunkexact || p.live != q.live ||
-            p.liveexact != q.liveexact || p.byteview != q.byteview || p.growonly != q.growonly ||
+            p.liveexact != q.liveexact || p.liveprojected != q.liveprojected ||
+            p.byteview != q.byteview || p.growonly != q.growonly ||
             p.contents != q.contents || p.inplace != q.inplace || !sametype(p.bound, q.bound) ||
             !sametype(p.pointee, q.pointee))
             return why("live shrinks");
@@ -2875,7 +2893,8 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
     return true;
 }
 
-inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline) {
+inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline,
+                                         Call *call) {
     // In progress from here, so that an error before the body's check, an
     // extern's included, leaves it failed (Checkpoint).
     spec->inprogress = true;
@@ -2932,6 +2951,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     f.expansiontrace = ActiveExpansionTrace();
     f.exits = &exits;
     f.argvals = argvals;
+    f.call = call;
     frames.push_back(f);
     auto fi = (int)frames.size() - 1;
     // The caller's body state is its own (BodyState): this body's loops run
@@ -2997,7 +3017,9 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                 // A pool class holds only references to resizable-class
                 // values; a slice or a reference to anything smaller may
                 // point at a cycle function's own storage.
-                if (pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_RESIZABLE ||
+                if (pt->kind != TY_REF ||
+                    (ClassOf(pt->ref->sub) != SC_RESIZABLE &&
+                     !(ClassOf(pt->ref->sub) == SC_ROOT && NeedsCycleStack(pt->ref->sub))) ||
                     !ra.exact)
                     classroots[ra.cls]->poolclass = false;
                 if (!ra.exact) exactrefs[ra.cls] = false;
@@ -3057,6 +3079,17 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             RecordStore(vd, held, ra.byteview, nullptr);
         }
         spec->params.push_back(vd);
+    }
+    for (size_t i = 0; i < spec->roots.size(); i++) {
+        auto &ra = spec->roots[i];
+        if (ra.ownerparam < 0) continue;
+        auto parent = spec->params[ra.ownerparam]->ref.Root();
+        auto t = spec->argtypes[ra.ownerparam]->ref->sub;
+        auto component = RootComponent(parent, t, ra.ownerfield);
+        auto old = classroots[ra.cls];
+        classroots[ra.cls] = component;
+        for (auto p : spec->params)
+            for (auto &a : p->ref.alts) if (a.root == old) a.root = component;
     }
     // A view's contents are a variable of the body, outside its loops.
     // Loads and stores through any alias see this binding or holder record;
@@ -3385,17 +3418,20 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
     // else (CallResult).
     m.Set(alt.root, alt.exact && (alt.root || !spec->inprogress), alt.from, alt.slotread);
     m.alts[0].classread = alt.classread;
+    m.alts[0].projected = alt.projected;
     m.writable = true;
     if (!alt.root || alt.root->isglobal || alt.root->ownerspec) return m;
     auto v = m;
     auto first = true;
     for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++) {
-        auto view = ViewClassOf(spec, p) == alt.root;
-        if (spec->params[p]->ref.Root() != alt.root && !view) continue;
+        auto view = ProjectedFrom(alt.root, ViewClassOf(spec, p));
+        if (!ProjectedFrom(alt.root, spec->params[p]->ref.Root()) && !view) continue;
         auto &a = argvals[p];
         auto x = m;
-        auto ar = view ? a.held.AsRoots() : ClassArgRoots(spec->argtypes[p], a);
-        x.TakeAlts(alt.exact ? ar : Bounds(ar));
+        auto base = view ? ViewClassOf(spec, p) : spec->params[p]->ref.Root();
+        auto ar = ProjectClass(alt.root, base,
+                               view ? a.held.AsRoots() : ClassArgRoots(spec->argtypes[p], a));
+        x.TakeAlts(alt.exact || alt.projected ? ar : Bounds(ar));
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
         if (alt.classread)
             for (size_t k = 0; k < x.alts.size(); k++)

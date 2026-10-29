@@ -1,5 +1,11 @@
 # Goose samples
 
+> **Deprecated language features:** `reusable` and `reusable[]`. Use
+> [`slot_pool<T>`](../docs/stdlib.md#slot_pool) for slots and
+> [`slice_pool<T>`](../docs/stdlib.md#slice_pool) for contiguous runs.
+> Builtin behavior and historical examples below remain relevant to existing
+> code; removal is planned separately, after the remaining migration gaps.
+
 If you have not written Goose before, read [`docs/tutorial.md`](../docs/tutorial.md)
 first: it introduces the language by example and says which of these to read
 when. [`docs/reference.md`](../docs/reference.md) then covers the whole
@@ -92,7 +98,7 @@ run as part of the test suite.
 
 | Sample | What it shows |
 |---|---|
-| [26_file_tree](26_file_tree.goose) | A directory tree: the nodes are kept in a `reusable` pool and passed around as references. Each directory's entries are one run of 4-byte `in pool` links in a `reusable[]` pool, and a run is grown in place or moved by `realloc_slice`. `rm -r` returns slots and runs to the pools, `mv` relinks, and the pools' counts show the reuse. |
+| [26_file_tree](26_file_tree.goose) | A directory tree: the nodes are kept in a stdlib `slot_pool` and passed around as references. Each directory's entries are one run of 4-byte `in nodes.items` links in a stdlib `slice_pool`, and a run is grown in place or moved by `realloc_slice`. `rm -r` returns slots and runs to the pools, `mv` relinks, and the pools' counts show the reuse. |
 
 ## The GPU
 

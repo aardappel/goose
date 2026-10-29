@@ -33,6 +33,13 @@ GOLDEN = [
      "{ let x = y as ! u8; let z = w [1 ..] [.. ^1]; }\n",
      "fn f(p: Node&<u32 in pool>, q: u8[:], r: i32[>..<], s: Shape..?, t: u8[..16]) "
      "{ let x = y as! u8; let z = w[1..][..^1]; }\n"),
+    ("root structs and component paths",
+     "root  struct State<T>{items:T[>..],scratch:i64[>..<]}\n"
+     "var pool=State<Node>{[],[]};\n"
+     "fn f(p:Node&<u32 in pool . items>,i:u32 in pool.items){let root=pool.items[i];}\n",
+     "root struct State<T> { items: T[>..], scratch: i64[>..<] }\n"
+     "var pool = State<Node> { [], [] };\n"
+     "fn f(p: Node&<u32 in pool.items>, i: u32 in pool.items) { let root = pool.items[i]; }\n"),
     ("imports, const for, initializers and qualified names",
      "import .a.b;\n"
      "fn f() { const for <k,v> in fields<P> { print(k); } let p = P{x:1,..}; let q = ::a + ns :: b; "

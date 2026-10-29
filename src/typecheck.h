@@ -218,10 +218,11 @@ struct TypeCheck {
         // checked inside it, or past them for the state being checked now.
         int bodyidx = 0;
         // A specialization's body being checked (CheckSpecBodyOnce): its exits,
-        // and the arguments of the call it is checked for, as the caller
+        // and the call it is checked for and its arguments, as the caller
         // checked them, where there is one.
         BodyExits *exits = nullptr;
         vector<Val> *argvals = nullptr;
+        Call *call = nullptr;
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK, SK_EXPANSION, SK_DEFER };
@@ -494,6 +495,18 @@ struct TypeCheck {
                              bool forwarding = false);
     void CheckCalleeRelative(Call *call, FnSpec *spec, vector<Val> &args);
     bool ResultLayoutFits(TypeExpr *from, TypeExpr *to);
+    // Root owners construct only as a declaration's immediate initializer.
+    // A destination alone is insufficient: a block/call can inherit it.
+    Node *rootinit = nullptr;
+    VarDef *rootowner = nullptr;
+    struct RootInitScope {
+        TypeCheck &tc;
+        Node *init;
+        VarDef *owner;
+        RootInitScope(TypeCheck &t, Node *n, VarDef *v)
+            : tc(t), init(t.rootinit), owner(t.rootowner) { t.rootinit = n; t.rootowner = v; }
+        ~RootInitScope() { tc.rootinit = init; tc.rootowner = owner; }
+    };
     // Whether the value being checked lands in a typed slot -- a field, an
     // element, an annotated variable, an assignment target -- whose declared
     // constness a read-only reference or slice must match (§9.5). A call
@@ -561,6 +574,19 @@ struct TypeCheck {
         ErrorIn(LocOf(l), msg, Chain(ActiveExpansionTrace()));
     }
 
+    bool StdlibLocation(DiagLoc at) const { return ast.StdlibFile(at.fileidx); }
+
+    void LibraryCallLocation(Diagnostic &d) {
+        if (!StdlibLocation(d.where)) return;
+        for (auto &related : d.related) {
+            if (related.where.fileidx < 0 || StdlibLocation(related.where)) continue;
+            auto definition = d.where;
+            d.where = related.where;
+            d.related.insert(d.related.begin(), { definition, "while checking this standard library expression" });
+            return;
+        }
+    }
+
     // An error at code checked earlier, with the instantiation chain taken
     // there: how a check made once the whole program has been reports one.
     // The text echoes the offending source line, with no caret, and then
@@ -573,6 +599,7 @@ struct TypeCheck {
         d.where = where;
         d.message = msg;
         d.related = std::move(chain);
+        LibraryCallLocation(d);
         d.text = ast.DiagnosticText(d, true);
         throw CompileError { d.text, { d } };
     }
@@ -735,6 +762,10 @@ struct TypeCheck {
         Warning w;
         w.diag.where = LocOf(n);
         w.diag.message = msg;
+        if (StdlibLocation(w.diag.where)) {
+            w.diag.related = Chain(n->expansiontrace);
+            LibraryCallLocation(w.diag);
+        }
         w.at = n->Origin();
         if (WarningsHeld()) {
             cur.pendingwarnings.push_back(std::move(w));
@@ -1375,6 +1406,26 @@ struct TypeCheck {
     Prov GlobalVarRead(VarDef *vd);
     Prov RefProvOf(VarDef *vd);
     VarDef *ResetLocal(VarDef *previous);
+    VarDef *RootComponent(VarDef *owner, TypeExpr *t, int field);
+    // Root metadata has no packed value layout, but an owner whose fields
+    // are all fixed needs no dynamic storage across a recursive call.
+    bool NeedsCycleStack(TypeExpr *t) {
+        return ClassOf(t) == SC_ROOT
+                   ? AnyField(t, [&](TypeExpr *ft) { return ClassOf(ft) != SC_FIXED; })
+                   : ClassOf(t) != SC_FIXED;
+    }
+    Roots ProjectRoots(const Roots &parents, TypeExpr *t, int field);
+    bool DifferentComponents(VarDef *a, bool within_a, VarDef *b, bool within_b) {
+        return within_a && within_b && a && b && a->componentbase && b->componentbase &&
+               a->componentfield != b->componentfield && TypeEq(a->componentbase, b->componentbase);
+    }
+    bool ProjectedFrom(VarDef *root, VarDef *base) {
+        for (auto r = root; r; r = r->componentowner) if (r == base) return true;
+        return false;
+    }
+    int ClassParam(FnSpec *spec, VarDef *root, bool &view);
+    Roots ProjectClass(VarDef *root, VarDef *base, const Roots &args);
+    Roots MapClass(FnSpec *spec, VarDef *root, const vector<Val> &args);
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
                    VarDef *previous = nullptr);
     VarDef *LookupVar(string_view name, string_view ns, Node *use = nullptr);
@@ -1560,6 +1611,7 @@ struct TypeCheck {
     // other root.
     int ActivationFloor(VarDef *root) {
         if (!IsClassRoot(root)) return 0;
+        while (root->componentowner) root = root->componentowner;
         for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
             auto &f = frames[fi];
             if (f.isfunval || !f.spec) continue;
@@ -1642,6 +1694,11 @@ struct TypeCheck {
 
     void ResolvePools();
     void ResolveIndexTypes();
+    VarDef *NamedArrayComponent(VarDef *global, string_view name, Line line);
+    void ValidateNamedComponents();
+    // Identities exist before type instantiation, including a Node whose
+    // fields refer to the items component of a slot_pool<Node> global.
+    map<pair<VarDef *, string_view>, VarDef *> namedcomponents;
     void ValidateIndexType(TypeExpr *t);
     // The globals some index or bound type names: never shrunk (§3.11).
     set<VarDef *> indexarrays;
@@ -1650,6 +1707,7 @@ struct TypeCheck {
     // for a program without the feature, which is what keeps `RootArg::pool`
     // from splitting any specialization such a program would not have split.
     set<VarDef *> poolglobals;
+    set<VarDef *> poolowners;   // Owners whose named components distinguish call-site roots.
 
     VarDef *PoolOf(VarDef *r);
     void ValidatePool(TypeExpr *t);
@@ -1702,6 +1760,7 @@ struct TypeCheck {
     void ArrayElemsReached(TypeExpr *t, vector<TypeExpr *> &out, vector<TypeExpr *> &open);
     void AppendArrayElemsReached(TypeExpr *t, vector<TypeExpr *> &out);
     bool RootedAtReceiver(const Val &rv, const Val &av, TypeExpr *elem);
+    string LibraryParamArg(VarDef *root);
     void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av, TypeExpr *elem,
                                const char *what, const char *sec);
 
@@ -1900,6 +1959,8 @@ struct TypeCheck {
     bool ImplicitCopy(const Val &v, Node *n, TypeExpr *dt);
     [[noreturn]] void ImplicitCopyError(Node *n);
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
+        if (ClassOf(dt) == SC_ROOT && (v.lvalue || IsPlainRef(v.type)))
+            Error(n, "root owners cannot be copied; bind a reference instead");
         if (ImplicitCopy(v, n, dt)) ImplicitCopyError(n);
     }
     void CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out);
@@ -2316,7 +2377,8 @@ struct TypeCheck {
     static const FnRecord *RecordOf(const FnSpec *spec) {
         return spec->inprogress ? spec->prev.get() : &spec->record;
     }
-    void CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline);
+    void CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline,
+                           Call *call = nullptr);
     bool SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec);
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
@@ -2326,7 +2388,7 @@ struct TypeCheck {
     int ClassDepth(VarDef *r);
     vector<VarDef *> NarrowedOptionals(const MatchInfo &mi);
     int EnvReach(const MatchInfo &mi);
-    void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
+    void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline, Call *call = nullptr);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
     void NamedResultCopyWarning(FnSpec *spec);
     Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
@@ -3006,6 +3068,7 @@ struct TypeCheck {
                 for (auto d : g->defs) failedglobals.insert(d);
             }
         }
+        ValidateNamedComponents();
         // Concrete ones only; a pointee still spelled with a type parameter
         // gets here again once a specialization substitutes it.
         for (auto t : ast.alltypes) {
@@ -3076,7 +3139,7 @@ struct TypeCheck {
                 auto found = false;
                 for (size_t i = 0; gc.spec && i < gc.spec->params.size() &&
                                    i < gc.spec->roots.size(); i++) {
-                    if (gc.spec->params[i]->ref.Root() != cr) continue;
+                    if (!ProjectedFrom(cr, gc.spec->params[i]->ref.Root())) continue;
                     if (!gc.spec->roots[i].concrete || !gc.spec->roots[i].exact) return false;
                     found = true;
                 }
@@ -3224,6 +3287,11 @@ struct TypeCheck {
                 if (found) return nullptr;
                 found = g;
             }
+            for (auto g : poolowners) {
+                if (!g->type || !TypeEq(g->type, t->ref->sub)) continue;
+                if (found) return nullptr;
+                found = g;
+            }
             return found;
         };
         map<VarDef *, int> poolclasses;
@@ -3301,12 +3369,23 @@ struct TypeCheck {
     // holding references into other storage cannot be.
     void CheckThreadGlobals(FnSpec *entry) {
         set<FnSpec *> seen;
+        set<TypeExpr *> namedtypes;
         function<void(FnSpec *)> rec = [&](FnSpec *sp) {
             if (!sp || !sp->body || !seen.insert(sp).second) return;
             function<void(Node *)> walk = [&](Node *n) {
                 if (!n) return;
+                NodeNamedArrays(n, namedtypes, [&](VarDef *a, bool) {
+                    if (auto owner = a->componentowner)
+                        Error(n, cat("thread programs cannot copy root global ", owner->name,
+                                     " (named by a type reached from thread_fn ", entry->sf->name,
+                                     "); construct worker-local state instead"));
+                });
                 if (auto id = Is<Ident>(n)) {
                     auto g = id->vdef;
+                    if (g && g->isglobal && g->type && ClassOf(g->type) == SC_ROOT)
+                        Error(n, cat("thread programs cannot copy root global ", id->name,
+                                     " (reached from thread_fn ", entry->sf->name,
+                                     "); construct worker-local state instead"));
                     if (g && g->isglobal && g->type && !IsFlat(g->type) && !StaticViewsOnly(g))
                         Error(n, cat("thread programs may access only flat globals, and `let` "
                                      "globals whose references lead only to static data "

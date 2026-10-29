@@ -1,0 +1,2 @@
+data stack overflow: a value on main's data stacks grew past the
+--stack-reserve or -DGS_STACK_RESERVE raises the reservation

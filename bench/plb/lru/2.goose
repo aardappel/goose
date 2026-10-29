@@ -5,14 +5,15 @@
 // the end of its run, so the table is kept at most a quarter full: 32 KB
 // for 1000 entries. At half full the program takes twice as long.
 
+import slot_pool;
 import std;
 import os;
 
-struct Node { key: u32, val: u32, prev: Node&<u32 in pool>, next: Node&<u32 in pool> }
-struct Slot { key: u32, node: Node&<u32 in pool>? }
+struct Node { key: u32, val: u32, prev: Node&<u32 in pool.items>, next: Node&<u32 in pool.items> }
+struct Slot { key: u32, node: Node&<u32 in pool.items>? }
 
-reusable var pool: Node[>..] = [];
-let head = pool.alloc_index(Node { key: 0, val: 0, prev: self, next: self });
+var pool = slot_pool<Node> {};
+let head = pool.alloc_index_with() { Node { key: 0, val: 0, prev: self, next: self } };
 
 struct Lcg { seed: u32 }
 
@@ -28,7 +29,7 @@ inline fn unlink(n: Node&) {
 
 // n becomes the most recently used.
 inline fn link_last(n: Node&) {
-    let h .= pool[head];
+    let h .= pool.items[head];
     n.prev .= h.prev;
     n.next .= h;
     h.prev.next .= n;
@@ -95,7 +96,7 @@ fn main() {
         if count == size {
             // The new key goes into the empty slot found for it before the
             // old one's slot is emptied, which may move it.
-            let lru .= pool[head].next;
+            let lru .= pool.items[head].next;
             let old = find(lru.key);
             lru.key = key;
             lru.val = val;
@@ -106,7 +107,7 @@ fn main() {
             remove_at(old);
             return;
         }
-        let e .= pool.alloc_ref(Node { key: key, val: val, prev: pool[head], next: pool[head] });
+        let e .= pool.alloc_with() { Node { key: key, val: val, prev: pool.items[head], next: pool.items[head] } };
         link_last(e);
         let s .= slot(at);
         s = Slot { key: key, node: e };

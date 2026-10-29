@@ -49,13 +49,17 @@ Every type belongs to exactly one *size class*:
   afterwards.
 * **resizable** — size may change after construction. Two flavors:
   *grow-only* and *grow-shrink*.
+* **root** — an explicitly declared `root struct`, grouping independently
+  stored fields under one owning lifetime. It has no contiguous value layout
+  and may only be owned by a local or global declaration (§3.4).
 
-A compound type's class is the max over its parts (fixed < variable <
-resizable), subject to the placement rules in §3.4.
+An ordinary compound type's class is the max over its parts (fixed < variable <
+resizable), subject to the placement rules in §3.4. Root structs retain their
+class regardless of their fields; references to them are fixed-size.
 
 Additionally, a type is **flat** if it contains no references, slices, or
-relative references at any depth. Only flat values may cross thread
-boundaries (§11.2).
+relative references at any depth and is not a root struct. Only flat values may
+cross thread boundaries (§11.2).
 
 ### 1.2 Memory model
 
@@ -418,9 +422,10 @@ Built-in members, which exist as the rules above allow:
   elements): the index of the element `r` refers to,
   `(addr − base) / elemsize`. `r` must be rooted at the array *exactly*
   (§9.2), so the division is exact and the result is in range without a
-  runtime check. A root names a variable, not a part of it. So where the
-  array is a field or an element of what its root holds, the reference
-  counts as rooted at the array only if that storage holds the element type
+  runtime check. A storage root names a variable or an independently stored root-struct
+  field (§3.4). Inside an ordinary packed value, fields and elements share
+  their enclosing storage root. The reference counts as rooted at the array
+  only if that storage holds the element type
   nowhere else: not in another field or element, nor inside an element. A
   parameter's storage is checked at each call (§10.2). A reference rooted
   elsewhere is a compile error.
@@ -428,6 +433,29 @@ Built-in members, which exist as the rules above allow:
 Growth always supplies element values, so no operation can expose
 uninitialized slots (§5.3). Per UFCS these are ordinary functions:
 `a.push(v)` is `push(a, v)`.
+
+`a.range_index(s) -> i64`, on the same array kinds and fixed-size element
+types as `index_of`, returns the start index of a slice of those elements.
+Unless exact provenance proves containment, a nonempty slice is checked for
+element alignment and complete containment within the receiver's current
+length. An empty slice from any origin returns zero. A failed check aborts in
+every build. `a.check_length(n) -> i64`, on resizable arrays of fixed-size
+elements, rejects a negative count or one whose element bytes exceed a
+data-stack reservation and otherwise returns the count. It evaluates the count
+once and changes no storage; it does not reserve space or check the space left
+after the array's current contents. Either takes a string literal as a last
+argument, `a.range_index(s, "msg")` or `a.check_length(n, "msg")`: a failed
+check then aborts with that message, as `abort("msg")` would, which lets a
+library say what went wrong in its own terms. These operations do not weaken
+`index_of`'s static provenance requirement.
+
+`dst.move_from(src)` copies the values of a slice into a writable slice of the
+same fixed-size element type. Lengths must agree; a mismatch aborts before any
+element is written in every build. The copy behaves as though the source values
+were saved first, including when the slices overlap; it does not clear the source.
+Both slices are evaluated once, receiver first. Copying must satisfy the usual
+stored-reference lifetime rules (§9.2), and elements containing self-relative
+references cannot be copied (§3.9). Empty slices, including defaults, are valid.
 
 ### 3.4 Placement rules (what may contain what)
 
@@ -439,10 +467,15 @@ uninitialized slots (§5.3). Per UFCS these are ordinary functions:
   computation (fine when iterating, costly for random access; this is a
   performance note, not a rule).
 * **resizable** values: locals/globals, by-value params, returns, and the
-  **final field** of a struct. This applies recursively: a struct ending in
+  **final field** of an ordinary struct. This applies recursively: a struct ending in
   a resizable is itself resizable and may only appear where resizables may.
   A resizable may also be the payload of a variable ADT (making that ADT
-  resizable, with the same tail rules). It is never an array element.
+  resizable, with the same tail rules). Any field of a root struct may be
+  resizable, with independent storage. It is never an array element.
+* **root** values: owning local/global declarations only. Never by value in
+  another struct (including another root struct), an array or slice (even
+  fixed-length or empty), an ADT payload, a parameter, or a result. References
+  to root structs follow the usual reference placement and lifetime rules.
 * **zero-size** values, although they are fixed: zero-length arrays (`T[0]`,
   and `T[..0]` of capacity 0) and variant types with no fields
   (`Shape.Point`, or a variant with only pads that insert nothing, §3.2),
@@ -454,8 +487,50 @@ uninitialized slots (§5.3). Per UFCS these are ordinary functions:
   element slot or a byte (Appendix C.2). Inside another value, that slot or
   byte would take bytes that the value's layout does not count.
 
-At most one resizable per struct (the tail). (Future extension: two
-resizables with memmove-on-insert semantics, opt-in.)
+An ordinary struct owns at most one resizable, on its tail. A **root struct**
+groups multiple independent components:
+
+```goose
+root struct State<T> {
+    items: T[>..] = [],
+    scratch: i64[>..<] = [],
+    count: i64 = 0
+}
+```
+
+`root` is contextual immediately before `struct`; it remains an identifier
+elsewhere. Fields, generic arguments, defaults, namespaces and field qualifiers
+work as for ordinary structs. Fields may be fixed, variable or resizable in any
+order, including ordinary structs with a resizable tail. Each field is a separate
+storage root sharing the owner's lifetime. Its own internal placement rules
+still apply. `pad` is forbidden on the root declaration, which has no packed
+layout; an ordinary component struct may contain padding.
+
+An owner is constructed directly by a literal at its declaration, for example
+`var s = State<i64> { .. };`. A typed global without an initializer uses the
+usual field defaults. Initializers run once in field order; construction checks
+prevent observing incomplete storage. All component stacks are restored when
+the scope exits, including nonlocal exits during partial construction. The
+number of stacks is statically determined. An owner with variable or resizable
+components cannot remain live across a recursive-cycle call (§7.8); a root
+whose fields are all fixed needs no dynamic component stacks.
+
+Owners cannot be copied, assigned whole, passed or returned by value, or used
+as temporary values. An unannotated binding from an existing owner borrows it,
+as with other nonfixed lvalues. Functions take `State<T>&`; references may be
+stored, optional, returned or captured when their ordinary lifetimes permit.
+Field assignment, borrowing and array operations retain their usual rules.
+Different fields remain distinct regions even when their element types match:
+shrinking one does not invalidate views into another. Ordinary references stored
+in a field can still refer elsewhere, and shrink checks follow those references.
+Self-relative links stay within one component's permitted region (§3.9).
+
+Root owners support formatting and field inspection by reference, but have no
+whole-value equality, arithmetic, raw serialization or public C layout.
+Eligible components can be serialized or viewed separately. Root owners and
+their references cannot cross worker/queue boundaries; workers may create local
+owners but cannot directly or transitively use root globals (§11.2). Unused root
+globals do not restrict a worker. See Appendix C.2 for the private representation.
 
 No type contains itself by value, either directly or through what it
 contains (fields, payloads in either ADT mode, variant types, array
@@ -873,6 +948,13 @@ error. For a local or parameter pool, the error points to the
 self-relative form, since the pool is named where the field is declared,
 and a local's name means nothing there.
 
+The name may also select a mutable direct array field of a global `var`
+`root struct`, as in `Node&<u32 in nodes.items>`. The owner name may be namespace
+qualified. The compiler resolves the declaration and field statically; aliases,
+reference crossings, array indexing and nested field paths are not supported.
+Each component is a separate pool identity with its own base. The same
+grow-only, pointee-containment and width requirements apply to the array field.
+
 * The pool is part of the type's identity: `Node&<u32 in pool>` is neither
   `Node&<u32>` nor `Node&<u32 in spare>`. Loading either form yields an
   ordinary `Node&`, and storing re-encodes.
@@ -1017,6 +1099,10 @@ var edges: NodeId[>..] = [];
   else is a compile error: a local or parameter has no name where a type
   is declared, any other array kind can shrink, and a sequential array
   cannot be indexed.
+  A mutable direct array field of a global `var` root is also allowed, as in
+  `u32 in graph.nodes` or `u32 upto graph.edges`, using the same component-name
+  resolution as §3.9. Its identity and no-shrink rule belong to that component,
+  independently of the owner's other fields.
 * The array is part of the type's identity: `u32 in nodes` is neither
   `u32`, `u16 in nodes`, `u32 upto nodes` nor `u32 in edges`. The value is
   the plain integer; the C type is that of `uN`.
@@ -1799,6 +1885,12 @@ length; access through retained references does not (they were validly
 created).
 
 ### 5.4 `reusable` arrays (safe allocation escape hatch)
+
+**Deprecated:** use the standard library's [`slot_pool<T>`](stdlib.md#slot_pool)
+for slots and [`slice_pool<T>`](stdlib.md#slice_pool) for contiguous runs.
+The builtin syntax and behavior described here remain supported for existing
+code and the [remaining migration gaps](design/root_structs.md#separate-follow-up-reusable-pools-in-the-stdlib).
+Removal is a separate future step; no deprecation diagnostic is emitted yet.
 
 A grow-only resizable local of fixed-size elements may be declared
 `reusable` (the keyword prefixes the declaration:
@@ -3189,9 +3281,12 @@ These values can cross the boundary (with layouts per C.2):
   limited arrays, and fixed-mode ADTs), by value as its packed C type;
 * `T&` to such a `T`, as a pointer;
 * `T[:]` of such a `T`, as the slice struct (`{ data, len }`);
-* `u8[>..]&`, as the resizable's header plus its stack (`gs_rref`), which
-  C appends to through `gs_bld_append(ref, p, n)`. C compiled on its own,
-  such as a package's C, finds both in `goose.h` (docs/packages.md).
+* `T[>..]&` of such a `T`, as the resizable's header plus its stack
+  (`gs_rref`). C sees the elements as blocks of `T`'s packed size: it may
+  write the ones there are and append whole ones at the stack top, moving
+  the top and the header's count together, which `gs_bld_append(ref, p, n)`
+  does for a `u8[>..]&`. C compiled on its own, such as a package's C, finds
+  both in `goose.h` (docs/packages.md).
 
 A return is one scalar or flat fixed-size value by value, or nothing;
 references, slices and builders can only be parameters. Everything else
@@ -3755,6 +3850,11 @@ the last two ends only that worker:
 * native call stack exhaustion (recursion deeper than a thread's stack
   holds, §7.8), which aborts safely in the same way, with a diagnostic of
   its own.
+
+An abort's message ends with the source location of the check that failed.
+A check inside a standard library function (§11.1), or an `abort` there,
+reports the place in the program's own code that called the library instead:
+the call that, through any further library functions, led to it.
 
 `exit(code)` ends the program normally with the given process exit code.
 Neither `abort` nor `exit` returns, and the checker takes this into
@@ -4419,8 +4519,11 @@ And the array members, ordinary functions of their receiver per UFCS
 | `.append(src)` | limited, grow-only, grow-shrink | an array or slice of elements (§3.3) |
 | `.pop() -> T`, `.pop_n(n)`, `.resize(n, v?)`, `.clear()` | limited, grow-shrink; grow-only where §5.1 allows a shrink | shrinking, and growing with a fill value (§3.3, §5) |
 | `.index_of(r) -> i64` | fixed, limited, grow-only, grow-shrink | the index of the element `r` refers to (§3.3) |
-| `.alloc_index(v) -> i64`, `.alloc_ref(v) -> T&`, `.free(i)` | `reusable` pools | slot reuse (§5.4) |
-| `.alloc_slice(n) -> T[:]`, `.realloc_slice(s, n) -> T[:]`, `.free_slice(s)` | `reusable[]` pools | slice reuse (§5.4) |
+| `.range_index(s, msg?) -> i64` | the same, fixed-size elements | checked start of a contained slice; zero for empty (§3.3) |
+| `.check_length(n, msg?) -> i64` | grow-only, grow-shrink, fixed-size elements | validate a count without allocating (§3.3) |
+| `.move_from(src)` | slices, fixed-size elements | checked equal-length copy, safe for overlapping slices (§3.3) |
+| `.alloc_index(v) -> i64`, `.alloc_ref(v) -> T&`, `.free(i)` | deprecated `reusable` pools | slot reuse (§5.4); prefer stdlib `slot_pool<T>` |
+| `.alloc_slice(n) -> T[:]`, `.realloc_slice(s, n) -> T[:]`, `.free_slice(s)` | deprecated `reusable[]` pools | slice reuse (§5.4); prefer stdlib `slice_pool<T>` |
 
 For serialization, the byte-count prefix must account for exactly the
 remaining input. Validation establishes complete elements, representable
@@ -4439,8 +4542,8 @@ came from is `design/stdlib_design.md`). The math types of §6.1 are its
 (§7.10).
 
 Deliberately out of scope for v1: error-value conventions (§7.9); move
-operations for resizables; multiple resizables per struct; two-way growth
-arrays; inline compaction / copying GC for pools; mixed-type pools;
+operations for resizables; nested root owners and arrays of root owners;
+two-way growth arrays; inline compaction / copying GC for pools; mixed-type pools;
 alignment annotations and explicit vector types (`simd fn`, §7.12, only
 widens the instruction set a function is built for); dynamic stacks;
 labeled break; namespace privacy, re-exports and nesting (§11.1).
@@ -4539,11 +4642,11 @@ fn compile(source: const u8[:]) -> i64 {
 }
 ```
 
-A struct owns at most one resizable (§3.4), and a function in a recursive
+An ordinary struct owns at most one resizable (§3.4), and a function in a recursive
 cycle owns none that stays in scope across a call back into the cycle
-(§7.8). So a program whose state is several growable tables owns each table
-as a local of a driver function, and passes the rest of the program one
-struct of references to them. The tables are rooted outside the cycle,
+(§7.8). This example owns each table as a local of a driver function and passes
+the rest of the program one struct of references to them. A `root struct`
+can instead own all the tables in one declaration in that driver. The tables are rooted outside the cycle,
 which grows and shrinks them through `c` like any pool passed to it (§7.4,
 §7.8). Since every call back into the cycle passes `c` on, the views read
 through `c` (a node's name copied into `text`, for example) may also be
@@ -4622,8 +4725,10 @@ its resolution is described.
    array, bound at compile time to the in-scope array of the right type.
 7. **Mixed-type pools & pool GC** — internal vs external references, inline
    compaction, copying; interacts with 6.
-8. **Multiple resizables per struct** (memmove-on-insert, opt-in) and
-   **two-way growth** arrays.
+8. **Nested root owners and constant arrays of owners** — root structs already
+   package independent resizables (§3.4); nesting and statically bounded owner
+   arrays are follow-up work ([design](design/root_structs.md)). **Two-way
+   growth** arrays remain open.
 9. **Concurrency surface finalization** — queue fairness/capacity, select,
    worker-local init, flat-type relaxation for self-contained
    relative-reference values (send whole trees through queues).
@@ -4689,8 +4794,8 @@ its resolution is described.
     function, an `extern "lib" { ... }` block binds its members from a shared
     library by name when the program starts, and `export fn` exposes a Goose
     function through a C-callable wrapper. The flat fixed-size types by
-    value, references and slices to them, and `u8[>..]&` builders can cross
-    the boundary where supported; other shapes are rejected at the
+    value, references and slices to them, and builders (`T[>..]&`) of them
+    can cross the boundary where supported; other shapes are rejected at the
     declaration.
 12. **Open syntax details** — DONE: both trailing-block parameter forms
     exist (the implicit `it` and `x =>`, §7.6), and `recursive fn` is the
@@ -4727,7 +4832,7 @@ scope entry. No other runtime state exists.
 
 * Scalars: natural little-endian storage of their declared width; `bool` is
   1 byte, 0 or 1. All loads/stores may be unaligned.
-* Fixed structs/arrays: packed concatenation in declaration order. A
+* Ordinary fixed structs/arrays: packed concatenation in declaration order. A
   zero-length array (`T[0]`, or `T[..0]` after its length field) has one
   element slot holding no element, since C has no empty arrays (§3.4). A
   struct with no bytes of its own (no fields, and no `pad n`) takes up one
@@ -4754,6 +4859,16 @@ scope entry. No other runtime state exists.
   fixed when its stack is reserved before any initializer runs; a function
   that loads or stores such a reference reads it once into a local at entry.
 * Slice: `{ data: T*, len: int64 }` (len = element count).
+
+**Root structs.** An owner has independent field storage and a private descriptor
+of references to those fields. Each field uses its ordinary representation,
+including its own stack identity for a resizable. A whole-owner reference is a
+pointer to the descriptor; it does not copy the components. Direct field access
+may use the component's local/global location without loading the descriptor.
+The backend may cache component stack tops, lengths and array bases where alias
+and effect analysis permits, synchronizing them around calls. The descriptor is
+not a Goose fixed-size value or a foreign ABI. It supplies no byte view, packed
+offsets, whole-owner copy, or serialization format.
 
 **Resizable values.** A resizable's element region always tops its data
 stack (§1.3(2)). A resizable array is represented as a header in the owning
@@ -4851,7 +4966,7 @@ topdecl     := import | struct | enum | typealias | fndecl | externblock | globa
 import      := "import" "."? ident ("." ident)* ";" | "import" ident "from" strlit ";"
 declname    := ident | ident "::" ident | "::" ident   // the namespace, else the file's
 qname       := ident | ident "::" ident | "::" ident   // a declaration reference
-struct      := "struct" declname generics? "{" fieldlist "}"
+struct      := "root"? "struct" declname generics? "{" fieldlist "}"
 enum        := "enum" declname generics? "{" variant ("," variant)* ","? "}"
 variant     := ident ( "{" fieldlist "}" )?
 fieldlist   := field ("," field)* ","?

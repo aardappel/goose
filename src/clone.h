@@ -688,4 +688,12 @@ template<typename F> void NodeVars(Node *n, F f) {
     if (auto c = Is<Call>(n)) for (auto p : c->fvparams) f(p);
 }
 
+template<typename F> void NodeNamedArrays(Node *n, set<TypeExpr *> &seen, F f) {
+    auto type = [&](TypeExpr *t) { NamedArraysIn(t, seen, f); };
+    type(n->exprtype);
+    NodeVars(n, [&](VarDef *v) { if (v) type(v->type); });
+    if (auto c = Is<Call>(n)) for (auto t : c->rettypes) type(t);
+    if (auto c = Is<AsCast>(n)) type(c->type);
+}
+
 }  // namespace goose

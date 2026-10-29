@@ -162,6 +162,8 @@ inline bool CodeGen::HoldsFatRef(TypeExpr *t) {
 }
 
 inline bool CodeGen::HoldsFatRefIn(TypeExpr *t, set<const void *> &open) {
+    // A root descriptor reaches the stacks owned by all its components.
+    if (IsRoot(t)) return true;
     switch (t->kind) {
         case TY_REF: return IsFatRef(t) || HoldsFatRefIn(t->ref->sub, open);
         case TY_SLICE: return HoldsFatRefIn(t->sub, open);
@@ -193,16 +195,16 @@ inline IntStorage CodeGen::LenStore(TypeArray *a) {
     }
 }
 
-inline const char *CodeGen::IntCT(IntStorage s) {
+inline const char *CodeGen::IntCT(IntStorage s, bool unaligned) {
     switch (s) {
         case IS_I8:  return "int8_t";
-        case IS_I16: return "gs_i16";
-        case IS_I32: return "gs_i32";
+        case IS_I16: return unaligned ? "gs_i16" : "int16_t";
+        case IS_I32: return unaligned ? "gs_i32" : "int32_t";
         case IS_U8:  return "uint8_t";
-        case IS_U16: return "gs_u16";
-        case IS_U32: return "gs_u32";
-        case IS_U64: return "gs_u64";
-        default:     return "gs_i64";
+        case IS_U16: return unaligned ? "gs_u16" : "uint16_t";
+        case IS_U32: return unaligned ? "gs_u32" : "uint32_t";
+        case IS_U64: return unaligned ? "gs_u64" : "uint64_t";
+        default:     return unaligned ? "gs_i64" : "int64_t";
     }
 }
 
@@ -515,22 +517,30 @@ inline void CodeGen::EmitCoreTypes() {
 
 // The C type of a fixed-class value (also refs/slices to anything). Emits
 // the typedef on first use. Never valid for bytes-class values.
-inline string CodeGen::CT(TypeExpr *t) {
+// Aggregate members use natural scalar/pointer types under #pragma pack(1).
+// Clang 18's x86-64 ABI can truncate a member across an eight-byte boundary when
+// its type has reduced alignment. References and slices still use the
+// alignment-one aliases for accesses through escaped member addresses.
+inline string CodeGen::CT(TypeExpr *t, bool unaligned) {
     switch (t->kind) {
-        case TY_INT:  assert(t->intstorage != IS_VARINT); return IntCT(t->intstorage);
-        case TY_FLT:  return t->fltstorage == FS_F32 ? "gs_f32" : "gs_f64";
+        case TY_INT:  assert(t->intstorage != IS_VARINT); return IntCT(t->intstorage, unaligned);
+        case TY_FLT:  return t->fltstorage == FS_F32 ? (unaligned ? "gs_f32" : "float")
+                                                   : (unaligned ? "gs_f64" : "double");
         case TY_BOOL: return "uint8_t";
         case TY_VOID: return "void";
         case TY_REF: {
             auto &r = *t->ref;
             if (r.lenstorage >= 0) {
                 assert(r.lenstorage != IS_VARINT);
-                return IntCT((IntStorage)r.lenstorage);   // Stored offset form.
+                return IntCT((IntStorage)r.lenstorage, unaligned);   // Stored offset form.
             }
             EmitCoreTypes();
             if (IsResz(r.sub)) return "gs_rref";
             // A pointer needs only the pointee's name, so a node type can
             // hold references to itself and the body can come later.
+            if (!unaligned)
+                return cat(IsBytesT(r.sub) ? string("uint8_t") :
+                           StructLike(r.sub) ? NameCT(r.sub) : CT(r.sub), " *");
             auto name = NameCT(t);
             if (cdefined.insert(Mangle(t)).second) {
                 auto sub = IsBytesT(r.sub) ? string("uint8_t") :
@@ -573,13 +583,13 @@ inline string CodeGen::CT(TypeExpr *t) {
         }
         case TY_ARRAY: {
             auto &a = *t->arr;
-            auto e = CT(a.sub);
+            auto e = CT(a.sub, false);
             if (a.akind == A_FIXED) {
                 auto k = ArrSize(t->arr);
                 Append(d, "typedef struct { ", e, " e[", k ? k : 1, "]; } ", name, ";\n");
             } else {
                 assert(a.akind == A_LIMITED && ArrSize(t->arr) >= 0);
-                Append(d, "typedef struct { ", IntCT(LenStore(t->arr)), " len; ", e, " e[",
+                Append(d, "typedef struct { ", IntCT(LenStore(t->arr), false), " len; ", e, " e[",
                        ArrSize(t->arr) ? ArrSize(t->arr) : 1, "]; } ", name, ";\n");
             }
             break;
@@ -588,6 +598,13 @@ inline string CodeGen::CT(TypeExpr *t) {
             auto si = SI(t);
             Append(d, "struct ", name, " {\n");
             if (EmptyLayout(si->st->fields)) Append(d, "    uint8_t gs_empty;\n");
+            else if (si->st->isroot) {
+                for (size_t i = 0; i < si->ftypes.size(); i++) {
+                    if (!si->ftypes[i]) continue;
+                    Append(d, "    ", CT(ast.RefTo(si->ftypes[i], t->line)), " ",
+                           Sanitize(si->st->fields[i].name), ";\n");
+                }
+            }
             else EmitCFields(d, si->st->fields, si->ftypes);
             Append(d, "};\n");
             break;
@@ -606,7 +623,7 @@ inline string CodeGen::CT(TypeExpr *t) {
             assert(!t->enu->varmode);
             auto ei = EIOf(t);
             EnsureTagEnum(ei);
-            Append(d, "struct ", name, " {\n    ", IntCT(TagStore(ei->en)), " tag;\n");
+            Append(d, "struct ", name, " {\n    ", IntCT(TagStore(ei->en), false), " tag;\n");
             string members;
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
                 if (EmptyLayout(ei->en->variants[vi].fields)) continue;
@@ -665,7 +682,7 @@ inline void CodeGen::EmitCFields(string &d, const vector<Field> &fields,
             if (sz > 0) Append(d, "    uint8_t gs_pad", npad++, "[", sz, "];\n");
             continue;
         }
-        Append(d, "    ", CT(ftypes[i]), " ", Sanitize(f.name), ";\n");
+        Append(d, "    ", CT(ftypes[i], false), " ", Sanitize(f.name), ";\n");
     }
     for (auto i = n; i < fields.size(); i++) {
         EmitCoreTypes();
@@ -1233,6 +1250,31 @@ inline bool CodeGen::HasFieldDefaults(TypeExpr *t) {
 inline void CodeGen::EmitDefaultInto(const string &lv, TypeExpr *t) {
     assert(!HasFieldDefaults(t));
     L("GS_MEMZERO(&", lv, ", sizeof(", lv, "));");
+}
+
+// An explicitly checked, flat zero default, including aggregate defaults
+// expanded into literals by type checking. Declared defaults keep their
+// normal construction, even if they happen to produce zero.
+inline bool CodeGen::ZeroDefaultValue(Node *n, TypeExpr *t) {
+    function<bool(TypeExpr *)> flat = [&](TypeExpr *ft) {
+        if (!IsFix(ft)) return false;
+        switch (ft->kind) {
+            case TY_INT: case TY_FLT: case TY_BOOL: return true;
+            case TY_STRUCT: return SI(ft)->flat;
+            case TY_ARRAY: return ft->arr->akind == A_FIXED && flat(ft->arr->sub);
+            default: return false;
+        }
+    };
+    if (!flat(t) || HasFieldDefaults(t)) return false;
+    if (auto c = Is<Call>(n))
+        return c->builtin == B_DEFAULT && c->rettypes.size() == 1 && TEq(c->rettypes[0], t);
+    auto sl = Is<StructLit>(n);
+    if (!sl || t->kind != TY_STRUCT || !TEq(sl->exprtype, t)) return false;
+    auto si = SI(t);
+    for (size_t i = 0; i < si->st->fields.size(); i++)
+        if (!si->st->fields[i].ispad && !ZeroDefaultValue(sl->InitFor((int)i), si->ftypes[i]))
+            return false;
+    return true;
 }
 
 // ------------------------------------------------------------------

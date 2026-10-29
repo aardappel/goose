@@ -59,24 +59,27 @@ inline const VarDef *CodeGen::OpenIbNrvo(InlineBlock *ib, const Dst &d) {
     return vd;
 }
 
-// What `d`, bound to `init`, stands for (refalias): the resizable variable
+// What `d`, bound to `init`, stands for (refalias): the resizable or root variable
 // `&v` names, or the reference variable an identifier names, followed
 // through that one's own alias. Null where d has to be a C variable: it can
 // be rebound, a nested function captures it (and is handed its address),
 // it is pool-shaped, or the initializer is anything but such a name. A
 // parameter, an alias, and a captured reference that cannot be rebound hold
 // the same value as long as d is live; a resizable variable's header and
-// stack never move.
+// stack never move, nor do a root owner's descriptor slots.
 inline const VarDef *CodeGen::AliasTarget(VarDef *d, Node *init, Node *&path) {
     path = nullptr;
+    auto cache_ref = [&](TypeExpr *t) {
+        return IsFatRef(t) || (t->kind == TY_REF && IsRoot(t->ref->sub));
+    };
     if (!d || !init || !curspec || d->isvar || d->isglobal || d->reusable || !d->type ||
-        !IsFatRef(d->type) || d->type->ref->optional || PrefVar(d) || d->captured ||
+        !cache_ref(d->type) || d->type->ref->optional || PrefVar(d) || d->captured ||
         capturedvars.count(d))
         return nullptr;
     // A reference variable that stands for its whole life for what it holds:
     // a parameter, an alias, a captured reference, none of them rebindable.
     auto fixedref = [&](const VarDef *t) -> const VarDef * {
-        if (!t || !t->type || !IsFatRef(t->type)) return nullptr;
+        if (!t || !t->type || !cache_ref(t->type)) return nullptr;
         if (refalias.count(t)) return t;
         if (t->isvar || t->isglobal || t->reusable || PrefVar(t)) return nullptr;
         for (auto p : curspec->params) if (p == t) return t;
@@ -87,16 +90,26 @@ inline const VarDef *CodeGen::AliasTarget(VarDef *d, Node *init, Node *&path) {
         if (!u->child->exprtype || !TEq(d->type->ref->sub, u->child->exprtype)) return nullptr;
         if (auto id = Is<Ident>(u->child)) {
             auto t = id->vdef;
-            if (!t || !t->type || t->reusable || !IsResz(t->type)) return nullptr;
+            if (!t || !t->type || t->reusable || (!IsResz(t->type) && !IsRoot(t->type)))
+                return nullptr;
             return t;
         }
         // A frame object's tail, by fields from a variable that holds the
         // object or from a reference that stands for one: a C member of a
-        // header that never moves, on the object's own stack.
-        auto n = FieldChainRoot(u->child, true);
+        // header that never moves, on the object's own stack. A reference
+        // field on the way can be rebound, and leads elsewhere anyway.
+        auto n = u->child;
+        Dot *component = nullptr;
+        while (auto dot = Is<Dot>(n)) {
+            if (!dot->IsField() || !dot->obj->exprtype) return nullptr;
+            component = dot;
+            n = dot->obj;
+            if (!Is<Ident>(n) && n->exprtype->kind == TY_REF) return nullptr;
+        }
         auto id = Is<Ident>(n);
         if (n == u->child || !id || !id->vdef || !id->vdef->type) return nullptr;
         auto t = id->vdef;
+        if (component && IsRoot(t->type)) t = t->components[component->fieldidx];
         if (IsResz(t->type) ? t->reusable : !fixedref(t)) return nullptr;
         path = u->child;
         return t;
@@ -105,7 +118,8 @@ inline const VarDef *CodeGen::AliasTarget(VarDef *d, Node *init, Node *&path) {
     auto t = id ? id->vdef : nullptr;
     if (!t || !t->type || !init->exprtype || !TEq(init->exprtype, d->type)) return nullptr;
     // A receiver the checker takes the reference of in place.
-    if (IsResz(t->type) && !t->reusable && TEq(d->type->ref->sub, t->type)) return t;
+    if ((IsResz(t->type) || IsRoot(t->type)) && !t->reusable && TEq(d->type->ref->sub, t->type))
+        return t;
     if (!TEq(t->type, d->type)) return nullptr;
     if (auto it = refalias.find(t); it != refalias.end()) {
         if (auto pit = aliaspath.find(t); pit != aliaspath.end()) path = pit->second;
@@ -140,6 +154,8 @@ inline Node *CodeGen::FieldChainRoot(Node *n, bool typed) {
 // Every binding of the body that AliasTarget accepts, in source order, so
 // that an alias of an alias resolves to the first one's target.
 inline void CodeGen::FindRefAliases(FnSpec *sp) {
+    for (auto p : sp->params)
+        if (auto it = knownrootparams.find(p); it != knownrootparams.end()) refalias[p] = it->second;
     auto bind = [&](VarDef *d, Node *init) {
         Node *path = nullptr;
         auto t = AliasTarget(d, init, path);
@@ -173,7 +189,8 @@ inline void CodeGen::FindRefAliases(FnSpec *sp) {
 //    other kind can be dereferenced right here, and might be one. Taking one
 //    of a variable does not count: that value is only handed on;
 //  * the globals' dedicated stacks, which a parameter or a captured
-//    reference may also be rooted at: there must be none;
+//    reference may also be rooted at: any such parameter must be a proven
+//    alias of its global owner, and there must be no captured reference;
 //  * its captured resizables' stacks (`<fv>_stk`), likewise: a parameter or
 //    a captured reference might be rooted at the same variable; and one
 //    that is its function's named result lives at that function's
@@ -195,14 +212,17 @@ inline void CodeGen::PlanTopClasses(FnSpec *sp) {
     auto isfv = [&](const VarDef *v) { return std::find(fvs.begin(), fvs.end(), v) != fvs.end(); };
     // A pool reference carries its stack (and its freelist's) as well.
     auto carries = [&](const VarDef *v) {
-        return v && (PrefVar(v) || (v->type && v->type->kind == TY_REF && IsResz(v->type->ref->sub)));
+        return v && (PrefVar(v) || (v->type && v->type->kind == TY_REF &&
+                                   (IsResz(v->type->ref->sub) || IsRoot(v->type->ref->sub))));
     };
     auto fatparam = false, fatfv = false, capresz = false, globals = false, unknown = false;
-    for (size_t i = 0; i < sp->params.size(); i++)
-        if (carries(sp->params[i]) || IsPoolParam(sp, i)) fatparam = true;
+    for (size_t i = 0; i < sp->params.size(); i++) {
+        if (knownrootparams.count(sp->params[i])) globals = true;
+        else if (carries(sp->params[i]) || IsPoolParam(sp, i)) fatparam = true;
+    }
     for (auto fv : fvs) {
         if (fv->reusable || carries(fv)) fatfv = true;
-        else if (fv->type && IsResz(fv->type)) capresz = true;
+        else if (fv->type && (IsResz(fv->type) || IsRoot(fv->type))) capresz = true;
     }
     // A return exiting this function or an inlined body stays here; any
     // other target constructs into a gs_fdst_ channel (§7.9).
@@ -216,9 +236,15 @@ inline void CodeGen::PlanTopClasses(FnSpec *sp) {
     ibs(sp->body);
     function<void(Node *)> walk = [&](Node *n) {
         if (!n) return;
-        if (n->exprtype && IsFatRef(n->exprtype)) {
+        if (n->exprtype && (IsFatRef(n->exprtype) ||
+            (n->exprtype->kind == TY_REF && IsRoot(n->exprtype->ref->sub)))) {
             if (!Is<Ident>(n) && !HandedRef(n)) unknown = true;
         }
+        // A projected reference is used here, without a call boundary to
+        // synchronize its owner's cached components (including inlined &x).
+        if (auto d = Is<Dot>(n); d && d->obj->exprtype &&
+            d->obj->exprtype->kind == TY_REF && IsRoot(d->obj->exprtype->ref->sub) &&
+            !Is<Ident>(d->obj)) unknown = true;
         if (auto r = Is<Return>(n); r && !localexits.count(r->target)) farreturn = true;
         NodeVars(n, [&](const VarDef *v) {
             if (!v) return;
@@ -263,17 +289,34 @@ inline void CodeGen::PlanTopClasses(FnSpec *sp) {
 //    to a function further out constructs into (`farreturn`), a stack this
 //    body cannot place (§7.9).
 inline bool CodeGen::RefTopsOk(FnSpec *sp, bool farreturn) {
+    auto rootref = [&](TypeExpr *t) { return t->kind == TY_REF && IsRoot(t->ref->sub); };
+    auto hasroots = false, hasfat = false;
+    for (auto pt : sp->argtypes) {
+        hasroots |= rootref(pt);
+        hasfat |= IsFatRef(pt);
+    }
+    // A separately passed component can alias its owner parameter. Keep the
+    // shared top in that case; no runtime non-aliasing promise is introduced.
+    if (hasroots && hasfat) return false;
+    for (auto fv : sinfo[sp].freevars)
+        if (fv->type && (IsRoot(fv->type) ||
+            (fv->type->kind == TY_REF && IsRoot(fv->type->ref->sub)))) return false;
     set<const VarDef *> fatparams, classes;
     vector<TypeExpr *> pointees;
     auto concrete = true;
     for (size_t i = 0; i < sp->params.size(); i++) {
         auto vd = sp->params[i];
-        if (!IsFatRef(sp->argtypes[i])) continue;
+        auto pt = sp->argtypes[i];
+        if (!IsFatRef(pt) && !rootref(pt)) continue;
+        if (rootref(pt) && vd->isvar) return false;
         if (!vd->refrootknown || !vd->ref.Root() || !vd->ref.Exact() ||
             !classes.insert(vd->ref.Root()).second)
             return false;
         fatparams.insert(vd);
-        pointees.push_back(sp->argtypes[i]->ref->sub);
+        if (rootref(pt)) {
+            for (auto ft : SI(pt->ref->sub)->ftypes)
+                if (ft && IsResz(ft)) pointees.push_back(ft);
+        } else pointees.push_back(pt->ref->sub);
         concrete &= i < sp->roots.size() && sp->roots[i].concrete;
     }
     if (fatparams.empty() || (fatparams.size() > 1 && !concrete)) return false;
@@ -300,12 +343,21 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp, bool farreturn) {
     // binding names it.
     auto check = [&](const VarDef *v) {
         if (!v || !v->type) return;
-        if (IsFatRef(v->type) && !fatparams.count(v) && !refalias.count(v)) ok = false;
+        if ((IsFatRef(v->type) || rootref(v->type)) &&
+            !fatparams.count(v) && !refalias.count(v)) ok = false;
         if (v->isglobal && IsBytesT(v->type) && maybeparam(v->type)) ok = false;
+        if (v->isglobal && IsRoot(v->type))
+            for (auto c : v->components)
+                if (c && IsBytesT(c->type) && maybeparam(c->type)) ok = false;
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n || !ok) return;
-        if (n->exprtype && IsFatRef(n->exprtype)) {
+        if (auto d = Is<Dot>(n); d && d->obj->exprtype &&
+            rootref(d->obj->exprtype) && !Is<Ident>(d->obj)) {
+            ok = false;
+            return;
+        }
+        if (n->exprtype && (IsFatRef(n->exprtype) || rootref(n->exprtype))) {
             // A reference taken of a variable is only handed on: to a call,
             // which syncs everything it is handed a stack in, or to an alias.
             auto id = Is<Ident>(n);
@@ -563,6 +615,16 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     // The spellings are only known once SigParams has named the parameters.
     if (reftops) {
         for (size_t i = 0; i < sp->params.size(); i++) {
+            auto pt = sp->argtypes[i];
+            if (pt->kind == TY_REF && IsRoot(pt->ref->sub)) {
+                auto owner = VarLoc(sp->params[i]);
+                DerefLoc(owner);
+                auto si = SI(owner.t);
+                for (size_t f = 0; f < si->ftypes.size(); f++)
+                    if (si->ftypes[f] && IsResz(si->ftypes[f]))
+                        refstkexprs.insert(FieldLocAt(owner, (int)f).stk);
+                continue;
+            }
             if (!IsFatRef(sp->argtypes[i])) continue;
             auto pn = LocalName(sp->params[i]);
             refstkexprs.insert(cat(pn, ".stk"));
@@ -751,7 +813,24 @@ inline void CodeGen::EmitGlobalDecls() {
             // dedicated stack where it has one.
             auto member = [&](const string &decl) { Append(gblock, "    ", decl, ";\n"); };
             gnames[d] = cat("GS_GL->", name);
-            if (IsResz(d->type)) {
+            if (IsRoot(d->type)) {
+                member(cat(CT(d->type), " ", name));
+                for (auto c : d->components) {
+                    if (!c) continue;
+                    auto cn = Unique(cat("gs_component_", name, "_", c->componentfield));
+                    gnames[c] = cat("GS_GL->", cn);
+                    auto ct = c->type;
+                    member(cat(IsResz(ct) && !IsFrameObj(ct) ? string("gs_rhdr")
+                               : IsBytesT(ct) && !IsFrameObj(ct) ? string("uint8_t *")
+                               : CT(ct), " ", cn));
+                    if (IsBytesT(ct)) {
+                        auto stk = Unique(cat("gs_gstk_", cn));
+                        member(cat("gs_stack ", stk));
+                        gstks[c] = cat("(&GS_GL->", stk, ")");
+                        reg(gstks[c]);
+                    }
+                }
+            } else if (IsResz(d->type)) {
                 EmitCoreTypes();
                 auto stk = Unique(cat("gs_gstk_", name));
                 member(cat(RzCT(d->type), " ", name));
@@ -794,6 +873,37 @@ inline void CodeGen::EmitGlobalDecls() {
     }
 }
 
+inline void CodeGen::InitGlobalValue(VarDef *d, Node *init) {
+    if (IsRoot(d->type)) {
+        auto sl = Is<StructLit>(init);
+        assert(sl && sl->sinst->st->isroot);
+        for (auto c : d->components) {
+            if (!c) continue;
+            auto i = c->componentfield;
+            InitGlobalValue(c, sl->InitFor(i));
+            Ident id(c->line, c->name);
+            id.vdef = c;
+            id.exprtype = c->type;
+            auto ref = c->type->kind == TY_REF ? cat("&", VarLoc(c).s)
+                                              : GenRefVal(&id, init->line);
+            L(gnames[d], ".", Sanitize(sl->sinst->st->fields[i].name), " = ", ref, ";");
+        }
+    } else if (IsResz(d->type)) {
+        InitGlobalStack(d);
+        GenConstruct(init, gstks[d], d->type, GlobalLenLv(d));
+    } else if (IsBytesT(d->type)) {
+        InitGlobalStack(d);
+        GenConstruct(init, gstks[d], d->type);
+    } else if (PrefVar(d)) {
+        L(gnames[d], " = ", GenPrefVal(init), ";");
+    } else if (IsRelRef(d->type)) {
+        EmitRelStoreAt(cat("(uint8_t *)&", gnames[d]), d->type, GenX(init),
+                       init->line, true, RelValue(init));
+    } else {
+        GenAny(init, Dst { DK_LVALUE, gnames[d], d->type });
+    }
+}
+
 inline void CodeGen::EmitGlobalInit() {
     curspec = nullptr;
     curinfo = nullptr;
@@ -806,20 +916,7 @@ inline void CodeGen::EmitGlobalInit() {
         for (size_t i = 0; i < g->defs.size(); i++) {
             auto d = g->defs[i];
             if (gstatic.count(d)) continue;   // Initialized at its declaration.
-            if (IsResz(d->type)) {
-                InitGlobalStack(d);
-                GenConstruct(g->inits[i], gstks[d], d->type, GlobalLenLv(d));
-            } else if (IsBytesT(d->type)) {
-                InitGlobalStack(d);
-                GenConstruct(g->inits[i], gstks[d], d->type);
-            } else if (PrefVar(d)) {
-                L(gnames[d], " = ", GenPrefVal(g->inits[i]), ";");
-            } else if (IsRelRef(d->type)) {
-                EmitRelStoreAt(cat("(uint8_t *)&", gnames[d]), d->type, GenX(g->inits[i]),
-                               g->inits[i]->line, true, RelValue(g->inits[i]));
-            } else {
-                GenAny(g->inits[i], Dst { DK_LVALUE, gnames[d], d->type });
-            }
+            InitGlobalValue(d, g->inits[i]);
         }
         if (termjump) cscopes.back().saves.clear();
         PopSc();

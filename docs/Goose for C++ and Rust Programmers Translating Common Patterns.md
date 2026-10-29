@@ -37,8 +37,8 @@ On top of that, the type system is closed-world: no inheritance, no traits, no v
 | Methods, `impl` blocks | Free functions; `x.f(a)` is `f(x, a)` | Traits |
 | `std::function`, stored `Box<dyn Fn>` | Compile-time function value; stored behaviour becomes an enum tag | Callbacks |
 | `Box<Node>` tree, `Vec<Node>` + `u32` indices | `Node[>..]` pool + `Node&<u32>?` links | Linked structures |
-| `shared_ptr`, `Rc<RefCell<T>>`, object pool | `reusable var pool: T[>..]` + `alloc_ref` / `free` | Non-nested lifetimes |
-| Struct owning three `Vec`s | Three locals + a struct of references to them | Structs that own several vectors |
+| `shared_ptr`, `Rc<RefCell<T>>`, object pool | `slot_pool<T>` from the standard library + `alloc_ref` / `free` | Non-nested lifetimes |
+| Struct owning three `Vec`s | A `root struct` whose three fields grow independently | Structs that own several vectors |
 | `Result<T, E>`, `?`, `throw` | Trailing `bool`, `T?`, `return E from f`, `exception::try` | Errors |
 | RAII destructor | Scope exit (memory); explicit `release` (external handles) | RAII |
 | `Arc<Mutex<T>>`, `std::thread` + shared data | `thread_fn` + typed queues of flat values | Threads |
@@ -458,19 +458,21 @@ Relative widths are `u8`, `u16`, `u32`, `u64` or `varint`. Use plain `T&` (8 byt
 | Form | Measured from | Use when |
 | --- | --- | --- |
 | `T&<u32>` | The field itself; target must be in the same array | The pool is a local or parameter, or you want to save/move the whole structure as bytes |
-| `T&<u32 in pool>` | The base of the named global array `pool` | Other arrays need links into the pool, or you relink a lot |
+| `T&<u32 in pool>` | The base of the named global array `pool`, or of a global root struct's field such as `pool.items` | Other arrays need links into the pool, or you relink a lot |
 
 A value holding self-relative links cannot be copied (the offsets would point elsewhere). Build it in place with `push` and bind it with `.=`.
 
 ### Doubly linked list with a sentinel
 
-`self` initializes a non-optional link to the value being constructed, so a circular list can have a sentinel and no null links at all:
+`self` initializes a non-optional link to the value being constructed, so a circular list can have a sentinel and no null links at all. The nodes live in a `slot_pool` (see [Non-nested lifetimes](#non-nested-lifetimes-shared_ptr-and-rc-become-pools)), which constructs the sentinel in its slot with `alloc_index_with`:
 
 ```
-struct Node { val: i64, prev: Node&<u32 in pool>, next: Node&<u32 in pool> }
+import slot_pool;
 
-reusable var pool: Node[>..] = [];
-let head = pool.alloc_index(Node { val: 0, prev: self, next: self });
+struct Node { val: i64, prev: Node&<u32 in pool.items>, next: Node&<u32 in pool.items> }
+
+var pool = slot_pool<Node> {};
+let head = pool.alloc_index_with() { Node { val: 0, prev: self, next: self } };
 
 fn insert_after(p: Node&, v: i64) -> Node& {
     let n .= pool.alloc_ref(Node { val: v, prev: p, next: p.next });
@@ -482,7 +484,7 @@ fn insert_after(p: Node&, v: i64) -> Node& {
 fn remove(n: Node&) {
     n.prev.next .= n.next;
     n.next.prev .= n.prev;
-    pool.free(pool.index_of(n));
+    pool.free_ref(n);
 }
 ```
 
@@ -531,55 +533,62 @@ match mark_at[i] { /* ... */ }
 
 The `in` form needs a global array; for a local one use `(Mark..&)[>..]` at 8 bytes per entry.
 
-## Non-nested lifetimes: `shared_ptr` and `Rc` become reusable pools
+## Non-nested lifetimes: `shared_ptr` and `Rc` become pools
 
-Some data really does not die in stack order: cache entries, nodes of a graph being edited, open documents closed in any order, entities in a game. C++ reaches for `new`/`delete` or `shared_ptr`; Rust for `Rc<RefCell<T>>` or a slab crate. Goose gives you a **`reusable` pool**: a grow-only array the compiler pairs with a hidden freelist.
+Some data really does not die in stack order: cache entries, nodes of a graph being edited, open documents closed in any order, entities in a game. C++ reaches for `new`/`delete` or `shared_ptr`; Rust for `Rc<RefCell<T>>` or a slab crate. Goose's standard library gives you a **`slot_pool`**: a grow-only array, `items`, paired with a freelist. It is a root struct (see [Structs that own several vectors](#structs-that-own-several-vectors-a-root-struct)), so each pool is a local or global variable.
 
 ```
+import slot_pool;
+
 struct Item { id: i32, weight: f32 }
-reusable var pool: Item[>..] = [];
+var pool = slot_pool<Item> {};
 
 let s0 = pool.alloc_index(Item { 10, 1.0 });   // a slot index
 let r  .= pool.alloc_ref(Item { 11, 1.0 });    // or a reference
 pool.free(s0);                                 // slot 0 goes on the freelist
 let s2 = pool.alloc_index(Item { 12, 2.0 });   // reuses slot 0
-pool.free(pool.index_of(r));                   // a reference back to its slot
+pool.free_ref(r);                              // a reference back to its slot
 ```
+
+Read and iterate the elements through `pool.items`: `pool.items[s2]`, `for item in pool.items`. The language's older `reusable` and `reusable[]` pools are deprecated in favour of `slot_pool` and `slice_pool`.
 
 **`free` releases nothing.** It puts an index on a freelist. Every slot stays a live, correctly typed value, so a stale reference to a reused slot reads a *different* `Item`, never garbage. That is a logic bug of the same class as a stale index into a `Vec`, not a use-after-free. Memory and type safety hold.
 
 The practical rules that follow:
 
 - Treat a freed slot like a stale index: stop using references to it after `free`. If you need to detect staleness, keep a generation counter in the element and compare it, as you would with a Rust slotmap key.
-- The pool never shrinks; its high-water mark stays committed until the owning scope ends (or the program does, for a global). `trim_memory()` in `os` returns pages above stack tops, not freed slots.
+- The pool never shrinks; its high-water mark stays committed until the owning scope ends (or the program does, for a global). `pool.items.len` counts every slot ever appended, free ones included, and iterating `items` visits those too. `trim_memory()` in `os` returns pages above stack tops, not freed slots.
 - Elements must be fixed-size. For variable-size data per slot, use the slice pool below.
 - Ref-counting has no direct equivalent. Decide who owns the object (usually one place) and free it there; other holders keep references and accept the stale-slot semantics, or check a generation.
 
-### Independently growing buffers: `reusable[]`
+### Independently growing buffers: `slice_pool`
 
-When each object owns a growable buffer (a document's text, a node's child list), use a slice pool. It hands out contiguous runs and merges freed neighbours.
+When each object owns a growable buffer (a document's text, a node's child list), use a `slice_pool`. It hands out contiguous runs of its `items` and merges freed neighbours.
 
 ```
 // C++: std::unordered_map<DocId, std::unique_ptr<Document>> open;
+import slot_pool;
+import slice_pool;
+
 struct Document { id: u64, text: u8[:] }      // the document's current run of bytes
 
-reusable var docs: Document[>..] = [];
-reusable[] var bytes: u8[>..] = [];
+var docs = slot_pool<Document> {};
+var bytes = slice_pool<u8> {};
 
 fn open_doc(id: u64, size: i64) -> i64 {      // a slot in docs, like a DocId
     return docs.alloc_index(Document { id: id, text: bytes.alloc_slice(size) });
 }
 fn grow(slot: i64, extra: i64) {
-    let d .= docs[slot];
+    let d .= docs.items[slot];
     d.text = bytes.realloc_slice(d.text, d.text.len + extra);
 }
 fn close(slot: i64) {
-    bytes.free_slice(docs[slot].text);
+    bytes.free_slice(docs.items[slot].text);
     docs.free(slot);
 }
 ```
 
-Handing out slot indices rather than references keeps the API simple: `free` takes an index, and `index_of` only accepts a reference the compiler can trace to that exact array, which a `Document&` parameter of a function using the global `docs` currently is not.
+Handing out slot indices rather than references keeps the API simple: `free` takes an index, and `free_ref` only accepts a reference the compiler can trace to that exact pool, which a `Document&` parameter of a function using the global `docs` currently is not. `bytes.alloc_copy(text)` allocates a run and fills it from an existing slice in one step.
 
 This is a first-fit allocator inside one array, with three consequences you would not see with `malloc`: `realloc_slice` may move a run, so keep cursors as offsets, not slices; all documents share one stack reservation (2 GB by default); and the array's high-water mark is never returned to the OS. The [design note](https://aardappel.github.io/goose/docs/design/owning_dynamic_data.html) covers alternatives, such as fixed `u8[..MAX]` slots or chunked ropes.
 
@@ -587,11 +596,32 @@ This is a first-fit allocator inside one array, with three consequences you woul
 
 Many "I need `shared_ptr`" cases are really "I need this to outlive the function that made it". Check first whether a caller's scope can own the data, with the callee pushing into an array passed down. That costs nothing and needs no freeing at all.
 
-## Structs that own several vectors: own them in a function, pass references
+## Structs that own several vectors: a root struct
 
-A C++ `class Compiler { vector<Node> nodes; vector<Symbol> syms; string out; }` or a Rust `struct World { entities: Vec<E>, events: Vec<Ev>, ... }` doesn't translate directly. A struct may hold **at most one** resizable array, and only as its **last** field (because a resizable value must be the top of its own data stack).
+A C++ `class Compiler { vector<Node> nodes; vector<Symbol> syms; string out; }` or a Rust `struct World { entities: Vec<E>, events: Vec<Ev>, ... }` becomes a **`root struct`**. Each of its fields gets storage of its own, so all three can grow independently:
 
-### What fits in a struct as-is
+```
+root struct Compiler {
+    nodes: Node[>..] = [],
+    syms: Symbol[>..] = [],
+    out: u8[>..] = [],
+}
+
+fn emit(c: Compiler&, s: u8[:]) { c.out.append(s); }
+
+fn compile(source: const u8[:]) -> i64 {
+    var c = Compiler { .. };
+    c.nodes.push(Node { kind: 1, first: -1, next: -1 });
+    emit(c, source);
+    return c.out.len;
+}   // all three tables freed here at once; nothing global to reset
+```
+
+The tradeoff is placement. The owner must be a local or global variable: it cannot be a field, an array element, a copy or a return value. Functions take it as `Compiler&`, and that reference can be stored, captured or made optional like any other. `slot_pool` and `slice_pool` above are root structs from the standard library.
+
+An ordinary `struct`, the kind you can put in arrays, holds **at most one** resizable array, and only as its **last** field (because a resizable value must be the top of its own data stack).
+
+### What fits in an ordinary struct
 
 - Any number of fixed-size fields, including inline bounded arrays (`u8[..32]`, `Item[..8]`) and fixed-mode enums.
 - Variable-size fields (`u8[]`, `T[varint]`) built once at construction.
@@ -601,7 +631,7 @@ If your "vectors" have a real small bound, `T[..k]` keeps them inline and the st
 
 ### The context pattern
 
-For several growable tables, make each a **local of a driver function**, and hand the working code one struct of references. A struct of references and slices is fixed-size and cheap to pass.
+When the tables already exist as separate variables, or the working code also needs data it does not own, make each table a **local of a driver function** and hand the working code one ordinary struct of references. A struct of references and slices is fixed-size and cheap to pass.
 
 ```
 struct Ctx {
@@ -644,7 +674,7 @@ recursive fn walk(c: Ctx&, n: i64, depth: i64) -> i64 {
 }
 ```
 
-A recursive-descent parser therefore keeps its state as locals of the non-recursive entry function (or a `Ctx`) rather than as members of a parser object.
+A recursive-descent parser therefore keeps its state in a root struct or locals owned by the non-recursive entry function, passed down by reference, rather than in a parser object the recursion creates.
 
 ### Updating a variable-size field
 
@@ -840,13 +870,13 @@ Goose's speed and safety come from a closed world and static ownership. A few de
 | --- | --- | --- |
 | Runtime plugins, an open class hierarchy extended by other modules | No function pointers, no vtables, whole-program compilation | An enum of known kinds; for truly external code, C via `extern fn` / `extern "lib" { … }` |
 | Closures stored in a struct or returned from a function | Function values must stay compile-time | Store an enum tag plus captured data; dispatch with case functions |
-| `Vec<Vec<T>>` where each inner vector grows independently | An array element can't be resizable | `reusable[]` slice pool, a flat array plus offsets, or `T[..k]` rows if bounded |
+| `Vec<Vec<T>>` where each inner vector grows independently | An array element can't be resizable | Runs from a `slice_pool<T>`, a flat array plus offsets, or `T[..k]` rows if bounded |
 | Random access into an array of variable-size records | Offsets depend on every earlier element | Fixed-size elements with inline capacity, or an index array of references beside it |
 | Taking a reference into a fixed-mode enum payload | It could be overwritten with another variant | Store it in variable mode (`T..`), or copy, modify and reassign |
 | Changing the variant of a packed (`T..`) element | Its neighbours are packed right behind it | Fixed mode, or rebuild the container |
-| `shared_ptr` with automatic last-owner cleanup | No refcounts, no destructors | Pick an owner; `reusable` pool + explicit `free`; generation field to detect staleness |
+| `shared_ptr` with automatic last-owner cleanup | No refcounts, no destructors | Pick an owner; `slot_pool` + explicit `free`; generation field to detect staleness |
 | Shared mutable state between threads | No shared memory by design | Messages through typed queues |
-| A struct with several growable members | One resizable per stack, so one per struct (last field) | Locals in a driver function + a struct of references (`Ctx`) |
+| An array of objects that each own several growable members | A root struct must be a local or global variable | One root struct holding a field per member, with slot indices or a `slice_pool` for the per-object parts |
 | Subprocesses, networking | Not in the v1 library | `extern fn` to C |
 
 As a rule of thumb, when something won't compile, read the whole error. It names both ends, such as the reference and where it was bound, or the holder and the line that stored into it, which usually tells you which scope or binding to move.

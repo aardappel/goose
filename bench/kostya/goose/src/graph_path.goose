@@ -5,6 +5,7 @@
 namespace graph_path;
 
 import std;
+import slice_pool;
 import bench;
 import helper;
 
@@ -29,7 +30,7 @@ fn new_graph(vertices: i32, jumps: i32, jump_len: i32) -> Graph {
     return graph;
 }
 
-fn add_edge(graph: Graph&, edges: i32[>..]&, u: i32, v: i32) {
+fn add_edge(graph: Graph&, edges: slice_pool<i32>&, u: i32, v: i32) {
     if u < graph.adj.len && v < graph.adj.len {
         let nu = graph.adj[u].len;
         graph.adj[u] = edges.realloc_slice(graph.adj[u], nu + 1);
@@ -40,7 +41,7 @@ fn add_edge(graph: Graph&, edges: i32[>..]&, u: i32, v: i32) {
     }
 }
 
-fn generate_random(graph: Graph&, edges: i32[>..]&) {
+fn generate_random(graph: Graph&, edges: slice_pool<i32>&) {
     for i: i32 in 1..graph.vertices { graph.add_edge(edges, i, i - 1); }
 
     for v: i32 in 0..graph.vertices {
@@ -57,17 +58,16 @@ fn generate_random(graph: Graph&, edges: i32[>..]&) {
 // one random graph, made once. The graph ends in a growable array, so it is
 // the last field.
 //
-// The graph's adjacency lists are runs of a slice pool, and a struct can't
-// hold one (a pool is a variable, which pairs the array with its freelist),
-// so the pool is a local of the code that makes the benchmark, declared
-// before it and handed to prepare.
+// The graph's adjacency lists are runs of a slice pool. Root owners cannot
+// be nested, so the pool is a local of the code that makes the benchmark,
+// declared before it and handed to prepare.
 struct GraphPathBenchmark { result_val: u32, prepared: bool, graph: Graph }
 
 fn new_base() -> GraphPathBenchmark {
     GraphPathBenchmark { result_val: 0, prepared: false, graph: new_graph(0, 0, 0) }
 }
 
-fn prepare(base: GraphPathBenchmark&, class_name: u8[:], edges: i32[>..]&) {
+fn prepare(base: GraphPathBenchmark&, class_name: u8[:], edges: slice_pool<i32>&) {
     if !base.prepared {
         let vertices = config_i64(class_name, "vertices") as i32;
         let jumps = config_i64(class_name, "jumps") as i32;
@@ -110,7 +110,7 @@ fn bfs_shortest_path(s: GraphPathBFS&, start: i32, target: i32) -> i64 {
     return -1;
 }
 
-fn prepare(s: GraphPathBFS&, edges: i32[>..]&) { s.base.prepare("Graph::BFS", edges); }
+fn prepare(s: GraphPathBFS&, edges: slice_pool<i32>&) { s.base.prepare("Graph::BFS", edges); }
 
 fn run(s: GraphPathBFS&, iteration_id: i64) {
     let total_length = s.bfs_shortest_path(0, s.base.graph.vertices - 1);
@@ -147,7 +147,7 @@ fn dfs_find_path(s: GraphPathDFS&, start: i32, target: i32) -> i64 {
     return if best_path == I32_MAX { -1 } else { best_path };
 }
 
-fn prepare(s: GraphPathDFS&, edges: i32[>..]&) { s.base.prepare("Graph::DFS", edges); }
+fn prepare(s: GraphPathDFS&, edges: slice_pool<i32>&) { s.base.prepare("Graph::DFS", edges); }
 
 fn run(s: GraphPathDFS&, iteration_id: i64) {
     let total_length = s.dfs_find_path(0, s.base.graph.vertices - 1);
@@ -203,7 +203,7 @@ fn a_star_shortest_path(s: GraphPathAStar&, start: i32, target: i32) -> i64 {
     return -1;
 }
 
-fn prepare(s: GraphPathAStar&, edges: i32[>..]&) { s.base.prepare("Graph::AStar", edges); }
+fn prepare(s: GraphPathAStar&, edges: slice_pool<i32>&) { s.base.prepare("Graph::AStar", edges); }
 
 fn run(s: GraphPathAStar&, iteration_id: i64) {
     let total_length = s.a_star_shortest_path(0, s.base.graph.vertices - 1);

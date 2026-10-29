@@ -1,0 +1,2 @@
+slice_pool.alloc_slice: invalid slice length
+stdlib_slice_pool_alloc_negative.goose:6)

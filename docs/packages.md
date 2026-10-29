@@ -212,9 +212,10 @@ exclude = ["tools", "third_party/demo"];
 ```
 
 Most values an `extern fn` passes have layouts that C can declare for
-itself, such as a slice as `{ data, len }` (spec §7.10). A builder,
-`u8[>..]&`, is the exception: C appends to it through the runtime, and
-`goose.h` gives separately compiled C access to the runtime for this. The
+itself, such as a slice as `{ data, len }` (spec §7.10). A builder
+(`T[>..]&`, such as `u8[>..]&`) is the exception: C appends to it through
+the runtime's `gs_rref`, and `goose.h` gives separately compiled C access to
+the runtime for this, along with `gs_bld_append` for bytes. The
 compiler puts that header on the include path of every native part,
 including the program's own and CMake targets, and rebuilds them all when
 the header changes:

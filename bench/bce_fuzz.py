@@ -8,7 +8,8 @@ an index or -1, doubling merge passes, helpers with early returns, push
 loops a `continue` in a block may cut short, cursors moved before a break,
 if-values as indices, multiples and quotients of an index against those of a
 length, stride loops from a start above zero, masked probes, nonzero guards,
-whole-struct stores through element references), each with random off-by-one
+whole-struct stores through element references, pops under a length
+guard), each with random off-by-one
 mutations that make some of them unsafe. Every program runs through the JIT
 with the pass on and off; a check the pass wrongly elides turns an abort into
 a read past the end, so the two runs differ. Programs that differ are kept.
@@ -32,7 +33,7 @@ def shape(r, a, n):
     off = pick(0, 0, 0, 1, -1)
     off2 = pick(0, 0, 0, 1, -1, 2)
     k = r.randint(0, 4)
-    kind = r.randint(0, 21)
+    kind = r.randint(0, 22)
     if kind == 0:   # two indices towards each other
         return [f"var {i} = {max(0, off)};", f"var {j} = {a}.len - {1 - off2 if off2 <= 1 else 0};",
                 f"while {i} {pick('<', '<', '<=')} {j} {{",
@@ -125,6 +126,14 @@ def shape(r, a, n):
                 f"for &p{n}, {i} in q{n} {{",
                 f"    p{n} = Pt {{ x: p{n}.y, y: p{n}.x }};",
                 f"    acc += {a}[{i}{' + 1' if off == 1 else ''}] + p{n}.x;", "}"]
+    if kind == 22:  # pops under a length guard, from a stack or a limited array
+        st = f"st{n}"
+        decl = pick(f"var {st}: i64[>..] = [];", f"var {st}: i64[..] = [..24];")
+        return [decl, f"for {i} in {a}.len {{ {st}.push({a}[{i}]); }}",
+                f"while {st}.len {pick('>', '!=', '>=')} {pick(0, 0, 1, -1)} {{ acc += {st}.pop(); }}",
+                f"for {i} in {k} {{ {st}.push({i}); }}",
+                f"if {st}.len {pick('>=', '>=', '>')} {pick(2, 2, 1)} {{ acc += {st}.pop() * 3 + {st}.pop(); }}",
+                f"if {st}.len != 0 {{ {st}.pop(); acc += {st}.len; }}"]
     return [f"var {w} = 1;", f"while {w} < {a}.len {{", f"    var {i} = 0;",   # doubling passes
             f"    while {i} < {a}.len {{", f"        let {s} = min({i} + {w}, {a}.len);",
             f"        if {s} > {i} {{ acc += {a}[{s} - 1]; }}",

@@ -54,6 +54,9 @@ SOURCES.append("LICENSE")
 COPIES = sorted(os.path.relpath(p, ROOT).replace(os.sep, "/")
                 for p in glob.glob(os.path.join(ROOT, "docs", "logo", "*.png")))
 COPIES.append("vscode/goose-language.vsix")
+# The raw results the benchmark reports link to.
+COPIES += sorted(os.path.relpath(p, ROOT).replace(os.sep, "/")
+                 for p in glob.glob(os.path.join(ROOT, "bench", "*.json")))
 # Finished HTML pages, and anything they load, are published untouched.
 COPIES += sorted(os.path.relpath(p, ROOT).replace(os.sep, "/")
                  for p in glob.glob(os.path.join(ROOT, "docs", "html", "**", "*"), recursive=True)

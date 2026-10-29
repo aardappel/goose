@@ -1,0 +1,5 @@
+first=[1]
+code=1234
+text=hello
+second=[2]
+S { [1, 3], 1234, "hello", [2] }

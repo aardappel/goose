@@ -98,6 +98,19 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             c->exprtype = slice;
             return { LoadLoc(lv, slice, ln) };
         }
+        case B_MOVE_FROM: {
+            auto dst = ArrayView(RecvLoc(an[0]));
+            auto base = T(), count = T();
+            L("uint8_t *", base, " = (uint8_t *)(", dst.elems, ");");
+            L("int64_t ", count, " = ", dst.len, ";");
+            auto src = GenPure(an[1]);
+            L("if (", count, " != ", src,
+              ".len) gs_abort_msg((const uint8_t *)\"move_from lengths differ\", "
+              "sizeof(\"move_from lengths differ\") - 1, ", LocArgs(ln), ");");
+            auto size = FixedSize(dst.elem);
+            if (size) L("if (", count, ") memmove(", base, ", ", src, ".data, (size_t)", count, " * ", size, ");");
+            return {};
+        }
         case B_TO_BYTES: return EmitToBytes(an, d0, ln);
         case B_BYTES_OF: return EmitBytesOf(c, an, ln);
         case B_FROM_BYTES: return EmitFromBytes(c, an, d0, ln);
@@ -105,7 +118,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto t = c->rettypes[0];
             auto tv = T();
             FixedLocal(t, tv);
-            if (!c->defaultinit) EmitDefaultInto(tv, t);
+            if (!HasFieldDefaults(t)) EmitDefaultInto(tv, t);
             else if (t->kind == TY_ARRAY) {
                 auto i = T();
                 L("for (int64_t ", i, " = 0; ", i, " < ", ArrSize(t->arr), "; ", i, "++) {");
@@ -293,41 +306,78 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return { cat("(((uint8_t *)(", rx, ") - (uint8_t *)(", v.elems, ")) / ",
                          FixedSize(v.elem), ")") };
         }
+        case B_CHECK_LENGTH: {
+            auto lv = RecvLoc(an[0]);
+            return { SliceLen(an[1], ArrayView(lv).elem, ln, "GS_E_ARRAYLEN",
+                              an.size() > 2 ? an[2] : nullptr) };
+        }
+        case B_RANGE_INDEX: {
+            auto lv = RecvLoc(an[0]);
+            auto v = ArrayView(lv);
+            auto sv = GenPure(an[1]);
+            auto esz = FixedSize(v.elem);
+            auto fail = FailCall("GS_E_ARRAYSLICE", an.size() > 2 ? an[2] : nullptr, ln);
+            auto i = T();
+            L("int64_t ", i, " = 0;");
+            if (!esz) {
+                L("if ((uint64_t)", sv, ".len > (uint64_t)(", v.len, ")) ", fail, ";");
+            } else if (!c->poolcheck) {
+                L("if (", sv, ".len) ", i, " = ((uint8_t *)", sv,
+                  ".data - (uint8_t *)(", v.elems, ")) / ", esz, ";");
+            } else {
+                L("if (", sv, ".len) {");
+                ind++;
+                auto off = T();
+                L("uint64_t ", off, " = (uint64_t)((uintptr_t)", sv,
+                  ".data - (uintptr_t)(", v.elems, "));");
+                L("if (", off, " % ", esz, " || ", off, " / ", esz,
+                  " >= (uint64_t)(", v.len, ") || (uint64_t)", sv,
+                  ".len > (uint64_t)(", v.len, ") - ", off, " / ", esz, ") ", fail, ";");
+                L(i, " = (int64_t)(", off, " / ", esz, ");");
+                ind--;
+                L("}");
+            }
+            return { i };
+        }
         case B_POP: {
             auto lv = RecvLoc(an[0]);
             auto v = ArrayView(lv);
             auto elem = v.elem;
             auto esz = FixedSize(elem);
-            if (lv.t->arr->akind != A_LIMITED) NoteLen(lv.stk, v.lenlv);
-            auto nl = T();
-            L("int64_t ", nl, " = ", v.len, " - 1;");
-            // On empty, the stored length would wrap (limited arrays) or
-            // the stack top drop below the elements (grow-shrink).
-            L("if (", nl, " < 0) gs_abort(GS_E_POP, ", LocArgs(ln), ");");
-            L(v.lenlv, " = (", LenCast(lv), ")", nl, ";");
             auto ak = lv.t->arr->akind;
             string at;
             if (ak == A_GROWSHRINK || ak == A_GROW) {
+                NoteLen(lv.stk, v.lenlv, lv.lenroot);
+                // On empty, the stack top would drop below the elements.
+                if (!c->nobc)
+                    L("if (", v.len, " <= 0) gs_abort(GS_E_POP, ", LocArgs(ln), ");");
+                L(v.lenlv, "--;");
                 // The array tops its stack: the element region ends at top.
                 L(TopW(lv.stk), " -= ", esz, ";");
                 at = Top(lv.stk);
             } else {
+                auto nl = T();
+                L("int64_t ", nl, " = ", v.len, " - 1;");
+                // On empty, the stored length would wrap.
+                if (!c->nobc) L("if (", nl, " < 0) gs_abort(GS_E_POP, ", LocArgs(ln), ");");
+                L(v.lenlv, " = (", LenCast(lv), ")", nl, ";");
                 at = cat("(", ElemAddr(v, nl), ")");
             }
-            // A relative-reference element leaves as the plain reference it
-            // loads as (§3.9): its offset is measured from the slot it
-            // leaves, whose bytes nothing has written over yet.
+            // The element leaves as a read of the slot it leaves, whose
+            // bytes nothing writes over until the array grows again: a
+            // destination stores it at once, and an operand followed by
+            // statements is read into a temporary first (GenOperandVal). A
+            // relative-reference element is the plain reference it loads as
+            // (§3.9), its offset measured from that slot.
             if (IsRelRef(elem))
                 return { LoadLoc(BytesLoc(at, elem, lv), c->rettypes[0], ln) };
-            auto tv = T();
-            FixedLocal(elem, tv, cat("*(", CT(elem), " *)", at));
-            return { tv };
+            return { cat("(*(", CT(elem), " *)", at, ")") };
         }
         case B_POP_N: {
             auto lv = RecvLoc(an[0]);
             auto v = ArrayView(lv);
             auto ak = lv.t->arr->akind;
-            if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv);
+            if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv, lv.lenroot);
             auto nn = GenPure(an[1]);
             // The length is read after the count, which may have changed it.
             auto ol = T();
@@ -348,7 +398,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto esz = FixedSize(elem);
             auto ak = lv.t->arr->akind;
             auto relref = IsRelRef(elem);
-            if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv);
+            if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv, lv.lenroot);
             auto nn = GenPure(an[1]);
             string fv;
             if (an.size() > 2) {
@@ -432,7 +482,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // reserved and only its length moves.
             auto ak = lv.t->arr->akind;
             if (ak == A_GROWSHRINK || ak == A_GROW) {
-                NoteLen(lv.stk, v.lenlv);
+                NoteLen(lv.stk, v.lenlv, lv.lenroot);
                 L(TopW(lv.stk), " = (uint8_t *)(", v.elems, ");");
             }
             L(v.lenlv, " = 0;");
@@ -571,7 +621,10 @@ inline string CodeGen::ElemValue(Node *n, TypeExpr *elem) {
         return ev;
     }
     if (IsBytesT(elem) || HasRelRef(elem)) return "";
-    return Snapshot(elem, GenXD(n, elem));
+    // A local variable keeps its value up to the store: only the array's
+    // own bookkeeping runs in between.
+    auto x = GenXD(n, elem);
+    return Is<Ident>(n) && IsCName(x) ? x : Snapshot(elem, x);
 }
 
 // Writes the fixed-size element `n`, given what ElemValue made of it, into
@@ -604,7 +657,17 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
         ref = e;
     } else {
         assert(!lv.stk.empty());
-        NoteLen(lv.stk, v.lenlv);
+        NoteLen(lv.stk, v.lenlv, lv.lenroot);
+        // A value evaluated ahead goes out at the top, and the element is
+        // then the one just below it: a read of the top a destination takes
+        // at once, and an operand followed by statements into a temporary
+        // (GenOperandVal), as a pop's value is.
+        if (!ev.empty() && !IsRelRef(elem)) {
+            EmitValStore(lv.stk, elem, ev);
+            L(v.lenlv, "++;");
+            ref = cat("((", CT(elem), " *)(", Top(lv.stk), " - ", FixedSize(elem), "))");
+            return { NewElemResult(ref, elem, lv, ln) };
+        }
         auto e = T();
         if (IsBytesT(elem)) {
             L("uint8_t *", e, " = ", Top(lv.stk), ";");
@@ -652,7 +715,7 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     auto st = src->exprtype;
     auto asrun = IsResz(st) || (st->kind == TY_ARRAY && st->arr->akind == A_VAR);
     auto fresh = Is<Call>(src) || IsCtl(src);
-    if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv);
+    if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv, lv.lenroot);
     if (fresh && asrun && ak != A_LIMITED) {
         auto nn = T();
         L("int64_t ", nn, " = 0;");
@@ -876,13 +939,25 @@ inline string CodeGen::SpanArgs(const Loc &lv) {
 
 // A slice pool's length argument, evaluated once. A negative length, or one
 // no data stack could hold, aborts before anything changes.
-inline string CodeGen::SliceLen(Node *n, TypeExpr *elem, Line ln) {
+inline string CodeGen::SliceLen(Node *n, TypeExpr *elem, Line ln, const char *error,
+                                Node *msg) {
     auto nv = T();
     L("int64_t ", nv, " = (int64_t)(", GenX(n), ");");
     auto esz = FixedSize(elem);
-    L("if ((uint64_t)", nv, " > GS_STACK_RESERVE / ", esz, ") gs_abort(GS_E_SLICELEN, ",
-      LocArgs(ln), ");");
+    if (esz)
+        L("if ((uint64_t)", nv, " > GS_STACK_RESERVE / ", esz, ") ", FailCall(error, msg, ln), ";");
+    else
+        L("if (", nv, " < 0) ", FailCall(error, msg, ln), ";");
     return nv;
+}
+
+// The call a failed check makes: the runtime's message for `error`, or the
+// string literal a range_index or check_length was given in its place.
+inline string CodeGen::FailCall(const char *error, Node *msg, Line ln) {
+    if (auto s = msg ? Is<StrLit>(msg) : nullptr)
+        return cat("gs_abort_msg((const uint8_t *)", CStr(s->val), ", ", s->val.size(), ", ",
+                   LocArgs(ln), ")");
+    return cat("gs_abort(", error, ", ", LocArgs(ln), ")");
 }
 
 // Grows a slice pool's element region to `end` elements where it is shorter.
@@ -895,6 +970,70 @@ inline void CodeGen::EmitSliceExtend(const Loc &lv, const string &end, int64_t e
     Bump(lv.stk, cat(ext, " * ", esz));
     ind--;
     L("}");
+}
+
+// Two checked loop idioms whose zero defaults have no observable per-element
+// work: filling a whole slice, and appending from an array's length to an end.
+// Field defaults, relative references and arbitrary expressions keep their
+// ordinary evaluation order and construction code.
+inline bool CodeGen::BulkDefaultLoop(ForLoop *loop) {
+    if (loop->idxdef || loop->vdef->captured || loop->vdef->type->kind != TY_INT ||
+        loop->vdef->type->intstorage != IS_I64) return false;
+    auto loopbody = loop->body;
+    if (loopbody->stmts.size() != 1 || loopbody->tail) return false;
+    auto unref = [](Node *n) {
+        auto u = Is<Unary>(n);
+        return u && u->op == T_BITAND ? u->child : n;
+    };
+    auto lenof = [&](Node *n, Node *array) {
+        auto dot = Is<Dot>(n);
+        return dot && !dot->IsField() && dot->name == "len" && SamePath(dot->obj, unref(array));
+    };
+    Node *array = nullptr, *value = nullptr, *end = nullptr;
+    auto append = false;
+    if (auto a = Is<Assign>(loopbody->stmts[0]); a &&
+        (a->op == T_ASSIGN || a->op == T_DOTASSIGN) && loop->iterkind == IK_COUNT) {
+        auto index = Is<Index>(a->lval);
+        auto id = index ? Is<Ident>(index->idx) : nullptr;
+        if (!id || id->vdef != loop->vdef || !lenof(loop->iter, index->obj)) return false;
+        array = index->obj; value = a->rhs;
+    } else if (auto call = Is<Call>(loopbody->stmts[0]); call &&
+               call->builtin == B_PUSH && loop->iterkind == IK_RANGE) {
+        auto args = call->ValueArgNodes();
+        auto range = Is<RangeExpr>(loop->iter);
+        if (args.size() != 2 || !range || !lenof(range->lo, args[0]) ||
+            (!Is<Ident>(range->hi) && !Is<IntLit>(range->hi)) ||
+            range->exprtype->kind != TY_INT || range->exprtype->intstorage != IS_I64)
+            return false;
+        array = args[0]; value = args[1]; end = range->hi; append = true;
+    } else return false;
+    auto type = unref(array)->exprtype;
+    if (type->kind == TY_REF) type = type->ref->sub;
+    if (append ? !IsResz(type) || type->kind != TY_ARRAY : type->kind != TY_SLICE) return false;
+    auto elem = append ? type->arr->sub : type->sub;
+    if (!FieldChainRoot(unref(array), true) || !ZeroDefaultValue(value, elem)) return false;
+    auto lv = RecvLoc(array);
+    auto view = ArrayView(lv);
+    auto esz = FixedSize(elem);
+    if (append) {
+        NoteLen(lv.stk, view.lenlv, lv.lenroot);
+        auto first = T(), limit = T();
+        L("int64_t ", first, " = ", view.len, ";");
+        L("int64_t ", limit, " = ", GenX(end), ";");
+        L("if (", limit, " > ", first, ") {");
+        ind++;
+        // The loop would have run into the guard gap; report it the same way.
+        L("if ((uint64_t)", limit, " > GS_STACK_RESERVE / ", esz, ") gs_stack_overflow(",
+          Top(lv.stk), ");");
+        L("GS_MEMZERO(", Top(lv.stk), ", (size_t)((", limit, " - ", first, ") * ", esz, "));");
+        Bump(lv.stk, cat("(", limit, " - ", first, ") * ", esz));
+        L(view.lenlv, " = ", limit, ";");
+        ind--;
+        L("}");
+    } else {
+        L("if (", view.len, ") GS_MEMZERO(", view.elems, ", (size_t)(", view.len, " * ", esz, "));");
+    }
+    return true;
 }
 
 // Default values (§4.2) for `count` elements of an array view from index
@@ -951,10 +1090,12 @@ inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
     if (it != threadglobals.end()) return it->second;
     set<FnSpec *> seen;
     set<VarDef *> named;
+    set<TypeExpr *> namedtypes;
     function<void(FnSpec *)> rec = [&](FnSpec *sp) {
         if (!sp || !sp->body || !seen.insert(sp).second) return;
         function<void(Node *)> walk = [&](Node *n) {
             if (!n) return;
+            NodeNamedArrays(n, namedtypes, [&](VarDef *a, bool) { named.insert(a); });
             if (auto id = Is<Ident>(n))
                 if (auto v = id->vdef; v && v->isglobal && !gstatic.count(v)) named.insert(v);
             if (auto c = Is<Call>(n)) {
@@ -1113,6 +1254,8 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     }
     assert(ki.freevars.empty() && !ki.hasrf && sp->rets.empty());
     if (ki.needssp) args.push_back("0");
+    // A worker has no caller: its function's failures report its declaration.
+    if (ki.located) args.push_back(CallerLoc(sp->sf->line));
     Append(b, "    gs_gl = calloc(1, sizeof(gs_globals_t));\n"
               "    if (!gs_gl) gs_panic(\"out of memory copying globals\");\n");
     for (auto d : ThreadGlobals(sp)) {
@@ -1358,6 +1501,12 @@ inline vector<string> CodeGen::EmitFromBytes(Call *c, vector<Node *> &an, Dst d0
         Bump(bstk, bn);
     }
     auto cnt = T();
+    // The verifier reads index types' array lengths through global headers.
+    // Those counts may still be held in this function's stack caches.
+    set<TypeExpr *> seen;
+    string reach;
+    NamedArraysIn(elem, seen, [&](VarDef *a, bool) { reach += cat(gstks[a], "\x01"); });
+    if (!reach.empty()) MarkFlush(reftops || topdst || topcap ? "*" : reach);
     L("int64_t ", cnt, " = ", ok, " ? ", vf, "(", pay, ", ", pn, ", ", bm, ") : -1;");
     L(ok, " = ", cnt, " >= 0;");
     auto rd = OpenRzDest(t, d0, ln, "from_bytes");

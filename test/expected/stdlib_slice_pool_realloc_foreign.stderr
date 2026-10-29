@@ -1,0 +1,2 @@
+slice_pool.realloc_slice: slice is not from this pool
+stdlib_slice_pool_realloc_foreign.goose:8)

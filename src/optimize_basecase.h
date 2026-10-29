@@ -120,7 +120,11 @@ struct BaseCaseInliner {
             // A callee that may `return ... from` us would leave the frame
             // the copy is in, the caller's, rather than the callee's.
             auto bad = [&](FnSpec *k) {
-                return k && (k->incycle || k->sf->isrec || k->needs.count(o.curspec));
+                // Environment reads include transitive captures and writes.
+                // Separate bodies that name them cannot use the copied
+                // base-case bindings; capture-free callbacks need no remap.
+                return k && (k->incycle || k->sf->isrec || k->needs.count(o.curspec) ||
+                             !k->envreads.empty());
             };
             if (bad(c->spec)) return false;
             for (auto d : c->dispatch) if (bad(d)) return false;
@@ -276,6 +280,7 @@ struct BaseCaseInliner {
             K->rets[0]->kind == TY_ARRAY)
             return nullptr;
         Inliner inl { o, ast, K, o.curspec, {}, {} };
+        inl.AtCallSite(c);
         vector<Node *> decls;
         for (size_t i = 0; i < K->params.size(); i++) {
             auto pv = K->params[i];

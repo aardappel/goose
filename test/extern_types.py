@@ -15,6 +15,7 @@ extern fn sum(values: const f32[:]) -> f32 = "native_sum";
 extern fn input(value: const Input&) -> i32 = "native_input";
 extern fn result() -> Result = "native_result";
 extern fn missing(values: const f64[:]) = "native_missing";
+extern fn push(out: Input[>..]&, a: i16, b: i16) = "native_push";
 ''')
     header = base / "adapter.h"
     tc.write_text(header, '''
@@ -29,6 +30,15 @@ static int32_t native_input(Input_g *value) {
 static Result_g native_result(void) {
     Result_g result = { 42 };
     return result;
+}
+/* Elements of a resizable of structs, appended at its stack top. */
+static void native_push(gs_rref out, int16_t a, int16_t b) {
+    Input_g v;
+    v.values_g.e[0] = a;
+    v.values_g.e[1] = b;
+    memcpy(out.stk->top, &v, sizeof v);
+    out.stk->top += sizeof v;
+    out.hdr->len++;
 }
 /* The declaration needs its slice type, but never a linked implementation. */
 static int64_t adapter_length(sl_f64 values) { return values.len; }
@@ -48,6 +58,9 @@ static int64_t adapter_length(sl_f64 values) { return values.len; }
         "unused": "",
         "slice": "let xs: f32[2] = [1.25, 2.75]; assert(sum(xs) == 4.0);",
         "aggregate": "let x = Input { [20, 22] }; assert(input(x) == result().value);",
+        "builder": "var xs: Input[>..] = [Input { [5, 6] }]; push(xs, 20, 22); push(xs, 1, 2); "
+                   "assert(xs.len == 3 && input(xs[1]) == 42 && xs[2].values[1] == 2); "
+                   "xs.push(Input { [7, 8] }); assert(input(xs[0]) + input(xs[3]) == 26);",
     }
     for name, body in cases.items():
         source = base / f"{name}.goose"

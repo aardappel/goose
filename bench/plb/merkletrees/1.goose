@@ -1,10 +1,11 @@
 // The problem's rules forbid arenas: every node is allocated on its own and
-// freed on its own. The nodes live in one `reusable` pool, a grow-only array
-// with a freelist, so `alloc_ref` takes the slot a `free` last handed back,
+// freed on its own. The nodes live in one `slot_pool`, a grow-only array
+// with a freelist, so `alloc_with` takes the slot a `free` last handed back,
 // the way a size-class allocator does, and the links are 4-byte offsets
 // from the pool's base. A tree is freed node by node, children first, as
 // Rust drops its boxes.
 
+import slot_pool;
 import std;
 import os;
 
@@ -14,19 +15,19 @@ let MIN_DEPTH = 4;
 struct Node {
     hash: i64,
     value: i64,
-    l: Node&<u32 in pool>?,
-    r: Node&<u32 in pool>?,
+    l: Node&<u32 in pool.items>?,
+    r: Node&<u32 in pool.items>?,
     has_hash: bool,
     has_value: bool,
 }
 
-reusable var pool: Node[>..] = [];
+var pool = slot_pool<Node> {};
 
 recursive fn make(depth: i64) -> Node& {
-    if depth == 0 { return pool.alloc_ref(Node { value: 1, has_value: true, .. }); }
+    if depth == 0 { return pool.alloc_with() { Node { value: 1, has_value: true, .. } }; }
     let l: Node& = make(depth - 1);
     let r: Node& = make(depth - 1);
-    return pool.alloc_ref(Node { l: l, r: r, .. });
+    return pool.alloc_with() { Node { l: l, r: r, .. } };
 }
 
 recursive fn free_tree(n: Node&) {
@@ -34,7 +35,7 @@ recursive fn free_tree(n: Node&) {
     if l { free_tree(l); }
     let r = n.r;
     if r { free_tree(r); }
-    pool.free(pool.index_of(n));
+    pool.free_ref(n);
 }
 
 fn get_hash(n: Node&) -> i64 { if n.has_hash { n.hash } else { -1 } }

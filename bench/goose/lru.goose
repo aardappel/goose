@@ -3,19 +3,19 @@
 // cache, page table, and connection pool has one of these in it, and it is
 // the mutation-heavy shape Goose's stack discipline is worst placed for:
 // nodes are freed and reallocated in an order that has nothing to do with
-// scope. The `reusable` pool (spec 5.4) is the language's answer -- a
-// freelist over a grow-only array, so a freed node's slot comes back on the
-// next alloc without an allocator, and every slot stays a valid Node forever.
+// scope. The stdlib `slot_pool` provides a freelist over a grow-only array,
+// so a freed node's slot comes back on the next alloc without an allocator,
+// and every slot stays a valid Node forever.
 //
-// Every link here is a 4-byte offset measured from `pool`'s base (spec 3.9's
-// `in pool` form): the list links inside the nodes, and the map's links from
+// Every link here is a 4-byte offset measured from `pool.items`'s base (spec 3.9's
+// `in pool.items` form): the list links inside the nodes, and the map's links from
 // `slots` *into* the pool, which a self-relative offset cannot express at all
 // since the two ends are in different arrays. So the map holds references and
 // still fits 8-byte slots, matching the vector-arena-with-u32-indices shape
-// the C++ and Rust versions use, and `pool.free(pool.index_of(n))` is what
+// the C++ and Rust versions use, and `pool.free_ref(n)` is what
 // turns a link back into a freelist index. A pool-relative store is a
 // subtraction from a base that is loop-invariant in a register rather than
-// from the field's own address, and the whole lookup path has no `&pool[i]`
+// from the field's own address, and the whole lookup path has no `&pool.items[i]`
 // in it. lru_indices.goose is the same program with i32 indices in the slots
 // and self-relative list links; C++'s idiomatic version is the textbook
 // std::list + std::unordered_map, an allocation per node and another per map
@@ -28,15 +28,16 @@
 
 import rng;
 import std;
+import slot_pool;
 
 let N = 8000000;                         // BENCH_N
 let CAP = N / 8;
 let KEYS = CAP * 2;
 
-struct Node { key: i32, val: i32, prev: Node&<u32 in pool>?, next: Node&<u32 in pool>? }
-struct Slot { key: i32, node: Node&<u32 in pool>? }   // node == null: empty.
+struct Node { key: i32, val: i32, prev: Node&<u32 in pool.items>?, next: Node&<u32 in pool.items>? }
+struct Slot { key: i32, node: Node&<u32 in pool.items>? }   // node == null: empty.
 
-reusable var pool: Node[>..] = [];
+var pool = slot_pool<Node> {};
 var slots: Slot[>..] = [];
 var mask: u64 = 0;
 
@@ -97,8 +98,8 @@ fn main() {
     // Two sentinels: the list is never empty, so no link is null in practice.
     let hi = pool.alloc_index(Node { key: -1, val: 0 });
     let ti = pool.alloc_index(Node { key: -1, val: 0 });
-    pool[hi].next .= pool[ti];
-    pool[ti].prev .= pool[hi];
+    pool.items[hi].next .= pool.items[ti];
+    pool.items[ti].prev .= pool.items[hi];
     var count = 0;
     var hits = 0;
     var misses = 0;
@@ -115,7 +116,7 @@ fn main() {
             if f {
                 unlink(f);
                 map_remove(at);
-                pool.free(pool.index_of(f));
+                pool.free_ref(f);
                 count--;
                 removes++;
             }
@@ -124,34 +125,34 @@ fn main() {
         if f {
             f.val += 1;
             unlink(f);
-            link_front(pool[hi], f);
+            link_front(pool.items[hi], f);
             hits++;
             continue;
         }
         misses++;
         var ins = at;
         if count == CAP {
-            let lru = pool[ti].prev;
+            let lru = pool.items[ti].prev;
             assert(lru);
             unlink(lru);
             let lat = find(lru.key);
             map_remove(lat);
-            pool.free(pool.index_of(lru));
+            pool.free_ref(lru);
             count--;
             // The deletion may have shifted entries in this key's probe run,
             // so the empty slot found above can be stale.
             ins = find(key);
         }
         let ni = pool.alloc_index(Node { key: key as i32, val: (key % 1000) as i32 });
-        let n = &pool[ni];
+        let n = &pool.items[ni];
         slots[ins] = Slot { key: key as i32, node: n };
-        link_front(pool[hi], n);
+        link_front(pool.items[hi], n);
         count++;
     }
     // Walk the list from most to least recent, so the order is checked too.
     var walk: u64 = 0;
     var vals = 0;
-    var cur = pool[hi].next;
+    var cur = pool.items[hi].next;
     loop {
         guard cur else { break; }
         guard cur.key >= 0 else { break; }

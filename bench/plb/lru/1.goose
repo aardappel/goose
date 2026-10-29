@@ -3,14 +3,15 @@
 // dictionary's values, are 4-byte offsets from the pool's base. A full
 // cache evicts by reusing its least recently used node for the new key.
 
+import slot_pool;
 import std;
 import os;
 import dictionary;
 
-struct Node { key: u32, val: u32, prev: Node&<u32 in pool>, next: Node&<u32 in pool> }
+struct Node { key: u32, val: u32, prev: Node&<u32 in pool.items>, next: Node&<u32 in pool.items> }
 
-reusable var pool: Node[>..] = [];
-let head = pool.alloc_index(Node { key: 0, val: 0, prev: self, next: self });
+var pool = slot_pool<Node> {};
+let head = pool.alloc_index_with() { Node { key: 0, val: 0, prev: self, next: self } };
 
 struct Lcg { seed: u32 }
 
@@ -26,7 +27,7 @@ inline fn unlink(n: Node&) {
 
 // n becomes the most recently used.
 inline fn link_last(n: Node&) {
-    let h .= pool[head];
+    let h .= pool.items[head];
     n.prev .= h.prev;
     n.next .= h;
     h.prev.next .= n;
@@ -40,7 +41,7 @@ fn main() {
     if a.len > 1 { let v, ok = parse_int(a[1]); if ok { size = v; } }
     if a.len > 2 { let v, ok = parse_int(a[2]); if ok { n = v; } }
     let modular = (size * 10) as u32;
-    var map = dictionary<u32, Node&<u32 in pool>?> {};
+    var map = dictionary<u32, Node&<u32 in pool.items>?> {};
     map.reserve(size);
     var count = 0;
 
@@ -53,7 +54,7 @@ fn main() {
             return;
         }
         if count == size {
-            let lru .= pool[head].next;
+            let lru .= pool.items[head].next;
             map.remove(lru.key);
             lru.key = key;
             lru.val = val;
@@ -62,7 +63,7 @@ fn main() {
             map.insert(key, lru);
             return;
         }
-        let e .= pool.alloc_ref(Node { key: key, val: val, prev: pool[head], next: pool[head] });
+        let e .= pool.alloc_with() { Node { key: key, val: val, prev: pool.items[head], next: pool.items[head] } };
         link_last(e);
         map.insert(key, e);
         count++;

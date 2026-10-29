@@ -4,6 +4,7 @@
 namespace game_of_life;
 
 import std;
+import slice_pool;
 import bench;
 import helper;
 
@@ -38,7 +39,7 @@ fn update(c: Cell&) { c.alive = c.next_state; }
 // the benchmark owns.
 struct Grid { width: i64, height: i64, cells: (Cell[:])[>..] }
 
-fn new_grid(pool: Cell[>..]&, width: i64, height: i64) -> Grid {
+fn new_grid(pool: slice_pool<Cell>&, width: i64, height: i64) -> Grid {
     var grid = Grid { width: width, height: height, cells: [] };
     for y in height {
         let row = pool.alloc_slice(width);
@@ -104,7 +105,7 @@ fn compute_hash(grid: Grid&) -> u32 {
 
 struct GameOfLife { grid: Grid }
 
-fn new_game_of_life(pool: Cell[>..]&) -> GameOfLife {
+fn new_game_of_life(pool: slice_pool<Cell>&) -> GameOfLife {
     let width = config_i64("Etc::GameOfLife", "w");
     let height = config_i64("Etc::GameOfLife", "h");
     return GameOfLife { grid: new_grid(pool, width, height) };

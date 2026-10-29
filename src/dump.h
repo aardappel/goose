@@ -697,6 +697,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
 }
 
 inline void StructDecl::Dump(string &s, int ind) const {
+    if (st->isroot) s += "root ";
     Append(s, "struct ", st->qname);
     DumpGenerics(s, st->generics);
     s += " {";

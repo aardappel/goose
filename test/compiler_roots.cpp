@@ -26,9 +26,9 @@ int main() {
     VarDef root, other, source, other_source;
     vector<RootAlt> alternatives;
     for (auto from : { (VarDef *)nullptr, &source, &other_source })
-        for (int bits = 0; bits < 8; bits++)
+        for (int bits = 0; bits < 16; bits++)
             alternatives.push_back({ &root, bool(bits & 1), from,
-                                     bool(bits & 2), bool(bits & 4) });
+                                     bool(bits & 2), bool(bits & 4), bool(bits & 8) });
     for (auto &a : alternatives) {
         auto x = One(a);
         assert(!x.Add(a));                         // Idempotence.
@@ -66,6 +66,12 @@ int main() {
     assert(x.Same(unknown, Roots::Compare::GlobalReach));
 
     Roots pending, empty;
+    auto projected = One({ &root, false, nullptr, false, false, true });
+    assert(!projected.Exact());                   // A field path is not an owner identity.
+    auto bound = projected;
+    bound.Weaken();
+    assert(!bound.alts[0].projected);
+    assert(Join(projected, bound) == bound);
     pending.SetUnknown();
     assert(empty.Add(pending));                    // A change in discovery state is feedback too.
     assert(empty == pending);

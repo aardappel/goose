@@ -583,7 +583,7 @@ This section is short, but everything after it rests on it.
 
 ### Size classes
 
-Every type is in one of three **size classes**:
+Every type is in one of four **size classes**:
 
 * **fixed**: the byte size is a compile-time constant. Scalars, structs of
   fixed fields, fixed arrays `T[k]`, static-capacity arrays `T[..k]`,
@@ -594,10 +594,14 @@ Every type is in one of three **size classes**:
 * **resizable**: the size may change after construction. `T[>..]`
   (grow-only) and `T[>..<]` (grow-shrink), and a struct whose last field is
   one of them.
+* **root**: a `root struct` owns independently stored fields under one lifetime.
+  It has no contiguous value layout and is owned only by a local or global
+  declaration. See [Root structs](#root-structs).
 
-A compound type's class is the largest of its parts' classes. A type is
+An ordinary compound type's class is the largest of its parts' classes. A root
+struct always retains its class, even with only fixed fields. A type is
 **flat** when it holds no reference, slice or relative reference at any
-depth; only flat values may cross between threads
+depth and is not a root struct; only flat values may cross between threads
 ([section 22](#22-threads)). Spec §1.1.
 
 ### Data stacks
@@ -834,9 +838,13 @@ time. Spec §3.3.
   computing its offset, which is fine while iterating and costly for
   random access.
 * **Resizable** values go in locals and globals, by-value parameters,
-  results, and the **last field** of a struct, which makes the struct
-  resizable too. A resizable value is never an array element, and a struct
-  has at most one.
+  results, and the **last field** of an ordinary struct, which makes the struct
+  resizable too. A root struct can own several, in any field position. Never
+  an array element.
+* **Root** owners go only in local/global declarations. A root cannot be
+  owned inside another struct, an array or slice (even a fixed-size array),
+  or an enum payload, or passed or returned by value. References to roots
+  follow the ordinary reference rules.
 * **Zero-size** values (`T[0]`, `T[..0]`, a variant with no fields) exist
   only as values of their own, never as a field or an element.
 
@@ -892,18 +900,36 @@ read the same way.
 | `.cap -> i64` | `T[..k]`, `T[..]` | the capacity |
 | `.push(v) -> T&` | limited, grow-only, grow-shrink | one element, constructed in place; returns a reference to it |
 | `.append(src)` | limited, grow-only, grow-shrink | the elements of an array, slice or array literal, copied in |
+| `.move_from(src)` | slices of fixed-size elements | copies equal-length slices with overlap-safe ordering |
 | `.pop() -> T` | limited, grow-shrink; grow-only where a shrink is allowed | removes and returns the last element |
 | `.pop_n(n)` | the same | drops the last `n` elements |
 | `.resize(n, v)`, `.resize(n)` | the same | grows with copies of `v`, or shrinks |
 | `.clear()` | the same | empties the array |
 | `.index_of(r) -> i64` | arrays of fixed-size elements | the index of the element `r` refers to |
+| `.range_index(s, msg?) -> i64` | the same | the start of a wholly contained slice; checked when provenance does not prove it |
+| `.check_length(n, msg?) -> i64` | grow-only, grow-shrink, fixed-size elements | validates a count against the data-stack reservation; returns it without changing the array |
 
 Growth always supplies element values: there is no operation that exposes
 an uninitialized slot. Exceeding a limited array's capacity aborts; so does
 shrinking below empty. `index_of` needs a reference that the compiler can
 prove points into that very array
 ([section 12](#12-lifetimes-roots-stores-and-writability)).
-The `reusable` pool operations are in [section 14](#14-reusable-pools).
+`range_index` accepts slices whose origin is only known at runtime: a nonempty
+slice must be element-aligned and wholly within the array's current length.
+An empty slice, including a default or foreign empty slice, returns zero.
+`check_length` rejects negative counts and counts whose elements alone would
+exceed a data-stack reservation, including oversized unsigned counts. It neither
+allocates storage nor promises that an append fits the array's remaining space.
+Both checks apply in every build. A string literal as a last argument,
+`a.range_index(s, "msg")`, is the message a failed check aborts with instead
+of the runtime's own; the standard library's pools word theirs this way.
+`dst.move_from(src)` requires equal lengths and aborts before writing if they
+differ. It copies the original source values even when the slices overlap;
+the source is not cleared. Both operands are evaluated once, left to right.
+The destination must be writable, and the usual lifetime and relative-reference
+copy restrictions apply. Empty slices may be copied, including default slices.
+The standard-library pool types and deprecated `reusable` operations are in
+[section 14](#14-reusable-pools).
 Spec §3.3, §12.
 
 ```goose
@@ -1148,7 +1174,7 @@ fn main() {
 struct Unit { kind: i32, hp: i32 = 100, x: f32, y: f32, name: u8[] }
 ```
 
-A struct is its fields in declaration order, **packed**: no padding is
+An ordinary struct is its fields in declaration order, **packed**: no padding is
 inserted, unaligned access is assumed cheap, and a struct of an `i8[3]` and
 an `i32` is 7 bytes. Struct declarations introduce nominal types; two
 structs with the same fields are different types.
@@ -1287,7 +1313,7 @@ Spec §3.4, §3.6.
 
 ### A resizable tail
 
-A struct's **last** field may be a resizable array, which makes the struct
+An ordinary struct's **last** field may be a resizable array, which makes the struct
 resizable: it can live wherever a growable array can (a local, a global, a
 by-value parameter, a result), but never as an element or a middle field. The
 tail grows through the struct like any growable array.
@@ -1310,6 +1336,77 @@ main [7] 1
 ```
 
 Spec §3.4, Appendix C.2.
+
+### Root structs
+
+Like an ordinary struct, a `root struct` bundles related state behind named
+fields. It lifts the requirement that those fields form one contiguous value:
+each field has independent storage, so several fields can grow separately.
+Fields can be fixed, variable or resizable, in any order, and all share the
+lifetime of the owning variable.
+
+The tradeoff is placement: an owning root struct must be a local or global
+variable, rather than a field or array element. It can group application state,
+a workspace, or a library instance:
+
+```goose
+root struct Workspace<T> {
+    items: T[>..] = [],
+    scratch: i64[>..<] = [],
+    calls: i64 = 0
+}
+
+fn add<T>(s: Workspace<T>&, value: T) -> T& {
+    s.calls += 1;
+    let result .= s.items.push(value);
+    s.scratch.push(s.calls);
+    s.scratch.clear();                // does not invalidate result
+    return result;
+}
+
+fn main() {
+    var state = Workspace<i64> { .. };
+    let first .= state.add(7);
+    state.add(8);
+    print(first, " ", state.items, " ", state.calls);
+}
+```
+
+```
+7 [7, 8] 2
+```
+
+Construct an owner with a literal directly in a local or global declaration.
+Field defaults and `..` work normally; a typed global may omit its initializer.
+The compiler determines all component stacks statically and restores them on
+scope exit. Existing recursive-cycle restrictions apply to owners with nonfixed
+fields: declare such state outside the cycle and pass a reference into it.
+
+Functions receive a root by reference. An unannotated binding from an existing
+owner also borrows it; `.=` is available to make that intent explicit. Owner
+references can be optional, stored in ordinary structs or arrays, returned, and
+captured by nested functions, subject to normal lifetime and writability rules.
+Field access, UFCS, reflection and formatting work through those references.
+
+A mutable grow-only array field of a global `var` root can be named in compact
+reference and index types: `Node&<u32 in pool.items>`, `u32 in pool.items`, and
+`u32 upto pool.items`. The name resolves to that particular field's storage;
+another field or owner is a different array. Only direct fields are supported:
+the path cannot follow an alias, reference, index or nested field.
+
+The owner itself cannot be copied, reassigned, passed or returned by value, used
+as a temporary, or placed inside another struct or array. This applies even to a
+root with no resizable fields. `root` only acts as a modifier before `struct`;
+variables, fields and functions may still be named `root`.
+
+A root has no packed byte image, whole-value equality or arithmetic, or public
+C layout. `pad` belongs in an ordinary component struct, not on the root.
+Serialize eligible fields separately, for example `to_bytes(state.items)`;
+that image contains only the selected component. Workers can construct local
+roots but cannot receive owners or owner references, or use a root global
+directly or through another function. A root global unused by a worker is fine.
+Nested owning roots and fixed arrays of owners are deferred. Spec §3.4,
+Appendix C.2.
 
 ### Generic structs
 
@@ -1336,7 +1433,7 @@ Spec §3.2.
 
 ### Equality and arithmetic
 
-`==` and `!=` compare structs memberwise, excluding pads; a reference or
+`==` and `!=` compare ordinary structs memberwise, excluding pads; a reference or
 slice *field* compares by identity (address and length), since recursing
 through it could loop. The arithmetic operators apply memberwise
 ([section 3](#arithmetic-on-structs-and-fixed-arrays)). Ordering operators
@@ -1841,8 +1938,10 @@ resize fill or converted through a temporary array representation.
 
 ### Pool-relative links and `self`
 
-`pool` in `T&<u32 in pool>` names a global `var` or `reusable var` of a
-grow-only type whose elements hold a `T`; the pool is part of the type's
+`pool` in `T&<u32 in pool>` names a global `var` array (including deprecated
+`reusable var`) or a mutable array field of a global `var` root, such as
+`T&<u32 in pool.items>`. The array must be grow-only and its elements hold a `T`;
+the pool is part of the type's
 identity. The stored value is the offset from the pool's base plus one,
 so 0 is null in the optional form and a `u32` link spans a pool of 4 GB.
 A load is rooted at `pool`, exactly, wherever the link was read from. This
@@ -1857,10 +1956,12 @@ sentinel. After that, no link is ever null, and every insert and remove is
 the same four stores:
 
 ```goose
-struct Node { val: i64, prev: Node&<u32 in pool>, next: Node&<u32 in pool> }
+import slot_pool;
 
-reusable var pool: Node[>..] = [];
-let head = pool.alloc_index(Node { val: 0, prev: self, next: self });   // the sentinel
+struct Node { val: i64, prev: Node&<u32 in pool.items>, next: Node&<u32 in pool.items> }
+
+var pool = slot_pool<Node> {};
+let head .= pool.alloc_with() { Node { val: 0, prev: self, next: self } };   // the sentinel
 
 fn insert_after(p: Node&, v: i64) -> Node& {
     let n .= pool.alloc_ref(Node { val: v, prev: p, next: p.next });
@@ -1872,20 +1973,20 @@ fn insert_after(p: Node&, v: i64) -> Node& {
 fn remove(n: Node&) {
     n.prev.next .= n.next;
     n.next.prev .= n.prev;
-    pool.free(pool.index_of(n));
+    pool.free(pool.items.index_of(n));
 }
 
-fn is_end(n: Node&) -> bool { n .== pool[head] }
+fn is_end(n: Node&) -> bool { n .== head }
 
 fn main() {
-    insert_after(pool[head], 1);
-    let two .= insert_after(pool[head].prev, 2);   // .=: `let two = …` would copy the node
-    insert_after(pool[head].prev, 3);
+    insert_after(head, 1);
+    let two .= insert_after(head.prev, 2);   // .=: `let two = …` would copy the node
+    insert_after(head.prev, 3);
     remove(two);
     var line: u8[>..] = [];
-    var n .= pool[head].next;
+    var n .= head.next;
     while !is_end(n) { format(line, n.val, " "); n .= n.next; }
-    print(line, "| ", pool.len, " slots, ", 8 + 4 + 4, " bytes a node");
+    print(line, "| ", pool.items.len, " slots, ", 8 + 4 + 4, " bytes a node");
 }
 ```
 
@@ -1900,9 +2001,12 @@ rejects.
 
 `self` is legal only in a struct or variant literal, and only for a
 non-optional relative-reference field whose pointee is the type being
-constructed. For an `in pool` field, the literal must also be built inside
-that pool (a `push`, an `alloc_ref`, an element store). The `reusable`
-pool and `alloc_ref` are explained in [section 14](#14-reusable-pools).
+constructed, and for an `in pool` field only in a literal built inside
+that array (a `push`, an element store, or a `slot_pool.alloc_with` builder).
+`alloc_with` selects the destination slot before calling the builder, so
+`self` points at that slot. `alloc_ref` accepts an already-constructed value;
+use it when no destination-dependent construction is needed. Both operations
+are explained in [section 14](#14-reusable-pools).
 
 ### Which form
 
@@ -2293,9 +2397,17 @@ argument is rejected. Spec §1.3, §4.2.
 ## 14. Reusable pools
 
 Some data has lifetimes that do not nest: cache entries, nodes of a graph
-that is edited, files deleted in any order. For these, a grow-only array
-of fixed-size elements can be declared `reusable`, and the compiler pairs
-it with a hidden freelist:
+that is edited, files deleted in any order. Use the standard library's
+[`slot_pool<T>`](stdlib.md#slot_pool) for individual slots and
+[`slice_pool<T>`](stdlib.md#slice_pool) for contiguous runs. Each is a root
+struct bundling an `items` array and its reuse metadata in one declaration.
+Owners must be local or global variables; functions take them by reference.
+
+**`reusable` and `reusable[]` are deprecated.** The builtins remain available
+for existing code and the [remaining migration gaps](design/root_structs.md#separate-follow-up-reusable-pools-in-the-stdlib).
+Their removal is a later step.
+
+Import `slot_pool` to use these operations:
 
 | Operation | Meaning |
 |---|---|
@@ -2312,17 +2424,18 @@ of the unsafety, and this design is what lets tree-mutating workloads run
 without an allocator.
 
 ```goose
+import slot_pool;
 struct Item { id: i32, weight: f32 }
 
 fn main() {
-    reusable var pool: Item[>..] = [];
+    var pool = slot_pool<Item> {};
     let s0 = pool.alloc_index(Item { 10, 1.0 });
     let s1 = pool.alloc_index(Item { 11, 1.0 });
     pool.free(s0);
     let s2 = pool.alloc_index(Item { 12, 2.0 });   // takes slot s0 back
     let node .= pool.alloc_ref(Item { 13, 3.0 });
-    pool.free(pool.index_of(node));                // a reference turned back into its slot
-    print("slots ", s0, " ", s1, " ", s2, ", pool length ", pool.len);
+    pool.free(pool.items.index_of(node));          // a reference turned back into its slot
+    print("slots ", s0, " ", s1, " ", s2, ", pool length ", pool.items.len);
 }
 ```
 
@@ -2330,21 +2443,25 @@ fn main() {
 slots 0 1 0, pool length 3
 ```
 
-A pool may be a local or a global. It never shrinks (its freelist keeps
-every slot live), and `push` and `append` still add at the end without
-consulting the freelist. A `T[>..]&` parameter bound to a pool is a *pool
-reference*. It carries the freelist beside the address, so the pool's
-operations work through it. A variable that was first bound to a pool can
-only be rebound to a pool of the same kind. Spec §5.4.
+A pool may be a local or a global. Its `items` array never shrinks through
+the pool API; `items.len` includes free slots. Use `items` for ordinary array
+access, and pass the owner as `slot_pool<T>&`. Elements must be fixed-size.
+`alloc_index` and `alloc_ref` take normally copyable values. For fresh values
+with self-relative links or pool-relative `self`, use
+`pool.alloc_with() { Node { value: 1, me: self } }`: the builder runs once,
+directly in the chosen slot, and returns a reference to it.
+Do not edit its `free_slots` metadata or shrink `items`
+directly. See the [library contract](stdlib.md#slot_pool) for supported types
+and lifetime rules.
 
 ### Slice pools
 
-`reusable[]` hands out *runs* of elements instead of single slots, with a
-freelist of spans that merges neighbours:
+`slice_pool<T>` hands out *runs* of elements instead of single slots, with a
+tree of free spans that merges neighbours:
 
 | Operation | Meaning |
 |---|---|
-| `a.alloc_slice(n) -> T[:]` | `n` elements from the first free span that holds them, else from the end of the array, which grows; every element added is a default value |
+| `a.alloc_slice(n) -> T[:]` | `n` elements from the first free span that holds them, else from the end of the array, which grows; every returned element is reset to its default |
 | `a.free_slice(s)` | records the run `s` for reuse |
 | `a.realloc_slice(s, n) -> T[:]` | `s` resized to `n` elements, in place where it can be, else freed and copied to where `alloc_slice(n)` puts it |
 
@@ -2352,8 +2469,9 @@ This suits the child lists of an n-ary tree: each node's entries are one
 contiguous run that can be walked as a plain slice.
 
 ```goose
+import slice_pool;
 fn main() {
-    reusable[] var pool: i64[>..] = [];
+    var pool = slice_pool<i64> {};
     let a = pool.alloc_slice(3);
     a[0] = 1; a[1] = 2; a[2] = 3;
     let b = pool.alloc_slice(2);
@@ -2361,7 +2479,7 @@ fn main() {
     pool.free_slice(a);
     let c = pool.alloc_slice(2);            // from the freed run, reset to defaults
     let d = pool.realloc_slice(b, 4);       // b ends the array: grows in place
-    print(c, " ", d, " ", pool.len, " ", pool);
+    print(c, " ", d, " ", pool.items.len, " ", pool.items);
 }
 ```
 
@@ -2369,12 +2487,35 @@ fn main() {
 [0, 0] [7, 8, 0, 0] 7 [0, 0, 3, 7, 8, 0, 0]
 ```
 
-The slice handed to `free_slice` or `realloc_slice` must be one of the
-pool's runs. Where the checker cannot prove that, the call checks it at
-run time and aborts if the slice is not one. A grown slice may be moved,
-so `realloc_slice` is unavailable for an element type holding
-self-relative links. A slice pool has no single-slot operations, and a
-plain `reusable` pool has none of these slice operations. Spec §5.4.
+Free and resize accept subranges of allocated runs. A nonempty slice must be
+aligned and wholly within `items`; where the checker cannot prove that, the
+call checks at runtime. Empty/default slices can be freed harmlessly, and growing
+an empty slice allocates a new run. Double frees remain logical errors; there
+is no occupancy check. A grown slice may be moved, so
+`realloc_slice` is unavailable for an element type holding self-relative
+links. Allocation and free do support defaultable self-relative elements.
+Pass an owner as `slice_pool<T>&`, and use its `items` array for indexing and
+slicing. The [library contract](stdlib.md#slice_pool) covers defaults,
+subranges, empty slices, high-water storage and relocation.
+
+### Deprecated builtin pools
+
+The legacy declarations `reusable var pool: T[>..] = [];` and
+`reusable[] var pool: T[>..] = [];` still provide the corresponding operations
+directly on the array, with hidden metadata. Their parameter type is `T[>..]&`;
+pool provenance carries the metadata through calls. Existing `push` and
+`append` operations add at the end without using freed spans. Their unchanged
+semantics are specified in [spec §5.4](goose_spec.md#54-reusable-arrays-safe-allocation-escape-hatch).
+
+To migrate, import the appropriate module, declare `slot_pool<T> {}` or
+`slice_pool<T> {}`, update owner parameters to the corresponding root reference,
+and use `pool.items` for array operations. Global index/pool-relative types
+can name `pool.items`. For a value that needs construction in its receiving
+slot, replace `alloc_ref(value)` with `alloc_with() { value }`; obtain its index
+with `pool.items.index_of` if needed. Ordinary value allocations and slice
+operations keep their method names. Owner transfer to workers remains a
+migration gap; keep the deprecated builtins for code requiring worker snapshots.
+Worker-local library pools already work.
 
 ---
 
@@ -2390,8 +2531,9 @@ index enters the program.
 An **index type** `uN in a` (`u8`, `u16`, `u32` or `u64`) is an unsigned
 integer that is below `a.len` wherever it can be observed. A **bound
 type** `uN upto a` is an unsigned integer that is at most `a.len`, used
-for the end of a range. `a` names a global `var` or `reusable var` of a
-grow-only type with fixed-size elements, and the array is part of the
+for the end of a range. `a` names a global `var` array (including deprecated `reusable var`)
+or a mutable array field of a global `var` root, such as `u32 in graph.nodes`.
+It must be grow-only with fixed-size elements, and the array is part of the
 type's identity: `u32 in nodes` is neither `u32` nor `u32 in edges`. The
 value is the plain integer.
 
@@ -2882,7 +3024,9 @@ fn blur_row(above: u8[:], here: u8[:], below: u8[:], out: u8[:]) {
 aborts that remain in every build are division by zero, a limited
 array's capacity overflow, shrinking below empty, a relative-reference
 offset that does not fit its width, a failed `assert`, and data-stack
-exhaustion. All of them are clean aborts with a message. Spec §9.3, §10.5.
+exhaustion. All of them are clean aborts with a message and the line of
+the check that failed; a check inside a standard library function names the
+line of the program's code that called the library. Spec §9.3, §10.5.
 
 ---
 
@@ -3802,7 +3946,8 @@ What may cross is exactly what has a plain C shape:
   fixed-mode enums), by value as its packed C type;
 * `T&` to such a `T`, as a pointer;
 * `T[:]` of such a `T`, as a `{ data, len }` struct;
-* `u8[>..]&`, a builder C appends to through `gs_bld_append`.
+* `T[>..]&` of such a `T`, a builder C may write and append whole elements
+  to (`gs_bld_append` appends bytes to a `u8[>..]&`).
 
 Results are one scalar or flat fixed-size value, or nothing. Everything
 else (`varint`s, references inside structs, variable or resizable values
@@ -3956,9 +4101,10 @@ standard library, written in Goose under `stdlib/` and documented in
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |
 
 The array members, `.len`, `.cap`, `.push`, `.append`, `.pop`, `.pop_n`,
-`.resize`, `.clear`, `.index_of`, are in [section 5](#members), and the
-pool operations `.alloc_index`, `.alloc_ref`, `.free`, `.alloc_slice`,
-`.realloc_slice`, `.free_slice` in [section 14](#14-reusable-pools).
+`.resize`, `.clear`, `.index_of`, `.range_index`, `.check_length`, `.move_from` are in
+[section 5](#members). The stdlib pool APIs and deprecated builtin operations
+`.alloc_index`, `.alloc_ref`, `.free`, `.alloc_slice`, `.realloc_slice`,
+`.free_slice` are in [section 14](#14-reusable-pools).
 Spec §12.
 
 ---
@@ -4029,8 +4175,9 @@ Spec §6.1, Appendix D.
   initializer, used as a literal is. §2.
 * **Narrowing**: the region after an `if`, `while`, `guard` or `assert`
   in which an optional is a plain reference. §10.
-* **Pool**: a grow-only array used as storage for linked data; `reusable`
-  adds a freelist. §11, §14.
+* **Pool**: storage for linked or independently reused data. The stdlib's
+  `slot_pool` and `slice_pool` bundle a grow-only array with reuse metadata;
+  the language's `reusable` modifiers are deprecated. §11, §14.
 * **Relative reference**: a link stored as a narrow offset, self-relative
   or measured from a named pool's base. §11.
 * **Root**: the variable that bounds the lifetime of a reference's target;

@@ -53,7 +53,9 @@ inline string GenericsText(const vector<GenericParam> &gs) {
 }
 
 // A type's declaration as its header line.
-inline string DeclDetail(const SStruct *st) { return cat("struct ", st->qname, GenericsText(st->generics)); }
+inline string DeclDetail(const SStruct *st) {
+    return cat(st->isroot ? "root " : "", "struct ", st->qname, GenericsText(st->generics));
+}
 inline string DeclDetail(const SEnum *en) { return cat("enum ", en->qname, GenericsText(en->generics)); }
 inline string DeclDetail(const SAlias *al) { return cat("type ", al->qname, " = ", TypeText(al->type)); }
 
@@ -1842,15 +1844,35 @@ inline void ScopeCompletions(const Located &loc, size_t offset, Completions &out
     for (int t = T_IMPORT; t <= T_TF64; t++) out.Add(TName((TType)t), CK_KEYWORD, 3);
 }
 
+// Whether a parameter type takes a value of a type, as a call binding the
+// function's type parameters would: a type parameter takes any type, a
+// generic struct or enum its instantiations whose arguments its own take,
+// and any other type itself; a const one only where it is const, or under a
+// const reference.
+inline bool TypeTakes(const TypeExpr *pt, const TypeExpr *ot, bool constref = false) {
+    if (pt->kind == TY_GENERIC) return true;
+    if (ot->cq && !pt->cq && !constref) return false;
+    auto args = [](const vector<TypeExpr *> &ps, const vector<TypeExpr *> &os) {
+        if (ps.size() != os.size()) return false;
+        for (size_t i = 0; i < ps.size(); i++)
+            if (!ps[i] || !os[i] || !TypeTakes(ps[i], os[i])) return false;
+        return true;
+    };
+    if (pt->kind == TY_STRUCT && ot->kind == TY_STRUCT && !pt->struc->args.empty())
+        return pt->struc->st == ot->struc->st && args(pt->struc->args, ot->struc->args);
+    if (pt->kind == TY_ENUM && ot->kind == TY_ENUM && !pt->enu->args.empty())
+        return pt->enu->en == ot->enu->en && args(pt->enu->args, ot->enu->args);
+    auto unconst = [](string s) { return s.rfind("const ", 0) == 0 ? s.substr(6) : s; };
+    return unconst(TypeText(pt)) == unconst(TypeText(ot));
+}
+
 // Whether a function's first parameter takes a value of a type, as a UFCS
-// call `value.f()` passes it: untyped or generic, the type itself, or a
-// reference to it.
-inline bool FirstParamTakes(const TypeExpr *pt, const string &otext) {
-    if (!pt || pt->kind == TY_GENERIC) return true;
-    if (pt->kind == TY_REF && pt->ref->sub && pt->ref->sub->kind == TY_GENERIC) return true;
-    auto ptext = TypeText(pt);
-    return ptext == otext || ptext == cat("const ", otext) || ptext.rfind(otext + "&", 0) == 0 ||
-           ptext.rfind(cat("const ", otext, "&"), 0) == 0;
+// call `value.f()` passes it: untyped, or taking the value or a reference
+// to it.
+inline bool FirstParamTakes(const TypeExpr *pt, const TypeExpr *ot) {
+    if (!pt) return true;
+    if (pt->kind == TY_REF && pt->ref->sub) return TypeTakes(pt->ref->sub, ot, pt->cq);
+    return TypeTakes(pt, ot);
 }
 
 // The members of the value before a `.`: the fields of its type, the
@@ -1868,11 +1890,14 @@ inline void MemberCompletions(const Located &loc, size_t dotpos, Completions &ou
         if (s.start >= objend) break;
         if (s.end == objend && (!object || s.start >= object->start)) object = &s;
     }
-    auto fields = [&](const vector<Field> &fs) {
-        for (auto &fld : fs)
-            if (!fld.ispad)
-                out.Add(fld.name, CK_FIELD, 0,
-                        cat(fld.isconst ? "let " : "", fld.name, ": ", TypeText(fld.type)), fld.doc);
+    // A field's type as the instantiation has it, where there is one.
+    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> *ftypes = nullptr) {
+        for (size_t i = 0; i < fs.size(); i++) {
+            auto &fld = fs[i];
+            if (fld.ispad) continue;
+            auto ft = ftypes && i < ftypes->size() && (*ftypes)[i] ? (*ftypes)[i] : fld.type;
+            out.Add(fld.name, CK_FIELD, 0, cat(fld.isconst ? "let " : "", fld.name, ": ", TypeText(ft)), fld.doc);
+        }
     };
     auto builtins = [&](int recv) {
         for (auto &b : builtindefs)
@@ -1895,11 +1920,27 @@ inline void MemberCompletions(const Located &loc, size_t dotpos, Completions &ou
         return;
     }
     while (type->kind == TY_REF && type->ref->sub) type = type->ref->sub;
-    if (type->kind == TY_STRUCT) fields(type->struc->st->fields);
-    else if (type->kind == TY_VARIANT && type->var->variant) fields(type->var->variant->fields);
-    auto otext = TypeText(type);
+    if (type->kind == TY_STRUCT) {
+        auto inst = type->struc->inst;
+        fields(type->struc->st->fields, inst && !inst->failed ? &inst->ftypes : nullptr);
+    } else if (type->kind == TY_VARIANT && type->var->variant) {
+        auto adt = AdtOf(type);
+        auto inst = adt ? adt->enu->inst : nullptr;
+        const vector<TypeExpr *> *ftypes = nullptr;
+        if (inst && !inst->failed) {
+            auto vi = (size_t)(type->var->variant - inst->en->variants.data());
+            if (vi < inst->vftypes.size()) ftypes = &inst->vftypes[vi];
+        }
+        fields(type->var->variant->fields, ftypes);
+    }
+    // The functions a UFCS call can name from here (Ast::LookupMethods):
+    // those of the type's namespace, the call's and the global one.
+    auto enclosing = FunctionsAround(an, f, dotpos);
+    auto usens = enclosing.empty() ? NamespaceOfFile(ast, f.fileidx) : enclosing[0]->ns;
+    auto tns = NominalNs(type);
     for (auto sf : ast.functions)
-        if (!sf->isnested && !sf->params.empty() && FirstParamTakes(sf->params[0].type, otext))
+        if (!sf->isnested && !sf->params.empty() && (sf->ns.empty() || sf->ns == usens || sf->ns == tns) &&
+            FirstParamTakes(sf->params[0].type, type))
             out.Add(sf->name, CK_METHOD, 1, FnHeader(sf), sf->doc);
     builtins(RecvKindOf(type));
 }

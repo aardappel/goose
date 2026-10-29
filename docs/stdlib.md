@@ -6,6 +6,8 @@
 - [std](#std)
 - [exception](#exception)
 - [dictionary](#dictionary)
+- [slot_pool](#slot_pool)
+- [slice_pool](#slice_pool)
 - [vec](#vec)
 - [math](#math)
 - [os](#os)
@@ -22,9 +24,10 @@
 
 </details>
 
-The standard library has sixteen modules under `stdlib/`: `std`,
-`dictionary`, `vec`, `math`, `os`, `ffi`, `binary`, `base64`, `csv`, `json`,
-`regex`, `audio`, `gfx`, `physics`, `ui`, and `exception`. Import each module by name,
+The standard library has eighteen modules under `stdlib/`: `std`,
+`dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, `os`, `ffi`, `binary`,
+`base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, `ui`, and `exception`.
+Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the following parts, all reached
@@ -102,7 +105,7 @@ The library uses these conventions:
   `T` the reference type. `stable_sort` sorts an array of `in pool` links,
   but its temporary array cannot hold copies of self-relative links (spec
   §3.9).
-* The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
+* The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, and `os` names are global;
   `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
   `physics`, `ui` and `exception` use their own namespaces, and so do the
   helpers `std` and `json` read and write float text with, in `float_text`.
@@ -110,6 +113,8 @@ The library uses these conventions:
   so a call to that function is an error. A global variable of such a name does not
   shadow it, because the name in a call resolves past global variables to
   the functions (spec §11.1).
+  Slice allocator implementation types and helpers use `slice_pool_detail`;
+  applications should use the public pool operations.
 
 ## std
 
@@ -288,6 +293,10 @@ fn stable_sort<T>(xs: T[:])                     // natural merge sort; one tempo
 fn to_lower(s: u8[:])                           // ASCII, in place
 fn to_upper(s: u8[:])
 ```
+
+`copy_into` preserves its element-by-element, first-to-last semantics. For a
+checked copy that preserves the source values when the slices overlap, use the
+language operation `dst.move_from(src)` (fixed-size, copyable elements).
 
 `sort` is a pattern-defeating quicksort based on pdqsort and Rust's
 ipnsort. It is unstable (the order it leaves equal elements in is
@@ -553,6 +562,233 @@ let c = owner.get(7);
 owner.insert(7, cells[4]);       // cells[3] is unchanged, and c still refers to it
 if c { c.v += 1; }
 ```
+
+## Migrating from reusable
+
+`reusable` and `reusable[]` are deprecated; their builtins are still available.
+Import `slot_pool` for individual slots or `slice_pool` for contiguous runs.
+
+| Existing spelling | Library spelling |
+|---|---|
+| `reusable var p: T[>..] = [];` | `var p = slot_pool<T> {};` |
+| `reusable[] var p: T[>..] = [];` | `var p = slice_pool<T> {};` |
+| pool parameter `p: T[>..]&` | `p: slot_pool<T>&` or `p: slice_pool<T>&` |
+| `p[i]`, `p.len`, `for x in p` | `p.items[i]`, `p.items.len`, `for x in p.items` |
+| `u32 in p`, `Node&<u32 in p>` | `u32 in p.items`, `Node&<u32 in p.items>` |
+| `p.alloc_ref(value)` | same for copyable values; `p.alloc_with() { fresh_value }` for in-place construction |
+| `p.alloc_index(value)` | same for copyable values; `p.alloc_index_with() { fresh_value }` for in-place construction |
+| `p.free(i)` | same; or `p.free_ref(node)` when the element is not itself a reference |
+| `p.alloc_slice(n)`, `p.free_slice(s)`, `p.realloc_slice(s, n)` | same method spellings on `slice_pool` |
+| allocate a slice, then copy into it | `p.alloc_copy(source)` |
+
+Both libraries keep stable, initialized backing storage. `items.len` is the
+high-water count, including free entries, and iteration visits those entries.
+Freed references/views remain valid and can observe replacement values; logical
+use-after-free and double-free detection require application bookkeeping.
+`recycle_all` makes all storage reusable without shrinking it or clearing values.
+Do not shrink/replace `items` or modify allocator bookkeeping directly.
+
+Wrong-pool slot frees through `free_ref` retain `index_of`'s compile-time check.
+Wrong-pool nonempty slice frees currently fail a runtime containment check
+(`slice_pool.free_slice: slice is not from this pool`); there is no
+compile-time warning yet. Empty slices from any origin are harmless. Like
+every check inside the standard library, the pools' report the line of the
+program that called them.
+Eligible `items` can be serialized independently, but this omits allocator state.
+Whole root owners cannot be serialized or copied to workers automatically.
+For flat elements, [the worker snapshot sample](../samples/32_pool_worker_snapshots.goose)
+copies `items` and allocator metadata explicitly into a worker-local owner.
+Its slice metadata types are implementation details, so keep that recipe in step
+with the library rather than treating it as a stable serialization format.
+
+Pool references can be stored in ordinary structs, captured, returned while their
+owner lives, and made optional. This is more flexible than builtin pool references.
+The owning root itself remains local/global-only; nested owning roots are deferred.
+
+## slot_pool
+
+`import slot_pool;` provides stable, reusable slots through ordinary root-struct
+fields and functions. Use it instead of the deprecated `reusable` language feature.
+
+```goose
+root struct slot_pool<T> {
+    items: T[>..] = [],
+    free_slots: i64[>..<] = []
+}
+
+fn alloc_index<T>(pool: slot_pool<T>&, value: T) -> i64
+fn alloc_ref<T>(pool: slot_pool<T>&, value: T) -> T&
+fn alloc_with<T, F>(pool: slot_pool<T>&) -> T&
+fn alloc_index_with<T, F>(pool: slot_pool<T>&) -> i64
+fn free<T>(pool: slot_pool<T>&, i: i64)
+fn free_ref<T>(pool: slot_pool<T>&, value: T&)
+fn recycle_all<T>(pool: slot_pool<T>&)
+```
+
+Declare a local or global owner and use `items` for ordinary indexing, slicing,
+iteration and `index_of`:
+
+```goose
+import slot_pool;
+
+fn main() {
+    var pool = slot_pool<i64> {};
+    let first .= pool.alloc_ref(10);
+    let index = pool.items.index_of(first);
+    pool.free(index);
+    assert(pool.alloc_index(20) == index);
+    print(first);                         // 20: the same slot, now reused
+}
+```
+
+Elements must be fixed-size. No default value is needed: every allocation
+supplies a value. `alloc_index` and `alloc_ref` take normally copyable values.
+An allocation takes the most recently
+freed index, or appends when no slot is free. `alloc_index` returns its index;
+`alloc_ref` returns a reference to its value. For reference elements, `T&`
+collapses to `T` as usual; use `alloc_index` when the slot's identity is needed.
+Whole-element assignment replaces reference-valued elements without writing
+through them.
+
+`alloc_with` and `alloc_index_with` take a zero-argument function or trailing block
+producing `T`; the latter returns the chosen index directly.
+It selects the slot first, calls the builder once, and constructs the result
+directly there. This supports self-relative links and pool-relative `self`:
+
+```goose
+import slot_pool;
+struct Node { value: i64, me: Node&<u32>, next: Node&<u32>? }
+fn main() {
+    var nodes = slot_pool<Node> {};
+    let first .= nodes.alloc_with() { Node { value: 1, me: self } };
+    let second .= nodes.alloc_with() { Node { value: 2, me: self, next: first } };
+    let index = nodes.items.index_of(second);
+    nodes.free(index);
+    nodes.alloc_with() { Node { value: 3, me: self, next: first } };
+    assert(second.value == 3 && second.me .== second);
+}
+```
+
+Fresh results may come from other functions. Existing self-relative values
+still cannot be copied, and links must point within the receiving array.
+A trailing block infers its result type; for a reference-valued `T`, pass a
+named function explicitly returning that reference type.
+
+Unlike value arguments, the builder runs after a free index has been removed.
+A slot freed by the builder stays available for a later allocation. A fresh
+slot joins `items.len` only when construction completes; a nonlocal return
+before completion does not publish it. Reuse is not transactional: a nonlocal
+exit does not restore the popped index or undo initializer side effects.
+The usual construction rules reject conflicting growth of `items` during
+the builder. Bounds checks on a recycled index run before the builder.
+
+`free` checks `0 <= i < items.len` in every build, then records the index. It
+leaves the element initialized and does not shrink the array. Existing references
+remain valid and can observe a later replacement. Double frees and use of a
+logically freed slot are application errors, as with `reusable`; the pool does
+not track occupancy or generations. `items.len` is the number of slots ever
+appended, including free ones, and iteration visits those slots too.
+
+Treat `free_slots` as bookkeeping. Do not shrink or replace `items`, or edit the
+freelist directly: doing so can invalidate the pool's logical state. Ordinary
+array bounds and lifetime checks still apply. `recycle_all` makes every slot
+available again in index order, retaining initialized values and backing storage.
+It does not shrink `items`, destroy values, or invalidate existing references.
+`free_ref` combines `index_of` with `free`, retaining its compile-time provenance
+check; use indices for reference-valued elements, whose references name the
+pointee rather than the pool slot. An eligible `items` component
+can be serialized separately, but its image omits the freelist.
+
+For a global `var pool`, compact links and index types can name its array:
+`Node&<u32 in pool.items>`, `u32 in pool.items`, and `u32 upto pool.items`.
+Pool-relative values with ordinary links are copyable and work with `alloc_ref`.
+Self-relative values and `self` initializers use `alloc_with` to construct at
+the allocated slot.
+A root owner cannot be copied to a worker; worker-local pools are allowed.
+See [the migration plan](design/root_structs.md#separate-follow-up-reusable-pools-in-the-stdlib).
+
+## slice_pool
+
+`import slice_pool;` provides reusable contiguous runs of fixed-size elements.
+`alloc_slice` and `realloc_slice` require defaults; `alloc_copy` only requires
+copyable values. An owner is declared as `var pool = slice_pool<T> {};`.
+Use it instead of the deprecated `reusable[]` language feature. Both builtins
+remain available for existing code; their removal is a separate future step.
+
+```goose
+fn alloc_slice<T>(pool: slice_pool<T>&, n: i64) -> T[:]
+fn alloc_copy<T>(pool: slice_pool<T>&, src: T[:]) -> T[:]
+fn free_slice<T>(pool: slice_pool<T>&, s: T[:])
+fn realloc_slice<T>(pool: slice_pool<T>&, s: T[:], n: i64) -> T[:]
+fn recycle_all<T>(pool: slice_pool<T>&)
+```
+
+```goose
+import slice_pool;
+fn main() {
+    var pool = slice_pool<i64> {};
+    var entries = pool.alloc_slice(3);
+    entries[0] = 7;
+    entries = pool.realloc_slice(entries, 5);
+    print(entries);                         // [7, 0, 0, 0, 0]
+    pool.free_slice(entries);
+    let again = pool.alloc_slice(2);
+    print(again, " ", pool.items.len);       // [0, 0] 5
+}
+```
+
+Allocation selects the first free span in index order that fits. If none fits,
+it grows the backing array, using any free span at the tail first. Free spans
+coalesce with their neighbors. An augmented B+ tree of 512-byte nodes handles
+first-fit search and neighbor lookup with tree walks and bounded node scans;
+emptied nodes are reused. The tree code is the runtime's, `reusable[]`'s, in a
+copy that checks what it reads from `nodes` and `tree`, so the policy matches.
+
+`alloc_slice` defaults every element it hands out, including reused elements.
+`alloc_copy` initializes directly from a source slice, without default-filling
+first. It supports overlapping views of `items` and does not free the source.
+For example, `strings.alloc_copy(text)` allocates and copies a string.
+`realloc_slice` preserves the first `min(s.len, n)` elements, returns a shortened
+tail to the tree, and defaults each added element once. Growth stays in place
+at the array's end or when the following free span suffices (including tail
+extension). Otherwise it frees the old run and selects the first fit, copying
+with overlap-safe ordering. Default expressions must not mutate or reenter the
+same pool. Every published backing-array element is initialized.
+
+`free_slice` and `realloc_slice` accept subranges of a pool run. They check that
+a nonempty slice is aligned and wholly within `items`, even when its origin is
+only known at runtime. Empty/default slices can be freed harmlessly; growing an
+empty slice allocates a new run. Negative or oversized counts abort in every
+build before the tree changes. `items.range_index(s)` recovers a nonempty run's
+index; it returns zero for every empty slice.
+
+Freeing and shrinking runs do not shrink `items` or invalidate old views. A
+retained view observes later replacements at its original address; relocation
+does not retarget it. Double frees, overlapping live allocations caused by
+invalid frees, and accessing a logically freed run are application errors.
+`items.len` is the high-water length, not the count of live elements. Treat
+`nodes` and `tree` as internal bookkeeping, and do not shrink or replace `items`.
+Ordinary bounds and lifetime checks still apply to these public fields. The
+runtime checks every node number and entry count it reads from them: one a
+program wrote wrong aborts with `slice pool span tree is corrupt`. A span
+edited to start past `items` aborts with `span tree is corrupt` from the
+operation that drew it; other edited spans can hand elements out twice, as a
+double free can.
+`recycle_all` makes the entire high-water range one free run and recycles all
+metadata nodes. It retains initialized values, backing storage and existing
+views; the next allocation starts at index zero.
+
+The owner follows the same placement, serialization and worker restrictions as
+`slot_pool`: serialize eligible `items` separately, and construct worker-local
+owners rather than transferring root owners. `alloc_slice` constructs defaults
+in place, so allocation and free support defaultable self-relative elements;
+`realloc_slice` requires normally copyable elements, just as the builtin does.
+Global index/pool-relative types can name `pool.items`, as for `slot_pool`.
+Optional references to separately owned storage and declared field defaults are
+supported when `T` has a default.
+
+See the [slice-pool benchmark report](../bench/slice_pool.md) for comparisons
+against `reusable[]`, including preserved function-call boundaries.
 
 ## vec
 

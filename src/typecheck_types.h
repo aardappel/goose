@@ -72,6 +72,11 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     LimitNestedInsts(t);
     auto inst = ast.NewStructInst();
     inst->st = st;
+    if (st->isroot) {
+        inst->sclass = SC_ROOT;
+        // There is no single byte image, even if every component is flat.
+        inst->flat = false;
+    }
     inst->args = t->struc->args;
     inst->run = { &st->fields, &inst->ftypes };
     st->insts.push_back(inst);
@@ -82,12 +87,15 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         for (auto &f : st->fields)
             inst->ftypes.push_back(f.ispad ? nullptr : Subst(f.type));
     });
-    // Placement (§3.4): a resizable field only as the tail, making the
-    // struct itself resizable; any variable part makes it variable.
+    // Ordinary structs have one packed region and at most one resizable
+    // tail. Root fields have independent storage, so neither their order
+    // nor their size classes change the owner's SC_ROOT classification.
     auto lastreal = LastRealField(st->fields);
     typechain.push_back(t);
     BeginTypeBuild();
     for (auto i = 0; i < (int)st->fields.size(); i++) {
+        if (st->isroot && st->fields[i].ispad)
+            Error(st->line, "root structs have no packed byte layout; padding belongs inside a component");
         if (st->fields[i].ispad) continue;
         auto ft = inst->ftypes[i];
         ValidateType(ft, st->line, VT_FIELD);
@@ -95,13 +103,14 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
             Error(st->line, cat("field ", st->fields[i].name, " of struct ", st->name,
                                 " cannot be ", zs, ": ", TypeStr(ft), " (§3.4)"));
         auto c = ClassOf(ft);
-        if (c == SC_RESIZABLE) {
+        if (c == SC_RESIZABLE && !st->isroot) {
             // A pad after the tail too: its bytes would lie where the tail
             // grows.
             if (i + 1 < (int)st->fields.size())
                 Error(st->line, cat("resizable field ", st->fields[i].name, " of struct ",
                                     st->name, " must be the final field",
-                                    i == lastreal ? ", with no pad after it" : ""));
+                                    i == lastreal ? ", with no pad after it" : "",
+                                    "; use root struct for independently stored fields"));
             inst->sclass = SC_RESIZABLE;
         } else if (c == SC_VARIABLE && inst->sclass == SC_FIXED) {
             inst->sclass = SC_VARIABLE;
@@ -415,6 +424,10 @@ inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
 // so none of the three survives leaving the program. Self-relative
 // references do, which is the whole point.
 inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
+    if (ClassOf(t) == SC_ROOT) {
+        why = "a root owner has no contiguous byte image; serialize its fields separately";
+        return false;
+    }
     switch (t->kind) {
         case TY_SLICE:
             why = cat(TypeStr(t), " is a slice, which is an address");
@@ -606,7 +619,19 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
             Error(l, "expression has no value here");
         case TY_FN:
             Error(l, "function value types are compile-time only and cannot be stored");
-        case TY_STRUCT: GetStructInst(t); return;
+        case TY_STRUCT:
+            // Check placement before instantiation: nested root ownership is
+            // unsupported even if the nested type is empty, fixed-only,
+            // generic, or the enclosing declaration is itself a root.
+            if (t->struc->st->isroot && pos != VT_LOCAL && pos != VT_GLOBAL &&
+                pos != VT_POINTEE)
+                Error(l, cat("root struct ", TypeStr(t),
+                             " can only be owned by a local or global variable; ",
+                             pos == VT_PARAM ? "pass it by reference instead"
+                             : pos == VT_RET ? "return a reference instead"
+                             : "nested root owners are not supported"));
+            GetStructInst(t);
+            return;
         case TY_ENUM: {
             auto inst = GetEnumInst(t);
             if (!inst->validated && !t->enu->varmode)
@@ -684,6 +709,8 @@ inline void TypeCheck::ValidatePointee(TypeExpr *t, Line l) {
     // ones substitution makes later.
     if (t->ref->pool && t->ref->pool->type && !HasGenerics(t->ref->sub)) ValidatePool(t);
     ValidateType(t->ref->sub, l, VT_POINTEE);
+    if (t->ref->lenstorage >= 0 && ClassOf(t->ref->sub) == SC_ROOT)
+        Error(l, "root struct references must be plain references, not relative references");
 }
 
 // ------------------------------------------------------------------
@@ -995,18 +1022,54 @@ inline bool TypeCheck::NamedResultKeepsLinks(TypeExpr *t) {
 
 // Names resolve once, before any type is instantiated, so the pool is
 // part of the type's identity from the first comparison on.
+inline VarDef *TypeCheck::NamedArrayComponent(VarDef *global, string_view name, Line line) {
+    auto dot = name.find('.');
+    if (dot == string_view::npos) return global;
+    auto field = name.substr(dot + 1);
+    if (field.find('.') != string_view::npos)
+        Error(line, cat("in ", name, ": a named array component must be a direct field of a "
+                        "global root owner"));
+    auto &c = namedcomponents[{ global, field }];
+    if (!c) {
+        c = ast.NewVarDef();
+        c->name = ast.Intern(cat(global->name, ".", field));
+        c->line = line;
+        c->isglobal = true;
+        c->isvar = global->isvar;
+        c->componentowner = global;
+    }
+    return c;
+}
+
+inline void TypeCheck::ValidateNamedComponents() {
+    for (auto &[key, c] : namedcomponents) {
+        auto [owner, field] = key;
+        auto t = owner->type;
+        if (!t || t->kind != TY_STRUCT || !t->struc->st->isroot)
+            Error(c->line, cat("in ", c->name, ": a named array component must be a direct "
+                               "field of a global root owner"));
+        if (c->componentfield < 0)
+            Error(c->line, cat("in ", c->name, ": root struct ", t->struc->st->name,
+                               " has no field ", field));
+        if (t->cq || t->struc->st->fields[c->componentfield].isconst || c->type->cq)
+            Error(c->line, cat("in ", c->name, ": a named array component must be mutable"));
+    }
+}
+
 inline void TypeCheck::ResolvePools() {
     for (auto t : ast.alltypes) {
         if (t->kind != TY_REF || t->ref->poolname.empty()) continue;
-        auto g = ast.LookupGlobal(t->ref->poolname, t->ref->poolns);
+        auto name = t->ref->poolname;
+        auto g = ast.LookupGlobal(name.substr(0, name.find('.')), t->ref->poolns);
         if (!g || g->defs.empty())
             Error(t->line, cat("in ", t->ref->poolname,
                                ": a relative reference's pool must be a global variable; a "
                                "local or parameter pool has no name at this declaration, so "
                                "use the self-relative form ", TypeStr(t->ref->sub), "&<",
                                IntStorageName(t->ref->lenstorage), "> instead (§3.9)"));
-        t->ref->pool = g->defs[0];
+        t->ref->pool = NamedArrayComponent(g->defs[0], name, t->line);
         poolglobals.insert(t->ref->pool);
+        if (t->ref->pool->componentowner) poolowners.insert(t->ref->pool->componentowner);
     }
 }
 
@@ -1016,12 +1079,13 @@ inline void TypeCheck::ResolvePools() {
 inline void TypeCheck::ResolveIndexTypes() {
     for (auto t : ast.alltypes) {
         if (t->kind != TY_INT || !t->ix || t->ix->arr) continue;
-        auto g = ast.LookupGlobal(t->ix->name, t->ix->ns);
+        auto name = t->ix->name;
+        auto g = ast.LookupGlobal(name.substr(0, name.find('.')), t->ix->ns);
         if (!g || g->defs.empty())
             Error(t->line, cat("in ", t->ix->name, ": the array of an index type must be a "
                                "global variable; a local or parameter has no name where a "
                                "type is declared (§3.11)"));
-        t->ix->arr = g->defs[0];
+        t->ix->arr = NamedArrayComponent(g->defs[0], name, t->line);
         indexarrays.insert(t->ix->arr);
     }
 }
@@ -1041,13 +1105,21 @@ inline void TypeCheck::ValidateIndexType(TypeExpr *t) {
                            "which cannot be indexed, so nothing can be an index of it (§3.11)"));
 }
 
-// The pool a reference rooted at `r` points into, or null. A global names
-// itself; a synthetic parameter class names what every call site that
-// reaches this specialization passed, which is part of its key.
+// The named pool or owner a reference rooted at `r` points into, or null.
+// A parameter class retains the identity shared by its call sites. Projecting
+// an owner class selects that same global owner's component.
 inline VarDef *TypeCheck::PoolOf(VarDef *r) {
     if (!r) return nullptr;
-    if (r->isglobal) return poolglobals.count(r) ? r : nullptr;
-    return r->classpool;
+    if (r->isglobal) return poolglobals.count(r) || poolowners.count(r) ? r : nullptr;
+    if (r->classpool) return r->classpool;
+    if (r->componentowner) {
+        auto owner = PoolOf(r->componentowner);
+        if (owner && owner->type && TypeEq(owner->type, r->componentbase)) {
+            auto c = owner->components[r->componentfield];
+            return poolglobals.count(c) ? c : nullptr;
+        }
+    }
+    return nullptr;
 }
 
 // The pool must be storage a `T` can live in, and one whose base never
@@ -1118,6 +1190,9 @@ inline bool TypeCheck::CanContainWalk(TypeExpr *t, TypeExpr *of) {
     auto loaded = LoadedTypeEq(t, of);
     assert(loaded == TypeEq(LoadType(t), of));
     if (loaded) return true;
+    // A root's component variables enumerate their own regions; the owner
+    // itself names only the control record, never all their storage at once.
+    if (t->kind == TY_STRUCT && t->struc->st->isroot) return false;
     if (t->kind == TY_ARRAY) return CanContain(t->arr->sub, of);
     return AnyField(t, [&](TypeExpr *ft) { return CanContain(ft, of); });
 }
@@ -1290,6 +1365,7 @@ inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bo
     for (auto g : ast.globals)
         for (auto gd : g->defs) {
             consider(gd, 0);
+            for (auto c : gd->components) if (c) consider(c, 0);
             unchecked = unchecked || (!gd->type && !(g->type && IsRefOrSlice(g->type)));
         }
     // A writable reference or slice is never given static data but a null or an
@@ -1371,7 +1447,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         // A self-relative reference points within its own root array by
         // construction (§3.9), so it inherits the container's root outright.
         if (relative) {
-            out.Add({ croot, c.exact });
+            out.Add({ croot, c.exact, nullptr, false, false, c.projected });
             continue;
         }
         if (!of || !croot || IsTemp(croot)) {
@@ -1394,6 +1470,16 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
             if (c.exact && inplace && croot->type && !IsTemp(croot) && croot->ownerspec &&
                 OuterLocal(croot) && ContentsReadBack(croot, of, out))
                 continue;
+            // Following a stored owner reference leaves this component. Keep
+            // its source for stores, but bound the next owner by the enclosing
+            // class. Otherwise walking a cycle of owner references would grow
+            // an unbounded sequence of synthetic .next.next component paths.
+            if (ClassOf(of) == SC_ROOT && IsClassRoot(croot) && croot->componentowner) {
+                auto base = croot;
+                while (base->componentowner) base = base->componentowner;
+                out.Add({ base, false, from });
+                continue;
+            }
             out.Add({ croot, false, from, false, classread });
             continue;
         }
@@ -1449,7 +1535,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 // what was stored there for a reference or slice of this type: a view of
 // another type stored beside it.
 inline bool TypeCheck::ContentsReadBack(VarDef *h, TypeExpr *of, Roots &out) {
-    if (!h->type || IsRefOrSlice(h->type)) return false;
+    if (!h->type || (IsRefOrSlice(h->type) && !h->componentowner)) return false;
     Roots r;
     auto known = false;
     for (auto &a : h->contents.alts) {
@@ -1604,9 +1690,23 @@ inline void TypeCheck::AppendArrayElemsReached(TypeExpr *t, vector<TypeExpr *> &
 inline bool TypeCheck::RootedAtReceiver(const Val &rv, const Val &av, TypeExpr *elem) {
     if (!av.Exact() || !rv.Exact()) return false;
     auto recvroot = rv.Root(), aroot = av.Root();
-    if (aroot != recvroot && !(recvroot && recvroot->isglobal && PoolOf(aroot) == recvroot))
+    auto recvpool = PoolOf(recvroot);
+    if (aroot != recvroot && !(recvpool && PoolOf(aroot) == recvpool))
         return false;
     return OneArrayOf(recvroot, elem);
+}
+
+// Where a standard library body is checked for the program's call, the
+// argument that call passes for the parameter whose class root is `root`:
+// what a diagnostic relocated to the call (LibraryCallLocation) names
+// instead of the library's parameter. "" for any other root.
+inline string TypeCheck::LibraryParamArg(VarDef *root) {
+    auto &f = CurRealFrame();
+    if (!root || !f.spec || !f.call || !ast.StdlibFile(f.sf->line.fileidx)) return "";
+    auto an = f.call->ValueArgNodes();
+    for (size_t p = 0; p < f.spec->params.size() && p < an.size(); p++)
+        if (f.spec->params[p]->ref.Root() == root) return ExprStr(an[p]);
+    return "";
 }
 
 // The same, required of what member `op` is handed.
@@ -1620,8 +1720,13 @@ inline void TypeCheck::CheckRootedAtReceiver(Call *c, const char *op, const Val 
     // Rooted where the receiver is, but in storage that may hold the element
     // elsewhere too: a root says which variable, not which part of it.
     auto shared = av.Exact() && rv.Exact() && av.Root() && av.Root() == rv.Root();
+    // A library function's parameter has no root of its own: its body is
+    // checked once for every caller's argument.
+    auto arg = av.Exact() ? LibraryParamArg(av.Root()) : string();
     Error(c, cat(".", op, " needs ", what, " rooted at the array itself (", sec, "); ",
                  !why.empty() ? why
+                 : !arg.empty() ? cat("this one is ", arg, ", which ", CurRealFrame().sf->name,
+                                      " takes as a parameter, from any root")
                  : !av.Exact() ? cat("this one's root is not known exactly, only that it "
                                      "outlives ", root)
                  : shared ? cat("this one is rooted at ", av.Root()->type ? "" : "the caller's "

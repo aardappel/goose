@@ -388,6 +388,13 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         }
         auto inst = tc.GetStructInst(t);
         sinst = inst;
+        if (st->isroot) {
+            if (tc.rootinit != this || !tc.rootowner)
+                tc.Error(this, "a root owner must be constructed directly at its declaration");
+            tc.rootowner->type = t;
+            for (size_t i = 0; i < inst->ftypes.size(); i++)
+                if (inst->ftypes[i]) tc.RootComponent(tc.rootowner, t, (int)i);
+        }
         auto deep = tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
         Val v;
         v.type = t;

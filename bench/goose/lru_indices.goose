@@ -1,7 +1,7 @@
 // lru.goose written the way it had to be before spec 3.9's `in pool` form:
 // the map slots hold i32 pool indices, and the list links inside the nodes
 // are self-relative, each store subtracting the field's own address and each
-// index-to-reference conversion an `&pool[i]`. Same workload and same output
+// index-to-reference conversion an `&pool.items[i]`. Same workload and same output
 // as lru.goose, and the same 8-byte slots and 16-byte nodes; it is the row's
 // control for what the encoding costs.
 //
@@ -9,6 +9,7 @@
 // the two ends are in different arrays -- which is why the map keeps indices
 // here. lru_indices is a variant, not a manifest row.
 
+import slot_pool;
 import rng;
 
 let N = 8000000;                         // BENCH_N
@@ -18,7 +19,7 @@ let KEYS = CAP * 2;
 struct Node { key: i32, val: i32, prev: Node&<u32>?, next: Node&<u32>? }
 struct Slot { key: i32, idx: i32 }       // idx < 0: empty.
 
-reusable var pool: Node[>..] = [];
+var pool = slot_pool<Node> {};
 var slots: Slot[>..] = [];
 var mask: u64 = 0;
 
@@ -77,10 +78,10 @@ fn main() {
     mask = (nslots - 1) as u64;
     for s in nslots { slots.push(Slot { key: 0, idx: -1 }); }
     // Two sentinels: the list is never empty, so no link is null in practice.
-    let hi = pool.alloc_index(Node { key: -1, val: 0 });
-    let ti = pool.alloc_index(Node { key: -1, val: 0 });
-    pool[hi].next .= pool[ti];
-    pool[ti].prev .= pool[hi];
+    let hi = pool.alloc_index_with() { Node { key: -1, val: 0 } };
+    let ti = pool.alloc_index_with() { Node { key: -1, val: 0 } };
+    pool.items[hi].next .= pool.items[ti];
+    pool.items[ti].prev .= pool.items[hi];
     var count = 0;
     var hits = 0;
     var misses = 0;
@@ -95,7 +96,7 @@ fn main() {
         if xs_mod(r >> 40, 16) == 0 {
             // An invalidation: drop the entry if it is cached.
             if fi >= 0 {
-                unlink(pool[fi]);
+                unlink(pool.items[fi]);
                 map_remove(at);
                 pool.free(fi);
                 count--;
@@ -104,17 +105,17 @@ fn main() {
             continue;
         }
         if fi >= 0 {
-            let n = &pool[fi];
+            let n = &pool.items[fi];
             n.val += 1;
             unlink(n);
-            link_front(pool[hi], n);
+            link_front(pool.items[hi], n);
             hits++;
             continue;
         }
         misses++;
         var ins = at;
         if count == CAP {
-            let lru = pool[ti].prev;
+            let lru = pool.items[ti].prev;
             assert(lru);
             unlink(lru);
             let lat = find(lru.key);
@@ -126,15 +127,15 @@ fn main() {
             // so the empty slot found above can be stale.
             ins = find(key);
         }
-        let ni = pool.alloc_index(Node { key: key as i32, val: (key % 1000) as i32 });
+        let ni = pool.alloc_index_with() { Node { key: key as i32, val: (key % 1000) as i32 } };
         slots[ins] = Slot { key: key as i32, idx: ni as i32 };
-        link_front(pool[hi], pool[ni]);
+        link_front(pool.items[hi], pool.items[ni]);
         count++;
     }
     // Walk the list from most to least recent, so the order is checked too.
     var walk: u64 = 0;
     var vals = 0;
-    var cur = pool[hi].next;
+    var cur = pool.items[hi].next;
     loop {
         guard cur else { break; }
         guard cur.key >= 0 else { break; }

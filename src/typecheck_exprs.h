@@ -667,7 +667,13 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
     };
     if (t->kind == TY_STRUCT) {
         auto inst = GetStructInst(t);
-        if (step(inst->st->fields, inst->ftypes, FieldsInFrame(d))) return;
+        if (inst->st->isroot) {
+            auto parent = lv.AsRoots();
+            if (step(inst->st->fields, inst->ftypes, true)) {
+                lv.TakeAlts(ProjectRoots(parent, t, d->fieldidx));
+                return;
+            }
+        } else if (step(inst->st->fields, inst->ftypes, FieldsInFrame(d))) return;
         if (inst->st->broken) throw Abandoned {};
         Error(d, cat("struct ", inst->st->name, " has no field ", d->name));
     }
@@ -825,7 +831,9 @@ inline bool TypeCheck::FieldsInFrame(Dot *d) {
     if (!ot) return false;
     auto pointee = ot->kind == TY_REF;
     if (pointee) ot = ot->ref->sub;
-    if (ot->kind != TY_STRUCT || !GetStructInst(ot)->frameobj) return false;
+    if (ot->kind != TY_STRUCT) return false;
+    if (ot->struc->st->isroot) return true;
+    if (!GetStructInst(ot)->frameobj) return false;
     auto od = Is<Dot>(d->obj);
     return pointee || !od || FieldsInFrame(od);
 }
@@ -1857,6 +1865,8 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
         v.type = compare ? ast.booltype : IsOpaque(lt) ? lt : rt;
         return v;
     }
+    if (ClassOf(lt) == SC_ROOT || ClassOf(rt) == SC_ROOT)
+        Error(b, "root owners do not support value operators; operate on their fields instead");
     auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
     if (b->op == T_EQ || b->op == T_NEQ) {
         Val v;
@@ -3067,6 +3077,9 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
     for (size_t k = 0; k < sl->inits.size(); k++) {
         auto &fi = sl->inits[k];
         auto ft = ftypes[sl->fieldindices[k]];
+        auto component = selft->kind == TY_STRUCT && selft->struc->st->isroot
+                             ? RootComponent(rootowner, selft, sl->fieldindices[k]) : nullptr;
+        DestScope ds(*this, component ? Dest(component) : curdst);
         if (Is<SelfRef>(fi.val)) CheckSelfInit(fi.val, ft, selft);
         else {
             SlotScope ss(*this, true);
@@ -3074,6 +3087,7 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
                           ? CheckDefaultInit(fi.val, ft, selft, sl, fields[sl->fieldindices[k]])
                           : CheckValue(fi.val, ft);
             NoteLitElem(deep, fi.val, fv, ft);
+            if (component && HoldsPlainRef(ft)) NoteHolderBinding(component, fv, fi.val);
         }
     }
     // Check every inverted pair, not just expressions whose numeric position
@@ -3284,6 +3298,9 @@ inline bool TypeCheck::ExposedLater(VarDef *v) {
 // everything else of this frame's body, for a `break` everything inside the
 // loop or `block` it ends, that loop's next iteration included.
 inline bool TypeCheck::UsedAfter(VarDef *v) {
+    // Components have no source identifier of their own. A later use of
+    // their owner conservatively keeps the component's stored views live.
+    if (v->componentowner && v->type) v = v->componentowner;
     set<SFunction *> seen;
     auto vframe = FrameOfScope(Depth(v) - 1);
     auto mentions = [&](Node *n, int fi) {

@@ -26,9 +26,7 @@ inline void CodeGen::EmitValStore(const string &stk, TypeExpr *t, const string &
 // C compiler assemble it in a register first.
 inline void CodeGen::StoreWhole(const string &p, TypeExpr *t, const string &x) {
     auto sz = FixedSize(t);
-    auto agg = t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ARRAY ||
-               (t->kind == TY_ENUM && !t->enu->varmode);
-    if (!agg || (sz != 2 && sz != 4 && sz != 8)) {
+    if (!WholeStore(t)) {
         L("*(", CT(t), " *)", p, " = ", x, ";");
         return;
     }
@@ -41,6 +39,14 @@ inline void CodeGen::StoreWhole(const string &p, TypeExpr *t, const string &x) {
     L(sz == 8 ? "uint64_t " : sz == 4 ? "uint32_t " : "uint16_t ", w, ";");
     L("GS_MEMCPY(&", w, ", &", v, ", ", sz, ");");
     L("GS_MEMCPY(", p, ", &", w, ", ", sz, ");");
+}
+
+// Whether StoreWhole stores a value of type t as one integer of its width.
+inline bool CodeGen::WholeStore(TypeExpr *t) {
+    auto sz = FixedSize(t);
+    auto agg = t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ARRAY ||
+               (t->kind == TY_ENUM && !t->enu->varmode);
+    return agg && (sz == 2 || sz == 4 || sz == 8);
 }
 
 inline void CodeGen::EmitLenCheck(IntStorage ls, const string &n) {
@@ -997,6 +1003,13 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
             FixedLitAtStk(init, stk);
             return;
         }
+        // A call, if, match or block giving such a value builds it at the
+        // stack top too, as a pushed element does, rather than in a
+        // temporary whose links would then be copied to another slot.
+        if (HasRelRef(ft) && IsFix(ft)) {
+            GenConstruct(init, stk, ft);
+            return;
+        }
         EmitValStore(stk, ft, GenX(init));
     };
     if (auto al = Is<ArrayLit>(n)) {
@@ -1089,6 +1102,11 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
     auto count = LitCount(al);
     if (et->arr->akind == A_LIMITED) L(base, ".len = ", count, ";");
     if (al->fillval) {
+        int byte;
+        if (!HasRelRef(elem) && UniformFillByte(al->fillval, elem, byte)) {
+            L("memset(", base, ".e, ", byte, ", ", count, " * sizeof(", base, ".e[0]));");
+            return;
+        }
         FillScope fill(*this, al->fillval, elem);
         // Captured values repeat; relative offsets are encoded per slot.
         auto perelem = HasRelRef(elem);
@@ -1113,6 +1131,10 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
 // EmitRelStoreAt); a temporary that is copied afterwards is not.
 inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot) {
     auto et = sl->exprtype;
+    if (ZeroDefaultValue(sl, et)) {
+        EmitDefaultInto(base, et);
+        return;
+    }
     // `baseoff` is where the fields run starts within the whole value, so a
     // `self` field can store its (constant) offset back to it.
     auto fieldset = [&](const string &b, const vector<Field> &fields,

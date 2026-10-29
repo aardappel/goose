@@ -69,6 +69,7 @@ calls, cached callbacks, local and operand temporaries, argument isolation,
 discarded results, conflicting growth, resize fills and layout conversion.
 Native C and TinyCC runs exercise both `-O0` and `-O2`, with runtime checks.
 
-These compiler changes are reviewed independently on
-`codex/in-place-construction`. After they land on master, the pool branch
-can rebase and implement `alloc_with` as ordinary library control flow.
+These compiler changes landed independently on master before the pool
+branch was rebased. `slot_pool.alloc_with` uses ordinary library control
+flow: assign a builder result into a recycled slot, or push it into a new
+one. It needs no additional compiler privilege.

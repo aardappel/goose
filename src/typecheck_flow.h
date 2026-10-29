@@ -42,6 +42,7 @@ inline bool TypeCheck::ContainsGrowShrink(TypeExpr *t) {
     switch (t->kind) {
         case TY_ARRAY: return t->arr->akind == A_GROWSHRINK;
         case TY_STRUCT: case TY_VARIANT:
+            if (ClassOf(t) == SC_ROOT) return false; // Components own their arrays separately.
             return AnyField(t, [&](TypeExpr *ft) { return ContainsGrowShrink(ft); });
         default: return false;
     }
@@ -229,6 +230,7 @@ inline bool TypeCheck::Viewable(TypeExpr *t) {
 inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root, bool growonly, TypeExpr *bound) {
     if (v->refrootknown) {
         for (auto &a : v->ref.alts) {
+            if (DifferentComponents(a.root, a.exact || a.projected, root, !bound)) continue;
             if (growonly && a.classread && !v->isvar) {
                 if (ClassReadMayPointInto(a.root, root, bound)) return true;
                 continue;
@@ -576,7 +578,10 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     auto slotref = previous->slotref;
     auto constuse = previous->constuse;
     auto constwhat = previous->constwhat;
+    auto components = std::move(previous->components);
+    for (auto c : components) if (c) ResetLocal(c);
     *previous = VarDef {};
+    previous->components = std::move(components);
     previous->captured = captured;
     previous->nonneguse = nonneguse;
     previous->markuse = markuse;
@@ -585,6 +590,126 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     previous->constuse = constuse;
     previous->constwhat = constwhat;
     return previous;
+}
+
+inline VarDef *TypeCheck::RootComponent(VarDef *owner, TypeExpr *t, int field) {
+    t = ast.PlainOf(t); // Qualifiers change access, not storage identity.
+    auto si = GetStructInst(t);
+    assert(si->st->isroot && owner);
+    VarDef *c = nullptr;
+    if (IsClassRoot(owner)) {
+        for (auto x : owner->components)
+            if (x && x->componentfield == field && TypeEq(x->componentbase, t)) return x;
+        c = ast.NewVarDef();
+        owner->components.push_back(c);
+    } else {
+        owner->components.resize(si->ftypes.size(), nullptr);
+        auto &slot = owner->components[field];
+        if (!slot) {
+            auto it = namedcomponents.find({ owner, si->st->fields[field].name });
+            slot = it == namedcomponents.end() ? ast.NewVarDef() : it->second;
+        }
+        c = slot;
+    }
+    c->componentowner = owner;
+    c->componentfield = field;
+    c->componentbase = t;
+    auto ft = si->ftypes[field];
+    if (IsClassRoot(owner)) {
+        c->poolclass = owner->poolclass;
+        c->growshrink = ContainsGrowShrink(ft);
+        GrowShrinkElems(ft, c->gselems);
+        ReachedThroughRefs(ft, c->classreach);
+        vector<TypeExpr *> elems, open;
+        ArrayElemsReached(ft, elems, open);
+        for (auto e : elems)
+            if (ElemArrayPlaces(ft, e) == 1) c->onearray.push_back(e);
+    } else c->type = ft;
+    c->name = ast.Intern(cat(owner->name, ".", si->st->fields[field].name));
+    c->line = owner->line;
+    c->depth = owner->depth;
+    c->ownerspec = owner->ownerspec;
+    c->isglobal = owner->isglobal;
+    c->isvar = owner->isvar;
+    c->assigned = c->maybeassigned = true;
+    // A recursive back edge can record a class use before the body first
+    // projects this field. Give the new projection those earlier uses too.
+    if (IsClassRoot(owner))
+        if (auto it = classuses.find(owner); it != classuses.end()) {
+            auto uses = it->second;
+            for (auto &u : uses) {
+                ClassUse projected;
+                projected.roots = ProjectRoots(u.roots, t, field);
+                NoteClassUse(c, projected);
+            }
+        }
+    return c;
+}
+
+inline Roots TypeCheck::ProjectRoots(const Roots &parents, TypeExpr *t, int field) {
+    Roots out;
+    out.unknown = parents.unknown;
+    for (auto a : parents.alts) {
+        if (a.root && (IsClassRoot(a.root) ||
+                      (a.root->type && TypeEq(ast.PlainOf(a.root->type), ast.PlainOf(t))))) {
+            a.root = RootComponent(a.root, t, field);
+            a.projected = true;
+            a.slotread = a.classread = false;
+            out.Add(a);
+        } else {
+            // A loaded owner reference may only have a lifetime bound. Enumerate
+            // the owners it can reach; never invent an exact owner from that bound.
+            auto candidates = RootCandidates(t, Depth(a.root), !a.root || a.root->isglobal,
+                                             true, false);
+            Roots projected;
+            projected.unknown = candidates.unknown;
+            for (auto b : candidates.alts) {
+                // A body checked during global initialization must still allow
+                // for owners declared later, beside the already known ones.
+                if (!b.root) {
+                    if (!b.exact) projected.Add(b);
+                    continue;
+                }
+                if (b.root == a.root) continue;
+                if (IsClassRoot(b.root) || (b.root->type &&
+                    TypeEq(ast.PlainOf(b.root->type), ast.PlainOf(t)))) {
+                    b.root = RootComponent(b.root, t, field);
+                    b.projected = true;
+                    b.slotread = b.classread = false;
+                    projected.Add(b);
+                }
+            }
+            if (projected.None()) projected.Add({ a.root, false, a.from, a.slotread, a.classread });
+            out.Add(projected);
+        }
+    }
+    return out;
+}
+
+// Find the argument naming a class or an ancestor of a projected class.
+inline int TypeCheck::ClassParam(FnSpec *spec, VarDef *root, bool &view) {
+    for (auto r = root; r; r = r->componentowner)
+        for (size_t p = 0; p < spec->params.size(); p++) {
+            view = ViewClassOf(spec, p) == r;
+            if (spec->params[p]->ref.Root() == r || view) return (int)p;
+        }
+    return -1;
+}
+
+inline Roots TypeCheck::ProjectClass(VarDef *root, VarDef *base, const Roots &args) {
+    if (root == base) return args;
+    assert(root && root->componentowner);
+    return ProjectRoots(ProjectClass(root->componentowner, base, args),
+                        root->componentbase, root->componentfield);
+}
+
+inline Roots TypeCheck::MapClass(FnSpec *spec, VarDef *root, const vector<Val> &args) {
+    bool view = false;
+    auto p = ClassParam(spec, root, view);
+    if (p < 0 || p >= (int)args.size()) return RootsOf(root);
+    auto base = view ? ViewClassOf(spec, p) : spec->params[p]->ref.Root();
+    return ProjectClass(root, base, view ? args[p].held.AsRoots()
+                                        : ClassArgRoots(spec->argtypes[p], args[p]));
 }
 
 inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
@@ -1170,6 +1295,8 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
 // either (Val::slot). A reference parameter binds the storage a construct's
 // branches name instead (CheckBranchCopy), never the construct itself.
 inline Val TypeCheck::TempCopy(Val v) {
+    if (v.type && ClassOf(v.type) == SC_ROOT)
+        Error(v.type->line, "root owners cannot be copied into a temporary");
     if (!v.type || v.isnull || v.type->kind == TY_REF || v.type->kind == TY_VOID ||
         v.type->kind == TY_FN)
         return v;
@@ -2416,6 +2543,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (!global) {
             CheckCycleInit(d, fi, calls);
             vars.push_back(d);
+            for (auto c : d->components) if (c) vars.push_back(c);
         }
     };
     // A var global declared without an initializer starts as its type's
@@ -2489,6 +2617,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // or slice variable binds a value rather than storing one. An
             // annotated variable is a typed slot for constness (§9.5).
             DestScope ds(*this, Dest(d, ann && (ann->kind == TY_REF || ann->kind == TY_SLICE)));
+            RootInitScope ris(*this, vd->inits[i], d);
             SlotScope ss(*this, ann != nullptr);
             auto refinit = Is<Unary>(vd->inits[i]);
             if (refinit && refinit->synth) {
@@ -2608,7 +2737,7 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
 // cycle of frame fi there (JoinCycle counts them) keeps that stack across
 // the call, as one in the local's scope does (§7.8).
 inline void TypeCheck::CheckCycleInit(VarDef *d, int fi, int calls) {
-    if (frames[fi].cyclecalls == calls || ClassOf(d->type) == SC_FIXED) return;
+    if (frames[fi].cyclecalls == calls || !NeedsCycleStack(d->type)) return;
     Error(frames[fi].cyclecall,
           cat(FrameFnName(fi), " calls into its recursive cycle while initializing "
               "non-fixed-size local ", d->name, ", which is built in place (§7.8)"));
@@ -2617,6 +2746,7 @@ inline void TypeCheck::CheckCycleInit(VarDef *d, int fi, int calls) {
 // §4.4: which lvalues accept `=` after construction.
 inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
     auto cls = ClassOf(t);
+    if (cls == SC_ROOT) Error(at, "a root owner cannot be assigned as a whole; assign its fields instead");
     if (cls == SC_VARIABLE && !(t->kind == TY_ARRAY && t->arr->akind == A_LIMITED))
         Error(at, cat("a value of type ", TypeStr(t),
                       " is frozen at construction (§4.4); rebuild its container instead"));
