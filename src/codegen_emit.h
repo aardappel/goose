@@ -981,11 +981,14 @@ inline string CodeGen::ExportHeader() {
 }
 
 inline void CodeGen::EmitMain() {
-    Append(code, "int main(int argc, char **argv) {\n"
-                 "#if defined(_WIN32) && !defined(GS_JIT) && !defined(main)\n"
-                 "    gs_rt_native_argv(&argc);\n"
-                 "#endif\n"
-                 "    gs_program_init(argc, argv);\n",
+    Append(code, "#if defined(_WIN32) && !defined(GS_JIT) && !defined(main)\n"
+                 "int wmain(int argc, wchar_t **argv) {\n"
+                 "    gs_rt_native_argv(argv);\n"
+                 "    gs_program_init(argc, NULL);\n"
+                 "#else\n"
+                 "int main(int argc, char **argv) {\n"
+                 "    gs_program_init(argc, argv);\n"
+                 "#endif\n",
            MainCall(), "    gs_rt_stats();\n    return 0;\n}\n");
 }
 

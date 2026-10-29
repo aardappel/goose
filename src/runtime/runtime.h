@@ -887,7 +887,7 @@ typedef struct {
 #ifdef _WIN32
 /* Only the real AOT process entry captures native arguments. JIT, renamed
    entries and C embedding retain the caller-supplied narrow vector. */
-GS_API void gs_rt_native_argv(int *argc);
+GS_API void gs_rt_native_argv(wchar_t **argv);
 #endif
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);

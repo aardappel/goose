@@ -678,7 +678,8 @@ handling. `false` means at least one OS request failed.
 Paths are UTF-8 on every platform; on Windows the runtime converts them to
 UTF-16 for the system's wide APIs. Environment values and the program's
 arguments are UTF-8 too. A generated Windows executable captures its real
-process arguments in UTF-16 before global initialization and returns their
+CRT-parsed process arguments from `wmain` in UTF-16 before global initialization,
+retaining CRT quoting semantics, and returns their
 exact UTF-8 forms. JIT runs, renamed-main dispatchers and C embedding keep
 their explicitly supplied vectors; the narrow Windows C embedding interface
 retains its ANSI-code-page contract. Captured native arguments are kept for

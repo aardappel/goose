@@ -904,7 +904,7 @@ R"GSRT(    uint8_t *top;
 #ifdef _WIN32
 /* Only the real AOT process entry captures native arguments. JIT, renamed
    entries and C embedding retain the caller-supplied narrow vector. */
-GS_API void gs_rt_native_argv(int *argc);
+GS_API void gs_rt_native_argv(wchar_t **argv);
 #endif
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
@@ -3675,23 +3675,14 @@ R"GSRT(/* Goose runtime: the OS primitives behind stdlib/os.goose (spec §7.10),
 
 #include <time.h>
 #if defined(_WIN32) && !defined(GS_JIT)
-#include <shellapi.h>
 #include <wchar.h>
-#ifdef _MSC_VER
-/* Present in both the separate runtime object and standalone runtime. */
-#pragma comment(lib, "shell32.lib")
-#endif
 
-GS_API void gs_rt_native_argv(int *argc) {
-    int count = 0;
+/* Borrow the CRT-parsed wide vector from wmain. Its storage lasts for the
+   process, and its quoting rules are the same as the narrow main startup. */
+GS_API void gs_rt_native_argv(wchar_t **argv) {
     if (gs_native_wargv) gs_panic("native arguments initialized twice");
-    wchar_t **words = CommandLineToArgvW(GetCommandLineW(), &count);
-    if (!words || count < 1) {
-        if (words) LocalFree(words);
-        gs_panic("cannot read native Unicode arguments");
-    }
-    gs_native_wargv = words;
-    *argc = count;
+    if (!argv) gs_panic("cannot read native Unicode arguments");
+    gs_native_wargv = argv;
 }
 #endif
 #ifndef _WIN32
@@ -3901,12 +3892,12 @@ GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
     int64_t left = data.len;
     for (int tries = 0; tries < 8; tries++) {
         uint64_t tag = gs_os_random_u64();
-)GSRT"
-R"GSRT(        int k = n;
+        int k = n;
         memcpy(t, p, (size_t)n * sizeof *t);
         t[k++] = '.';
         for (int s = 60; s >= 0; s -= 4) t[k++] = "0123456789abcdef"[(tag >> s) & 15];
-        t[k++] = '.';
+)GSRT"
+R"GSRT(        t[k++] = '.';
         t[k++] = 't';
         t[k++] = 'm';
         t[k++] = 'p';
@@ -4151,11 +4142,11 @@ static int gs_os_resource_native(gs_os_char *buf) {
 #else
     char *path = buf;
     size_t n;
-)GSRT"
-R"GSRT(    #ifdef __APPLE__
+    #ifdef __APPLE__
         uint32_t capacity = GS_OS_PATH_MAX;
         if (_NSGetExecutablePath(path, &capacity) != 0) return 0;
-        /* Resolve the loader's possible relative path and symlinks. */
+)GSRT"
+R"GSRT(        /* Resolve the loader's possible relative path and symlinks. */
         char *resolved = realpath(path, NULL);
         if (!resolved) return 0;
         n = strlen(resolved);
@@ -4365,11 +4356,11 @@ GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
 #endif
 }
 
-)GSRT"
-R"GSRT(/* Wall-clock time in nanoseconds since the Unix epoch. */
+/* Wall-clock time in nanoseconds since the Unix epoch. */
 GS_API int64_t gs_os_time_ns(void) {
     /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
-       links against does not have it, and glibc hides it from a compiler
+)GSRT"
+R"GSRT(       links against does not have it, and glibc hides it from a compiler
        announcing C99, which tcc also is. */
 #ifdef _WIN32
     /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is

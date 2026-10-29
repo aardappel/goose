@@ -29,12 +29,13 @@ def check(exe, cc, out, style):
     records = []
 
     def run(name, argv):
-        with subprocess.Popen(list(map(str, argv)), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as child:
+        launch = argv if isinstance(argv, str) else list(map(str, argv))
+        with subprocess.Popen(launch, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as child:
             data, error = child.communicate()
             code, pid = child.returncode, child.pid
         (out / (name + '.stdout')).write_bytes(data)
         (out / (name + '.stderr')).write_bytes(error)
-        records.append({'name': name, 'argv': list(map(str, argv)), 'pid': pid, 'exit': code,
+        records.append({'name': name, 'argv': launch, 'raw_command_line': isinstance(argv, str), 'pid': pid, 'exit': code,
                         'stdout_sha256': hashlib.sha256(data).hexdigest(), 'stderr_sha256': hashlib.sha256(error).hexdigest()})
         (out / 'processes.json').write_text(json.dumps(records, indent=2), encoding='utf-8')
         return code, data, error
@@ -43,8 +44,8 @@ def check(exe, cc, out, style):
         if not good:
             raise RuntimeError(name + ' failed; original literal expectation and raw output retained')
 
-    def expected(argv0):
-        block = b''.join(('[' + item + ']\n').encode('utf-8') for item in [str(argv0), *VALUES])
+    def expected(argv0, values=VALUES):
+        block = b''.join(('[' + item + ']\n').encode('utf-8') for item in [str(argv0), *values])
         return b'START\n' + block + b'CURRENT\n' + block
 
     app = folder / 'native \u03b1.exe'
@@ -56,17 +57,33 @@ def check(exe, cc, out, style):
     shutil.copyfile(app, copied)
     r = run('copied-native', [copied, *VALUES])
     require(r[0] == 0 and r[1] == expected(copied) and not r[2] and app.read_bytes() == copied.read_bytes(), 'copied argv0')
+    # A string reaches CreateProcess unchanged: an argv list would re-quote it
+    # and miss the CRT/Shell32 distinction in adjacent quoted double quotes.
+    raw_cases = [('adjacent-quotes', '"a""b" c', ['a"b', 'c']),
+                 ('unicode-quotes', '"\u03b1""\u03b2" \U0001f331', ['\u03b1"\u03b2', '\U0001f331']),
+                 ('empty-tab', '""\t"two words"', ['', 'two words'])]
+
+    def raw_arguments(label, target):
+        for case, suffix, values in raw_cases:
+            command = '"' + str(target) + '" ' + suffix
+            r = run(label + '-raw-' + case, command)
+            require(r[0] == 0 and r[1] == expected(target, values) and not r[2],
+                    label + ' CRT raw quoting: ' + case)
+
+    raw_arguments('native', app)
+    raw_arguments('copied-native', copied)
     r = run('jit', [exe, 'run', '--offline', program.as_posix(), '--', *VALUES])
     require(r[0] == 0 and r[1] == expected(program.as_posix()), 'JIT supplied vector')
     cfile = folder / 'standalone.c'
     r = run('emit-standalone', [exe, '--offline', '--standalone', '-o', cfile, program])
     require(r[0] == 0 and cfile.is_file(), 'standalone emission')
     standalone = folder / 'standalone.exe'
-    command = ([cc, '/nologo', '/O1', '/fp:precise', '/utf-8', cfile, '/Fe:' + str(standalone), '/Fo:' + str(folder) + '\\'] if style == 'msvc' else [cc, '-O1', '-ffp-contract=off', cfile, '-o', standalone, '-lshell32'])
+    command = ([cc, '/nologo', '/O1', '/fp:precise', '/utf-8', cfile, '/Fe:' + str(standalone), '/Fo:' + str(folder) + '\\'] if style == 'msvc' else [cc, '-O1', '-ffp-contract=off', cfile, '-municode', '-o', standalone])
     r = run('compile-standalone', command)
     require(r[0] == 0 and standalone.is_file(), 'standalone native compile')
     r = run('standalone', [standalone, *VALUES])
     require(r[0] == 0 and r[1] == expected(standalone) and not r[2], 'standalone Unicode argv')
+    raw_arguments('standalone', standalone)
     # A C host and a renamed-main batch dispatcher deliberately supply vectors
     # different from the OS process arguments. They must remain theirs.
     runtime = folder / 'runtime.c'
@@ -77,7 +94,7 @@ def check(exe, cc, out, style):
         target = folder / (name + '.exe')
         command = ([cc, '/nologo', '/O1', '/fp:precise', '/utf-8', *sources,
                     '/Fe:' + str(target), '/Fo:' + str(folder) + '\\'] if style == 'msvc' else
-                   [cc, '-O1', '-ffp-contract=off', *sources, '-o', target, '-lshell32'])
+                   [cc, '-O1', '-ffp-contract=off', *sources, '-o', target])
         result = run('compile-' + name, command)
         require(result[0] == 0 and target.is_file(), name + ' compile')
         return target

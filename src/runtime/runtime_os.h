@@ -3,23 +3,14 @@
 
 #include <time.h>
 #if defined(_WIN32) && !defined(GS_JIT)
-#include <shellapi.h>
 #include <wchar.h>
-#ifdef _MSC_VER
-/* Present in both the separate runtime object and standalone runtime. */
-#pragma comment(lib, "shell32.lib")
-#endif
 
-GS_API void gs_rt_native_argv(int *argc) {
-    int count = 0;
+/* Borrow the CRT-parsed wide vector from wmain. Its storage lasts for the
+   process, and its quoting rules are the same as the narrow main startup. */
+GS_API void gs_rt_native_argv(wchar_t **argv) {
     if (gs_native_wargv) gs_panic("native arguments initialized twice");
-    wchar_t **words = CommandLineToArgvW(GetCommandLineW(), &count);
-    if (!words || count < 1) {
-        if (words) LocalFree(words);
-        gs_panic("cannot read native Unicode arguments");
-    }
-    gs_native_wargv = words;
-    *argc = count;
+    if (!argv) gs_panic("cannot read native Unicode arguments");
+    gs_native_wargv = argv;
 }
 #endif
 #ifndef _WIN32
