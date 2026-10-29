@@ -206,6 +206,25 @@ inline const char *CodeGen::IntCT(IntStorage s) {
     }
 }
 
+// A struct or array member's C type. Members use the plain C scalar: the
+// packed layout already makes their access unaligned, and Clang 18 passes
+// a small struct by value wrongly when a member's type carries aligned(1)
+// (it lands in the wrong register bytes). Pointers keep the alignment
+// typedefs, which is where unaligned pointees need them.
+inline string CodeGen::MemberCT(TypeExpr *t) {
+    return PlainCT(CT(t));
+}
+
+inline string CodeGen::PlainCT(const string &ct) {
+    static const char *const names[][2] = {
+        { "gs_i16", "int16_t" }, { "gs_i32", "int32_t" }, { "gs_i64", "int64_t" },
+        { "gs_u16", "uint16_t" }, { "gs_u32", "uint32_t" }, { "gs_u64", "uint64_t" },
+        { "gs_f32", "float" }, { "gs_f64", "double" },
+    };
+    for (auto &n : names) if (ct == n[0]) return n[1];
+    return ct;
+}
+
 // The runtime arithmetic helper suffix per integer type (runtime.h).
 inline const char *CodeGen::IntSfx(IntStorage s) {
     switch (s) {
@@ -573,14 +592,14 @@ inline string CodeGen::CT(TypeExpr *t) {
         }
         case TY_ARRAY: {
             auto &a = *t->arr;
-            auto e = CT(a.sub);
+            auto e = MemberCT(a.sub);
             if (a.akind == A_FIXED) {
                 auto k = ArrSize(t->arr);
                 Append(d, "typedef struct { ", e, " e[", k ? k : 1, "]; } ", name, ";\n");
             } else {
                 assert(a.akind == A_LIMITED && ArrSize(t->arr) >= 0);
-                Append(d, "typedef struct { ", IntCT(LenStore(t->arr)), " len; ", e, " e[",
-                       ArrSize(t->arr) ? ArrSize(t->arr) : 1, "]; } ", name, ";\n");
+                Append(d, "typedef struct { ", PlainCT(IntCT(LenStore(t->arr))), " len; ", e,
+                       " e[", ArrSize(t->arr) ? ArrSize(t->arr) : 1, "]; } ", name, ";\n");
             }
             break;
         }
@@ -606,7 +625,8 @@ inline string CodeGen::CT(TypeExpr *t) {
             assert(!t->enu->varmode);
             auto ei = EIOf(t);
             EnsureTagEnum(ei);
-            Append(d, "struct ", name, " {\n    ", IntCT(TagStore(ei->en)), " tag;\n");
+            Append(d, "struct ", name, " {\n    ", PlainCT(IntCT(TagStore(ei->en))),
+                   " tag;\n");
             string members;
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
                 if (EmptyLayout(ei->en->variants[vi].fields)) continue;
@@ -665,7 +685,7 @@ inline void CodeGen::EmitCFields(string &d, const vector<Field> &fields,
             if (sz > 0) Append(d, "    uint8_t gs_pad", npad++, "[", sz, "];\n");
             continue;
         }
-        Append(d, "    ", CT(ftypes[i]), " ", Sanitize(f.name), ";\n");
+        Append(d, "    ", MemberCT(ftypes[i]), " ", Sanitize(f.name), ";\n");
     }
     for (auto i = n; i < fields.size(); i++) {
         EmitCoreTypes();

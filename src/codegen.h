@@ -358,6 +358,8 @@ struct CodeGen {
 
     void EmitCoreTypes();
     string CT(TypeExpr *t);
+    string MemberCT(TypeExpr *t);
+    static string PlainCT(const string &ct);
     static bool StructLike(TypeExpr *t);
     string NameCT(TypeExpr *t);
     set<string> cdefined;    // Mangled names whose C body has been emitted.
