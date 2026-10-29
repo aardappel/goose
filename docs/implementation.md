@@ -6444,6 +6444,23 @@ x86-64 the search tests 16 bytes at a time:
 * with SSSE3 `pshufb` nibble tables for any other set, when the CPUID check
   that `gs_rt_start` makes finds SSSE3.
 
+On AArch64 (little-endian, clang or gcc) the same loops run on NEON, which
+every such CPU has, so there is no check. The compares are NEON's, and the
+tables are looked up with `TBL` (`vqtbl1q_u8`), which gives 0 for any index
+of 16 or more: the byte masked with 0x8f indexes the low table and gives 0
+from 128 up, and the byte xor 0x80, masked the same way, indexes the high
+one. NEON has no `movemask`. A block's 0x00/0xff result is narrowed by
+`shrn` (each 16-bit lane shifted right by 4, keeping 8 bits) to one 64-bit
+word holding a nibble per byte, so the first match is its trailing zero
+count divided by 4. `GS_BMASK`, `GS_BMASK_DROP` and `GS_BMASK_FIRST` stand
+for these steps, and the loops are written once for both targets. On
+AArch64 `find_any` also first steps 64 bytes at a time, testing the four
+blocks' results together (`GS_ANY_WIDE`). Without that step, a long search
+for a single rare byte ran at about 80% of the speed of macOS's `memchr`;
+with it, the search is 1.25x faster than `memchr`, and 1.8-4x faster than
+the byte loop for other sets (SSH.log, Apple M3 Max). MSVC for ARM64 and
+big-endian AArch64 keep the byte loop.
+
 Everything else, TinyCC included, tests one byte at a time, and searches for
 a single byte with `memchr`. The last part of a range is tested by loading
 the range's last whole block again and shifting the positions already tested

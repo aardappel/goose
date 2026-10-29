@@ -240,9 +240,12 @@ fn find_pair(s: u8[:], a: const ByteSet&, d: i64, b: const ByteSet&) -> i64
 These functions scan in the runtime. On x86-64 they test 16 bytes at a time
 with SSE2, which every such CPU has. A set that is not at most three bytes,
 one range, or the complement of either is looked up in nibble tables, which
-needs SSSE3; the runtime checks for it when the program starts. Elsewhere,
-and in a JIT run, they test one byte at a time, and a set of a single byte
-is searched with the C library's `memchr`. `byte_set` works out how to test
+needs SSSE3; the runtime checks for it when the program starts. On AArch64
+(little-endian, built with clang or gcc) they use NEON, which every such CPU
+has, for every kind of set, and `find_any` tests 64 bytes at a time where
+the search is that long. Elsewhere, and in a JIT run, they test one byte at
+a time, and a set of a single byte is searched with the C library's
+`memchr`. `byte_set` works out how to test
 a set by going over all 256 bytes, so make the set once, in a variable,
 outside the loop that searches. `members` is the set, and the other fields
 are used by the search. `find_pair` is the test for a prefilter that knows
