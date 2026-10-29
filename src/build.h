@@ -57,7 +57,7 @@ struct Builder {
     }
 
     // The system libraries a program links beyond the C library, in the cc
-    // style: none on Windows, where they live in the C runtime.
+    // style. Windows needs none beyond its CRT.
     vector<string> SystemLibs() const {
         #ifdef _WIN32
             return {};
@@ -160,6 +160,12 @@ struct Builder {
             for (auto &o : objects) argv.push_back(o);
             for (auto &r : rsps) argv.push_back(cat("@", r));
         } else {
+            #ifdef _WIN32
+                // MinGW GCC selects its wide executable startup explicitly.
+                // Keep this out of shared-library links; MSVC-target clang
+                // chooses wmainCRTStartup from the entry symbol itself.
+                if (tc.name == "gcc" || tc.name == "cc") argv.push_back("-municode");
+            #endif
             argv.push_back(src);
             for (auto &o : objects) argv.push_back(o);
             argv.push_back("-o");

@@ -922,12 +922,17 @@ handling. `false` means at least one OS request failed.
 
 Paths are UTF-8 on every platform; on Windows the runtime converts them to
 UTF-16 for the system's wide APIs. Environment values and the program's
-arguments are UTF-8 too. On Windows the arguments pass through the ANSI
-code page first, so they keep only the characters that code page has. A
-path is refused, and the call returns `false`, if it is longer than 4095
-bytes, contains a NUL byte, or (on Windows) is not valid UTF-8, because a
-path that was cut short or decoded another way could name a different
-file.
+arguments are UTF-8 too. A generated Windows executable captures its real
+CRT-parsed process arguments from `wmain` in UTF-16 before global initialization,
+retaining CRT quoting semantics, and returns their
+exact UTF-8 forms. JIT runs, renamed-main dispatchers and C embedding keep
+their explicitly supplied vectors; the narrow Windows C embedding interface
+retains its ANSI-code-page contract. Captured native arguments are kept for
+the process lifetime. Invalid UTF-16 or conversion allocation failure is an
+error, never a lossy fallback. A path is refused, and the call returns
+`false`, if it is longer than 4095 bytes, contains a NUL byte, or (on Windows)
+is not valid UTF-8, because a path that was cut short or decoded another way
+could name a different file.
 
 `read_file` appends nothing when it fails. `read_stdin` appends the bytes
 unchanged, on Windows too, where the C library's text mode would turn each

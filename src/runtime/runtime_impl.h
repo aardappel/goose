@@ -181,6 +181,11 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 /* The program's arguments, for stdlib/os.goose (runtime_os.h). */
 static int gs_argc;
 static char **gs_argv;
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
+/* Borrowed from wmain: the CRT retains the vector for the process lifetime.
+   The real process entry sets it before global/worker initialization. */
+static wchar_t **gs_native_wargv;
+#endif
 
 /* What a new region reserves: the usable part, which halves whenever the
    platform refuses one (gs_reserve_region), and the guard gap behind it;
