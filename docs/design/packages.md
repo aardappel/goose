@@ -318,7 +318,7 @@ tag being moved to a different commit.
 A library repository, minimally:
 
     mylib.goose          the entry: `namespace mylib;`, its declarations, its requirements
-    mylib.build          the sidecar, when the package has a native part
+    mylib.build          the sidecar, when the package has build settings
     sub.goose            further modules, `import mylib.sub;`
     src/*.c, include/    its C, if any
     examples/, test/     programs that are roots of their own
@@ -331,6 +331,7 @@ comments, `key = value;`, strings, `true`/`false`, integers and
 |---|---|---|
 | `c_sources` | both | C files, relative to the package root, compiled by the discovered C compiler (§5.1); a single-header library is one `impl.c` that defines its implementation macro and includes the header |
 | `c_include` | both | include directories |
+| `c_headers` | both | headers, relative to the package root, included in the consumer's generated C after its types and before extern prototypes and function bodies, as with `--include`; these alone create no native part |
 | `c_defines` | both | `NAME` or `NAME=VALUE` |
 | `c_flags_cc`, `c_flags_msvc` | both | extra compile flags per driver style |
 | `c_libs` | both | system libraries, by name (`m`, `user32`); the compiler writes them in each driver style's form |
@@ -346,9 +347,16 @@ platform-only part. A program's sidecar lists its own C with the same keys;
 a program that includes a library's C through `--include` keeps working,
 since the header is spliced into the generated C as it is today.
 
+`c_headers` preserves list order, after command-line headers, with the
+program's sidecar first and packages in load order. The headers may use
+types of declared externs even when unused, but not types from unimported
+modules. They must support the consumer's C backend; a header-only package
+can run through TinyCC without an external toolchain. The native source
+settings (`c_include`, `c_defines`, `c_flags_*`) do not apply to these headers.
+
 ## 5. Native parts
 
-A package with any `c_*` key or a `cmake_target` has a native part. It is
+A package with nonempty `c_sources` or a `cmake_target` has a native part. It is
 built once per toolchain (§6.1) under `build/pkg/…/<toolchain>/`, in the
 release configuration, with the static C runtime on Windows. It is built in
 two forms: what an AOT program links, and a shared library the JIT loads.

@@ -1658,6 +1658,11 @@ int Main(int argc, char **argv) {
         // --stacks needs the generated program's bounds, so --check runs
         // the backend for them and writes nothing.
         if (nocgen && !stacks) return 0;
+        // Sidecar headers share --include's position after generated types.
+        // They belong to every loaded package, not just those with a native
+        // part: a header-only adapter needs no separate compilation or loading.
+        for (auto &pkg : ast.packages)
+            includes.insert(includes.end(), pkg.cheaders.begin(), pkg.cheaders.end());
         // A quoted include resolves against the including file's own directory
         // first, so the --include headers are written relative to where the .c
         // goes: the generated file then compiles wherever the tree sits,

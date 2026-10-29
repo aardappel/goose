@@ -2374,7 +2374,7 @@ struct Package {
     // its native part (§5), and the rest of its settings.
     string sidecar;
     bool hassidecar = false;
-    vector<string> csources, cincludes;     // Absolute.
+    vector<string> csources, cincludes, cheaders;     // Absolute.
     vector<string> cdefines, cflags_cc, cflags_msvc, clibs;
     string cmake_target;
     vector<string> cmake_options;
