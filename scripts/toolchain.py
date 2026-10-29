@@ -295,8 +295,6 @@ class CC:
             # asking for them by name fails.
             if not IS_WINDOWS:
                 argv += ["-pthread", "-lm"] + (["-ldl"] if sys.platform.startswith("linux") else [])
-            else:
-                argv += ["-lshell32"]
         r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         output = (r.stdout or "") + (r.stderr or "")
         if log:
@@ -350,8 +348,6 @@ class CC:
         else:
             argv += [f"-I{i}" for i in includes]
             argv += ["-shared", "-fPIC", *map(str, sources), "-o", str(out)]
-            if IS_WINDOWS:
-                argv += ["-lshell32"]
         r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
 
@@ -535,12 +531,11 @@ def test_cc(name=None):
     return cc
 
 
-# Packed Goose fields deliberately use unaligned scalar accesses. Keep the
-# remaining UBSan checks, and make every finding fatal, including in programs
+# Make every sanitizer finding fatal, including in programs
 # which are themselves expected to abort. ASan still checks the compiler and
 # runtime's C allocations; it cannot see logical object boundaries inside a
 # Goose virtual-memory arena.
-SANITIZER_FLAGS = ("-fsanitize=address,undefined", "-fno-sanitize=alignment",
+SANITIZER_FLAGS = ("-fsanitize=address,undefined",
                    "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g")
 
 

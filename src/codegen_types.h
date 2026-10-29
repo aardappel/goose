@@ -196,13 +196,13 @@ inline IntStorage CodeGen::LenStore(TypeArray *a) {
 inline const char *CodeGen::IntCT(IntStorage s) {
     switch (s) {
         case IS_I8:  return "int8_t";
-        case IS_I16: return "int16_t";
-        case IS_I32: return "int32_t";
+        case IS_I16: return "gs_i16";
+        case IS_I32: return "gs_i32";
         case IS_U8:  return "uint8_t";
-        case IS_U16: return "uint16_t";
-        case IS_U32: return "uint32_t";
-        case IS_U64: return "uint64_t";
-        default:     return "int64_t";
+        case IS_U16: return "gs_u16";
+        case IS_U32: return "gs_u32";
+        case IS_U64: return "gs_u64";
+        default:     return "gs_i64";
     }
 }
 
@@ -227,9 +227,9 @@ inline const char *CodeGen::IntSfx(IntStorage s) {
 inline const char *CodeGen::RelCT(IntStorage s, bool uns) {
     switch (IntSize(s)) {
         case 1: return uns ? "uint8_t" : "int8_t";
-        case 2: return uns ? "uint16_t" : "int16_t";
-        case 4: return uns ? "uint32_t" : "int32_t";
-        default: return uns ? "uint64_t" : "int64_t";
+        case 2: return uns ? "gs_u16" : "gs_i16";
+        case 4: return uns ? "gs_u32" : "gs_i32";
+        default: return uns ? "gs_u64" : "gs_i64";
     }
 }
 
@@ -518,7 +518,7 @@ inline void CodeGen::EmitCoreTypes() {
 inline string CodeGen::CT(TypeExpr *t) {
     switch (t->kind) {
         case TY_INT:  assert(t->intstorage != IS_VARINT); return IntCT(t->intstorage);
-        case TY_FLT:  return t->fltstorage == FS_F32 ? "float" : "double";
+        case TY_FLT:  return t->fltstorage == FS_F32 ? "gs_f32" : "gs_f64";
         case TY_BOOL: return "uint8_t";
         case TY_VOID: return "void";
         case TY_REF: {
@@ -529,10 +529,15 @@ inline string CodeGen::CT(TypeExpr *t) {
             }
             EmitCoreTypes();
             if (IsResz(r.sub)) return "gs_rref";
-            if (IsBytesT(r.sub)) return "uint8_t *";
             // A pointer needs only the pointee's name, so a node type can
             // hold references to itself and the body can come later.
-            return cat(StructLike(r.sub) ? NameCT(r.sub) : CT(r.sub), " *");
+            auto name = NameCT(t);
+            if (cdefined.insert(Mangle(t)).second) {
+                auto sub = IsBytesT(r.sub) ? string("uint8_t") :
+                           StructLike(r.sub) ? NameCT(r.sub) : CT(r.sub);
+                Append(tdecls, "typedef ", sub, " *", name, " GS_ALIGN1;\n");
+            }
+            return name;
         }
         default: break;
     }
@@ -758,7 +763,7 @@ inline void CodeGen::EmitSizeWalk(string &b, TypeExpr *t, const string &q) {
                     return;
                 }
                 case A_LIMITED:   // Runtime capacity: [cap u32][len u32][cap slots].
-                    Append(b, "    ", q, " += 8 + (int64_t)*(uint32_t *)", q, " * ",
+                    Append(b, "    ", q, " += 8 + (int64_t)*(gs_u32 *)", q, " * ",
                            FixedSize(a.sub), ";\n");
                     return;
                 default:
@@ -1117,9 +1122,9 @@ inline void CodeGen::EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, cons
                     } else {
                         Append(b, "        int64_t ", v, "c;\n");
                         Append(b, "        if (n - ", q, " < 8) return -1;\n");
-                        Append(b, "        ", v, "c = (int64_t)*(const uint32_t *)(p + ", q,
+                        Append(b, "        ", v, "c = (int64_t)*(const gs_u32 *)(p + ", q,
                                ");\n");
-                        Append(b, "        ", v, "n = (int64_t)*(const uint32_t *)(p + ", q,
+                        Append(b, "        ", v, "n = (int64_t)*(const gs_u32 *)(p + ", q,
                                " + 4);\n");
                         Append(b, "        if (", v, "n > ", v, "c || ", v, "c > (n - ", q,
                                " - 8) / ", esz, ") return -1;\n");
@@ -1482,11 +1487,11 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
                                p, "; ", p, " += ", IntSize(ls), ";\n");
                     }
                 } else if (a.akind == A_LIMITED) {
-                    Append(bo, I, "int64_t ", out, "cap = (int64_t)*(uint32_t *)", p,
-                           "; int64_t ", out, " = (int64_t)*(uint32_t *)(", p, " + 4); ",
+                    Append(bo, I, "int64_t ", out, "cap = (int64_t)*(gs_u32 *)", p,
+                           "; int64_t ", out, " = (int64_t)*(gs_u32 *)(", p, " + 4); ",
                            p, " += 8;\n");
                 } else {
-                    Append(bo, I, "int64_t ", out, " = *(int64_t *)", p, "; ", p,
+                    Append(bo, I, "int64_t ", out, " = *(gs_i64 *)", p, "; ", p,
                            " += 8;\n");
                 }
             };

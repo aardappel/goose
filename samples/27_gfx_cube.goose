@@ -71,8 +71,8 @@ fn main() {
     }
     defer gfx::close();   // On every way out of main from here on.
 
-    var verts: Vertex[>..] = [];
-    var indices: u16[>..] = [];
+    var verts:   Vertex[>..] = [];
+    var indices: u16[>..]    = [];
     cube(verts, indices);
     let vertex_buffer = gfx::vertex_buffer(bytes_of(verts));
     let index_buffer = gfx::index_buffer(bytes_of(indices));
@@ -112,7 +112,7 @@ fn main() {
     desc.formats[2] = gfx::VERTEX_UBYTE4_NORM;
     let cube_pipeline = gfx::pipeline(cube_vs, cube_fs, desc);
 
-    var yaw: f32 = 0.6;
+    var yaw:   f32 = 0.6;
     var pitch: f32 = 0.5;
     var drawn = 0;
     while gfx::frame() {

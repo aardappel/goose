@@ -886,7 +886,7 @@ struct CodeGen {
     // A limited array's capacity: static for the C-typed form, read from
     // the header of the runtime-capacity byte form.
     string LimitedCap(const Loc &lv) {
-        return lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+        return lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(gs_u32 *)(", lv.s, ")");
     }
 
     // ------------------------------------------------------------------

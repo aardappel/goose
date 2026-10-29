@@ -11,7 +11,7 @@ struct RuntimeFile {
 inline const RuntimeFile runtime_files[] = {
     { "runtime.h", string_view(
 R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with.
-   Plain C99 (+ #pragma pack, unaligned scalar access); compiles with MSVC,
+   Plain C99 (+ #pragma pack, alignment typedefs); compiles with MSVC,
    gcc, clang, and tcc. Kept deliberately small: per-operation behavior (push,
    indexing, field access) is emitted inline by the compiler; only genuinely
    shared machinery lives in the runtime (data stacks, varints, printing,
@@ -25,12 +25,13 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
    platform's headers, which no program's unit includes, and is built one
    of two ways:
 
-   - Standalone (`goose --standalone`, and every JIT run): one translation
+   - Standalone (`goose --standalone`): one translation
      unit holds it all, and everything the runtime defines is static.
-   - Separate (`goose -o`'s default): the program's unit declares the rest
+   - Separate (JIT and `goose -o`'s default): the program's unit declares the rest
      extern (GS_SEPARATE_RUNTIME), and `goose --emit-runtime` writes it out
      as a C file of its own (GS_RUNTIME_OBJECT), compiled once and linked
-     with every program. That object takes no configuration of its own: the
+     with every program. JIT uses the same interface to the runtime built
+     into Goose. That object takes no configuration of its own: the
      program hands it the data stack sizes as it starts (gs_rt_init), it
      always supports threads, and it holds the checks of debug and release
      builds alike, so one object serves every program a compiler emits.
@@ -61,12 +62,33 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #define _DEFAULT_SOURCE 1
 #endif
 
+#ifndef GS_EMBEDDED_JIT
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#endif
+
+/* Goose values can start at any byte, including scalars reached through a
+   reference or slice. GCC and Clang must retain that alignment on the
+   pointee type, even after taking a packed member's address. MSVC and
+   TinyCC already permit these accesses on the supported targets. The
+   aliases keep the underlying C types and their calling conventions. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#define GS_ALIGN1 __attribute__((aligned(1)))
+#else
+#define GS_ALIGN1
+#endif
+typedef int16_t gs_i16 GS_ALIGN1;
+typedef int32_t gs_i32 GS_ALIGN1;
+typedef int64_t gs_i64 GS_ALIGN1;
+typedef uint16_t gs_u16 GS_ALIGN1;
+typedef uint32_t gs_u32 GS_ALIGN1;
+typedef uint64_t gs_u64 GS_ALIGN1;
+typedef float gs_f32 GS_ALIGN1;
+typedef double gs_f64 GS_ALIGN1;
 
 /* Every float operation rounds on its own. A C compiler may otherwise
    contract a multiply and an add into one fused rounding wherever the target
@@ -185,7 +207,8 @@ enum {
     GS_E_RESIZEFILL,   /* resize growth requires a fill value */
     GS_E_RESIZENEG,    /* resize to a negative length */
     GS_E_POP,          /* pop on empty array */
-    GS_E_THREADID,     /* thread_wait on an unknown thread id */
+)GSRT"
+R"GSRT(    GS_E_THREADID,     /* thread_wait on an unknown thread id */
     GS_E_THREADSELF,   /* a worker cannot wait for itself */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
     GS_E_ENDIAN,       /* serialization on a big-endian host */
@@ -200,8 +223,7 @@ GS_API GS_NORETURN void gs_panic(const char *msg);
 GS_API GS_NORETURN void gs_abort(int err, const char *file, int line);
 /* The program's own abort(msg) (§9.3): the message is Goose bytes, not a C
    string, so it goes out with an explicit length. */
-)GSRT"
-R"GSRT(GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
                                      int line);
 GS_API GS_NORETURN void gs_exit(int64_t code);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
@@ -345,7 +367,8 @@ static inline int gs_simd_level(void) {
 
 /* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
    is built for FMA and twice where it is not, so its results are the
-   implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
+)GSRT"
+R"GSRT(   implementation's (§7.12). GS_MUL_ADD_BASE says which for code built for
    the target as a whole: fused on arm64 and on x86-64 built for AVX2 or
    past it (-march=x86-64-v3, clang-cl's /arch:AVX2), separate everywhere
    else, under TinyCC and under MSVC. MSVC compiles fma() to a call into the
@@ -362,8 +385,7 @@ static inline int gs_simd_level(void) {
 #endif
 #define GS_MUL_ADD_MODE GS_MUL_ADD_BASE
 
-)GSRT"
-R"GSRT(/* The generated code's memcpy and memset of zeros. Most move or clear the
+/* The generated code's memcpy and memset of zeros. Most move or clear the
    1 to 32 bytes of a field, an element or a reference, a constant size the
    optimizing backends turn into a few moves. TinyCC calls the C library for
    every memcpy and memset, so under it a constant size of up to 32 bytes
@@ -503,7 +525,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
    operation, for the debug build's overflow message; the release macros
    drop them unevaluated. */
 
-/* Division and modulo, both builds: the zero check is not optional, `%` is
+)GSRT"
+R"GSRT(/* Division and modulo, both builds: the zero check is not optional, `%` is
    Euclidean, and i64.min / -1 aborts. They are macros for the reason the
    other operations are, but each names its operands more than once, so the
    compiler passes side-effect-free ones (as GS_IDX's index); a signed
@@ -518,8 +541,7 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
     ((T)(b) ? (T)((T)(a) % (T)(b)) : (gs_divfail((f), (l)), (T)0))
 #define GS_DIVS(T, a, b, f, l) \
     ((T)(b) ? (T)((int64_t)(T)(a) / (int64_t)(T)(b)) : (gs_divfail((f), (l)), (T)0))
-)GSRT"
-R"GSRT(#define GS_MODS(T, t, a, b, f, l) \
+#define GS_MODS(T, t, a, b, f, l) \
     ((T)(b) == 0 ? (gs_divfail((f), (l)), (T)0) \
      : (T)(((t) = (int64_t)(T)(a) % (int64_t)(T)(b)) < 0 \
                ? (t) + ((T)(b) < 0 ? -(int64_t)(T)(b) : (int64_t)(T)(b)) : (t)))
@@ -665,7 +687,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_shr_i32(a, n) ((int32_t)((int64_t)(a) >> ((n) & 31)))
 
 #define gs_add_u8(a, b)  ((uint8_t)((a) + (b)))
-#define gs_sub_u8(a, b)  ((uint8_t)((a) - (b)))
+)GSRT"
+R"GSRT(#define gs_sub_u8(a, b)  ((uint8_t)((a) - (b)))
 #define gs_mul_u8(a, b)  ((uint8_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_shl_u8(a, n)  ((uint8_t)((uint64_t)(a) << ((n) & 7)))
 #define gs_shr_u8(a, n)  ((uint8_t)((uint64_t)(a) >> ((n) & 7)))
@@ -683,8 +706,7 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
 
 #define gs_add_i64(a, b, f, l) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
-)GSRT"
-R"GSRT(#define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
+#define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
 #define gs_mul_i64(a, b, f, l) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_neg_i64(a, f, l)    ((int64_t)(0u - (uint64_t)(a)))
 #define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
@@ -865,7 +887,8 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
 }
 #define GS_RANGE(v, lo, hi, t, f, l) gs_rangechk((v), (lo), (hi), (t), (f), (l))
 #define GS_RANGE_U(v, hi, t, f, l)   gs_rangechk_u((v), (hi), (t), (f), (l))
-#define GS_F2I(d, s, lo, hi, t, f, l) gs_f2ichk((d), (s), (lo), (hi), (t), (f), (l))
+)GSRT"
+R"GSRT(#define GS_F2I(d, s, lo, hi, t, f, l) gs_f2ichk((d), (s), (lo), (hi), (t), (f), (l))
 #define GS_F2U(d, s, f, l)            gs_f2uchk((d), (s), (f), (l))
 
 #else
@@ -887,8 +910,7 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
    runtime's (runtime_impl.h). */
 
 typedef struct {
-)GSRT"
-R"GSRT(    uint8_t *top;
+    uint8_t *top;
 } gs_stack;
 
 /* The program defines what goose.h gives C compiled on its own (gs_stack
@@ -901,11 +923,6 @@ R"GSRT(    uint8_t *top;
    budgeted for regions over the whole program, and the most regions the
    main program and any one worker hold (the compiler's static counts),
    which size their registries and give hardware_threads() its cap. */
-#ifdef _WIN32
-/* Only the real AOT process entry captures native arguments. JIT, renamed
-   entries and C embedding retain the caller-supplied narrow vector. */
-GS_API void gs_rt_native_argv(wchar_t **argv);
-#endif
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
@@ -1055,7 +1072,8 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 #endif  /* GS_RUNTIME_OBJECT */
 
 /* ---------------------------------------------------------------------------
-   Slice pools (§5.4, `reusable[]`). A pool's freelist is a tree of its free
+)GSRT"
+R"GSRT(   Slice pools (§5.4, `reusable[]`). A pool's freelist is a tree of its free
    (index, count) spans, kept on a data stack of its own in nodes of
    GS_SPAN_NODE bytes (runtime_impl.h). The emitted code grows the element
    region and fills elements; these only keep the spans, and each takes the
@@ -1068,8 +1086,7 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
    freelist: for alloc_slice, and for a slice realloc_slice moves. */
 GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                               int64_t cnt);
-)GSRT"
-R"GSRT(/* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
+/* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
    end the array, to cnt elements: where it starts now. The caller copies
    the elements where that moved. */
 GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
@@ -1310,6 +1327,7 @@ static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, 
         gs_longjmp(gs_contain->jump, 1);
     }
     fwrite(text, 1, (size_t)(pre + len + loc), stderr);
+    free(text);
     gs_end(1);
 }
 
@@ -1397,10 +1415,9 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 /* The program's arguments, for stdlib/os.goose (runtime_os.h). */
 static int gs_argc;
 static char **gs_argv;
-#ifdef _WIN32
-/* CommandLineToArgvW owns one contiguous allocation, retained for this
-   process's lifetime as the CRT retains main's original argv. The real
-   process entry sets it before runtime/global/worker initialization. */
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
+/* Borrowed from wmain: the CRT retains the vector for the process lifetime.
+   The real process entry sets it before global/worker initialization. */
 static wchar_t **gs_native_wargv;
 #endif
 
@@ -1527,6 +1544,9 @@ GS_API void gs_release_regions(void) {
 #include <fcntl.h>
 
 static size_t gs_page_size = 0;
+#ifdef GS_HOSTED_JIT
+static void *gs_jit_fault_handler;
+#endif
 #define GS_COMMIT_CHUNK (1u << 20)
 /* What each thread program keeps of its native stack for reporting that
    stack's overflow (gs_native_stack_init). */
@@ -1587,7 +1607,11 @@ static size_t gs_os_page_size(void) {
 /* Installed once by main, before any worker can start. */
 static void gs_regions_init(void) {
     gs_page_size = gs_os_page_size();
-    if (!AddVectoredExceptionHandler(1, gs_fault_filter))
+    void *handler = AddVectoredExceptionHandler(1, gs_fault_filter);
+#ifdef GS_HOSTED_JIT
+    gs_jit_fault_handler = handler;
+#endif
+    if (!handler)
         gs_panic("cannot install data stack fault handler");
 }
 
@@ -1621,7 +1645,8 @@ static void gs_release_region(const gs_region *r) {
 /* Whether this is the first call of gs_end; and where the later ones wait. */
 static int gs_end_first(void) {
     static volatile LONG ended;
-    return !InterlockedExchange(&ended, 1);
+)GSRT"
+R"GSRT(    return !InterlockedExchange(&ended, 1);
 }
 static GS_NORETURN void gs_park(void) {
     for (;;) Sleep(INFINITE);
@@ -1630,8 +1655,7 @@ static GS_NORETURN void gs_park(void) {
 #else  /* posix */
 
 #include <sys/mman.h>
-)GSRT"
-R"GSRT(#include <unistd.h>
+#include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
 
@@ -1647,6 +1671,9 @@ static GS_TLS void *gs_sigstack;
 #define GS_SIGSTACK_MIN (64u << 10)
 /* What the fault handler replaced, for the faults that are not its own. */
 static struct sigaction gs_prev_segv, gs_prev_bus;
+#ifdef GS_HOSTED_JIT
+static int gs_jit_fault_installed;
+#endif
 
 /* For gs_trim_memory, which discards whole pages only. */
 static size_t gs_page_size = 0;
@@ -1689,9 +1716,15 @@ static void gs_regions_init(void) {
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
         gs_panic("cannot install data stack fault handler");
+#ifdef GS_HOSTED_JIT
+    gs_jit_fault_installed = 1;
+#endif
     #ifdef SIGBUS
         if (sigaction(SIGBUS, &sa, &gs_prev_bus))
             gs_panic("cannot install data stack fault handler");
+#ifdef GS_HOSTED_JIT
+        gs_jit_fault_installed |= 2;
+#endif
     #endif
 }
 
@@ -1796,12 +1829,16 @@ static GS_NORETURN void gs_park(void) {
 #endif
 
 static GS_NORETURN void gs_end(int code) {
+#ifdef GS_HOSTED_JIT
+    gs_jit_exit(code);
+#else
     if (!gs_end_first()) gs_park();
     fflush(NULL);
     #ifdef __TINYC__
         if (gs_current_thread_id < 0) exit(code);
     #endif
     _Exit(code);
+#endif
 }
 
 /* The smallest a region gets before a refusal is fatal. */
@@ -1839,14 +1876,14 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
 }
 
 /* Explicit rather than on every rewind: short-lived scratch can reuse its
-   pages cheaply, while a long-running application can give them back after
+)GSRT"
+R"GSRT(   pages cheaply, while a long-running application can give them back after
    replacing a large document. Keep the virtual reservation and the partly
    used final page; limited-array capacity and live borrowed values are below
    the synchronized top and remain intact. Each worker has its own registry.
 
    Eager on purpose: Windows decommits, which returns the commit charge as
-)GSRT"
-R"GSRT(   well as the physical pages (DiscardVirtualMemory and MEM_RESET keep the
+   well as the physical pages (DiscardVirtualMemory and MEM_RESET keep the
    charge), and Linux's MADV_DONTNEED drops the pages from RSS at once,
    where MADV_FREE leaves them counted until the kernel is short of memory.
    On macOS MADV_DONTNEED reclaims nothing reliably, so replace the unused
@@ -2027,7 +2064,8 @@ static void gs_sp_fix(gs_sppath *p, int64_t l, int64_t was, int64_t now) {
         int64_t k = p->pos[l - 1], c = p->node[l], m = in->max[k];
         int leaf = l == p->h;
         int64_t key = gs_sp_key(p, c, leaf);
-        int64_t nm = now >= m ? now : was < m ? m : gs_sp_max(p, c, leaf, was);
+)GSRT"
+R"GSRT(        int64_t nm = now >= m ? now : was < m ? m : gs_sp_max(p, c, leaf, was);
         if (in->key[k] == key && nm == m) return;
         in->key[k] = key;
         in->max[k] = nm;
@@ -2038,8 +2076,7 @@ static void gs_sp_fix(gs_sppath *p, int64_t l, int64_t was, int64_t now) {
 
 /* Descends to the leaf holding the last span that starts at or before idx,
    and returns its position there, or -1 where no span does. */
-)GSRT"
-R"GSRT(static int64_t gs_sp_find(gs_sppath *p, int64_t idx) {
+static int64_t gs_sp_find(gs_sppath *p, int64_t idx) {
     int64_t l, i = GS_SPHEAD(p)->root, k;
     gs_spleaf *lf;
     p->h = GS_SPHEAD(p)->height;
@@ -2264,14 +2301,14 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
        ones before, smaller than cnt, and those from j on, which need
        scanning only where c was the node's largest. */
     for (l = p.h; l > 0; l--) {
-        gs_spinner *in = GS_SPINNER(&p, p.node[l - 1]);
+)GSRT"
+R"GSRT(        gs_spinner *in = GS_SPINNER(&p, p.node[l - 1]);
         int64_t e = p.pos[l - 1], mx = in->max[e], nm = mx;
         int64_t key = gs_sp_key(&p, p.node[l], l == p.h);
         if (c == mx) {
             const int64_t *v = l == p.h ? lf->cnt : GS_SPINNER(&p, p.node[l])->max;
             int64_t w = l == p.h ? lf->n : GS_SPINNER(&p, p.node[l])->n;
-)GSRT"
-R"GSRT(            nm = before[l] > now ? before[l] : now;
+            nm = before[l] > now ? before[l] : now;
             for (; j < w && nm < c; j++)
                 if (v[j] > nm) nm = v[j];
         }
@@ -2480,7 +2517,8 @@ static int gs_ctz32(unsigned x) {
 static int gs_cpu_ssse3;
 
 static void gs_scan_init(void) {
-#ifdef _WIN32
+)GSRT"
+R"GSRT(#ifdef _WIN32
     int r[4];
     __cpuid(r, 1);
     gs_cpu_ssse3 = (r[2] >> 9) & 1;
@@ -2492,8 +2530,7 @@ static void gs_scan_init(void) {
 
 /* A set's block test, held in registers: the bytes or range it compares
    with and all ones where the result is complemented, or its tables. */
-)GSRT"
-R"GSRT(typedef struct { __m128i a, b, c, flip; } gs_bsm;
+typedef struct { __m128i a, b, c, flip; } gs_bsm;
 
 static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
     if (tables) {
@@ -2654,7 +2691,8 @@ GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t 
     if (np >= 16 && sa->kind != 5 && sb->kind != 5) return gs_scan_pair_blocks(p, np, sa, d, sb);
     if (np >= 16 && gs_cpu_ssse3) return gs_scan_pair_tables(p, np, sa, d, sb);
 #endif
-    return gs_scan_pair_bytes(p, np, sa, d, sb);
+)GSRT"
+R"GSRT(    return gs_scan_pair_bytes(p, np, sa, d, sb);
 }
 
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
@@ -2662,8 +2700,7 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     gs_argc = argc;
     gs_argv = argv;
     /* A region's usable part is whole pages: the guard gap behind it has to
-)GSRT"
-R"GSRT(       start on a page to be protected, and on Windows a stack would run on
+       start on a page to be protected, and on Windows a stack would run on
        unseen through the rest of a part page committed at its end, past the
        GS_STACK_RESERVE bytes the compiler's checks go by. */
     gs_region_page = gs_os_page_size();
@@ -2854,7 +2891,8 @@ static int gs_float_digits(uint64_t f, int e, int bits, int emin, char *dig, int
     else {
         gs_big_mul_pow10(&r, -*k);
         gs_big_mul_pow10(&mp, -*k);
-        if (asym) gs_big_mul_pow10(&mlo, -*k);
+)GSRT"
+R"GSRT(        if (asym) gs_big_mul_pow10(&mlo, -*k);
     }
     gs_big_add(&t, &r, &mp);
     c = gs_big_cmp(&t, &s);
@@ -2865,8 +2903,7 @@ static int gs_float_digits(uint64_t f, int e, int bits, int emin, char *dig, int
     /* Each digit d leaves the remainder r: stop where the digits so far
        followed by d (r within *mm) or by d + 1 (r + mp past s) read back. */
     for (;;) {
-)GSRT"
-R"GSRT(        int d = 0, low, high;
+        int d = 0, low, high;
         gs_big_mul(&r, 10);
         gs_big_mul(&mp, 10);
         if (asym) gs_big_mul(&mlo, 10);
@@ -3674,7 +3711,7 @@ R"GSRT(/* Goose runtime: the OS primitives behind stdlib/os.goose (spec §7.10),
    runtime_ext.h declares them, which this follows. */
 
 #include <time.h>
-#if defined(_WIN32) && !defined(GS_JIT)
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
 #include <wchar.h>
 
 /* Borrow the CRT-parsed wide vector from wmain. Its storage lasts for the
@@ -4301,7 +4338,7 @@ GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *bin
 
 GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
-#if defined(_WIN32) && !defined(GS_JIT)
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
     if (gs_native_wargv) {
         /* The OS command line is bounded by 32767 UTF-16 units, so the
            per-argument length fits the conversion API's int parameter. */
@@ -4358,9 +4395,9 @@ GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
 
 /* Wall-clock time in nanoseconds since the Unix epoch. */
 GS_API int64_t gs_os_time_ns(void) {
-    /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
 )GSRT"
-R"GSRT(       links against does not have it, and glibc hides it from a compiler
+R"GSRT(    /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
+       links against does not have it, and glibc hides it from a compiler
        announcing C99, which tcc also is. */
 #ifdef _WIN32
     /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
@@ -4486,6 +4523,84 @@ static inline void gs_bld_append(gs_rref b, const void *p, int64_t n) {
     b.hdr->len += n;
 }
 
+#endif
+)GSRT"
+    ) },
+    { "jit_c.h", string_view(
+R"GSRT(/* The C surface used by generated code in the embedded JIT. Platform types
+   and implementation headers belong to the runtime built into Goose. The
+   integer and pointer types follow TinyCC's target definitions. */
+#ifndef GOOSE_JIT_C_H
+#define GOOSE_JIT_C_H
+typedef signed char int8_t;
+typedef unsigned char uint8_t;
+typedef short int16_t;
+typedef unsigned short uint16_t;
+typedef int int32_t;
+typedef unsigned int uint32_t;
+typedef __INT64_TYPE__ int64_t;
+typedef unsigned __INT64_TYPE__ uint64_t;
+typedef __SIZE_TYPE__ size_t;
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+typedef __INTPTR_TYPE__ intptr_t;
+typedef __UINTPTR_TYPE__ uintptr_t;
+#define NULL ((void *)0)
+#define INT8_MIN (-128)
+#define INT8_MAX 127
+#define UINT8_MAX 255
+#define INT16_MIN (-32768)
+#define INT16_MAX 32767
+#define UINT16_MAX 65535
+#define INT32_MIN (-2147483647 - 1)
+#define INT32_MAX 2147483647
+#define UINT32_MAX 4294967295U
+#define INT64_MIN (-9223372036854775807LL - 1)
+#define INT64_MAX 9223372036854775807LL
+#define UINT64_MAX 18446744073709551615ULL
+#define INFINITY (1.0F / 0.0F)
+#define NAN (0.0F / 0.0F)
+
+void *memcpy(void *, const void *, size_t);
+void *memmove(void *, const void *, size_t);
+void *memset(void *, int, size_t);
+int memcmp(const void *, const void *, size_t);
+void *memchr(const void *, int, size_t);
+size_t strlen(const char *);
+void *malloc(size_t);
+void *calloc(size_t, size_t);
+void *realloc(void *, size_t);
+void free(void *);
+int abs(int);
+
+#define GS_JIT_MATH1(fn) double fn(double); float fn##f(float);
+#define GS_JIT_MATH2(fn) double fn(double, double); float fn##f(float, float);
+GS_JIT_MATH1(sqrt)
+GS_JIT_MATH1(sin)
+GS_JIT_MATH1(cos)
+GS_JIT_MATH1(tan)
+GS_JIT_MATH1(asin)
+GS_JIT_MATH1(acos)
+GS_JIT_MATH1(atan)
+GS_JIT_MATH1(exp)
+GS_JIT_MATH1(log)
+GS_JIT_MATH1(log2)
+GS_JIT_MATH1(log10)
+GS_JIT_MATH1(floor)
+GS_JIT_MATH1(ceil)
+GS_JIT_MATH1(round)
+GS_JIT_MATH1(trunc)
+GS_JIT_MATH1(fabs)
+GS_JIT_MATH2(atan2)
+GS_JIT_MATH2(pow)
+GS_JIT_MATH2(fmod)
+GS_JIT_MATH1(cbrt)
+GS_JIT_MATH2(hypot)
+double ldexp(double, int);
+float ldexpf(float, int);
+double frexp(double, int *);
+float frexpf(float, int *);
+#undef GS_JIT_MATH1
+#undef GS_JIT_MATH2
 #endif
 )GSRT"
     ) },

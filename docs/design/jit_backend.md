@@ -30,12 +30,13 @@ runtime opens the library when the program starts, under this backend as in
 a built program. Only a package or program with C of its own to compile
 needs one.
 
-Both modes generate identical C for the program. A JIT run compiles the whole
-runtime in the same translation unit, using the form that `--standalone` writes.
-By default, `-o` instead declares most of the runtime extern. That output links
-with the runtime object produced by `--emit-runtime` (`docs/implementation.md`
-§7). `-D` writes a define into the C source, so both modes receive the same
-source text. `--` passes the remaining arguments to the program.
+Both modes generate identical C for the program. JIT and default `-o` output
+declare most of the runtime extern, keeping the inline helpers in the
+generated unit. AOT links the runtime object produced by `--emit-runtime`
+(`docs/implementation.md` §7); JIT binds those functions to the runtime built
+into Goose. `--standalone` still writes the whole runtime into an AOT unit.
+`-D` writes a define into the generated C source. `--` passes the remaining
+arguments to the program.
 
 The program shares the process: its exit status becomes the compiler's, its
 output goes to the same streams, and the compiler's own progress lines move
@@ -55,8 +56,7 @@ TinyCC has a configure script and a makefile, and CMake can use neither of
 them on all three platforms, so `cmake/libtcc.cmake` produces what they would
 have produced:
 
-* a `config.h` with the version, the target, and the machine triplet Debian
-  family systems need to find the C library;
+* a `config.h` with the version and paths within the bundled directory;
 * the library itself, as the single translation unit TinyCC's `ONE_SOURCE`
   build uses;
 * the `tcc` driver, which is used here only to build the next item, because
@@ -67,21 +67,21 @@ have produced:
   list, leaving out the pieces that only a standalone executable or DLL
   needs.
 
-These, TinyCC's runtime headers and, on Windows, the `.def` files that list
-what the system DLLs export are staged into one directory, and the compiler
-passes that directory to `tcc_set_lib_path()`. `GOOSE_TCCLIB` overrides it,
-and a `tcclib` directory beside the compiler binary takes precedence over the
-build tree the compiler was configured in. On macOS the C library's headers
-exist only inside an SDK. The SDK that xcode-select made active (found the
-same way TinyCC finds the SDK's libraries) comes before the SDK the compiler
-was configured with, so a compiler built on another machine finds this
-machine's headers.
+These, TinyCC's runtime headers and, on Windows, its import definitions are
+staged into one directory. Packagers can set `GOOSE_TCC_LIB_PATH` in CMake
+to their installation directory. `GOOSE_TCCLIB` overrides it at run time,
+and a `tcclib` directory beside the compiler binary takes precedence over
+the configured path. Ordinary JIT programs use only the bundled `tccdefs.h` and
+`libtcc1.a`; their small C declaration surface is embedded. Explicitly
+included C can use the additional staged headers.
 
-The runtime's `dlopen` is in libc on glibc 2.34 and later, and in `libdl` on
-earlier versions. So on Linux `RunJit` adds the library `dl`, as a built
-program's link line does, and ignores it if it is missing: a system without
-the archive has the function in its libc. TinyCC does the same for its own
-bounds checker.
+`RunJit` disables default include and library paths, registers the host
+runtime's symbols, explicitly loads the bundled support archive, relocates
+the generated unit, and calls its entry point through the hosted runtime.
+System headers, SDKs, and the platform's dynamic-loading interfaces are
+resolved when Goose itself is built. Runtime startup supplies the program's
+arguments and resource root; teardown releases its regions and restores the
+host's fault handlers.
 
 ## Testing
 
@@ -105,14 +105,23 @@ the backend, contrary to the language's requirements.
 Remaining limitations and possible improvements, roughly ordered by their
 impact on the project.
 
+### Included C
+
+The hosted runtime calls the relocated entry point directly. Included C
+constructor/destructor and `atexit` hooks still need integration with this
+entry/exit path. Its staged standard-header aliases expose only the C
+declarations used by Goose, so arbitrary C depending on additional libc
+functions or SDK headers needs an explicit interface.
+
 ### Threads
 
 A program that spawns a worker or uses a queue (§11.2) is refused under this
 backend. TinyCC's in-memory runner rejects any section with `SHF_TLS`
 (`tccrun.c`: *thread-local storage not supported with -run*), and the runtime
-puts each thread program's globals pointer and its data-stack region registry in
-thread-local storage whenever `GS_NEED_THREADS` is set. This prevents seven test
-files and one sample from running through JIT; the others run.
+puts each thread program's globals pointer in thread-local storage whenever
+`GS_NEED_THREADS` is set. The native runtime's TLS is supported by its host
+compiler, but the generated unit still needs TinyCC TLS support. The test
+runner reports the skipped fixtures and sample.
 
 Possible directions:
 
@@ -127,27 +136,20 @@ Possible directions:
   TinyCC itself and would require upstream work.
 * **Leave it refused.** The diagnostic already says to compile with `-o`.
 
-Windows needs two more things whichever way this goes: TinyCC's bundled winapi
-headers do not declare `SRWLOCK` or `CONDITION_VARIABLE`, and its `kernel32.def`
-does not export the functions over them, so the runtime would need those
-declarations under `__TINYC__` and the staged `.def` file would need the names.
+### Native math
 
-### `log2` on Windows
-
-TinyCC's bundled `math.h` defines `log2(x)` as `log(x) * log2(e)`, which can differ
-from native libm by a few ulp. `test/stdlib/stdlib_math.goose` allows small
-rounding differences in transcendental results and runs on both native and JIT
-backends without a `no-jit` marker.
+The embedded JIT binds math functions from the host C runtime, including
+`log2` on Windows. `test/stdlib/stdlib_math.goose` allows small rounding
+differences in transcendental results across platforms and runs on both
+native and JIT backends without a `no-jit` marker.
 
 ### The sanitizer profile
 
 The JIT runs are skipped under ASan/UBSan. The program itself is not
-instrumented. Also, TinyCC's `exit()` longjmps back into `tcc_run` instead of
-terminating the process, so the program's own heap allocations are still
-live when the compiler exits, and LeakSanitizer reports them as leaks of the
-compiler. Freeing them would need a teardown entry point in the runtime that
-the JIT could call after `tcc_run` returns. The compiled path already has
-full sanitizer coverage, so this is a low priority.
+instrumented. The hosted runtime releases its regions and generated
+stack-pointer array after normal return or Goose exit/abort, but this path
+has not been validated under sanitizers. The compiled path has sanitizer
+coverage.
 
 ### Backtraces and bounds checking
 
@@ -166,7 +168,7 @@ to ask the kernel for writable-then-executable memory.
 
 ### Compilation is not cached
 
-Every JIT run recompiles the runtime, about 1200 lines of C, along with the
-program. The benchmark report measures that fixed overhead. TinyCC has no
-serialized form for an in-memory result, so caching would require substantial
-work.
+Every JIT run recompiles the generated program and inline runtime helpers.
+The rest of the runtime is already compiled into Goose. TinyCC has no
+serialized form for an in-memory result, so caching would require
+substantial work.

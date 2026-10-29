@@ -996,12 +996,14 @@ LIBTCCAPI int tcc_set_output_type(TCCState *s, int output_type)
 #ifdef TCC_TARGET_PE
 # ifdef TCC_IS_NATIVE
     /* allow linking with system dll's directly */
-    tcc_add_systemdir(s);
+    if (!s->nostdlib_paths)
+        tcc_add_systemdir(s);
 # endif
 
 #elif defined TCC_TARGET_MACHO
 # ifdef TCC_IS_NATIVE
-    tcc_add_macos_sdkpath(s);
+    if (!s->nostdlib_paths)
+        tcc_add_macos_sdkpath(s);
 # endif
 
 #else

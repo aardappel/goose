@@ -852,7 +852,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
         lv.s = p;
     } else if (lv.viaref && !lv.lenlv.empty()) {
         auto p = cg.T();
-        cg.L("int64_t *", p, " = &(", lv.lenlv, ");");
+        cg.L("gs_i64 *", p, " = &(", lv.lenlv, ");");
         lv.lenlv = cat("(*", p, ")");
     }
     if (lv.viaref && cg.IsResz(lv.t) && !lv.stk.empty() && !cg.CacheableStk(lv.stk)) {
@@ -914,10 +914,10 @@ inline void Assign::CgStmt(CodeGen &cg) {
         string srcstk;
         auto src = cg.GenPtr(rhs, &srcstk);
         auto nn = cg.T();
-        cg.L("int64_t ", nn, " = (int64_t)*(uint32_t *)(", src, " + 4);");
+        cg.L("int64_t ", nn, " = (int64_t)*(gs_u32 *)(", src, " + 4);");
         cg.L("if (", nn, " > ", cg.LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
              cg.LocArgs(line), ");");
-        cg.L("*(uint32_t *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
+        cg.L("*(gs_u32 *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
         cg.L("GS_MEMCPY((", lv.s, ") + 8, ", src, " + 8, (size_t)(", nn, " * ",
           cg.FixedSize(t->arr->sub), "));");
         return;

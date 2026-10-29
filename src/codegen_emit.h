@@ -940,7 +940,7 @@ inline void CodeGen::EmitExports() {
         }
         for (auto &a : argv) Append(args, args.empty() ? "" : ", ", a);
         auto outlen = Unique("gs_export_len");
-        if (returnslice) Append(params, params.empty() ? "" : ", ", "int64_t *", outlen);
+        if (returnslice) Append(params, params.empty() ? "" : ", ", "gs_i64 *", outlen);
         if (params.empty()) params = "void";
         if (!args.empty() && si.needssp) args += ", ";
         if (si.needssp) args += "0";
@@ -981,7 +981,8 @@ inline string CodeGen::ExportHeader() {
 }
 
 inline void CodeGen::EmitMain() {
-    Append(code, "#if defined(_WIN32) && !defined(GS_JIT) && !defined(main)\n"
+    Append(code, "#if defined(_WIN32) && !defined(GS_EMBEDDED_JIT) && !defined(main)\n"
+                 "GS_API void gs_rt_native_argv(wchar_t **argv);\n"
                  "int wmain(int argc, wchar_t **argv) {\n"
                  "    gs_rt_native_argv(argv);\n"
                  "    gs_program_init(argc, NULL);\n"

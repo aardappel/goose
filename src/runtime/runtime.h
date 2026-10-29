@@ -1,5 +1,5 @@
 /* Goose runtime — the part every compiler-generated C file starts with.
-   Plain C99 (+ #pragma pack, unaligned scalar access); compiles with MSVC,
+   Plain C99 (+ #pragma pack, alignment typedefs); compiles with MSVC,
    gcc, clang, and tcc. Kept deliberately small: per-operation behavior (push,
    indexing, field access) is emitted inline by the compiler; only genuinely
    shared machinery lives in the runtime (data stacks, varints, printing,
@@ -13,12 +13,13 @@
    platform's headers, which no program's unit includes, and is built one
    of two ways:
 
-   - Standalone (`goose --standalone`, and every JIT run): one translation
+   - Standalone (`goose --standalone`): one translation
      unit holds it all, and everything the runtime defines is static.
-   - Separate (`goose -o`'s default): the program's unit declares the rest
+   - Separate (JIT and `goose -o`'s default): the program's unit declares the rest
      extern (GS_SEPARATE_RUNTIME), and `goose --emit-runtime` writes it out
      as a C file of its own (GS_RUNTIME_OBJECT), compiled once and linked
-     with every program. That object takes no configuration of its own: the
+     with every program. JIT uses the same interface to the runtime built
+     into Goose. That object takes no configuration of its own: the
      program hands it the data stack sizes as it starts (gs_rt_init), it
      always supports threads, and it holds the checks of debug and release
      builds alike, so one object serves every program a compiler emits.
@@ -49,12 +50,33 @@
 #define _DEFAULT_SOURCE 1
 #endif
 
+#ifndef GS_EMBEDDED_JIT
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#endif
+
+/* Goose values can start at any byte, including scalars reached through a
+   reference or slice. GCC and Clang must retain that alignment on the
+   pointee type, even after taking a packed member's address. MSVC and
+   TinyCC already permit these accesses on the supported targets. The
+   aliases keep the underlying C types and their calling conventions. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#define GS_ALIGN1 __attribute__((aligned(1)))
+#else
+#define GS_ALIGN1
+#endif
+typedef int16_t gs_i16 GS_ALIGN1;
+typedef int32_t gs_i32 GS_ALIGN1;
+typedef int64_t gs_i64 GS_ALIGN1;
+typedef uint16_t gs_u16 GS_ALIGN1;
+typedef uint32_t gs_u32 GS_ALIGN1;
+typedef uint64_t gs_u64 GS_ALIGN1;
+typedef float gs_f32 GS_ALIGN1;
+typedef double gs_f64 GS_ALIGN1;
 
 /* Every float operation rounds on its own. A C compiler may otherwise
    contract a multiply and an add into one fused rounding wherever the target
@@ -884,11 +906,6 @@ typedef struct {
    budgeted for regions over the whole program, and the most regions the
    main program and any one worker hold (the compiler's static counts),
    which size their registries and give hardware_threads() its cap. */
-#ifdef _WIN32
-/* Only the real AOT process entry captures native arguments. JIT, renamed
-   entries and C embedding retain the caller-supplied narrow vector. */
-GS_API void gs_rt_native_argv(wchar_t **argv);
-#endif
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */

@@ -55,8 +55,8 @@ fn disassemble(code: Op[:]) {
 // locals a small fixed array. The `match` is a switch on the tag byte with
 // the operand read in place, and a jump is an index store.
 fn run(code: Op[:]) -> i64 {
-    var stack: i64[>..<] = [];
-    var locals: i64[8] = [0; 8];
+    var stack:  i64[>..<] = [];
+    var locals: i64[8]    = [0; 8];
     var pc = 0;
     var steps = 0;
     loop {

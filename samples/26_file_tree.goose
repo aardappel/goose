@@ -17,7 +17,7 @@
 type Link = Node&<u32 in nodes>?;
 
 struct Node {
-    name: u8[..15],     // inline, so a Node is fixed-size, as pool elements must be
+    name:    u8[..15],  // inline, so a Node is fixed-size, as pool elements must be
     entries: Link[:],   // the run of links to what this directory holds
 }
 

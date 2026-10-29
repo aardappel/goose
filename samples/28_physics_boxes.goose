@@ -54,7 +54,7 @@ let SHADOW_SIZE = 2048;
 // inside another.
 let CELLS = 24;
 let CELL: f32 = 1.3;
-let DT: f32 = 1.0 / 60.0;
+let DT:   f32 = 1.0 / 60.0;
 
 fn f3(x: f32) -> float3 { float3 { x, x, x } }
 
@@ -250,7 +250,7 @@ fn main() {
 
     // Two pyramids for the pour to bury and the arm to knock down.
     var bodies: physics::Body[>..] = [];
-    var looks: Look[>..] = [];
+    var looks:  Look[>..]          = [];
     for p in 2 {
         let center = if p == 0 { float3 { 8.0, 0.0, 5.0 } } else { float3 { -7.0, 0.0, -8.0 } };
         let rows = 8;
@@ -271,15 +271,15 @@ fn main() {
     let pyramid_boxes = bodies.len;
 
     // --- drawing -------------------------------------------------------------
-    var verts: Vertex[>..] = [];
-    var indices: u16[>..] = [];
+    var verts:   Vertex[>..] = [];
+    var indices: u16[>..]    = [];
     cube(verts, indices);
     let cube_vb = gfx::vertex_buffer(bytes_of(verts));
     let cube_ib = gfx::index_buffer(bytes_of(indices));
     // Room for every instance there will ever be: filled from the start
     // each frame.
-    let one: Instance[1] = [default<Instance>()];
-    let none: u8[>..] = [];
+    let one:  Instance[1] = [default<Instance>()];
+    let none: u8[>..]     = [];
     let instance_bytes = bytes_of(one).len;
     let inst_vb = gfx::buffer(gfx::BUFFER_VERTEX,
                               (props.len + 1 + pyramid_boxes + max_boxes) * instance_bytes, none);
@@ -308,12 +308,12 @@ fn main() {
 
     // --- the pour ------------------------------------------------------------
     var r = rng { 2026 };
-    var instances: Instance[>..] = [];
+    var instances:  Instance[>..]           = [];
     var transforms: physics::Transform[>..] = [];
     var dropped = 0;
     var oldest = 0;
-    var yaw: f32 = 0.6;
-    var pitch: f32 = 0.45;
+    var yaw:      f32 = 0.6;
+    var pitch:    f32 = 0.45;
     var distance: f32 = 48.0;
     var drawn = 0;
     var stats_time: f64 = 0.0;

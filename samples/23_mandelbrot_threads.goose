@@ -71,7 +71,7 @@ fn main() {
     for i in n { ids.push(thread_spawn(worker)); }
     // Finished rows land in one byte buffer as they arrive; `order` maps a
     // row index to where its bytes went.
-    var rows: u8[>..] = [];
+    var rows:  u8[>..]  = [];
     var order: i64[>..] = [];
     order.resize(H, -1);
     for done in H {

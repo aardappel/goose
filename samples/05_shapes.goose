@@ -75,7 +75,7 @@ enum Mark {
 // `marks` (`in marks`, 4 bytes), and loading one is an add. The array such
 // offsets are measured from is a global; a local array can be indexed the
 // same way with plain 8-byte references, `(Mark..&)[>..]`.
-var marks: Mark..[>..] = [];
+var marks:   Mark..[>..]                  = [];
 var mark_at: (Mark..&<u32 in marks>)[>..] = [];
 
 fn main() {

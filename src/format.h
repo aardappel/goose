@@ -1,8 +1,8 @@
 // Goose compiler — `goose format`: rewrites a Goose file in the standard
 // layout. The author's line breaks stay; indentation, the spaces between
 // tokens, blank lines, trailing whitespace and the final newline are
-// normalized, and a list whose closing bracket starts a line gets a trailing
-// comma. The formatter prints the file's own tokens and comments, the text
+// normalized, a list whose closing bracket starts a line gets a trailing
+// comma, and a run of declarations' types and `=`s line up as gofmt's do. The formatter prints the file's own tokens and comments, the text
 // between them chosen afresh, with the parser as the oracle for what a token
 // is (Parser::roles: a generic `<` or a comparison, a unary `-` or a binary
 // one, a bracket whose list may end in a comma). Every result is checked
@@ -334,11 +334,29 @@ struct OutLine {
     int delta = 0;              // How far the end of the line moved.
     int codeend = 0;            // The column after the code.
     int depth = 0;              // Brackets open at its start.
+    // A table's cells: the type and the `=` of a line that declares a name
+    // with its type, `[const|let|...] name: type [= value]`, as items, and
+    // where they start; -1 where the line has none. Lines with the same key
+    // in a run line them up.
+    int cell[2] = { -1, -1 };
+    int cellcol[2] = { 0, 0 };
+    string cellkey;
 };
 
-// The formatted text of `src`, whose tokens carry `roles`.
-inline string Layout(const string &src, const vector<pair<const char *, uint8_t>> &roles) {
-    auto items = Collect(src, roles);
+// The keywords that may come before the name a table's line declares.
+inline bool DeclKeyword(const Item &it) {
+    if (it.kind != Item::TOKEN) return false;
+    switch (it.tok) {
+        case T_EXPORT: case T_LET: case T_VAR: case T_CONST: case T_EXTERN: case T_PAD:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The lines of the output, with `pad` spaces more before the items it
+// names: the cells of a table, lined up.
+inline vector<OutLine> Lines(const vector<Item> &items, const unordered_map<int, int> &pad) {
     // An open bracket: where its line is indented, where it is, and, for the
     // lines inside it, the first line of the statement or element they are
     // in (its anchor), which a continuation line keeps its offset from.
@@ -404,8 +422,29 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
                 c.anew = indent;
             }
         }
+        // The cells, where the line starts a statement or an element that
+        // declares a name with its type.
+        auto prefix = i;
+        while (prefix < j && DeclKeyword(items[prefix])) prefix++;
+        if (!cont && hascode && prefix + 2 < j && IsTok(items[prefix], T_IDENT) &&
+            IsTok(items[prefix + 1], T_COLON) && items[prefix + 2].kind == Item::TOKEN) {
+            L.cell[0] = (int)prefix + 2;
+            auto d = 0;
+            for (auto q = prefix + 2; q < j && items[q].kind == Item::TOKEN; q++) {
+                d -= Closes(items[q]);
+                if (d < 0 || IsTok(items[q], T_SEMI)) break;
+                if (d == 0 && IsTok(items[q], T_ASSIGN)) {
+                    L.cell[1] = (int)q;
+                    break;
+                }
+                if (IsOpener(items[q])) d++;
+            }
+            L.cellkey = cat(L.depth, " ", indent);
+            for (auto q = i; q < prefix; q++) Append(L.cellkey, " ", items[q].text);
+        }
         L.text.assign((size_t)indent, ' ');
         auto col = indent;
+        auto lowest = stack.size();
         auto delta = indent - oldindent;
         const Item *prev = nullptr;
         // A bracket opened on this line after one opened on an earlier line
@@ -436,10 +475,13 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
                 // declarations stays a table.
                 if (it.kind == Item::TOKEN && IsTok(*prev, T_SEMI) && it.oldcol > prev->oldcol + 2)
                     sp = max(sp, it.oldcol + delta - col);
+                if (auto p = pad.find((int)k); p != pad.end()) sp += p->second;
                 L.text.append((size_t)sp, ' ');
                 col += sp;
             }
             auto startcol = col;
+            for (auto c = 0; c < 2; c++)
+                if (L.cell[c] == (int)k) L.cellcol[c] = col;
             if (it.text.find('\n') != string_view::npos) {
                 int applied;
                 auto s = Shift(it.text, delta, it.kind != Item::TOKEN, applied);
@@ -462,6 +504,7 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
                     }
                     stack.pop_back();
                 }
+                lowest = min(lowest, stack.size());
                 if (IsOpener(it)) {
                     auto last = k == lasttoken;
                     auto block = IsBlockCurly(it);
@@ -474,6 +517,11 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
         }
         L.delta = delta;
         L.codeend = col;
+        // A table's line is whole: no bracket it closes or leaves open, and
+        // no line break inside it.
+        if (lowest < (size_t)L.depth || stack.size() != (size_t)L.depth ||
+            L.text.find('\n') != string::npos)
+            L.cell[0] = L.cell[1] = -1;
         // How the line ends, for the next.
         prevhang = false;
         if (hascode) {
@@ -490,6 +538,49 @@ inline string Layout(const string &src, const vector<pair<const char *, uint8_t>
         out.push_back(std::move(L));
         i = j;
     }
+    return out;
+}
+
+// The formatted text of `src`, whose tokens carry `roles`.
+inline string Layout(const string &src, const vector<pair<const char *, uint8_t>> &roles) {
+    auto items = Collect(src, roles);
+    auto out = Lines(items, {});
+    // Tables, as gofmt lines them up: a run of consecutive lines that declare
+    // names with their types, at one depth and indentation and after the same
+    // keywords, puts each type a space past the longest name, and each `=`
+    // in a run of them a space past the longest type.
+    unordered_map<int, int> pad;
+    for (size_t a = 0; a < out.size();) {
+        if (out[a].cell[0] < 0) { a++; continue; }
+        auto b = a + 1;
+        while (b < out.size() && out[b].cell[0] >= 0 && out[b].orignl == 1 &&
+               out[b].cellkey == out[a].cellkey)
+            b++;
+        if (b - a >= 2) {
+            auto at = 0;
+            for (auto k = a; k < b; k++) at = max(at, out[k].cellcol[0]);
+            for (auto k = a; k < b; k++)
+                if (at > out[k].cellcol[0]) pad[out[k].cell[0]] = at - out[k].cellcol[0];
+            auto moved = [&](size_t k) {
+                auto p = pad.find(out[k].cell[0]);
+                return out[k].cellcol[1] + (p == pad.end() ? 0 : p->second);
+            };
+            for (auto c = a; c < b;) {
+                if (out[c].cell[1] < 0) { c++; continue; }
+                auto e = c + 1;
+                while (e < b && out[e].cell[1] >= 0) e++;
+                if (e - c >= 2) {
+                    auto eq = 0;
+                    for (auto k = c; k < e; k++) eq = max(eq, moved(k));
+                    for (auto k = c; k < e; k++)
+                        if (eq > moved(k)) pad[out[k].cell[1]] = eq - moved(k);
+                }
+                c = e;
+            }
+        }
+        a = b;
+    }
+    if (!pad.empty()) out = Lines(items, pad);
     // Trailing comments: a run of them on consecutive lines at one depth,
     // which shared a column, shares one still, as far right as its longest
     // line needs; any other keeps its column, moved with its line, or one

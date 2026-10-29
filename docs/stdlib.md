@@ -352,7 +352,7 @@ let smallest = q.heap_pop();
 ```goose
 fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8)   // base 2..36, right-aligned
 fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>..] or u8[..k]
-fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, rounded half up; inf/-inf/nan as print writes them
+fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, the exact value rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
@@ -409,6 +409,15 @@ var head: u8[>..] = [];
 format_uleb(head, payload.len);
 write_file(path, head); append_file(path, payload);
 ```
+
+`format_flt` rounds the exact binary value of `v`, at any size and to any
+number of places: `format_flt(out, 0.1, 20)` writes
+`0.10000000000000000555`, as C's `printf("%.20f")` does, and
+`format_flt(out, 2.675, 2)` writes `2.67`, since the double nearest 2.675
+is just below it. Only a value that is exactly halfway rounds differently
+from `printf`, which rounds half to even: `format_flt(out, 0.125, 2)`
+writes `0.13`. The plain `format` writes the shortest text that reads back
+as the same value.
 
 ## exception
 

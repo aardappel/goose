@@ -151,6 +151,30 @@ add_dependencies(goose tcc_runtime)
 set(GOOSE_TCC_LIB_PATH "${TCC_STAGE}" CACHE PATH "TinyCC's runtime directory")
 target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${GOOSE_TCC_LIB_PATH}")
 
+# C headers included explicitly by a program see the same small host interface
+# as generated C. These paths precede TinyCC's own compiler headers.
+foreach(header stdint.h string.h stdlib.h math.h)
+    configure_file(src/runtime/jit_c.h "${TCC_STAGE}/goose/include/${header}" COPYONLY)
+endforeach()
+
+# Register the functions declared by the separate-runtime interface. Reading
+# the headers at configure time keeps this table in step with that interface.
+set(jit_symbols "")
+foreach(header runtime.h runtime_ext.h)
+    set(path "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/${header}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
+    file(STRINGS "${path}" declarations REGEX "^GS_API ")
+    foreach(declaration IN LISTS declarations)
+        if(declaration MATCHES "(gs_[A-Za-z0-9_]+)\\(")
+            string(APPEND jit_symbols "GS_JIT_SYMBOL(${CMAKE_MATCH_1})\n")
+        endif()
+    endforeach()
+endforeach()
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/jit_symbols.inc" CONTENT "${jit_symbols}" @ONLY)
+target_sources(goose PRIVATE src/jit_runtime.c src/jit_runtime.h)
+target_include_directories(goose PRIVATE "${CMAKE_BINARY_DIR}")
+set_property(TARGET goose PROPERTY C_STANDARD 11)
+
 # The blessed packages GOOSE_BUILTIN_LIBS names (src/blessed.txt; `all`, or
 # a list of their names), compiled into the compiler (cmake/package.cmake),
 # so that their programs run with nothing else installed. Empty by default:

@@ -2,7 +2,7 @@
    runtime_ext.h declares them, which this follows. */
 
 #include <time.h>
-#if defined(_WIN32) && !defined(GS_JIT)
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
 #include <wchar.h>
 
 /* Borrow the CRT-parsed wide vector from wmain. Its storage lasts for the
@@ -627,7 +627,7 @@ GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *bin
 
 GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
-#if defined(_WIN32) && !defined(GS_JIT)
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
     if (gs_native_wargv) {
         /* The OS command line is bounded by 32767 UTF-16 units, so the
            per-argument length fits the conversion API's int parameter. */

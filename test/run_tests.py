@@ -1740,7 +1740,7 @@ def main():
             return
         sig = re.search(r"^static void walk_g\w*\(([^)]*)\) \{$", cfile.read_text(),
                         re.MULTILINE)
-        want = (r"void \*\w+, int64_t \w+, int64_t \w+, gs_rhdr \*\w+, gs_stack \*\w+, "
+        want = (r"void \*\w+, int64_t \w+, gs_i64 \w+, gs_rhdr \*\w+, gs_stack \*\w+, "
                 r"void \*\w+, int64_t \w+")
         if not sig or not re.fullmatch(want, sig[1]):
             r.fail(f"member parameters {f.name}",
@@ -1760,7 +1760,7 @@ def main():
         body = re.search(r"^static void store_links_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
                          cfile.read_text(), re.MULTILINE | re.DOTALL)
         stores = body and all(re.search(rf"\)\.{fld}_g = ", body[1]) for fld in ("w", "prev"))
-        if not stores or re.search(r"double \*t\d+ = &", body[1]):
+        if not stores or re.search(r"gs_f64 \*t\d+ = &", body[1]):
             r.fail(f"member stores {f.name}", body[1] if body else "no store_links in the C")
         else:
             r.ok(f"member stores {f.name}")
@@ -2356,6 +2356,16 @@ def main():
             r.fail("resource paths", str(e))
     if cc or jit:
         r.show_task(resource_paths)
+
+    def jit_runtime():
+        from jit_runtime import check_jit_runtime
+        try:
+            check_jit_runtime(exe, gendir)
+            r.ok("embedded JIT runtime: bundled files, exit/abort statuses and resource roots")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("embedded JIT runtime", str(e))
+    if jit:
+        r.show_task(jit_runtime)
 
     def git_packages():
         from packages_git import check_git_packages

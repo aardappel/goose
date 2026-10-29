@@ -37,8 +37,8 @@ fn mul_add_small(n: u32[>..]&, m: u32, a: u32) {
 }
 
 fn add(a: u32[:], b: u32[:]) -> u32[>..] {
-    var r: u32[>..] = [];
-    var carry: u64 = 0;
+    var r:     u32[>..] = [];
+    var carry: u64      = 0;
     for i in max(a.len, b.len) {
         let x: u64 = if i < a.len { a[i] } else { 0 };
         let y: u64 = if i < b.len { b[i] } else { 0 };

@@ -369,8 +369,8 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv) {
                 v.typedelems = true;
             } else {
                 v.elems = cat("((", lv.s, ") + 8)");
-                v.len = cat("(int64_t)*(uint32_t *)((", lv.s, ") + 4)");
-                v.lenlv = cat("(*(uint32_t *)((", lv.s, ") + 4))");
+                v.len = cat("(int64_t)*(gs_u32 *)((", lv.s, ") + 4)");
+                v.lenlv = cat("(*(gs_u32 *)((", lv.s, ") + 4))");
             }
             return v;
         case A_VAR: {

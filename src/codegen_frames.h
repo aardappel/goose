@@ -357,7 +357,7 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
             if (IsResz(sp->rets[i]) && IsFrameObj(sp->rets[i]))
                 add(cat(CT(sp->rets[i]), " *gs_rl", i));
             else
-                add(cat("int64_t *gs_rl", i));
+                add(cat("gs_i64 *gs_rl", i));
         } else if (IsBytesT(sp->rets[i])) {
             add(cat("gs_stack *gs_dst", i));
         } else if ((int)i != si.cret) {

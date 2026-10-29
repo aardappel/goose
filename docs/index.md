@@ -95,6 +95,9 @@ and the reference describe what was built; these say why.
 * [Dynamic externs](design/dynamic_externs.md): `extern "lib" { ... }`,
   an extern fn bound from a shared library by name at program start; a
   proposal.
+* [Coroutines](design/coroutines.md): stackless coroutines whose frame is
+  an ordinary fixed-size value, driven by `resume` and scheduled by
+  libraries; what Rust, C++, Kotlin, Go and Zig learned; a proposal.
 
 ## Getting the compiler
 

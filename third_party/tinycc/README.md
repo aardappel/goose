@@ -17,6 +17,10 @@ License: LGPL 2.1 (`COPYING`), with the relicensing notes in `RELICENSING`.
 
 Local changes:
 
+- `libtcc.c`: `tcc_set_output_type` honors `nostdlib_paths` for Windows
+  system directories and macOS SDK discovery, as it does for configured
+  library paths. The embedded JIT supplies its runtime symbols and support
+  archive itself.
 - `arm64-gen.c`: use Apple's natural stack size and alignment for fixed
   floating-point arguments, including homogeneous float aggregates. This
   fixes a trailing float being passed at offset 16 instead of 12 after a

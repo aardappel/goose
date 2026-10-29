@@ -819,9 +819,8 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
         f.locals.push_back({ i, v, { v->assigned, v->maybeassigned, v->narrowed } });
     });
     // Globals' narrowing participates too (assignment in branches).
-    for (auto g : ast.globals)
-        for (auto v : g->defs)
-            if (v->narrowed) f.globals.push_back({ v, v->narrowed });
+    for (auto v : narrowedglobals)
+        if (v->narrowed) f.globals.push_back({ v, v->narrowed });
     f.reachable = reachable;
     f.kills = cur.kills;
     return f;
@@ -834,8 +833,7 @@ inline void TypeCheck::RestoreFlow(const FlowState &f) {
         e.var->maybeassigned = e.state.maybeassigned;
         e.var->narrowed = e.state.narrowed;
     }
-    for (auto g : ast.globals)
-        for (auto v : g->defs) v->narrowed = nullptr;
+    for (auto v : narrowedglobals) v->narrowed = nullptr;
     for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
     reachable = f.reachable;
     cur.kills = f.kills;
@@ -901,7 +899,7 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
         if (!id->vdef) return;
         auto t = id->vdef->type;
         if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed)
-            id->vdef->narrowed = NarrowedRef(t, cond->line);
+            SetNarrowed(id->vdef, NarrowedRef(t, cond->line));
         return;
     }
     if (auto u = Is<Unary>(cond)) {
@@ -2834,7 +2832,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
             if (spec && lv.var->ownerspec != spec)
                 spec->record.reboundoptionals.insert(lv.var);
             if (!v.isnull && wasplain) {
-                lv.var->narrowed = NarrowedRef(target, a->line);
+                SetNarrowed(lv.var, NarrowedRef(target, a->line));
             } else {
                 lv.var->narrowed = nullptr;
             }

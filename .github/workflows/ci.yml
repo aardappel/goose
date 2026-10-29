@@ -113,9 +113,7 @@ jobs:
       # allocations.
 
       # Instrument the C++ compiler as well as the C it emits. -O1 keeps
-      # useful sanitizer stacks and compiler build time modest. Generated C
-      # disables only alignment checks because Goose deliberately packs data;
-      # the compiler itself retains the full undefined-behavior checks.
+      # useful sanitizer stacks and compiler build time modest.
       - name: Configure instrumented compiler
         run: >-
           cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug

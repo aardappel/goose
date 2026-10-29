@@ -627,9 +627,9 @@ fn parse_error(what: const u8[:], pos: i64) -> Node?, u8[>..] { return null, str
 // as it is pushed.
 fn parse(text: u8[:], doc: Node[>..]&, decoded: u8[>..]&) -> Node?, u8[>..] {
     var pos = 0;
-    var root: Node? = null;
+    var root:   Node? = null;
     var parent: Node? = null;       // the innermost container,
-    var last: Node? = null;         // its last child so far,
+    var last:   Node? = null;       // its last child so far,
     var count = 0;                  // how many it has,
     var is_obj = false;             // and whether it is an object
     var outer: Open[>..<] = [];     // the containers around it, innermost last

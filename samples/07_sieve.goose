@@ -34,8 +34,8 @@ fn main() {
 
     // Collect the primes. `%` is Euclidean, so bucketing by residue needs
     // no care about signs; here it counts the primes by their last digit.
-    var primes: i32[>..] = [];
-    var by_last_digit: i64[10] = [0; 10];
+    var primes:        i32[>..] = [];
+    var by_last_digit: i64[10]  = [0; 10];
     for n, k in flags {
         if n == 1 {
             primes.push(k as i32);

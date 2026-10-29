@@ -37,7 +37,7 @@ import audio;
 // --- the WAD directory and little-endian values ------------------------------
 
 struct Lump { name: u8[..8], start: i64, size: i64 }
-var wad: u8[>..] = [];
+var wad:   u8[>..]   = [];
 var lumps: Lump[>..] = [];
 
 fn require(ok: bool, message: const u8[:]) {
@@ -123,16 +123,16 @@ let ATLAS_W = 2048;
 let ATLAS_H = 4096;
 struct Picture {
     name: u8[..8], kind: i64,       // 0: patch, 1: wall texture, 2: flat
-    x: i64, y: i64, w: i64, h: i64,
+    x:    i64, y: i64, w: i64, h: i64,
     left: i64, top: i64,           // patch anchor (weapons and sprites)
 }
-var pictures: Picture[>..] = [];
-var atlas_pixels: u8[>..] = [];
+var pictures:     Picture[>..] = [];
+var atlas_pixels: u8[>..]      = [];
 var shelf_x = 0;
 var shelf_y = 0;
 var shelf_height = 0;
 var palette: u8[768];
-var font: i64[128];
+var font:    i64[128];
 var sky_picture = 0;
 
 fn find_picture(name: const u8[:], kind: i64) -> i64 {
@@ -265,27 +265,27 @@ fn load_pictures() {
 
 struct Side { offset: float2, upper: i64, lower: i64, middle: i64, sector: i64 }
 struct Line {
-    a: float2, b: float2, flags: i64, special: i64, tag: i64, front: i64, back: i64,
+    a:         float2, b: float2, flags: i64, special: i64, tag: i64, front: i64, back: i64,
     activated: bool = false,
 }
 struct Sector {
-    floor: f32, ceiling: f32, floor_pic: i64, ceiling_pic: i64,
-    light: f32, special: i64, tag: i64,
-    start_floor: f32, start_ceiling: f32,
-    motion: i64, target: f32, wait: f32, speed: f32,
+    floor:        f32, ceiling: f32, floor_pic: i64, ceiling_pic: i64,
+    light:        f32, special: i64, tag: i64,
+    start_floor:  f32, start_ceiling: f32,
+    motion:       i64, target: f32, wait: f32, speed: f32,
     secret_found: bool,
 }
 struct Seg { a: float2, b: float2, sector: i64 }
 struct Subsector { first: i64, count: i64, sector: i64 }
 struct Node { origin: float2, delta: float2, front: i64, back: i64 }
 struct FloorTriangle { a: float2, b: float2, c: float2, sector: i64 }
-var vertices: float2[>..] = [];
-var sides: Side[>..] = [];
-var lines: Line[>..] = [];
-var sectors: Sector[>..] = [];
-var segs: Seg[>..] = [];
-var subsectors: Subsector[>..] = [];
-var nodes: Node[>..] = [];
+var vertices:        float2[>..]        = [];
+var sides:           Side[>..]          = [];
+var lines:           Line[>..]          = [];
+var sectors:         Sector[>..]        = [];
+var segs:            Seg[>..]           = [];
+var subsectors:      Subsector[>..]     = [];
+var nodes:           Node[>..]          = [];
 var floor_triangles: FloorTriangle[>..] = [];
 
 fn cross2(a: float2, b: float2) -> f32 { a.x * b.y - a.y * b.x }
@@ -375,12 +375,12 @@ fn load_map() {
     for i in sec.len / 26 {
         let at = i * 26;
         let bottom: f32 = i16le(sec, at);
-        let top: f32 = i16le(sec, at + 2);
+        let top:    f32 = i16le(sec, at + 2);
         sectors.push(Sector {
-            floor: bottom, ceiling: top,
+            floor:     bottom, ceiling: top,
             floor_pic: flat(name_at(sec, at + 4)), ceiling_pic: flat(name_at(sec, at + 12)),
-            light: clamp<f32>(i16le(sec, at + 20) / 255.0, 0.0, 1.0),
-            special: i16le(sec, at + 22), tag: i16le(sec, at + 24),
+            light:     clamp<f32>(i16le(sec, at + 20) / 255.0, 0.0, 1.0),
+            special:   i16le(sec, at + 22), tag: i16le(sec, at + 24),
             start_floor: bottom, start_ceiling: top, .. });
     }
     let sd = records("SIDEDEFS", 30);
@@ -438,33 +438,33 @@ fn load_map() {
 
 // --- things, player and sound ------------------------------------------------
 
-let STEP: f32 = 1.0 / 60.0;
+let STEP:          f32 = 1.0 / 60.0;
 let PLAYER_RADIUS: f32 = 16.0;
 let PLAYER_HEIGHT: f32 = 56.0;
 struct Player {
-    pos: float2, z: f32, falling: f32, yaw: f32,
-    health: i64, armor: i64, bullets: i64, shells: i64,
-    weapon: i64, shotgun: bool, chaingun: bool, blue_key: bool,
+    pos:      float2, z: f32, falling: f32, yaw: f32,
+    health:   i64, armor: i64, bullets: i64, shells: i64,
+    weapon:   i64, shotgun: bool, chaingun: bool, blue_key: bool,
     cooldown: f32, flash: f32, hurt: f32, bonus: f32, bob: f32,
 }
 struct Actor {
-    pos: float2, z: f32, kind: i64, picture: i64,
+    pos:    float2, z: f32, kind: i64, picture: i64,
     radius: f32, health: i64, alive: bool, solid: bool,
-    awake: bool, timer: f32, pain: f32, death: f32, attacking: f32,
+    awake:  bool, timer: f32, pain: f32, death: f32, attacking: f32,
 }
 struct Fireball { pos: float2, z: f32, velocity: float2, vz: f32, life: f32 }
-var player: Player;
-var actors: Actor[..512];
+var player:    Player;
+var actors:    Actor[..512];
 var fireballs: Fireball[64];
 var next_fireball = 0;
-var game_time: f32 = 0.0;
+var game_time:    f32 = 0.0;
 var damage_clock: f32 = 0.0;
 var kills = 0;
 var total_monsters = 0;
 var secrets = 0;
 var total_secrets = 0;
 var won = false;
-var message: u8[..160];
+var message:      u8[..160];
 var message_time: f32 = 0.0;
 var random_state: u32 = 12345;
 

@@ -40,7 +40,7 @@ fn main() {
 
     // 2. One leaf per used symbol, all in the priority queue.
     var nodes: Node[>..] = [];
-    var heap: i32[>..<] = [];
+    var heap:  i32[>..<] = [];
     for f, c in freq {
         if f > 0 {
             nodes.push(Node { weight: f, sym: c as i16 });

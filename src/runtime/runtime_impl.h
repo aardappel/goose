@@ -87,6 +87,7 @@ static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, 
         gs_longjmp(gs_contain->jump, 1);
     }
     fwrite(text, 1, (size_t)(pre + len + loc), stderr);
+    free(text);
     gs_end(1);
 }
 
@@ -174,10 +175,9 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 /* The program's arguments, for stdlib/os.goose (runtime_os.h). */
 static int gs_argc;
 static char **gs_argv;
-#ifdef _WIN32
-/* CommandLineToArgvW owns one contiguous allocation, retained for this
-   process's lifetime as the CRT retains main's original argv. The real
-   process entry sets it before runtime/global/worker initialization. */
+#if defined(_WIN32) && !defined(GS_HOSTED_JIT)
+/* Borrowed from wmain: the CRT retains the vector for the process lifetime.
+   The real process entry sets it before global/worker initialization. */
 static wchar_t **gs_native_wargv;
 #endif
 
@@ -303,6 +303,9 @@ GS_API void gs_release_regions(void) {
 #include <fcntl.h>
 
 static size_t gs_page_size = 0;
+#ifdef GS_HOSTED_JIT
+static void *gs_jit_fault_handler;
+#endif
 #define GS_COMMIT_CHUNK (1u << 20)
 /* What each thread program keeps of its native stack for reporting that
    stack's overflow (gs_native_stack_init). */
@@ -363,7 +366,11 @@ static size_t gs_os_page_size(void) {
 /* Installed once by main, before any worker can start. */
 static void gs_regions_init(void) {
     gs_page_size = gs_os_page_size();
-    if (!AddVectoredExceptionHandler(1, gs_fault_filter))
+    void *handler = AddVectoredExceptionHandler(1, gs_fault_filter);
+#ifdef GS_HOSTED_JIT
+    gs_jit_fault_handler = handler;
+#endif
+    if (!handler)
         gs_panic("cannot install data stack fault handler");
 }
 
@@ -422,6 +429,9 @@ static GS_TLS void *gs_sigstack;
 #define GS_SIGSTACK_MIN (64u << 10)
 /* What the fault handler replaced, for the faults that are not its own. */
 static struct sigaction gs_prev_segv, gs_prev_bus;
+#ifdef GS_HOSTED_JIT
+static int gs_jit_fault_installed;
+#endif
 
 /* For gs_trim_memory, which discards whole pages only. */
 static size_t gs_page_size = 0;
@@ -464,9 +474,15 @@ static void gs_regions_init(void) {
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
         gs_panic("cannot install data stack fault handler");
+#ifdef GS_HOSTED_JIT
+    gs_jit_fault_installed = 1;
+#endif
     #ifdef SIGBUS
         if (sigaction(SIGBUS, &sa, &gs_prev_bus))
             gs_panic("cannot install data stack fault handler");
+#ifdef GS_HOSTED_JIT
+        gs_jit_fault_installed |= 2;
+#endif
     #endif
 }
 
@@ -571,12 +587,16 @@ static GS_NORETURN void gs_park(void) {
 #endif
 
 static GS_NORETURN void gs_end(int code) {
+#ifdef GS_HOSTED_JIT
+    gs_jit_exit(code);
+#else
     if (!gs_end_first()) gs_park();
     fflush(NULL);
     #ifdef __TINYC__
         if (gs_current_thread_id < 0) exit(code);
     #endif
     _Exit(code);
+#endif
 }
 
 /* The smallest a region gets before a refusal is fatal. */

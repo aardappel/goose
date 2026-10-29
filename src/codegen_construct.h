@@ -76,8 +76,8 @@ inline void CodeGen::EmitArrayCount(const string &stk, TypeExpr *at, const strin
         case A_LIMITED: {   // Runtime capacity: chosen as the initial length (v1).
             if (check) EmitLenCheck(IS_U32, n);
             auto x = check ? cat("(uint32_t)", n) : n;
-            L("*(uint32_t *)", Top(stk), " = ", x, ";");
-            L("*(uint32_t *)(", Top(stk), " + 4) = ", x, ";");
+            L("*(gs_u32 *)", Top(stk), " = ", x, ";");
+            L("*(gs_u32 *)(", Top(stk), " + 4) = ", x, ";");
             Bump(stk, "8");
             break;
         }
@@ -1188,8 +1188,8 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
         L("int64_t ", t, " = ", cv, ";");
         L("if (", t, " < 0 || ", t, " > (int64_t)UINT32_MAX) "
           "gs_abort(GS_E_CAPRANGE, ", LocArgs(al->line), ");");
-        L("*(uint32_t *)", Top(stk), " = (uint32_t)", t, ";");
-        L("*(uint32_t *)(", Top(stk), " + 4) = 0;");
+        L("*(gs_u32 *)", Top(stk), " = (uint32_t)", t, ";");
+        L("*(gs_u32 *)(", Top(stk), " + 4) = 0;");
         Bump(stk, cat("8 + ", t, " * ", FixedSize(elem)));
         return;
     }

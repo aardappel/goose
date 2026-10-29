@@ -7,6 +7,7 @@
 #pragma once
 
 #include "libtcc.h"
+#include "jit_runtime.h"
 #include <filesystem>
 
 namespace goose {
@@ -24,7 +25,7 @@ inline string JitLibPath(const string &exedir) {
     auto beside = cat(exedir, "tcclib");
     // Installed next to the binary wins, so a copied build tree keeps working
     // even though the configure-time path still exists on this machine.
-    if (auto f = fopen(cat(beside, "/include/stddef.h").c_str(), "rb")) {
+    if (auto f = fopen(cat(beside, "/include/tccdefs.h").c_str(), "rb")) {
         fclose(f);
         return beside;
     }
@@ -52,50 +53,37 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     // Both the header search path and the library search path are derived from
     // this, so it has to be set before the output type that reads them.
     tcc_set_lib_path(s, libpath.c_str());
-    #ifdef __APPLE__
-        // The C library's headers are only in an SDK. The output type adds
-        // the include paths TinyCC was configured with after these: its own
-        // headers, then the SDK of the machine the compiler was built on.
-        // This machine's active SDK goes first, behind TinyCC's headers.
-        if (auto sdk = MacSdkPath(); !sdk.empty()) {
-            tcc_add_sysinclude_path(s, cat(libpath, "/include").c_str());
-            tcc_add_sysinclude_path(s, cat(sdk, "/usr/include").c_str());
-        }
-    #endif
+    tcc_set_options(s, "-nostdinc -nostdlib -Wl,-nostdlib");
+    tcc_add_sysinclude_path(s, cat(libpath, "/goose/include").c_str());
+    tcc_add_sysinclude_path(s, cat(libpath, "/include").c_str());
     auto fail = [&](const char *what) {
         auto msg = cat("libtcc: ", what, "\n", diags);
         tcc_delete(s);
         throw CompileError { msg };
     };
     if (tcc_set_output_type(s, TCC_OUTPUT_MEMORY) < 0) fail("cannot target memory");
-    #ifdef __linux__
-        // dlopen, for the runtime's dynamic externs: in libdl before glibc
-        // 2.34 and in libc since, so a system without the archive is one
-        // whose libc has the function, and a failure here is nothing.
-        tcc_add_library(s, "dl");
-        diags.clear();
+    // TinyCC's compiler helpers come only from this build's bundled archive.
+    #ifdef _WIN32
+        auto support = cat(libpath, "/lib/libtcc1.a");
+    #else
+        auto support = cat(libpath, "/libtcc1.a");
     #endif
-    // The in-process program's assets belong to its entry source, not to
-    // the Goose executable. This define is JIT-only: emitted AOT C keeps no
-    // build-machine resource path. Resolve now, without changing cwd.
+    for (auto p = goose_jit_symbols(); p->name; ++p)
+        tcc_add_symbol(s, p->name, p->address);
+    for (auto &[name, addr] : symbols) tcc_add_symbol(s, name.c_str(), addr);
+    if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
+    if (tcc_add_file(s, support.c_str()) < 0) fail("loading compiler support failed");
+    if (tcc_relocate(s) < 0) fail("relocating the generated C failed");
+    auto entry = (int (*)(int, char **))tcc_get_symbol(s, "main");
+    auto cleanup = (void (*)(void))tcc_get_symbol(s, "gs_jit_cleanup");
+    if (!entry || !cleanup) fail("cannot find the program entry points");
     std::error_code patherror;
     auto root = filesystem::absolute(filesystem::path(progname), patherror).parent_path();
     if (patherror) fail("cannot locate the entry source directory");
     auto bytes = root.generic_u8string();
-    string source = "#define GS_JIT 1\n#define GS_JIT_RESOURCE_DIR \"";
-    // Fixed-width octal escapes are unambiguous even for quotes, control
-    // characters, UTF-8 and a hex digit immediately after an escaped byte.
-    for (auto ch : bytes) {
-        char escaped[5];
-        snprintf(escaped, sizeof escaped, "\\%03o", (unsigned)(uint8_t)ch);
-        source += escaped;
-    }
-    if (bytes.empty() || bytes.back() != u8'/') source += '/';
-    source += "\"\n";
-    source += csrc;
-    if (tcc_compile_string(s, source.c_str()) < 0) fail("compiling the generated C failed");
-    for (auto &[name, addr] : symbols) tcc_add_symbol(s, name.c_str(), addr);
-    // tcc_run hands these to the program's main, which takes them as C main
+    string resource_dir((const char *)bytes.data(), bytes.size());
+    if (resource_dir.empty() || resource_dir.back() != '/') resource_dir += '/';
+    // The runtime hands these to the program's main, which takes them as C main
     // does: an array of writable pointers. Hence the mutable copies.
     auto name = progname;
     auto args = progargs;
@@ -103,11 +91,8 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     argv.push_back(name.data());
     for (auto &a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
-    diags.clear();
-    auto code = tcc_run(s, (int)argv.size() - 1, argv.data());
-    // A run that never started reports through the callback; a program that
-    // genuinely returns -1 does not.
-    if (code == -1 && !diags.empty()) fail("running the generated C failed");
+    auto code = goose_jit_run(entry, cleanup, (int)argv.size() - 1, argv.data(),
+                              resource_dir.c_str());
     tcc_delete(s);
     return code;
 }
