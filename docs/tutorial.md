@@ -1384,7 +1384,8 @@ functions or files.
 
 ## 14. Threads that share nothing
 
-There is no shared mutable memory. A worker is declared `thread_fn`, and the
+For ordinary Goose values, there is no shared mutable memory. A worker is
+declared `thread_fn`, and the
 compiler compiles it and everything it calls as a **separate program** with
 its own data stacks and its own copies of the globals it uses.
 
@@ -1425,7 +1426,28 @@ what [`23_mandelbrot_threads`](../samples/23_mandelbrot_threads.goose) does.
 
 A worker that increments a global increments *its own copy*, and `main`'s
 copy is unchanged. That may sound restrictive, but it means there can be no
-data races, and the language has no locks, atomics or memory ordering.
+data races between ordinary isolated Goose values. This model needs no locks,
+atomics or memory ordering in Goose code.
+
+The boundary is native code. An `extern fn` can access state that Goose does
+not manage, and a flat integer can be a native handle or encode an address.
+Copying that integer copies the handle, not the native resource it names.
+Two workers with separate copies can therefore still reach the same native
+memory, file, or other resource.
+
+For example, passing a native buffer handle to two workers does not give
+each worker a private buffer. The native adapter must define which operations
+can run concurrently, how writes become visible, and how long that buffer
+remains alive. A native library's own thread-safety restrictions still apply,
+even when its arguments are flat Goose values.
+
+Keep native resources alive until every worker using them has finished.
+Use the native API's synchronization contract for shared native state; Goose's
+copied globals and typed queues do not establish that contract for you.
+The compiler checks the ordinary Goose values crossing the worker boundary,
+but cannot inspect the implementation of an external function or prove what
+an integer handle refers to. The no-data-race guarantee above is limited to
+ordinary isolated Goose values, not arbitrary FFI behavior.
 
 (Threads need an external C compiler: the in-process TinyCC backend cannot
 place thread-local storage, so compile threaded programs with `-o`.)
@@ -1606,6 +1628,11 @@ imposes it.
   ([section 13](#13-generics-and-blocks-that-disappear);
   [spec §7.6](goose_spec.md#76-static-function-values),
   [§8.2](goose_spec.md#82-case-functions-match-as-an-overload-set)).
+* **Native handles are outside worker isolation.** Copying an integer handle
+  does not copy its native resource. FFI adapters must supply synchronization
+  and lifetime rules for resources reached by multiple workers; ordinary
+  Goose value isolation cannot enforce those rules
+  ([section 14](#14-threads-that-share-nothing)).
 * **Whole-program compilation.** There is no separate compilation, and there
   are no shared libraries of Goose code
   ([spec §10.1](goose_spec.md#101-whole-program-call-graph-order)).
