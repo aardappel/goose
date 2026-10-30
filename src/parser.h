@@ -515,6 +515,8 @@ struct Parser {
     }
 
     void CheckFreshTypeName(string_view ns, string_view name) {
+        if (ns.empty() && NativeKindForName(name) >= 0)
+            Error(cat("reserved native type name: ", name));
         if (auto n = ast.FindNS(ns); n && n->TypeNameExists(name))
             Error(cat("type name already declared: ", QualifiedStr(ns, name)));
     }

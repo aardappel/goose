@@ -22,7 +22,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         Error(c, cat(d.name, " takes ", (int64_t)d.minargs,
                      d.minargs == d.maxargs ? string() : cat("-", (int64_t)d.maxargs),
                      " argument(s), ", (int64_t)args.size(), " given"));
-    if (d.kind >= B_SHARED_ALLOC && d.kind <= B_MEMORY_COPY) {
+    if (d.kind >= B_SHARED_ALLOC && d.kind <= B_MEMORY_WRITE) {
         auto captype = [&](NativeKind k) {
             auto t = ast.NewType(TY_NATIVE, c->line); t->nativekind = k; return t;
         };
@@ -67,9 +67,6 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 CheckArg(args[d.kind == B_MEMORY_READ ? 2 : 3], ast.booltype);
                 return d.kind == B_MEMORY_READ ? result(t) : VoidVal();
             }
-            case B_MEMORY_COPY:
-                cap(0, NK_ACCESS); number(1); cap(2, NK_ACCESS); number(3); number(4);
-                return VoidVal();
             default: assert(false);
         }
     }

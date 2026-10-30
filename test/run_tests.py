@@ -2052,6 +2052,7 @@ def main():
                 if out is not None and r.check_stdout(name, name, out):
                     r.ok(f"runtime {name}")
         r.show_task(runtime_lifecycle, "runtime_threads_lifecycle", "threads")
+        r.show_task(runtime_lifecycle, "runtime_shared_lifecycle", "memory")
         r.show_task(runtime_lifecycle, "runtime_trim_memory", "runtime")
 
         # A library build's C host: goose_exit ends the program and goose_init

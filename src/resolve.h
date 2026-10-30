@@ -62,10 +62,9 @@ inline void ResolveTypeNames(Ast &ast) {
     for (auto t : ast.alltypes) {
         if (t->kind != TY_UNRESOLVED) continue;
         auto nm = t->named;
-        int native = -1;
-        for (int k = NK_OWNER; k <= NK_ATOMIC_U64; k++)
-            if (nm->name == NativeName(k)) native = k;
-        if (native >= 0) {
+        int native = NativeKindForName(nm->name);
+        if (native >= 0 && !ast.LookupStruct(nm->name, nm->ns) &&
+            !ast.LookupEnum(nm->name, nm->ns) && !ast.LookupAlias(nm->name, nm->ns)) {
             if (!nm->args.empty() || nm->varmode)
                 ErrorAt(t, nm, "native capabilities take no type arguments or variable mode");
             t->kind = TY_NATIVE;

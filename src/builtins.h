@@ -77,7 +77,6 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_SHARED_RELEASE, "shared_release", 1, 1, "", "", 0, "", 0) \
     F(B_MEMORY_READ, "memory_read", 3, 3, "", "", 0, "", BF_TYARGS) \
     F(B_MEMORY_WRITE, "memory_write", 4, 4, "", "", 0, "", BF_TYARGS) \
-    F(B_MEMORY_COPY, "memory_copy", 5, 5, "", "", 0, "", 0) \
     F(B_PRINT,            "print",            0, 99,   "",   "",  0,              "",            0) \
     F(B_STR,              "str",              0, 99,   "",   "",  0,              "",            0) \
     F(B_FORMAT,           "format",           1, 99,   "",   "",  BR_GROWABLE,    "format into", BF_MEMBER | BF_WRITE) \
