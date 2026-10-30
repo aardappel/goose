@@ -255,6 +255,82 @@ one state for the process, or that may only be called from the main thread,
 says so in its sidecar with `main_thread_only = true;`, and calling it from
 a `thread_fn` is then a compile error.
 
+### Using Goose types in a C header
+
+A `c_headers` adapter uses the types Goose has already declared; it does not
+redeclare them or import a C struct into Goose. Here is a complete local
+package and a program that calls it:
+
+```goose
+// mylib/mylib.goose
+namespace mylib;
+struct Pair { lo: u32, hi: u32 }
+extern fn swap(p: Pair) -> Pair = "mylib_swap";
+```
+
+```goose
+// mylib/mylib.build
+c_headers = ["include/adapters.h"];
+```
+
+```c
+// mylib/include/adapters.h
+#ifndef MYLIB_ADAPTERS_H
+#define MYLIB_ADAPTERS_H
+
+static inline mylib_Pair_g5 mylib_swap(mylib_Pair_g5 p) {
+    mylib_Pair_g5 result;
+    result.lo_g = p.hi_g;
+    result.hi_g = p.lo_g;
+    return result;
+}
+
+#endif
+```
+
+```goose
+// app.goose, beside the mylib directory
+import mylib from "./mylib";
+fn main() {
+    let p = mylib::swap(mylib::Pair { 20, 22 });
+    assert(p.lo == 22 && p.hi == 20);
+    print(p.lo, " ", p.hi);
+}
+```
+
+`goose run app.goose` prints `22 20`; `goose build app.goose` builds the
+same program with the native C compiler. Neither needs `--include` or a
+separately compiled `.c` file.
+
+The names in the header follow spec §7.10:
+
+| Goose declaration | C spelling | Rule |
+| --- | --- | --- |
+| `mylib::Pair` | `mylib_Pair_g5` | namespace, `_`, type name, `_g`, namespace length |
+| `Pair` without a namespace | `Pair_g` | type name followed by `_g` |
+| Fields `lo`, `hi` | `lo_g`, `hi_g` | field name followed by `_g`, without the namespace |
+| `swap(...) = "mylib_swap"` | `mylib_swap` | the explicit extern symbol, unchanged |
+
+The `5` is the length of `mylib`, not an import-order number. For example,
+`goosimd::Bytes32` becomes `goosimd_Bytes32_g7`. A package's import path does
+not set these names; its `namespace` declaration does.
+
+Inspect the actual declarations with `goose -o app.c app.goose`: the type
+definitions appear before the adapter's `#include`, and extern prototypes
+follow it. This is especially useful for generic or composite types, whose
+names include their type arguments and may need collision suffixes. User
+field names get `_g`; compiler-defined slice members remain `data` and `len`.
+
+Use the generated type rather than a second C definition with similar
+fields. These naming rules are not a stable binary ABI contract: matching
+names or fields does not establish compatible layout, alignment, or calling
+conventions with an independently compiled C library. Goose structs are
+packed, not naturally aligned C structs. An adapter for an existing C API
+must account for that API's representation rather than assume the types are
+interchangeable. Separately compiled `c_sources` do not see the generated
+declarations; this example relies on compiling the header and the Goose code
+together in the same C translation unit.
+
 ### Files a package needs at run time
 
 `embed_file("path")` reads a file when the program is compiled (the path is
