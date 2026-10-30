@@ -1425,29 +1425,21 @@ cells: u8[] }` crosses the queue as one copy, including its pixels, which is
 what [`23_mandelbrot_threads`](../samples/23_mandelbrot_threads.goose) does.
 
 A worker that increments a global increments *its own copy*, and `main`'s
-copy is unchanged. That may sound restrictive, but it means there can be no
-data races between ordinary isolated Goose values. This model needs no locks,
-atomics or memory ordering in Goose code.
+copy is unchanged. Goose managed data structures never share memory between
+threads. This model needs no locks, atomics or memory ordering in Goose code.
 
-The boundary is native code. An `extern fn` can access state that Goose does
-not manage, and a flat integer can be a native handle or encode an address.
-Copying that integer copies the handle, not the native resource it names.
-Two workers with separate copies can therefore still reach the same native
-memory, file, or other resource.
+The standard library does not share memory between threads either. Where it accesses stateful OS functionality, that access is
+thread-safe.
 
-For example, passing a native buffer handle to two workers does not give
-each worker a private buffer. The native adapter must define which operations
-can run concurrently, how writes become visible, and how long that buffer
-remains alive. A native library's own thread-safety restrictions still apply,
-even when its arguments are flat Goose values.
+Non-standard packages can access C code through FFI, outside these guarantees.
+For example, copying an integer handle does not copy the native resource it
+names, so two workers can still reach the same resource. The compiler cannot
+inspect the C code or determine what a handle refers to.
 
-Keep native resources alive until every worker using them has finished.
-Use the native API's synchronization contract for shared native state; Goose's
-copied globals and typed queues do not establish that contract for you.
-The compiler checks the ordinary Goose values crossing the worker boundary,
-but cannot inspect the implementation of an external function or prove what
-an integer handle refers to. The no-data-race guarantee above is limited to
-ordinary isolated Goose values, not arbitrary FFI behavior.
+As a community convention, C code accessed by a non-standard package should
+be at least thread-safe unless otherwise specified. Packages should clearly
+mark any code that is not thread-safe. Follow the package's synchronization
+and lifetime rules for native resources shared between workers.
 
 (Threads need an external C compiler: the in-process TinyCC backend cannot
 place thread-local storage, so compile threaded programs with `-o`.)
@@ -1628,10 +1620,12 @@ imposes it.
   ([section 13](#13-generics-and-blocks-that-disappear);
   [spec §7.6](goose_spec.md#76-static-function-values),
   [§8.2](goose_spec.md#82-case-functions-match-as-an-overload-set)).
-* **Native handles are outside worker isolation.** Copying an integer handle
-  does not copy its native resource. FFI adapters must supply synchronization
-  and lifetime rules for resources reached by multiple workers; ordinary
-  Goose value isolation cannot enforce those rules
+* **Non-standard FFI packages are outside worker isolation.** Goose managed
+  data structures never share memory between threads. The standard library
+  does not share memory either; its access to stateful OS functionality is
+  thread-safe. Non-standard packages can access C code with no such guarantee.
+  By convention, that code should be at least thread-safe unless otherwise
+  specified, and packages should clearly mark code that is not thread-safe
   ([section 14](#14-threads-that-share-nothing)).
 * **Whole-program compilation.** There is no separate compilation, and there
   are no shared libraries of Goose code
