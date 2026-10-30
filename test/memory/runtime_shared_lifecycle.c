@@ -11,6 +11,9 @@
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/wait.h>
+#include <errno.h>
 #endif
 
 static volatile long live_allocations, live_regions;
@@ -79,6 +82,18 @@ static int counted_munmap(void *base, size_t size) {
 #define munmap counted_munmap
 #endif
 
+#ifndef _WIN32
+static int fail_native_create, checking_failed_create;
+static long failed_create_allocations;
+static uint64_t failed_create_slot;
+static int injected_create(pthread_t *t, const pthread_attr_t *attr,
+                           void *(*entry)(void *), void *args) {
+    return fail_native_create ? EAGAIN : pthread_create(t, attr, entry, args);
+}
+static _Noreturn void checked_exit(int code);
+#define pthread_create injected_create
+#define _Exit checked_exit
+#endif
 #define malloc counted_malloc
 #define calloc counted_calloc
 #define free counted_free
@@ -90,6 +105,18 @@ static int counted_munmap(void *base, size_t size) {
 #include "../../src/runtime/runtime_impl.h"
 #include "../../src/runtime/runtime_threads.h"
 
+#ifndef _WIN32
+#undef _Exit
+static _Noreturn void checked_exit(int code) {
+    if (checking_failed_create) {
+        int cleaned = !gs_shared_pending && !gs_threads &&
+            !gs_shared_at(failed_create_slot)->workers &&
+            counter_add(&live_allocations, 0) == failed_create_allocations;
+        _Exit(code == 1 && cleaned ? 0 : 3);
+    }
+    _Exit(code);
+}
+#endif
 static gs_mutex gate_mutex = GS_MUTEX_INIT;
 static gs_cond gate_cond = GS_COND_INIT;
 static int gate;
@@ -104,6 +131,10 @@ static void wait_gate(uint8_t *args) {
     uint64_t value = 42;
     gs_shared_write(access, 0, &value, 8, 0, __FILE__, __LINE__);
     /* Abandoned authorization must be drained by worker cleanup. */
+}
+static void wrong_owner(uint8_t *args) {
+    gs_shared_cap owner; memcpy(&owner, args, sizeof owner);
+    gs_shared_close(owner, __FILE__, __LINE__);
 }
 static void owned(uint8_t *args) {
     int aborting; memcpy(&aborting, args, sizeof aborting);
@@ -193,6 +224,20 @@ int main(void) {
 
     gs_shared_cap owner = gs_shared_alloc(4096, &ok); check(ok, "main allocation");
     gs_shared_cap view = gs_shared_view(owner, 0, 4096, __FILE__, __LINE__);
+    joined(gs_thread_spawn(wrong_owner, &owner, sizeof owner, 1), 0);
+#ifndef _WIN32
+    pid_t pid = fork(); check(pid >= 0, "fork failure injection");
+    if (!pid) {
+        checking_failed_create = fail_native_create = 1;
+        failed_create_slot = owner.slot;
+        failed_create_allocations = counter_add(&live_allocations, 0);
+        gs_shared_handoff(view, __FILE__, __LINE__);
+        gs_thread_spawn(wait_gate, &view, sizeof view, 0);
+        _Exit(4);
+    }
+    int status; check(waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+                     WEXITSTATUS(status) == 0, "failed native creation rolls back leases and packet");
+#endif
     gate = 0; gs_shared_handoff(view, __FILE__, __LINE__);
     int64_t id = gs_thread_spawn(wait_gate, &view, sizeof view, 0);
     check(!gs_shared_close(owner, __FILE__, __LINE__), "pre-start lease prevents close");

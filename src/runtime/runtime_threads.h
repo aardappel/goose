@@ -484,8 +484,6 @@ GS_API void gs_rt_stop(void) {
 #define GS_SH_OWNER 1
 #define GS_SH_VIEW 2
 #define GS_SH_ACCESS 3
-#define GS_SH_ATOMIC32 4
-#define GS_SH_ATOMIC64 5
 #ifdef GS_SEPARATE_RUNTIME
 gs_shared_record *gs_shared_slabs[GS_SHARED_SLABS];
 #endif
@@ -557,8 +555,7 @@ static gs_shared_cap gs_shared_finish(uint64_t i, int kind) {
 static void gs_shared_unmap(uint64_t allocation) {
     gs_shared_record *r = gs_shared_at(allocation);
 #ifdef _WIN32
-    if (r->filemap) UnmapViewOfFile(r->data);
-    else VirtualFree(r->data, 0, MEM_RELEASE);
+    VirtualFree(r->data, 0, MEM_RELEASE);
 #else
     munmap(r->data, (size_t)r->size);
 #endif
@@ -699,18 +696,10 @@ GS_API void gs_shared_write(gs_shared_cap access, uint64_t offset, const void *v
         }
     memcpy(r->data + offset, bytes, size); gs_mutex_unlock(&gs_shared_mutex);
 }
-GS_API void gs_shared_copy(gs_shared_cap dst, uint64_t doff, gs_shared_cap src, uint64_t soff,
-                            uint64_t size, const char *file, int line) {
-    gs_mutex_lock(&gs_shared_mutex);
-    gs_shared_record *d = gs_shared_access(dst, doff, size, 1, file, line);
-    gs_shared_record *s = gs_shared_access(src, soff, size, 0, file, line);
-    memmove(d->data + doff, s->data + soff, (size_t)size);
-    gs_mutex_unlock(&gs_shared_mutex);
-}
 GS_API void gs_shared_handoff(gs_shared_cap cap, const char *file, int line) {
     gs_mutex_lock(&gs_shared_mutex);
     gs_shared_record *r = gs_shared_get(cap, file, line);
-    if (r->kind != GS_SH_VIEW && r->kind != GS_SH_ATOMIC32 && r->kind != GS_SH_ATOMIC64)
+    if (r->kind != GS_SH_VIEW)
         gs_shared_bad("shared capability is not sendable", file, line);
     gs_shared_record *owner = gs_shared_at(r->allocation);
     if (owner->workers == UINT64_MAX) gs_shared_bad("shared worker lease overflow", file, line);

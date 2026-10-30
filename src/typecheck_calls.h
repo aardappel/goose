@@ -2543,6 +2543,10 @@ inline void TypeCheck::CheckfreeCallee(Node *at, SFunction *callee) {
 // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
 // fixed struct or array (packed, no references).
 inline bool TypeCheck::ExternValueOk(TypeExpr *t, string &why) {
+    if (Reaches(t, [](TypeExpr *t) { return t->kind == TY_NATIVE; })) {
+        why = "safe native capabilities have no raw C ABI";
+        return false;
+    }
     if (HoldsIndexT(t)) {
         why = "C code is not checked against the array an index type names (§3.11)";
         return false;

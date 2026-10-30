@@ -68,11 +68,16 @@ enum TypeKind {
     TY_VOID,        // Typecheck-created: the "type" of statements and valueless blocks.
 };
 
-enum NativeKind { NK_OWNER, NK_VIEW, NK_ACCESS, NK_ATOMIC_U32, NK_ATOMIC_U64 };
+enum NativeKind { NK_OWNER, NK_VIEW, NK_ACCESS };
 inline const char *NativeName(int k) {
-    static const char *names[] = { "SharedOwner", "SharedView", "SharedAccess",
-                                   "SharedAtomicU32", "SharedAtomicU64" };
+    static const char *names[] = { "SharedOwner", "SharedView", "SharedAccess" };
     return names[k];
+}
+
+inline int NativeKindForName(string_view name) {
+    for (int k = NK_OWNER; k <= NK_ACCESS; k++)
+        if (name == NativeName(k) || name == cat("::", NativeName(k))) return k;
+    return -1;
 }
 
 enum ArrayKind {
@@ -344,8 +349,7 @@ struct TypeExpr {
 
 // The views of a type's shape that every pass asks for.
 inline bool IsSharedSendable(const TypeExpr *t) {
-    return t->kind == TY_NATIVE && (t->nativekind == NK_VIEW ||
-           t->nativekind == NK_ATOMIC_U32 || t->nativekind == NK_ATOMIC_U64);
+    return t->kind == TY_NATIVE && t->nativekind == NK_VIEW;
 }
 inline bool IsRefOrSlice(const TypeExpr *t) { return t->kind == TY_REF || t->kind == TY_SLICE; }
 inline bool IsOptional(const TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }

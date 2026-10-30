@@ -51,7 +51,7 @@ inline string CodeGen::LenCast(const Loc &lv) {
 inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
     auto an = c->ArgNodes();
     auto ln = c->line;
-    if (c->builtin >= B_SHARED_ALLOC && c->builtin <= B_MEMORY_COPY) {
+    if (c->builtin >= B_SHARED_ALLOC && c->builtin <= B_MEMORY_WRITE) {
         usesthreads = true;
         vector<string> a;
         for (auto n : an) a.push_back(Snapshot(n->exprtype, GenPure(n)));
@@ -79,9 +79,6 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             case B_MEMORY_WRITE:
                 L("gs_shared_write(", a[0], ", ", a[1], ", &", a[2], ", sizeof ", a[2],
                   ", ", a[3], ", ", LocArgs(ln), ");"); return {};
-            case B_MEMORY_COPY:
-                L("gs_shared_copy(", a[0], ", ", a[1], ", ", a[2], ", ", a[3], ", ", a[4],
-                  ", ", LocArgs(ln), ");"); return {};
             default: assert(false);
         }
     }
