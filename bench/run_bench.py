@@ -158,12 +158,16 @@ BENCHMARKS = [
              dict(label="cpp new/delete", file="tree.cpp", variant=1, tier="idiomatic"),
              dict(label="cpp arena + indices", file="tree.cpp", variant=2, tier="expert")],
         rust=[dict(label="rust Box nodes", file="tree_box.rs"),
-              dict(label="rust arena + indices", file="tree_arena.rs")],
+              dict(label="rust arena + indices", file="tree_arena.rs"),
+              dict(label="rust pre-order, 12-byte links", file="tree_arena_fast.rs")],
         summary=(
             "The arena rows avoid per-node allocation and recursive destruction. Goose "
             "links its 12-byte nodes with typed nullable relative references; C++ and "
             "safe Rust use u32 indices. Compare bintrees for the cost of repeatedly "
-            "building and discarding this shape."),
+            "building and discarding this shape. The pre-order Rust row lays the "
+            "complete tree out parent-first so the walk is a sequential slot scan, "
+            "and the deltas in the links turn node addressing from index*12 into an "
+            "add."),
     ),
     dict(
         name="interp",
