@@ -1,5 +1,7 @@
 // no-jit
-thread_fn claim(next: SharedAtomicU64) {
+struct AtomicPacket { tag: u8, next: SharedAtomicU64 }
+thread_fn claim(tag: u8, next: SharedAtomicU64) {
+    assert(tag == 7);
     loop {
         let job = atomic_fetch_add(next, 1, "Relaxed");
         if job >= 4000 { break; }
@@ -23,17 +25,22 @@ thread_fn atomic_bad(kind: i64) {
     let a = shared_atomic_u64(o, 0, 0);
     if kind == 4 { shared_atomic_u64(o, 0, 0); }
     if kind == 5 { shared_borrow(shared_view(o, 0, 1)); }
-    if kind == 6 { assert(shared_close(o)); atomic_load(a, "Relaxed"); }
+    if kind == 6 || kind == 8 {
+        assert(shared_close(o));
+        if kind == 8 { let newer, yes = shared_alloc(64); assert(yes); }
+        atomic_load(a, "Relaxed");
+    }
     if kind == 7 { abort("atomic worker abort"); }
 }
 fn main() {
     let o, ok = shared_alloc(64); assert(ok);
     let next = shared_atomic_u64(o, 0, 0);
     assert(atomic_is_lock_free(next));
+    let packet = AtomicPacket { tag: 7, next: next };
     var workers: i64[>..] = [];
-    for i in 8 { workers.push(thread_spawn(claim, next)); }
+    for i in 8 { workers.push(thread_spawn(claim, packet.tag, packet.next)); }
     for id in workers { assert(thread_wait(id)); }
-    var seen: bool[4000];
+    var seen = default<bool[4000]>();
     for i in 4000 {
         let job = qget<u64>();
         assert(job < 4000 && !seen[job]); seen[job] = true;
@@ -54,6 +61,6 @@ fn main() {
     let ordinary = shared_borrow(shared_view(o, 8, 8));
     memory_write<u64>(ordinary, 0, 42, false); shared_release(ordinary);
     assert(shared_close(o));
-    for kind in 8 { assert(!thread_wait(thread_spawn_contained(atomic_bad, kind))); }
+    for kind in 9 { assert(!thread_wait(thread_spawn_contained(atomic_bad, kind))); }
     print("shared atomics ok");
 }

@@ -105,6 +105,7 @@ struct CodeGen {
     // copies into the worker's instance (EmitThreadSpawn, EnsureThreadThunk).
     unordered_map<FnSpec *, vector<VarDef *>> threadglobals;
     vector<VarDef *> &ThreadGlobals(FnSpec *entry);
+    bool shared_atomic64 = false;
     string protos;
     // Extern fns called by live code, in the order their first call is
     // emitted: the prototypes follow it, and a set of pointers would put

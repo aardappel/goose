@@ -955,6 +955,8 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->dispatcharg = dispatcharg;
     c->builtin = builtin;
     c->poolcheck = poolcheck;
+    c->memory_order = memory_order;
+    c->failure_order = failure_order;
     c->qtype = qtype;
     c->shaderblob = shaderblob;
     c->rettypes = rettypes;

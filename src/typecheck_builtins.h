@@ -70,6 +70,52 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             default: assert(false);
         }
     }
+    if (d.kind >= B_SHARED_ATOMIC64 && d.kind <= B_ATOMIC_CAS) {
+        auto native = [&](size_t i, NativeKind k) {
+            auto v = CheckValue(args[i], nullptr);
+            if (v.type->kind != TY_NATIVE || v.type->nativekind != k)
+                Error(c, cat(d.name, " requires ", NativeName(k)));
+        };
+        auto result = [&](TypeExpr *t, bool second = false) {
+            Val v; v.type = t; c->rettypes.push_back(t);
+            if (second) { Val b; b.type = ast.booltype; c->rettypes.push_back(b.type); lastcallrets = {v, b}; }
+            return v;
+        };
+        auto nt = [&](NativeKind k) { auto t = ast.NewType(TY_NATIVE, c->line); t->nativekind = k; return t; };
+        if (d.kind == B_SHARED_ATOMIC64) {
+            native(0, NK_OWNER); CheckArg(args[1], ast.inttypes[IS_U64]);
+            CheckArg(args[2], ast.inttypes[IS_U64]);
+            return result(nt(NK_ATOMIC_U64));
+        }
+        auto v = CheckValue(args[0], nullptr);
+        if (v.type->kind != TY_NATIVE || v.type->nativekind != NK_ATOMIC_U64)
+            Error(c, cat(d.name, " requires SharedAtomicU64"));
+        auto scalar = ast.inttypes[IS_U64];
+        c->qtype = scalar;
+        if (d.kind == B_ATOMIC_LOCKFREE) return result(ast.booltype);
+        if (d.kind != B_ATOMIC_LOAD) CheckArg(args[1], scalar);
+        if (d.kind == B_ATOMIC_CAS) CheckArg(args[2], scalar);
+        auto order = [&](size_t i) {
+            auto lit = ConstStrLit(args[i]);
+            if (!lit) Error(c, "memory order must be a compile-time string");
+            CheckArg(args[i], cu8slice);
+            static const char *names[] = {"Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"};
+            static const int codes[] = {0, 2, 3, 4, 5};
+            for (int k = 0; k < 5; k++) if (lit->val == names[k]) return codes[k];
+            Error(c, cat("unknown memory order: ", lit->val));
+        };
+        auto oi = d.kind == B_ATOMIC_LOAD ? 1 : d.kind == B_ATOMIC_CAS ? 3 : 2;
+        c->memory_order = order(oi);
+        auto o = c->memory_order;
+        if (d.kind == B_ATOMIC_LOAD && (o == 3 || o == 4)) Error(c, "invalid memory order for atomic load");
+        if (d.kind == B_ATOMIC_STORE && (o == 2 || o == 4)) Error(c, "invalid memory order for atomic store");
+        if (d.kind == B_ATOMIC_CAS) {
+            auto f = c->failure_order = order(4);
+            if (f == 3 || f == 4 || (f == 5 && o != 5) || (f == 2 && o != 2 && o != 4 && o != 5))
+                Error(c, "invalid compare_exchange failure order");
+        }
+        return d.kind == B_ATOMIC_STORE ? VoidVal() : result(scalar, d.kind == B_ATOMIC_CAS);
+    }
     // The fully custom builtins first.
     switch (d.kind) {
         case B_PRINT:

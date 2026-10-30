@@ -69,8 +69,40 @@ memory. Borrow creation, view creation and worker handoff are setup operations.
 ## Candidate scope and targets
 
 This candidate adds anonymous storage and scalar access only. It has no file
-mapping, page advice, raw pointers, atomics, byte-buffer operations or byte copy.
+mapping, page advice, raw pointers, byte-buffer operations or byte copy.
+The dependent u64 atomic candidate is described below.
 The new storage semantics require upstream maintainer agreement before a PR.
 Linux x86-64 with GCC and Clang is execution-tested. Other native targets are
 not execution-verified. Embedded TinyCC cannot run the required threaded TLS
 runtime. Ordinary Goose values and worker globals keep their existing rules.
+
+## First u64 atomic candidate
+
+`shared_atomic_u64(owner, offset, initial)` registers one naturally aligned
+8-byte cell and returns opaque `SharedAtomicU64`. Registration rejects overlap
+with any active ordinary access or another atomic cell. Once registered, those
+bytes cannot be borrowed ordinarily until the allocation is closed. The cell
+uses the substrate's stale-generation checks and worker leases. Copied handles
+remain packed values; the actual cell and metadata stay naturally aligned.
+No ordinary reference or integer address is accepted by an atomic operation.
+
+- `atomic_is_lock_free(cell)` returns true on supported targets.
+- `atomic_load(cell, order)` returns `u64`.
+- `atomic_store(cell, value, order)` returns nothing.
+- `atomic_fetch_add(cell, value, order)` returns the previous `u64`, wrapping
+  modulo 2^64 even in debug builds.
+- `atomic_compare_exchange(cell, expected, desired, success_order, failure_order)`
+  performs strong CAS and returns `(observed, exchanged)`. On success observed
+  is the expected old value; on failure it is the actual cell value.
+
+Orders are explicit compile-time strings: Relaxed, Acquire, Release, AcqRel,
+and SeqCst. Loads reject Release/AcqRel; stores reject Acquire/AcqRel. A CAS
+failure order must be a valid load order no stronger than the success order;
+Release success permits only Relaxed failure. There is no Consume or fence API.
+
+Generated native C uses GCC/Clang `__atomic_*` operations and rejects unsupported
+backends or non-lock-free 64-bit cells/generations, with no mutex fallback.
+Linux x86-64 GCC 14 and Clang 23 are the execution-tested configurations.
+U32, indexed atomic regions, exchange, other RMW operations and raw addresses
+are excluded from this candidate. Join all workers before close; initialization
+must precede spawn. Relaxed claims alone do not publish concurrently read data.

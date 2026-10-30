@@ -69,6 +69,12 @@ inline int RecvKindOf(TypeExpr *t) {
 
 //        enum            name                min max  args  rets recv            grows          flags
 #define BUILTINS \
+    F(B_SHARED_ATOMIC64, "shared_atomic_u64", 3, 3, "", "", 0, "", 0) \
+    F(B_ATOMIC_LOCKFREE, "atomic_is_lock_free", 1, 1, "", "", 0, "", 0) \
+    F(B_ATOMIC_LOAD, "atomic_load", 2, 2, "", "", 0, "", 0) \
+    F(B_ATOMIC_STORE, "atomic_store", 3, 3, "", "", 0, "", 0) \
+    F(B_ATOMIC_ADD, "atomic_fetch_add", 3, 3, "", "", 0, "", 0) \
+    F(B_ATOMIC_CAS, "atomic_compare_exchange", 5, 5, "", "", 0, "", 0) \
     F(B_SHARED_ALLOC, "shared_alloc", 1, 1, "", "", 0, "", 0) \
     F(B_SHARED_VIEW, "shared_view", 3, 3, "", "", 0, "", 0) \
     F(B_SHARED_CLOSE, "shared_close", 1, 1, "", "", 0, "", 0) \

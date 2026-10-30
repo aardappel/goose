@@ -986,7 +986,12 @@ typedef struct { uint64_t slot, generation; } gs_shared_cap;
 #define GS_SHARED_SLAB_SIZE 256
 #define GS_SHARED_SLABS 4096
 #define GS_SHARED_MAX (GS_SHARED_SLAB_SIZE * GS_SHARED_SLABS)
-typedef struct gs_shared_record {
+#ifdef _MSC_VER
+#define GS_SHARED_ALIGN8 __declspec(align(8))
+#else
+#define GS_SHARED_ALIGN8 __attribute__((aligned(8)))
+#endif
+typedef struct GS_SHARED_ALIGN8 gs_shared_record {
     uint64_t generation, allocation, offset, size, identity;
     uint8_t *data;
     int64_t actor;
@@ -994,6 +999,8 @@ typedef struct gs_shared_record {
     int kind, readonly, orphan;
 } gs_shared_record;
 GS_API gs_shared_record *gs_shared_slabs[GS_SHARED_SLABS];
+GS_API gs_shared_cap gs_shared_atomic_u64(gs_shared_cap owner, uint64_t offset,
+    uint64_t initial, const char *file, int line);
 GS_API gs_shared_cap gs_shared_alloc(uint64_t size, uint8_t *ok);
 GS_API gs_shared_cap gs_shared_view(gs_shared_cap owner, uint64_t offset, uint64_t size,
                                     const char *file, int line);

@@ -1074,7 +1074,12 @@ typedef struct { uint64_t slot, generation; } gs_shared_cap;
 #define GS_SHARED_SLAB_SIZE 256
 #define GS_SHARED_SLABS 4096
 #define GS_SHARED_MAX (GS_SHARED_SLAB_SIZE * GS_SHARED_SLABS)
-typedef struct gs_shared_record {
+#ifdef _MSC_VER
+#define GS_SHARED_ALIGN8 __declspec(align(8))
+#else
+#define GS_SHARED_ALIGN8 __attribute__((aligned(8)))
+#endif
+typedef struct GS_SHARED_ALIGN8 gs_shared_record {
     uint64_t generation, allocation, offset, size, identity;
     uint8_t *data;
     int64_t actor;
@@ -1082,6 +1087,8 @@ typedef struct gs_shared_record {
     int kind, readonly, orphan;
 } gs_shared_record;
 GS_API gs_shared_record *gs_shared_slabs[GS_SHARED_SLABS];
+GS_API gs_shared_cap gs_shared_atomic_u64(gs_shared_cap owner, uint64_t offset,
+    uint64_t initial, const char *file, int line);
 GS_API gs_shared_cap gs_shared_alloc(uint64_t size, uint8_t *ok);
 GS_API gs_shared_cap gs_shared_view(gs_shared_cap owner, uint64_t offset, uint64_t size,
                                     const char *file, int line);
@@ -3891,6 +3898,7 @@ R"GSRT(/* Native shared memory. Registry mutation is serialized. Descriptors liv
 #define GS_SH_OWNER 1
 #define GS_SH_VIEW 2
 #define GS_SH_ACCESS 3
+#define GS_SH_ATOMIC64 4
 #ifdef GS_SEPARATE_RUNTIME
 gs_shared_record *gs_shared_slabs[GS_SHARED_SLABS];
 #endif
@@ -4108,7 +4116,7 @@ GS_API void gs_shared_write(gs_shared_cap access, uint64_t offset, const void *v
 GS_API void gs_shared_handoff(gs_shared_cap cap, const char *file, int line) {
     gs_mutex_lock(&gs_shared_mutex);
     gs_shared_record *r = gs_shared_get(cap, file, line);
-    if (r->kind != GS_SH_VIEW)
+    if (r->kind != GS_SH_VIEW && r->kind != GS_SH_ATOMIC64)
         gs_shared_bad("shared capability is not sendable", file, line);
     gs_shared_record *owner = gs_shared_at(r->allocation);
     if (owner->workers == UINT64_MAX) gs_shared_bad("shared worker lease overflow", file, line);
@@ -4146,7 +4154,35 @@ GS_API void gs_shared_worker_cleanup(void *leases, int64_t actor) {
     }
     gs_mutex_unlock(&gs_shared_mutex);
 }
- #endif /* GS_NEED_THREADS */
+#endif /* GS_NEED_THREADS */
+
+)GSRT"
+R"GSRT(#if GS_NEED_THREADS
+GS_API gs_shared_cap gs_shared_atomic_u64(gs_shared_cap owner, uint64_t offset,
+    uint64_t initial, const char *file, int line) {
+    gs_mutex_lock(&gs_shared_mutex);
+    gs_shared_record *r = gs_shared_get(owner, file, line);
+    if (r->kind != GS_SH_OWNER || r->actor != gs_current_thread_id)
+        gs_shared_bad("shared owner belongs to another thread", file, line);
+    gs_shared_bounds(offset, 8, r->size, file, line);
+    if (((uintptr_t)r->data + offset) % 8)
+        gs_shared_bad("shared atomic alignment", file, line);
+    for (uint64_t i = 0; i < gs_shared_highwater; i++) {
+        gs_shared_record *v = gs_shared_at(i);
+        if (v->kind >= GS_SH_ACCESS && v->allocation == owner.slot &&
+            gs_shared_overlap(v->offset, v->size, offset, 8))
+            gs_shared_bad("conflicting shared atomic range", file, line);
+    }
+    uint64_t i = gs_shared_slot();
+    if (i == UINT64_MAX) gs_shared_bad("out of memory registering shared atomic", file, line);
+    gs_shared_record *a = gs_shared_at(i);
+    a->allocation = owner.slot; a->offset = offset; a->size = 8; a->data = r->data + offset;
+    /* Ordinary initialization precedes registration and every worker lease. */
+    memcpy(a->data, &initial, 8);
+    gs_shared_cap cap = gs_shared_finish(i, GS_SH_ATOMIC64);
+    gs_mutex_unlock(&gs_shared_mutex); return cap;
+}
+#endif
 )GSRT"
     ) },
     { "runtime_ext.h", string_view(

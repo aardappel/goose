@@ -82,6 +82,53 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             default: assert(false);
         }
     }
+    if (c->builtin >= B_SHARED_ATOMIC64 && c->builtin <= B_ATOMIC_CAS) {
+        usesthreads = true;
+        auto bk = c->builtin;
+        if (!shared_atomic64) {
+            shared_atomic64 = true;
+            Append(head, "\n#if defined(__TINYC__) || (!defined(__GNUC__) && !defined(__clang__))\n"
+                         "#error Native shared atomics require GCC or Clang; this backend is unsupported\n#endif\n"
+                         "#if __GCC_ATOMIC_LLONG_LOCK_FREE != 2\n"
+                         "#error Native u64 cells and generation validation must be always lock-free\n#endif\n");
+        }
+        vector<string> a;
+        size_t nargs = bk == B_ATOMIC_LOAD || bk == B_ATOMIC_LOCKFREE ? 1
+                     : bk == B_ATOMIC_CAS || bk == B_SHARED_ATOMIC64 ? 3 : 2;
+        for (size_t i = 0; i < nargs; i++)
+            a.push_back(Snapshot(an[i]->exprtype, GenPure(an[i])));
+        if (bk == B_SHARED_ATOMIC64) {
+            auto t = T();
+            L("gs_shared_cap ", t, " = gs_shared_atomic_u64(", a[0], ", ", a[1], ", ", a[2],
+              ", ", LocArgs(ln), ");");
+            return {t};
+        }
+        auto rec = T(); L("gs_shared_record *", rec, " = NULL;");
+        auto msg = "invalid, closed, or misaligned shared atomic capability";
+        // A valid worker lease spans this entire instruction, not just this check.
+        L("if (!", a[0], ".generation || ", a[0], ".slot >= GS_SHARED_MAX || ",
+          "!gs_shared_slabs[", a[0], ".slot / GS_SHARED_SLAB_SIZE] || ",
+          "!(", rec, " = &gs_shared_slabs[", a[0], ".slot / GS_SHARED_SLAB_SIZE][", a[0], ".slot % GS_SHARED_SLAB_SIZE]) || ",
+          "__atomic_load_n(&", rec, "->generation, __ATOMIC_ACQUIRE) != ", a[0], ".generation || ",
+          rec, "->kind != 4 || ", rec, "->size != 8 || ((uintptr_t)", rec, "->data & 7)) ",
+          "gs_abort_msg((const uint8_t *)\"", msg, "\", ", strlen(msg), ", ", LocArgs(ln), ");");
+        if (bk == B_ATOMIC_LOCKFREE) return {"__atomic_always_lock_free(8, 0)"};
+        auto ptr = T(); L("uint64_t *", ptr, " = (uint64_t *)", rec, "->data;");
+        static const char *orders[] = {"__ATOMIC_RELAXED", "", "__ATOMIC_ACQUIRE", "__ATOMIC_RELEASE", "__ATOMIC_ACQ_REL", "__ATOMIC_SEQ_CST"};
+        auto order = orders[c->memory_order];
+        if (bk == B_ATOMIC_STORE) {
+            L("__atomic_store_n(", ptr, ", ", a[1], ", ", order, ");"); return {};
+        }
+        if (bk == B_ATOMIC_CAS) {
+            auto ok = T();
+            L("uint8_t ", ok, " = __atomic_compare_exchange_n(", ptr, ", &", a[1], ", ", a[2],
+              ", 0, ", order, ", ", orders[c->failure_order], ");");
+            return {a[1], ok};
+        }
+        auto t = T(); L("uint64_t ", t, " = __atomic_", bk == B_ATOMIC_LOAD ? "load_n" : "fetch_add",
+                       "(", ptr, bk == B_ATOMIC_LOAD ? "" : cat(", ", a[1]), ", ", order, ");");
+        return {t};
+    }
     switch ((BuiltinKind)c->builtin) {
         case B_PRINT: {
             // The whole line, newline included, is rendered before any of
