@@ -1384,7 +1384,8 @@ functions or files.
 
 ## 14. Threads that share nothing
 
-There is no shared mutable memory. A worker is declared `thread_fn`, and the
+For ordinary Goose values, there is no shared mutable memory. A worker is
+declared `thread_fn`, and the
 compiler compiles it and everything it calls as a **separate program** with
 its own data stacks and its own copies of the globals it uses.
 
@@ -1424,8 +1425,21 @@ cells: u8[] }` crosses the queue as one copy, including its pixels, which is
 what [`23_mandelbrot_threads`](../samples/23_mandelbrot_threads.goose) does.
 
 A worker that increments a global increments *its own copy*, and `main`'s
-copy is unchanged. That may sound restrictive, but it means there can be no
-data races, and the language has no locks, atomics or memory ordering.
+copy is unchanged. Goose managed data structures never share memory between
+threads. This model needs no locks, atomics or memory ordering in Goose code.
+
+The standard library does not share memory between threads either. Where it accesses stateful OS functionality, that access is
+thread-safe.
+
+Non-standard packages can access C code through FFI, outside these guarantees.
+For example, copying an integer handle does not copy the native resource it
+names, so two workers can still reach the same resource. The compiler cannot
+inspect the C code or determine what a handle refers to.
+
+As a community convention, C code accessed by a non-standard package should
+be at least thread-safe unless otherwise specified. Packages should clearly
+mark any code that is not thread-safe. Follow the package's synchronization
+and lifetime rules for native resources shared between workers.
 
 (Threads need an external C compiler: the in-process TinyCC backend cannot
 place thread-local storage, so compile threaded programs with `-o`.)
@@ -1606,6 +1620,13 @@ imposes it.
   ([section 13](#13-generics-and-blocks-that-disappear);
   [spec §7.6](goose_spec.md#76-static-function-values),
   [§8.2](goose_spec.md#82-case-functions-match-as-an-overload-set)).
+* **Non-standard FFI packages are outside worker isolation.** Goose managed
+  data structures never share memory between threads. The standard library
+  does not share memory either; its access to stateful OS functionality is
+  thread-safe. Non-standard packages can access C code with no such guarantee.
+  By convention, that code should be at least thread-safe unless otherwise
+  specified, and packages should clearly mark code that is not thread-safe
+  ([section 14](#14-threads-that-share-nothing)).
 * **Whole-program compilation.** There is no separate compilation, and there
   are no shared libraries of Goose code
   ([spec §10.1](goose_spec.md#101-whole-program-call-graph-order)).
