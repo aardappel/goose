@@ -1027,7 +1027,8 @@ if SDL_Init(0x20) < 0 { abort(str("SDL: ", ffi::cstr(SDL_GetError()))); }
 
 ## binary
 
-Checked, little-endian reads of external formats, written entirely in Goose.
+Checked reads of external formats, little- and big-endian, written in Goose
+(floats take their bits through one small runtime helper).
 `import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
 returned byte slices and fixed-width names borrow that input without copying
 or allocating. Their lifetimes and read-only access are checked normally.
@@ -1037,9 +1038,16 @@ This API does not interpret Goose serialization images (`from_bytes`).
 
 ```goose
 fn range_ok(data: const u8[:], at: i64, size: i64) -> bool
-fn read_u16le(data: const u8[:], at: i64) -> u16, bool
-fn read_i16le(data: const u8[:], at: i64) -> i16, bool
-fn read_u32le(data: const u8[:], at: i64) -> u32, bool
+fn read_u8(data: const u8[:], at: i64) -> u8, bool
+fn read_i8(data: const u8[:], at: i64) -> i8, bool
+fn read_u16le(data: const u8[:], at: i64) -> u16, bool    // and read_u16be
+fn read_i16le(data: const u8[:], at: i64) -> i16, bool    // and read_i16be
+fn read_u32le(data: const u8[:], at: i64) -> u32, bool    // and read_u32be
+fn read_i32le(data: const u8[:], at: i64) -> i32, bool    // and read_i32be
+fn read_u64le(data: const u8[:], at: i64) -> u64, bool    // and read_u64be
+fn read_i64le(data: const u8[:], at: i64) -> i64, bool    // and read_i64be
+fn read_f32le(data: const u8[:], at: i64) -> f32, bool    // and read_f32be
+fn read_f64le(data: const u8[:], at: i64) -> f64, bool    // and read_f64be
 fn read_bytes(data: const u8[:], at: i64, size: i64) -> const u8[:], bool
 fn read_name(data: const u8[:], at: i64, width: i64) -> const u8[:], bool
 ```
@@ -1047,7 +1055,10 @@ fn read_name(data: const u8[:], at: i64, width: i64) -> const u8[:], bool
 Offsets and sizes are bytes. Negative values, truncated fields and offsets
 past the end fail with zero or an empty slice and `false`; range checking
 does not overflow on extreme offsets or sizes. An empty range at the end
-is valid. Reads work at unaligned offsets on either host byte order.
+is valid. Reads work at unaligned offsets on either host byte order. The
+`le` reads take the least significant byte first, the `be` reads the most
+significant. A float read keeps the value's bits exactly, NaN payloads
+included.
 `read_name` validates the entire fixed-width field and returns the bytes
 before its first NUL, or all `width` bytes if there is no NUL. It does not
 validate padding or interpret the bytes as a particular text encoding.
@@ -1057,9 +1068,8 @@ validate padding or interpret the bytes as a particular text encoding.
 ```goose
 struct Reader { data: const u8[:], pos: i64 }
 fn reader(data: const u8[:]) -> Reader
-fn read_u16le(r: Reader&) -> u16, bool
-fn read_i16le(r: Reader&) -> i16, bool
-fn read_u32le(r: Reader&) -> u32, bool
+fn read_u8(r: Reader&) -> u8, bool
+fn read_u16le(r: Reader&) -> u16, bool    // every offset read has a cursor form
 fn read_bytes(r: Reader&, size: i64) -> const u8[:], bool
 fn read_name(r: Reader&, width: i64) -> const u8[:], bool
 fn skip(r: Reader&, size: i64) -> bool
