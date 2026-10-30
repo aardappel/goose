@@ -27,6 +27,13 @@ Local changes:
   spilled three-float struct. Variadic arguments retain eight-byte slots.
   `test/packages/pkg_float_abi.goose` checks calls into native C through the
   in-process backend as well as native builds.
+- `arm64-gen.c`: `arm64_spoff` adds an offset of 4096 or more to sp with
+  the extended-register form of ADD/SUB (`add xN, sp, x30, uxtx`). It used
+  the shifted-register form, which reads register 31 as xzr, so it gave
+  the offset itself instead of an address in the frame. A call passing
+  two structs of 4096 bytes or more by value then copied the second to a
+  small absolute address and crashed. `test/codegen/large_struct_args.goose`
+  checks it.
 - `lib/libtcc1.c`, `tccgen.c`: round an unsigned 64-bit integer of 2^63 or
   more to float or double once, at run time (`__floatundisf`,
   `__floatundidf`), and a 64-bit integer constant to float once when folding
