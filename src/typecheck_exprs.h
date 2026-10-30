@@ -2550,7 +2550,9 @@ inline void TypeCheck::ReportRedundantCasts() {
         return tuple(l.fileidx, l.line, i);
     };
     sort(out.begin(), out.end(), [&](size_t i, size_t j) { return key(i) < key(j); });
-    for (auto i : out) ast.Warn(castverdicts[i].diag);
+    // Two casts on one line may look alike but only one may go. Show the
+    // source and its column so the terminal identifies the one that warns.
+    for (auto i : out) ast.Warn(castverdicts[i].diag, true);
 }
 
 // A name in a compile-time size, capacity or fill count, or in an integer
