@@ -3957,10 +3957,7 @@ writable as its type says, so a read-only argument needs it declared
 program's own C goes in a sidecar `foo.build` beside `foo.goose`
 (`c_sources = ["impl.c"];`). Headers supplied by `c_headers` in that sidecar
 or by `--include header.h` can use Goose's generated types directly; see
-[Using Goose types in a C header](packages.md#using-goose-types-in-a-c-header)
-for a complete example and the type and field naming rules. The `math` and
-`os` modules are built on this interface. Spec §7.10,
-[packages.md](packages.md#3-a-program-with-c-of-its-own).
+[Using Goose types in a C header](packages.md#using-goose-types-in-a-c-header).
 
 ### `extern "lib" { … }`: a shared library, bound by name
 
