@@ -52,3 +52,24 @@ fixture also passed the focused GCC/Clang matrix.
 Linux x86-64 is the execution-verified platform. Other platforms remain
 unverified; embedded TinyCC threaded execution is unsupported. No TSan result
 is claimed. No general GC or ownership inference is introduced.
+
+## Upstream opening refresh, 2026-10-31
+
+The owner lifted the publication hold. Fetched upstream master at
+`2ed1a63dde2ddff777fbb7f4790412b4f00cd47d` and confirmed it has no shared
+capability substrate or shared atomic API. Rebased the four prepared commits
+cleanly onto that tip, with no implementation changes. Updated the PR draft
+only to remove the superseded publication hold.
+
+Rebuilt the Release compiler from this branch. The focused shared suite passed
+all four GCC 14.2 / Clang 23.1.3 debug/release configurations, shared rejection
+diagnostics, and Clang ASan/UBSan lifecycle instrumentation. This covers the
+study's stale aliases, overlap/disjoint ranges, owner-only close, overflow,
+packing/alignment, worker leases, descendants, failed creation and abort cleanup.
+
+Full native suite rerun: all tests passed (35 seconds, eight jobs), with embedded
+JIT and unavailable multimedia modules skipped. The initial run exposed only
+test environment issues: the relocated compiler needed an adjacent stdlib link,
+and two pre-existing generated builder directories polluted bash completion.
+After correcting those artifacts the complete rerun passed. None of the four
+owner-reported baseline failures reproduced; no additional failure remains.
