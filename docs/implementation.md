@@ -4657,8 +4657,9 @@ type (array kinds do not convert at a reference). So a grow or shrink
 resizes no place whose array type is surely another (`DistinctTypes` in
 `GrowShrinkKill`; the elements a refill stores are a separate kill).
 Likewise, a callee's write through an argument that is an array of
-scalars, which holds no other array, kills only places of that array's type
-(`OtherArray` in `KillArgStorage`). A shrink of a reference parameter's
+scalars, or of any element type holding no length and no reference (a
+struct of scalars), which holds no other array and leads to none, kills
+only places of that array's type (`OtherArray` in `KillArgStorage`). A shrink of a reference parameter's
 array thus leaves a global of another type alone.
 
 A directional bump records that the new length is at least (or at most) the

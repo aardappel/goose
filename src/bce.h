@@ -1866,13 +1866,13 @@ struct BCE {
         if (!Is<SliceExpr>(lv) && KillSliceArg(a, lv)) return;
         auto t = ArgTarget(a);
         NoteStorage(t);
-        // An array of scalars holds no other array, so a write through it
-        // changes the length of an array of its own type only.
+        // An array whose elements hold no length and no reference (scalars,
+        // a struct of scalars) holds no other array and leads to none, so a
+        // write through it changes the length of an array of its own type only.
         auto at = lv->exprtype;
         if (at && at->kind == TY_REF) at = at->ref->sub;
         auto sub = at && at->kind == TY_ARRAY ? at->arr->sub : nullptr;
-        auto only = sub && (sub->kind == TY_INT || sub->kind == TY_FLT || sub->kind == TY_BOOL)
-                        ? at : nullptr;
+        auto only = sub && !HoldsLen(sub, true) ? at : nullptr;
         switch (t.kind) {
             case TG_NONE:
                 return;
