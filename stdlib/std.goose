@@ -7,21 +7,21 @@
 
 // ---- scalars and bits --------------------------------------------------
 
-fn min<T>(a: T, b: T) -> T { if b < a { return b; } return a; }
-fn max<T>(a: T, b: T) -> T { if a < b { return b; } return a; }
-fn clamp<T>(x: T, lo: T, hi: T) -> T {
+checkfree fn min<T>(a: T, b: T) -> T { if b < a { return b; } return a; }
+checkfree fn max<T>(a: T, b: T) -> T { if a < b { return b; } return a; }
+checkfree fn clamp<T>(x: T, lo: T, hi: T) -> T {
     if x < lo { return lo; }
     if hi < x { return hi; }
     return x;
 }
 
-fn abs<T>(x: T) -> T { if x < 0 { return -x; } return x; }
-fn abs(x: f32) -> f32 { if x < 0.0 { return -x; } return x; }
-fn abs(x: f64) -> f64 { if x < 0.0 { return -x; } return x; }
+checkfree fn abs<T>(x: T) -> T { if x < 0 { return -x; } return x; }
+checkfree fn abs(x: f32) -> f32 { if x < 0.0 { return -x; } return x; }
+checkfree fn abs(x: f64) -> f64 { if x < 0.0 { return -x; } return x; }
 
 // Truncating remainder pairs with `/`. The product stays between a and
 // zero; divisor -1 has remainder zero even when its quotient cannot fit.
-fn rem<T>(a: T, b: T) -> T {
+checkfree fn rem<T>(a: T, b: T) -> T {
     // A negative all-ones divisor is -1; this also accepts unsigned types.
     if b < 0 && ~b == 0 { return 0; }
     return a - (a / b) * b;
@@ -29,7 +29,7 @@ fn rem<T>(a: T, b: T) -> T {
 
 // Euclidean division pairs with `%`. Adjust the truncating quotient from
 // its remainder, without forming a - (a % b), which can underflow.
-fn div_euclid<T>(a: T, b: T) -> T {
+checkfree fn div_euclid<T>(a: T, b: T) -> T {
     let q = a / b;
     if rem(a, b) < 0 {
         if b > 0 { return q - 1; }
@@ -38,27 +38,27 @@ fn div_euclid<T>(a: T, b: T) -> T {
     return q;
 }
 
-fn sign<T>(x: T) -> T {
+checkfree fn sign<T>(x: T) -> T {
     if x < 0 { return -1; }
     if 0 < x { return 1; }
     return 0;
 }
-fn sign(x: f32) -> f32 {
+checkfree fn sign(x: f32) -> f32 {
     if x < 0.0 { return -1.0; }
     if 0.0 < x { return 1.0; }
     return 0.0;
 }
-fn sign(x: f64) -> f64 {
+checkfree fn sign(x: f64) -> f64 {
     if x < 0.0 { return -1.0; }
     if 0.0 < x { return 1.0; }
     return 0.0;
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
-fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
+checkfree fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+checkfree fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
 
 // The smallest power of two that is at least max(x, 1).
-fn next_pow2(x: i64) -> i64 {
+checkfree fn next_pow2(x: i64) -> i64 {
     var p = 1;
     while p < x { p = p * 2; }
     return p;
@@ -90,24 +90,24 @@ fn swap<T>(a: T&, b: T&) {
 // upwards. The fold and the mix are invertible, so distinct floats hash
 // apart.
 
-fn hash_mix(x: u64) -> u64 {
+checkfree fn hash_mix(x: u64) -> u64 {
     var h = x * 11400714819323198485;
     h = h ^ (h >> 32);
     return h;
 }
 
-fn hash(x: i8) -> u64 { hash_mix(x as! u64) }
-fn hash(x: i16) -> u64 { hash_mix(x as! u64) }
-fn hash(x: i32) -> u64 { hash_mix(x as! u64) }
-fn hash(x: i64) -> u64 { hash_mix(x as! u64) }
-fn hash(x: u8) -> u64 { hash_mix(x) }
-fn hash(x: u16) -> u64 { hash_mix(x) }
-fn hash(x: u32) -> u64 { hash_mix(x) }
-fn hash(x: u64) -> u64 { hash_mix(x) }
-fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
+checkfree fn hash(x: i8) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: i16) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: i32) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: i64) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: u8) -> u64 { hash_mix(x) }
+checkfree fn hash(x: u16) -> u64 { hash_mix(x) }
+checkfree fn hash(x: u32) -> u64 { hash_mix(x) }
+checkfree fn hash(x: u64) -> u64 { hash_mix(x) }
+checkfree fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
 // -0.0 hashes as 0.0, which it equals; an f32 as the f64 of its value.
-fn hash(x: f32) -> u64 { hash(x as f64) }
-fn hash(x: f64) -> u64 {
+checkfree fn hash(x: f32) -> u64 { hash(x as f64) }
+checkfree fn hash(x: f64) -> u64 {
     if x == 0.0 { return hash_mix(0); }
     let b = float_text::bits_of(x);
     return hash_mix(b ^ (b >> 32));
@@ -182,7 +182,7 @@ fn hash_lanes(s: u8[:]) -> u64 {
     return h ^ (h >> 32);
 }
 
-fn hash_combine(seed: u64, h: u64) -> u64 {
+checkfree fn hash_combine(seed: u64, h: u64) -> u64 {
     seed ^ (h + 11400714819323198485 + (seed << 6) + (seed >> 2))
 }
 
@@ -1573,7 +1573,7 @@ const float_text::POW5: u64[28] = [1, 5, 25, 125, 625, 3125, 15625, 78125, 39062
                                    1490116119384765625, 7450580596923828125];
 
 // The bits of a double.
-fn float_text::bits_of(x: f64) -> u64 {
+checkfree fn float_text::bits_of(x: f64) -> u64 {
     let a: f64[1] = [x];
     let b = bytes_of(a);
     return b[0] | (b[1] as u64) << 8 | (b[2] as u64) << 16 | (b[3] as u64) << 24 |
