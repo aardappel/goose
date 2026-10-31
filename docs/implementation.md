@@ -4463,7 +4463,8 @@ known about the old value stays true about the pinned old value. That is what
 makes a `for i in n` loop's entry snapshot sound across iterations, and what
 lets an `Index` compare its receiver's length as it was *before* the index
 expression ran (`Index::BceWalk` drops the length term if evaluating the
-index moved anything).
+index bumped the receiver's place; a kill of anything else, such as the
+locals of a call inlined into the index, leaves it).
 
 A length mutation with known direction bridges the generations: a grow adds
 `old <= new` and a shrink adds `new <= old`. So a bound established before a
@@ -4482,8 +4483,13 @@ recognizes:
 * an integer variable, unless it is a `varint` or a `u64` that is not of
   an index type (`IntBaseVar`, §5.11);
 * `.len` of a place (a fixed array's length is a constant);
-* `x + c`/`x - c` at `i64` only (narrower widths wrap below the 64-bit math
-  the facts are stated in);
+* `x + c`/`x - c` at `i64`. A narrower width wraps below the 64-bit math
+  the facts are stated in, so there the sum is a fresh base in the type's
+  range (`NarrowStepTerm`): equal to `x + c` where the facts show it fits,
+  and otherwise on the side a wrap cannot cross, at most `x + c` for
+  `c >= 0` and at least it for `c <= 0` (`x` lies in the type and `|c|`
+  below `2^N`, so a wrap moves the result by `2^N` against `c`). The `u32`
+  `e + 1` of an index of `a` is so at most `a.len`;
 * `a % b` and `a & b`, which lie in `[0, b]` on a fresh base when `b` is
   provably non-negative. A negative signed mask proves nothing, so a mask's
   term must also be one that cannot have wrapped (`n + 1` at i64's top is
@@ -4508,7 +4514,8 @@ recognizes:
   in `[i * 4, i * 4 + 3]`);
 * the value of a bare block or of an `InlineBlock` (its tail or final
   return), where no other return leaves the inlined body with a value of
-  its own (`BlockValueTerm`).
+  its own (`BlockValueTerm`). Where one does, a block of an index type is
+  still a value of that type (`IndexTypeTerm`), as the call was.
 
 An operation's width is its operands' type (`OpType`), not its `exprtype`,
 which is the possibly wider slot that receives the value (§3.3). Derived
@@ -4655,8 +4662,9 @@ type (array kinds do not convert at a reference). So a grow or shrink
 resizes no place whose array type is surely another (`DistinctTypes` in
 `GrowShrinkKill`; the elements a refill stores are a separate kill).
 Likewise, a callee's write through an argument that is an array of
-scalars, which holds no other array, kills only places of that array's type
-(`OtherArray` in `KillArgStorage`). A shrink of a reference parameter's
+scalars, or of any element type holding no length and no reference (a
+struct of scalars), which holds no other array and leads to none, kills
+only places of that array's type (`OtherArray` in `KillArgStorage`). A shrink of a reference parameter's
 array thus leaves a global of another type alone.
 
 A directional bump records that the new length is at least (or at most) the
@@ -4699,7 +4707,19 @@ outside `[0, 2^48]`, which the check rejects.
 
 Joins are the **meet** of the branch states (`Meet`: a fact survives with the
 weaker constant, generations take the maximum); a branch that diverges
-contributes nothing.
+contributes nothing. A variable one branch re-binds is named after the join
+by the later generation, which the other branch never mentions, and an `if`
+value of integer type by a fresh base neither does (`Phi`; `TermOf` reads it
+back while no generation has advanced). For those the meet compares what
+each branch *implies*: the shortest paths from and to every base either
+branch names, in a copy of the branch where the phi equals the branch's own
+term. So `let k = if k0 < n { k0 } else { n - 1 }` keeps `k >= 0` from
+`n > 0`, and `if k > last { k = last; }` keeps `k <= last`. A variable a
+branch states nothing about is no phi: that branch knows only its axioms,
+which hold of the joined value too. The cost is two shortest-path runs per
+phi and branch, at joins that re-bind or yield an integer only. A block
+with a `defer` has no value term (`BlockValueTerm`): its deferred bodies
+run after the value is read and their kills come first.
 
 ### 5.7 Loops and invariants
 
@@ -4734,8 +4754,13 @@ three modes (`RunSpec`):
   write other than `±constant`), it checks that every write preserves
   `v >= 0` and that no write can wrap at the variable's width. It also
   checks that `v <= len(P) + c` survives for each place `P` that the
-  variable indexes or bounds and that is never shrunk or re-bound in the
-  body (growth alone never breaks it). The declaration decides `c`: what
+  variable indexes or bounds and that is never shrunk in the body (growth
+  alone never breaks it). A place re-bound in the body, such as an inlined
+  slice parameter declared anew in each iteration of the caller's loop,
+  still qualifies, but its bound holds in the judging walk only of the
+  variable's current value, and only while a write that the facts place
+  below that length (`StateLeLen`) is more recent than the place's last
+  rebind (`Flow::lestated`, `LeLenHolds`). The declaration decides `c`: what
   its value needs, but at least 0 (`var j = 1` before
   `while j + 4 <= a.len { ...; j += 4; }` stays within `len + 1`, which
   keeps `j + 4` from wrapping). Where the value starts below the length, a
@@ -4919,8 +4944,8 @@ its length reaches it. A variable of an index type gets the axioms
 `0 <= v` and `v <= len(a) - 1` (`<= len(a)` for a bound type) against the
 length's *current* generation (`IndexBoundOf` in `DistsFrom`). So does a
 one-shot base standing for a value of an index type that is read out of
-storage or comes from a call, a branch or a conversion (`IndexTypeTerm`,
-`tmplen`). The array never shrinks, so a value below any earlier length is
+storage or comes from a call (inlined or not), a branch or a conversion
+(`IndexTypeTerm`, `tmplen`). The array never shrinks, so a value below any earlier length is
 below the current one, and no bridge facts are involved. A `u64` of an
 index type is a base, since it is below a length. So every write of one
 kills it, as it does any other integer variable (`IntBaseVar`): an

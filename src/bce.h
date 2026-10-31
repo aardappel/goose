@@ -245,6 +245,9 @@ struct BCE {
         vector<Fact> facts;
         Gens vgen, pgen;   // By var id / place id.
         small_vector<Lin, 4> lins;
+        // Sorted var ids whose current value a write has placed against a
+        // re-bindable place's length since its last rebind (LeLenHolds).
+        small_vector<int, 4> lestated;
     };
     Flow flow;
     int nextgen = 0;
@@ -630,6 +633,9 @@ struct BCE {
         return &c;
     }
     map<VarDef *, vector<pair<int, int64_t>>> lelen;   // v <= len(P) + c, as (P, c).
+    // The places the body re-binds (RebindKill), such as an inlined slice
+    // or reference parameter declared anew in each iteration of a loop.
+    set<int> rebound;
     map<VarDef *, int> mono;   // +1 nondecreasing / -1 nonincreasing, wrap-free.
 
     bool Reach(VarDef *v) {
@@ -789,9 +795,11 @@ struct BCE {
         if (!lelen.empty())
             for (size_t i = 0; i < nodes.size(); i++) {
                 if (nodes[i].kind != BK_VAR) continue;
-                auto it = lelen.find(varof[nodes[i].id]);
+                auto v = varof[nodes[i].id];
+                auto it = lelen.find(v);
                 if (it != lelen.end())
-                    for (auto [pid, c] : it->second) add(LenBase(pid));
+                    for (auto [pid, c] : it->second)
+                        if (LeLenHolds(nodes[i], v, pid)) add(LenBase(pid));
             }
         auto idx = [&](const Base &b) {
             for (size_t i = 0; i < nodes.size(); i++) if (nodes[i] == b) return (int)i;
@@ -826,6 +834,7 @@ struct BCE {
                 auto it = lelen.find(v);
                 if (it != lelen.end())
                     for (auto [pid, c] : it->second) {
+                        if (!LeLenHolds(b, v, pid)) continue;
                         auto li = idx(LenBase(pid));
                         if (li >= 0) edges.push_back({ (int)i, li, c });
                     }
@@ -979,6 +988,27 @@ struct BCE {
         return s;
     }
 
+    // `x + d` at a width below 64 bits, d a constant. §6.2 wraps there in
+    // release builds, so x + d is the result only where the facts show it
+    // fits the type. A wrap moves the result by 2^N against the sign of d (x
+    // lies in the type and |d| < 2^N, so it wraps at most once), which keeps
+    // one side of the relation either way: the u32 `e + 1` of an index of a
+    // is at most e + 1, so `upto a` holds it, wrapped or not (§3.11).
+    Term NarrowStepTerm(TypeExpr *t, const Term &x, int64_t d) {
+        if (mode == M_KILLS || !CmpAdmissible(x)) return {};
+        auto [lo, hi] = IntRange(t->intstorage);
+        if (d <= lo - hi - 1 || d >= hi - lo + 1) return {};
+        auto off = SatAdd(x.off, d);
+        if (!SmallOff(off)) return {};
+        auto s = IvalTerm(t, lo, hi);
+        if (!s.ok) return {};
+        auto fits = x.b.kind == BK_ZERO ? off >= lo && off <= hi
+                                        : NoWrap(Term { true, x.b, off }, t->intstorage);
+        if (d >= 0 || fits) AddFactB(s.b, x.b, off);              // s <= x + d.
+        if (d <= 0 || fits) AddFactB(x.b, s.b, SatSub(0, off));   // x + d <= s.
+        return s;
+    }
+
     // ------------------------------------------------------------------
     // Scaled and quotient bases (Lin).
 
@@ -1108,7 +1138,7 @@ struct BCE {
     // ------------------------------------------------------------------
     // Term extraction: a machine integer expression as base + offset. Offset
     // arithmetic is accepted at i64 only (narrower widths wrap below the
-    // 64-bit math the facts are stated in).
+    // 64-bit math the facts are stated in; NarrowStepTerm relates those).
 
     Term LenTermOf(Node *obj) {
         auto t = obj->exprtype;
@@ -1144,7 +1174,10 @@ struct BCE {
             // Two moving operands: no difference term, but the intervals add.
             if (rt.b.kind != BK_ZERO)
                 return Derived(n, [&] { return IvalSumTerm(b, lt, rt); });
-            if (t->intstorage != IS_I64) return {};
+            if (t->intstorage != IS_I64)
+                return Derived(n, [&] {
+                    return NarrowStepTerm(t, lt, b->op == T_PLUS ? rt.off : SatSub(0, rt.off));
+                });
             auto off = b->op == T_PLUS ? SatAdd(lt.off, rt.off) : SatSub(lt.off, rt.off);
             if (off == INF) return {};
             if (lt.b.kind != BK_ZERO && !SmallOff(off)) return {};
@@ -1164,14 +1197,26 @@ struct BCE {
                 return t.ok ? t : IndexTypeTerm(ac->totype);
             });
         // A spliced-in call body (or a bare block) is its value expression.
-        if (auto ib = Is<InlineBlock>(n)) return BlockValueTerm(ib->body, ib->sf);
-        if (auto bl = Is<Block>(n)) return BlockValueTerm(bl, nullptr);
+        // Where that is no term (several returns), a value of an index type
+        // still has what its type says, as the call's result did (below).
+        if (auto ib = Is<InlineBlock>(n)) {
+            auto t = BlockValueTerm(ib->body, ib->sf);
+            if (t.ok || !IsIndexT(n->exprtype)) return t;
+        } else if (auto bl = Is<Block>(n)) {
+            auto t = BlockValueTerm(bl, nullptr);
+            if (t.ok || !IsIndexT(n->exprtype)) return t;
+        }
         // A value read out of storage or returned by a call has no base, but
         // a narrow integer type still bounds it.
         if (Is<Index>(n) || Is<Dot>(n) || Is<Call>(n))
             return Derived(n, [&] {
                 return IsIndexT(n->exprtype) ? IndexTypeTerm(n->exprtype) : TypeRangeTerm(n);
             });
+        // An if's value, as the join named it (IfExpr::BceWalk).
+        if (Is<IfExpr>(n) && !IsIndexT(n->exprtype)) {
+            auto it = mode == M_KILLS ? derived.end() : derived.find(n);
+            return it != derived.end() && it->second.second == nextgen ? it->second.first : Term {};
+        }
         // Any other value of an index or bound type: a branch's, a match's.
         if (IsIndexT(n->exprtype)) return Derived(n, [&] { return IndexTypeTerm(n->exprtype); });
         return {};
@@ -1202,6 +1247,9 @@ struct BCE {
             if (ReturnsTo(b->tail, sf)) return {};
             if (last) for (auto v : last->vals) if (ReturnsTo(v, sf)) return {};
         }
+        // A deferred body runs after the value is read and may re-bind what
+        // the term would name (Block::BceWalk applies its kills first).
+        for (auto st : b->stmts) if (Is<Defer>(st)) return {};
         if (b->tail) return TermOf(b->tail);
         if (b->stmts.empty()) return {};
         auto r = Is<Return>(b->stmts.back());
@@ -1389,6 +1437,7 @@ struct BCE {
     Mode mode = M_JUDGE;
     set<int> *ksum = nullptr;          // Killscan summary: bumped place ids...
     set<int> *shsum = nullptr;         // ...those a non-growing bump can hit...
+    set<int> *rbsum = nullptr;         // ...those a rebind of their root bumps...
     set<VarDef *> *vksum = nullptr;    // ...and re-bound/killed variables.
     bool anybump = false;
     // While HasKillEffects runs: the variables its node declares, whose
@@ -1404,14 +1453,15 @@ struct BCE {
         Flow flow;
         Mode mode;
         bool anybump;
-        set<int> *ksum, *shsum;
+        set<int> *ksum, *shsum, *rbsum;
         set<VarDef *> *vksum;
         KillsScope(BCE &b, set<int> *ks = nullptr, set<int> *sh = nullptr,
-                   set<VarDef *> *vks = nullptr)
+                   set<VarDef *> *vks = nullptr, set<int> *rb = nullptr)
             : b(b), flow(b.flow), mode(b.mode), anybump(b.anybump), ksum(b.ksum),
-              shsum(b.shsum), vksum(b.vksum) {
+              shsum(b.shsum), rbsum(b.rbsum), vksum(b.vksum) {
             b.ksum = ks;
             b.shsum = sh;
+            b.rbsum = rb;
             b.vksum = vks;
             b.anybump = false;
             b.mode = M_KILLS;
@@ -1422,6 +1472,7 @@ struct BCE {
             b.anybump = anybump;
             b.ksum = ksum;
             b.shsum = shsum;
+            b.rbsum = rbsum;
             b.vksum = vksum;
         }
     };
@@ -1443,12 +1494,15 @@ struct BCE {
         return false;
     }
 
-    void BumpPlace(int pid, int dir) {   // dir: +1 grow, -1 shrink, 0 unknown.
+    // A rebind is told apart from a shrink: the invariants survive it
+    // where a write restates them after it (LeLenHolds).
+    void BumpPlace(int pid, int dir, bool rebind = false) {   // dir: +1 grow, -1 shrink, 0 unknown.
         if (!freshvars || !freshvars->count(places[pid].rootv)) anybump = true;
         auto old = LenBase(pid);
         flow.pgen.Set(pid, ++nextgen);
         if (ksum) ksum->insert(pid);
-        if (shsum && dir <= 0) shsum->insert(pid);
+        if (rebind && rbsum) rbsum->insert(pid);
+        else if (shsum && dir <= 0) shsum->insert(pid);
         // The direction carries the facts about the old length over to the
         // new one. With none to carry it is left out: a growth of storage
         // that may be anything bumps every place in the program, and their
@@ -1596,7 +1650,15 @@ struct BCE {
     void RebindKill(VarDef *root) {
         NoteStorage(OwnerTarget(root));
         for (size_t i = 0; i < places.size(); i++)
-            if (places[i].rootv == root) BumpPlace((int)i, 0);
+            if (places[i].rootv == root) BumpPlace((int)i, 0, true);
+        // What a variable was placed below no longer bounds it here.
+        erase_if(flow.lestated, [&](int id) {
+            auto it = lelen.find(varof[id]);
+            if (it == lelen.end()) return false;
+            for (auto [pid, c] : it->second)
+                if (places[pid].rootv == root) return true;
+            return false;
+        });
     }
 
     // A reference stored into a field or element slot, in storage tu owns
@@ -1859,13 +1921,13 @@ struct BCE {
         if (!Is<SliceExpr>(lv) && KillSliceArg(a, lv)) return;
         auto t = ArgTarget(a);
         NoteStorage(t);
-        // An array of scalars holds no other array, so a write through it
-        // changes the length of an array of its own type only.
+        // An array whose elements hold no length and no reference (scalars,
+        // a struct of scalars) holds no other array and leads to none, so a
+        // write through it changes the length of an array of its own type only.
         auto at = lv->exprtype;
         if (at && at->kind == TY_REF) at = at->ref->sub;
         auto sub = at && at->kind == TY_ARRAY ? at->arr->sub : nullptr;
-        auto only = sub && (sub->kind == TY_INT || sub->kind == TY_FLT || sub->kind == TY_BOOL)
-                        ? at : nullptr;
+        auto only = sub && !HoldsLen(sub, true) ? at : nullptr;
         switch (t.kind) {
             case TG_NONE:
                 return;
@@ -2187,7 +2249,21 @@ struct BCE {
         if (Ge0(v)) AddFactB(Zero(), vb, 0);
         auto it = lelen.find(v);
         if (it != lelen.end())
-            for (auto [pid, c] : it->second) AddFactB(vb, LenBase(pid), c);
+            for (auto [pid, c] : it->second)
+                if (LeLenHolds(vb, v, pid)) AddFactB(vb, LenBase(pid), c);
+    }
+
+    // Whether the granted `v <= len(P) + c` holds of v's base vb. Every
+    // write of v placed its value so against P's length then, and P only
+    // grows after, so it holds of any value v had, unless the body re-binds
+    // P: then only of v's current value, where a write placed it since P's
+    // last rebind (RebindKill). That is how a probe index declared in an
+    // inlined body keeps its bound in each iteration of the caller's loop,
+    // which binds the body's slice parameter anew.
+    bool LeLenHolds(const Base &vb, VarDef *v, int pid) {
+        if (!rebound.count(pid)) return true;
+        auto &st = flow.lestated;
+        return vb == VarBase(v) && std::binary_search(st.begin(), st.end(), VarId(v));
     }
 
     // Whether base + off is the value computed at storage s, rather than one
@@ -2250,6 +2326,24 @@ struct BCE {
             AddFactB(nb, t.b, t.off);
             AddFactB(t.b, nb, SatSub(0, t.off));
         }
+        if (mode == M_JUDGE) StateLeLen(v);
+    }
+
+    // A value the facts place below each re-bindable length v is granted
+    // to stay below states those bounds anew, past any earlier rebind
+    // (LeLenHolds). Shifts and steps keep what was stated: the recording
+    // walk proved they keep v within every granted bound.
+    void StateLeLen(VarDef *v) {
+        auto it = lelen.find(v);
+        if (it == lelen.end()) return;
+        auto &st = flow.lestated;
+        auto id = VarId(v);
+        auto at = std::lower_bound(st.begin(), st.end(), id);
+        if (at != st.end() && *at == id) st.erase(at);
+        auto vb = VarBase(v);
+        for (auto [pid, c] : it->second)
+            if (rebound.count(pid) && !Query(vb, LenBase(pid), c)) return;
+        st.insert(std::lower_bound(st.begin(), st.end(), id), id);
     }
 
     // `v + rhs` for the compound assignment `v += rhs` (or `-=`), which a
@@ -3026,7 +3120,19 @@ struct BCE {
         mode = saved;
     }
 
-    Flow Meet(const Flow &a, const Flow &b) {
+    // A value a join names by one base, p, that each incoming flow knows by
+    // a term of its own: ta in the first, tb in the second.
+    struct Phi { Base p; Term ta, tb; };
+
+    // The join keeps the facts both flows state. A variable one of them
+    // re-bound is named after the join by the later generation, which the
+    // other flow never mentions, and an if's value by a base neither does
+    // (vals): for those, the facts the meet compares are what each flow
+    // implies, its shortest paths against every base either flow names,
+    // with the value defined as the flow's own term. A re-bound variable
+    // whose base a flow states nothing about is left out: what that flow
+    // knows of it is only its axioms, which hold of the joined value anyway.
+    Flow Meet(const Flow &a, const Flow &b, span<const Phi> vals = {}) {
         Flow r;
         for (auto &f : a.facts)
             for (auto &g : b.facts)
@@ -3043,6 +3149,72 @@ struct BCE {
                 }
         r.vgen = Gens::Max(a.vgen, b.vgen);
         r.pgen = Gens::Max(a.pgen, b.pgen);
+        std::set_intersection(a.lestated.begin(), a.lestated.end(), b.lestated.begin(),
+                              b.lestated.end(), std::back_inserter(r.lestated));
+        if (mode == M_KILLS) return r;
+        auto named = [](const Flow &f, const Base &x) {
+            if (x.kind == BK_ZERO) return true;
+            for (auto &g : f.facts) if (g.l == x || g.r == x) return true;
+            return false;
+        };
+        small_vector<Phi, 4> phis;
+        for (auto &v : vals)
+            if (named(a, v.ta.b) && named(b, v.tb.b)) phis.push_back(v);
+        for (auto &g : r.vgen.gens) {
+            auto ga = Base { BK_VAR, g.id, a.vgen.Get(g.id) };
+            auto gb = Base { BK_VAR, g.id, b.vgen.Get(g.id) };
+            if (ga.gen != gb.gen && IntBaseVar(varof[g.id]) && named(a, ga) && named(b, gb))
+                phis.push_back({ Base { BK_VAR, g.id, g.gen }, { true, ga, 0 }, { true, gb, 0 } });
+        }
+        if (phis.empty()) return r;
+        small_vector<Base, 32> to = { Zero() };
+        auto add = [&](const Base &x) {
+            for (auto &y : to) if (y == x) return;
+            to.push_back(x);
+        };
+        for (auto &f : a.facts) { add(f.l); add(f.r); }
+        for (auto &f : b.facts) { add(f.l); add(f.r); }
+        for (auto &ph : phis) add(ph.p);
+        // The implied facts about each phi in one flow, from a scratch copy
+        // of it in which the phis are defined. Either flow may be the
+        // current one itself.
+        auto implied = [&](const Flow &f, bool first) {
+            auto scratch = f;
+            std::swap(flow, scratch);
+            for (auto &ph : phis) {
+                auto &t = first ? ph.ta : ph.tb;
+                if (t.b == ph.p && !t.off) continue;
+                flow.facts.push_back({ ph.p, t.b, t.off });
+                flow.facts.push_back({ t.b, ph.p, SatSub(0, t.off) });
+            }
+            vector<Fact> out;
+            for (auto &ph : phis) {
+                auto up = DistsFrom(ph.p, to), dn = DistsFrom(ph.p, to, true);
+                for (size_t i = 0; i < to.size(); i++) {
+                    if (to[i] == ph.p) continue;
+                    // Bounds as far out as the axioms' only crowd the table.
+                    if (SmallOff(up[i])) out.push_back({ ph.p, to[i], up[i] });
+                    if (SmallOff(dn[i])) out.push_back({ to[i], ph.p, dn[i] });
+                }
+            }
+            std::swap(flow, scratch);
+            return out;
+        };
+        auto fa = implied(a, true), fb = implied(b, false);
+        for (auto &f : fa)
+            for (auto &g : fb) {
+                if (!(f.l == g.l && f.r == g.r)) continue;
+                auto c = std::max(f.c, g.c);
+                auto known = false;
+                for (auto &h : r.facts)
+                    if (h.l == f.l && h.r == f.r) {
+                        h.c = std::min(h.c, c);
+                        known = true;
+                        break;
+                    }
+                if (!known && r.facts.size() < MAXFACTS) r.facts.push_back({ f.l, f.r, c });
+                break;
+            }
         return r;
     }
 
@@ -3068,6 +3240,7 @@ struct BCE {
         cands.clear();
         ge0.clear();
         lelen.clear();
+        rebound.clear();
         mono.clear();
         ownvars.clear();
         classparams.clear();
@@ -3100,7 +3273,7 @@ struct BCE {
         set<int> bumped, shrunk;
         set<VarDef *> vbumped;
         {
-            KillsScope ks(*this, &bumped, &shrunk, &vbumped);
+            KillsScope ks(*this, &bumped, &shrunk, &vbumped, &rebound);
             flow = Flow {};
             Walk(sp->body);
         }
@@ -3117,7 +3290,8 @@ struct BCE {
             if (rit != relpids.end())
                 for (auto pid : rit->second) {
                     // `v <= len(P)` survives any growth of P, so only a
-                    // shrink (or a re-bound access path) rules P out.
+                    // shrink (or a re-bound access path) rules P out. A
+                    // rebind of P's root does not (LeLenHolds).
                     if (shrunk.count(pid) || vbumped.count(places[pid].rootv)) continue;
                     if (c.le.size() >= 8) break;
                     c.le.push_back({ pid, 0 });
@@ -3517,11 +3691,13 @@ inline bool Binary::BceWalk(BCE &b) {
 inline bool Index::BceWalk(BCE &b) {
     b.Walk(obj);
     auto lent = b.mode == BCE::M_KILLS ? BCE::Term {} : b.LenTermOf(obj);
-    auto gen = b.nextgen;
     b.Walk(idx);
     // The receiver is evaluated before its index. A rebind or growth in
-    // the index must not replace that earlier receiver's length proof.
-    if (b.nextgen != gen && lent.b.kind != BCE::BK_ZERO) lent = BCE::Term {};
+    // the index must not replace that earlier receiver's length proof:
+    // every such change bumps the receiver's place, so its length is the
+    // one compared only while that generation is still current. Other
+    // kills in the index (an inlined call's own locals) leave it alone.
+    if (lent.b.kind == BCE::BK_LEN && !(lent.b == b.LenBase(lent.b.id))) lent = BCE::Term {};
     b.JudgeIndex(this, lent);
     return true;
 }
@@ -3785,7 +3961,24 @@ inline bool IfExpr::BceWalk(BCE &b) {
     if (fellthen && !fellelse) { b.flow = std::move(thenf); return true; }
     if (!fellthen && fellelse) return true;   // b.flow is already the else path.
     if (!fellthen && !fellelse) return false;
-    b.flow = b.Meet(thenf, b.flow);
+    // An integer value both branches give a term to: one base, which the
+    // join relates to what each branch knew of its own (TermOf reads it
+    // back while no generation has advanced).
+    small_vector<BCE::Phi, 1> val;
+    if (elseb && BCE::MachineInt(exprtype)) {
+        auto et = b.TermOf(elseb);
+        std::swap(thenf, b.flow);
+        auto tt = b.TermOf(thenb);
+        auto admissible = b.CmpAdmissible(tt);
+        std::swap(thenf, b.flow);
+        if (admissible && b.CmpAdmissible(et)) {
+            auto p = b.IndexTypeTerm(exprtype);
+            val.push_back({ p.ok ? p.b : b.TmpBase(), tt, et });
+        }
+    }
+    b.flow = b.Meet(thenf, b.flow, val);
+    b.derived.erase(this);
+    if (!val.empty()) b.derived[this] = { BCE::Term { true, val[0].p, 0 }, b.nextgen };
     return true;
 }
 
