@@ -1164,8 +1164,15 @@ struct BCE {
                 return t.ok ? t : IndexTypeTerm(ac->totype);
             });
         // A spliced-in call body (or a bare block) is its value expression.
-        if (auto ib = Is<InlineBlock>(n)) return BlockValueTerm(ib->body, ib->sf);
-        if (auto bl = Is<Block>(n)) return BlockValueTerm(bl, nullptr);
+        // Where that is no term (several returns), a value of an index type
+        // still has what its type says, as the call's result did (below).
+        if (auto ib = Is<InlineBlock>(n)) {
+            auto t = BlockValueTerm(ib->body, ib->sf);
+            if (t.ok || !IsIndexT(n->exprtype)) return t;
+        } else if (auto bl = Is<Block>(n)) {
+            auto t = BlockValueTerm(bl, nullptr);
+            if (t.ok || !IsIndexT(n->exprtype)) return t;
+        }
         // A value read out of storage or returned by a call has no base, but
         // a narrow integer type still bounds it.
         if (Is<Index>(n) || Is<Dot>(n) || Is<Call>(n))
@@ -3517,11 +3524,13 @@ inline bool Binary::BceWalk(BCE &b) {
 inline bool Index::BceWalk(BCE &b) {
     b.Walk(obj);
     auto lent = b.mode == BCE::M_KILLS ? BCE::Term {} : b.LenTermOf(obj);
-    auto gen = b.nextgen;
     b.Walk(idx);
     // The receiver is evaluated before its index. A rebind or growth in
-    // the index must not replace that earlier receiver's length proof.
-    if (b.nextgen != gen && lent.b.kind != BCE::BK_ZERO) lent = BCE::Term {};
+    // the index must not replace that earlier receiver's length proof:
+    // every such change bumps the receiver's place, so its length is the
+    // one compared only while that generation is still current. Other
+    // kills in the index (an inlined call's own locals) leave it alone.
+    if (lent.b.kind == BCE::BK_LEN && !(lent.b == b.LenBase(lent.b.id))) lent = BCE::Term {};
     b.JudgeIndex(this, lent);
     return true;
 }

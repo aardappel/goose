@@ -4463,7 +4463,8 @@ known about the old value stays true about the pinned old value. That is what
 makes a `for i in n` loop's entry snapshot sound across iterations, and what
 lets an `Index` compare its receiver's length as it was *before* the index
 expression ran (`Index::BceWalk` drops the length term if evaluating the
-index moved anything).
+index bumped the receiver's place; a kill of anything else, such as the
+locals of a call inlined into the index, leaves it).
 
 A length mutation with known direction bridges the generations: a grow adds
 `old <= new` and a shrink adds `new <= old`. So a bound established before a
@@ -4508,7 +4509,8 @@ recognizes:
   in `[i * 4, i * 4 + 3]`);
 * the value of a bare block or of an `InlineBlock` (its tail or final
   return), where no other return leaves the inlined body with a value of
-  its own (`BlockValueTerm`).
+  its own (`BlockValueTerm`). Where one does, a block of an index type is
+  still a value of that type (`IndexTypeTerm`), as the call was.
 
 An operation's width is its operands' type (`OpType`), not its `exprtype`,
 which is the possibly wider slot that receives the value (§3.3). Derived
@@ -4919,8 +4921,8 @@ its length reaches it. A variable of an index type gets the axioms
 `0 <= v` and `v <= len(a) - 1` (`<= len(a)` for a bound type) against the
 length's *current* generation (`IndexBoundOf` in `DistsFrom`). So does a
 one-shot base standing for a value of an index type that is read out of
-storage or comes from a call, a branch or a conversion (`IndexTypeTerm`,
-`tmplen`). The array never shrinks, so a value below any earlier length is
+storage or comes from a call (inlined or not), a branch or a conversion
+(`IndexTypeTerm`, `tmplen`). The array never shrinks, so a value below any earlier length is
 below the current one, and no bridge facts are involved. A `u64` of an
 index type is a base, since it is below a length. So every write of one
 kills it, as it does any other integer variable (`IntBaseVar`): an
