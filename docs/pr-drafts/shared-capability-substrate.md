@@ -13,9 +13,9 @@ worker cleanup releases abandoned accesses and leases, including descendants.
 Owners and accesses cannot cross a worker boundary; direct views can. Safe
 capabilities have no raw C ABI or serializable byte image.
 
-This is a substantive language extension and is prepared for discussion only.
-Maintainer agreement is required before opening this PR. File mapping, page
-advice, unsafe pointers, atomics, indexed arrays and byte-copy APIs are deferred.
+This is a substantive language extension proposed for maintainer discussion.
+File mapping, page advice, unsafe pointers, atomics, indexed arrays and byte-copy
+APIs are deferred.
 
 Validation: upstream baseline and complete candidate suite, focused GCC 14 and
 Clang 23 debug/release checks, Clang ASan/UBSan lifecycle checks. Lifecycle
