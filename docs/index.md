@@ -99,6 +99,11 @@ and the reference describe what was built; these say why.
 * [Coroutines](design/coroutines.md): stackless coroutines whose frame is
   an ordinary fixed-size value, driven by `resume` and scheduled by
   libraries; what Rust, C++, Kotlin, Go and Zig learned; a proposal.
+* [Claims the compiler checks and spends](design/llm_frontier.md): where
+  the next frontier lies for code written by language models and reviewed
+  by people: contracts in the prover's own fact language, `abortfree`,
+  `pure`, a race-free `par for` by proof, owning pool handles, and what
+  each costs; a research note.
 
 ## Getting the compiler
 
