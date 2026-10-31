@@ -82,4 +82,4 @@ at `shared_alloc`. This was an additional regression beyond the known baseline:
 the extracted builtin table had not been mirrored in the TextMate grammar.
 Reproduced that exact assertion locally, added all eight substrate builtin
 names to the grammar, and reran the extension tests against the refreshed
-substrate compiler. All 36 tests passed. No compiler/runtime code changed.
+substrate compiler. All 40 tests passed. No compiler/runtime code changed.
