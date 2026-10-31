@@ -4707,7 +4707,19 @@ outside `[0, 2^48]`, which the check rejects.
 
 Joins are the **meet** of the branch states (`Meet`: a fact survives with the
 weaker constant, generations take the maximum); a branch that diverges
-contributes nothing.
+contributes nothing. A variable one branch re-binds is named after the join
+by the later generation, which the other branch never mentions, and an `if`
+value of integer type by a fresh base neither does (`Phi`; `TermOf` reads it
+back while no generation has advanced). For those the meet compares what
+each branch *implies*: the shortest paths from and to every base either
+branch names, in a copy of the branch where the phi equals the branch's own
+term. So `let k = if k0 < n { k0 } else { n - 1 }` keeps `k >= 0` from
+`n > 0`, and `if k > last { k = last; }` keeps `k <= last`. A variable a
+branch states nothing about is no phi: that branch knows only its axioms,
+which hold of the joined value too. The cost is two shortest-path runs per
+phi and branch, at joins that re-bind or yield an integer only. A block
+with a `defer` has no value term (`BlockValueTerm`): its deferred bodies
+run after the value is read and their kills come first.
 
 ### 5.7 Loops and invariants
 
