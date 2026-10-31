@@ -988,6 +988,27 @@ struct BCE {
         return s;
     }
 
+    // `x + d` at a width below 64 bits, d a constant. §6.2 wraps there in
+    // release builds, so x + d is the result only where the facts show it
+    // fits the type. A wrap moves the result by 2^N against the sign of d (x
+    // lies in the type and |d| < 2^N, so it wraps at most once), which keeps
+    // one side of the relation either way: the u32 `e + 1` of an index of a
+    // is at most e + 1, so `upto a` holds it, wrapped or not (§3.11).
+    Term NarrowStepTerm(TypeExpr *t, const Term &x, int64_t d) {
+        if (mode == M_KILLS || !CmpAdmissible(x)) return {};
+        auto [lo, hi] = IntRange(t->intstorage);
+        if (d <= lo - hi - 1 || d >= hi - lo + 1) return {};
+        auto off = SatAdd(x.off, d);
+        if (!SmallOff(off)) return {};
+        auto s = IvalTerm(t, lo, hi);
+        if (!s.ok) return {};
+        auto fits = x.b.kind == BK_ZERO ? off >= lo && off <= hi
+                                        : NoWrap(Term { true, x.b, off }, t->intstorage);
+        if (d >= 0 || fits) AddFactB(s.b, x.b, off);              // s <= x + d.
+        if (d <= 0 || fits) AddFactB(x.b, s.b, SatSub(0, off));   // x + d <= s.
+        return s;
+    }
+
     // ------------------------------------------------------------------
     // Scaled and quotient bases (Lin).
 
@@ -1117,7 +1138,7 @@ struct BCE {
     // ------------------------------------------------------------------
     // Term extraction: a machine integer expression as base + offset. Offset
     // arithmetic is accepted at i64 only (narrower widths wrap below the
-    // 64-bit math the facts are stated in).
+    // 64-bit math the facts are stated in; NarrowStepTerm relates those).
 
     Term LenTermOf(Node *obj) {
         auto t = obj->exprtype;
@@ -1153,7 +1174,10 @@ struct BCE {
             // Two moving operands: no difference term, but the intervals add.
             if (rt.b.kind != BK_ZERO)
                 return Derived(n, [&] { return IvalSumTerm(b, lt, rt); });
-            if (t->intstorage != IS_I64) return {};
+            if (t->intstorage != IS_I64)
+                return Derived(n, [&] {
+                    return NarrowStepTerm(t, lt, b->op == T_PLUS ? rt.off : SatSub(0, rt.off));
+                });
             auto off = b->op == T_PLUS ? SatAdd(lt.off, rt.off) : SatSub(lt.off, rt.off);
             if (off == INF) return {};
             if (lt.b.kind != BK_ZERO && !SmallOff(off)) return {};
