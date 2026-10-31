@@ -82,3 +82,34 @@ they are not a general proof of race freedom or native-FFI lifetime safety.
 No PR is opened for this branch. Its substrate is a substantive language
 extension requiring maintainer agreement. The drafted description is
 `docs/pr-drafts/shared-atomic-u64.md`. Owner review precedes any upstream opening.
+
+## Upstream opening refresh, 2026-10-31
+
+The owner lifted the publication hold. Upstream master was fetched at
+`2ed1a63dde2ddff777fbb7f4790412b4f00cd47d`; its sources contain neither the
+shared capability substrate nor this u64 atomic API. The substrate rebased
+cleanly and opened as https://github.com/aardappel/goose/pull/163 at
+`64ec466fb6a67ef4042df4b435a18abc467f6d44`. Rebased the three u64 commits
+cleanly onto that head. No implementation changes or rebase fixes were needed.
+
+The PR draft now removes the superseded hold and states the dependency first.
+GitHub's upstream repository has no substrate branch to use as a PR base, so
+the u64 PR targets master and includes the prerequisite in its overall diff.
+The incremental u64 change remains separately inspectable in its commits.
+
+Fresh Release compiler build and focused validation passed: all forty legal/
+illegal order cases; Goose O0/O2 generated-C inspection; forty GCC 14.2 / Clang
+23.1.3 debug/release runs, each verifying all four thousand job IDs exactly once;
+unsigned wrap; CAS success/failure; mixed-access rejection in both directions;
+bounds/alignment; stale/reused handles; packed packets; and live-worker close.
+The shared capability suite also passed its four compiler/mode configurations
+and diagnostics. Clang ASan/UBSan passed both lifecycle and atomic fixtures.
+The i486 rejection and x86-64 acceptance gates passed, and generated binaries
+had no unresolved atomic library calls. Fresh Clang TSan runs of the generated
+atomic fixture and direct runtime lifecycle fixture passed without race reports.
+
+Complete native suite: all tests passed (35 seconds, eight jobs), including
+1450 parse/typecheck checks, 694 generated C runs, 204 debug checks, 21 compiler/
+runtime/Clang checks and 1928 typecheck rejection checks. Embedded JIT and
+unavailable multimedia modules were skipped. None of the four owner-reported
+upstream baseline failures reproduced, and no additional failure remains.

@@ -1,5 +1,11 @@
 # Add capability-based u64 atomics in registered shared storage
 
+Depends on https://github.com/aardappel/goose/pull/163. GitHub cannot target a
+branch that exists only in the fork, so this PR targets master and includes
+that prerequisite. The u64 changes are the three commits after the substrate
+readiness refresh, plus the opening refresh. The [incremental u64 diff](https://github.com/jtenner/goose/compare/upstream/shared-capability-substrate...upstream/shared-atomic-u64)
+excludes the prerequisite.
+
 Builds on the separately proposed shared capability substrate. This adds one
 opaque `SharedAtomicU64` cell type with `shared_atomic_u64`,
 `atomic_is_lock_free`, load, store, fetch-add and strong compare-exchange.
@@ -26,6 +32,12 @@ O0/O2 for explicit orders, strong CAS and lock-free gates; i486 was rejected
 and x86-64 accepted. Clang ASan/UBSan and TSan fixtures passed. See the readiness
 report for exact commands, baseline caveats and platform limits.
 
-Prepared for owner/maintainer discussion only. Do not open this PR until the
-shared-storage extension has maintainer agreement and its prerequisite is
-accepted. This branch is stacked on `upstream/shared-capability-substrate`.
+Proposed for maintainer discussion alongside the prerequisite. This branch is
+stacked on `upstream/shared-capability-substrate`; the substrate must land first.
+
+Refreshed against upstream master `2ed1a63d` on October 31. The complete
+native suite passed: 1450 parse/typecheck checks, 694 generated C runs,
+204 debug checks, 21 compiler/runtime/Clang checks and 1928 typecheck
+rejection checks, alongside the remaining sections. The four reported upstream
+baseline failures did not reproduce. Embedded JIT and unavailable multimedia
+modules were skipped. Linux x86-64 is the execution-verified platform.
