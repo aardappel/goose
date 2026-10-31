@@ -107,6 +107,9 @@ typedef double gs_f64 GS_ALIGN1;
 #ifndef GS_DEBUG
 #define GS_DEBUG 0          /* 1: overflow, `as` range, and tag checks (§9.3). */
 #endif
+#ifndef GS_CONTRACTS
+#define GS_CONTRACTS GS_DEBUG  /* 1: requires/ensures/invariant checks (docs/design/proofs.md). */
+#endif
 
 /* Configuration; all overridable from the compile command line. */
 /* The most data stacks the compiler lets one thread program use at once:

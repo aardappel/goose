@@ -108,6 +108,7 @@ inline Node *StrLit::Clone1(Ast &ast) const { return ast.New<StrLit>(line, val, 
 inline Node *Ident::Clone1(Ast &ast) const {
     auto n = ast.New<Ident>(line, name, ns);
     n->expansionerror = expansionerror;
+    n->oldof = CloneOrNull(ast, oldof);
     return n;
 }
 
@@ -135,7 +136,9 @@ inline Node *Unary::Clone1(Ast &ast) const {
 }
 
 inline Node *Binary::Clone1(Ast &ast) const {
-    return ast.New<Binary>(line, op, left->Clone(ast), right->Clone(ast));
+    auto b = ast.New<Binary>(line, op, left->Clone(ast), right->Clone(ast));
+    b->implies = implies;
+    return b;
 }
 
 inline Node *Dot::Clone1(Ast &ast) const {
@@ -185,6 +188,12 @@ inline Node *Block::Clone1(Ast &ast) const {
     b->brokenat = brokenat;
     CloneNodes(ast, stmts, b->stmts);
     b->tail = CloneOrNull(ast, tail);
+    // A quantifier's parts are only dumped, so the copy shares them.
+    b->quant = quant;
+    b->quantvar = quantvar;
+    b->quantlo = quantlo;
+    b->quanthi = quanthi;
+    b->quantbody = quantbody;
     return b;
 }
 
@@ -234,7 +243,10 @@ inline Node *EarlyBlock::Clone1(Ast &ast) const {
 }
 
 inline Node *While::Clone1(Ast &ast) const {
-    return ast.New<While>(line, cond->Clone(ast), (Block *)body->Clone(ast));
+    auto w = ast.New<While>(line, cond->Clone(ast), (Block *)body->Clone(ast));
+    CloneNodes(ast, invariants, w->invariants);
+    w->invarianttexts = invarianttexts;
+    return w;
 }
 
 inline Node *LoopExpr::Clone1(Ast &ast) const {
@@ -246,6 +258,8 @@ inline Node *ForLoop::Clone1(Ast &ast) const {
                               (Block *)body->Clone(ast));
     f->vartype = ast.CloneExpansionType(vartype);
     f->idxtype = ast.CloneExpansionType(idxtype);
+    CloneNodes(ast, invariants, f->invariants);
+    f->invarianttexts = invarianttexts;
     return f;
 }
 

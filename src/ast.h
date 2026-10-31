@@ -993,6 +993,9 @@ NODE(Ident)
     // Filled by typecheck: exactly one of these.
     VarDef *vdef = nullptr;         // A variable.
     SFunction *fnref = nullptr;     // A named function used as a function value.
+    // `old(e)` in an ensures clause (docs/design/proofs.md §3.1): the name
+    // stands for e's value on entry, which LowerContracts binds to it.
+    Node *oldof = nullptr;
     Ident(Line l, string_view _name, string_view _ns = {}) : Node(l, NKind), name(_name), ns(_ns) {}
 NODE_END
 
@@ -1059,6 +1062,8 @@ NODE(Binary)
     // is provably nonnegative and a divisor provably positive, so codegen
     // computes it unsigned, with no zero or overflow check to make.
     bool nonneg = false;
+    // `a implies b` in a contract, kept as `!a || b` and dumped as written.
+    bool implies = false;
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l, NKind), op(_op), left(_l), right(_r) {}
 NODE_END
 
@@ -1244,6 +1249,11 @@ NODE(Block)
     // error, those from it on what parsed after. The checker checks the
     // block up to it and stops the body there (Abandoned).
     int brokenat = -1;
+    // A contract's bounded quantifier, `all i in lo..hi: p` or `any ...`
+    // (docs/design/proofs.md §4.2), which the parser expands to this block;
+    // kept so that the block dumps as written. The nodes are the block's own.
+    string_view quant, quantvar;
+    Node *quantlo = nullptr, *quanthi = nullptr, *quantbody = nullptr;
     Block(Line l) : Node(l, NKind) {}
 NODE_END
 
@@ -1298,6 +1308,10 @@ NODE(While)
     bool countdown = false;
     Node *cond;
     Block *body;
+    // `invariant` clauses and their source text (docs/design/proofs.md §5.1),
+    // which LowerContracts moves into the body as checks.
+    vector<Node *> invariants;
+    vector<string> invarianttexts;
     While(Line l, Node *_cond, Block *_body) : Node(l, NKind), cond(_cond), body(_body) {}
 NODE_END
 
@@ -1336,6 +1350,8 @@ NODE(ForLoop)
     vector<Binary *> lanemods;
     bool sumred = false;
     BCE_MARK
+    vector<Node *> invariants;  // See While.
+    vector<string> invarianttexts;
     bool byref;                 // for &x in ...
     string_view var;
     string_view idxvar;         // Optional second binding; empty if absent.
@@ -1505,6 +1521,10 @@ struct SFunction {
     bool takesloc = false;
     bool isnested = false;
     SFunction *outer = nullptr;     // The function a nested one is declared in.
+    // Contracts (docs/design/proofs.md §3) and their source text, which
+    // LowerContracts turns into checks in the body before typecheck.
+    vector<Node *> requires_, ensures;
+    vector<string> requirestexts, ensurestexts;
     Block *body = nullptr;
     // The body lost a statement to a parse error, or holds an incomplete
     // `.` (Block::brokenat, Dot::incomplete): the signature is whole, and a

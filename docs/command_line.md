@@ -190,6 +190,7 @@ These options have the same meaning for `goose run`, `goose build`,
 |---|---|
 | `-O0`, `-O1`, `-O2` | How much the Goose compiler inlines: nothing, a little, or the most (the default). Constant folding and propagation run at every level, and a build's C compiler optimizes at every level. |
 | `--debug` | Turn on the overflow checks, the range checks of `as` casts and the tag checks (`GS_DEBUG=1`). Each failure names its source line, and an overflow or a cast names the values involved. A build also gets debug information ([§3](#3-building-an-executable)). |
+| `--check-contracts` | Check `requires`, `ensures` and `invariant` clauses (`GS_CONTRACTS=1`) in a build without `--debug`, which checks them anyway ([proofs.md](design/proofs.md)). |
 | `-D NAME[=VALUE]` | Define a C macro in the generated program, as `-DNAME[=VALUE]` does too. The define is written into the C itself, so a run and a build see the same source. The value is 1 when none is given. |
 | `--stack-reserve size` | The address space reserved for each data stack, from 64K up to 256T with a `K`, `M`, `G` or `T` suffix. The default is 2G. The address space is committed as it is used, so a large reservation costs nothing until it is used. |
 | `--stacks` | Report how many data stacks the program and each of its workers use, what that adds up to, and the cap it puts on `hardware_threads()`. |
@@ -210,6 +211,7 @@ The `-D` macros that the runtime reads, which configure a program:
 | Macro | Default | What it sets |
 |---|---|---|
 | `GS_DEBUG` | 0 | 1 is what `--debug` sets: the overflow, range and tag checks. |
+| `GS_CONTRACTS` | `GS_DEBUG` | 1 is what `--check-contracts` sets: the checks of contract clauses. |
 | `GS_STACK_STATS` | 0 | 1 makes each thread program report its data stack use on stderr as it ends. |
 | `GS_STACK_RESERVE` | 2 GB | The address space reserved per data stack, which `--stack-reserve` sets. |
 | `GS_STACK_GAP` | 1 MB | The unmapped gap after each data stack, which makes runaway growth abort. |

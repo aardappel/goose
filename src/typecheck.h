@@ -3437,6 +3437,9 @@ struct TypeCheck {
 // driver asked for (a program without main, a header without an export),
 // throws CompileError.
 inline void TypeCheckProgram(Ast &ast, bool library = false, bool nomain = false) {
+    // An error lowering a contract is reported, and the checker goes on past
+    // it as past its own.
+    LowerContracts(ast);
     TypeCheck tc(ast, library, nomain);
 }
 

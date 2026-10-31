@@ -129,6 +129,9 @@ R"GSRT(#ifndef GS_NEED_THREADS
 #ifndef GS_DEBUG
 #define GS_DEBUG 0          /* 1: overflow, `as` range, and tag checks (§9.3). */
 #endif
+#ifndef GS_CONTRACTS
+#define GS_CONTRACTS GS_DEBUG  /* 1: requires/ensures/invariant checks (docs/design/proofs.md). */
+#endif
 
 )GSRT"
 R"GSRT(/* Configuration; all overridable from the compile command line. */
