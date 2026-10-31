@@ -2,8 +2,7 @@
 
 Depends on https://github.com/aardappel/goose/pull/163. GitHub cannot target a
 branch that exists only in the fork, so this PR targets master and includes
-that prerequisite. The u64 changes are the three commits after the substrate
-readiness refresh, plus the opening refresh. The [incremental u64 diff](https://github.com/jtenner/goose/compare/upstream/shared-capability-substrate...upstream/shared-atomic-u64)
+that prerequisite. The u64 implementation and tests remain in separate commits. The [incremental u64 diff](https://github.com/jtenner/goose/compare/upstream/shared-capability-substrate...upstream/shared-atomic-u64)
 excludes the prerequisite.
 
 Builds on the separately proposed shared capability substrate. This adds one

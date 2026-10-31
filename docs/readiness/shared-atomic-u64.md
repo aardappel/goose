@@ -113,3 +113,11 @@ Complete native suite: all tests passed (35 seconds, eight jobs), including
 runtime/Clang checks and 1928 typecheck rejection checks. Embedded JIT and
 unavailable multimedia modules were skipped. None of the four owner-reported
 upstream baseline failures reproduced, and no additional failure remains.
+
+### CI grammar correction
+
+Merged the substrate's TextMate builtin correction without rewriting either
+open PR branch. The u64 grammar test then reproduced the corresponding missing
+`shared_atomic_u64` assertion. Added all six atomic builtin names and reran the
+extension suite against the refreshed u64 compiler: all 40 tests passed. No
+compiler/runtime code changed; the existing native validation remains applicable.
