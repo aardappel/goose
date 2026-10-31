@@ -2061,6 +2061,7 @@ struct TypeCheck {
     Val CheckLogical(Binary *b);
     Val CheckBinaryResult(Binary *b, Val &lv, Val &rv);
     Val NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bool trial);
+    void DecidedComparison(Binary *b, const Val &lv, const Val &rv, TypeExpr *lt, TypeExpr *rt);
     Val NumericUnary(Unary *u, const Val &v, bool trial);
     // A float whose type comes from float literals alone (§6.3): a constant,
     // a literal parameter (§7.7), or a Val::litfloat.
