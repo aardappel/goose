@@ -73,3 +73,13 @@ test environment issues: the relocated compiler needed an adjacent stdlib link,
 and two pre-existing generated builder directories polluted bash completion.
 After correcting those artifacts the complete rerun passed. None of the four
 owner-reported baseline failures reproduced; no additional failure remains.
+
+### CI grammar correction
+
+The first upstream CI run passed the compiler/native suite on Linux, macOS and
+Windows, then failed the same VS Code builtin-highlighting test on each system
+at `shared_alloc`. This was an additional regression beyond the known baseline:
+the extracted builtin table had not been mirrored in the TextMate grammar.
+Reproduced that exact assertion locally, added all eight substrate builtin
+names to the grammar, and reran the extension tests against the refreshed
+substrate compiler. All 36 tests passed. No compiler/runtime code changed.
