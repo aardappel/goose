@@ -4483,8 +4483,13 @@ recognizes:
 * an integer variable, unless it is a `varint` or a `u64` that is not of
   an index type (`IntBaseVar`, §5.11);
 * `.len` of a place (a fixed array's length is a constant);
-* `x + c`/`x - c` at `i64` only (narrower widths wrap below the 64-bit math
-  the facts are stated in);
+* `x + c`/`x - c` at `i64`. A narrower width wraps below the 64-bit math
+  the facts are stated in, so there the sum is a fresh base in the type's
+  range (`NarrowStepTerm`): equal to `x + c` where the facts show it fits,
+  and otherwise on the side a wrap cannot cross, at most `x + c` for
+  `c >= 0` and at least it for `c <= 0` (`x` lies in the type and `|c|`
+  below `2^N`, so a wrap moves the result by `2^N` against `c`). The `u32`
+  `e + 1` of an index of `a` is so at most `a.len`;
 * `a % b` and `a & b`, which lie in `[0, b]` on a fresh base when `b` is
   provably non-negative. A negative signed mask proves nothing, so a mask's
   term must also be one that cannot have wrapped (`n + 1` at i64's top is
