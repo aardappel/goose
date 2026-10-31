@@ -4737,8 +4737,13 @@ three modes (`RunSpec`):
   write other than `±constant`), it checks that every write preserves
   `v >= 0` and that no write can wrap at the variable's width. It also
   checks that `v <= len(P) + c` survives for each place `P` that the
-  variable indexes or bounds and that is never shrunk or re-bound in the
-  body (growth alone never breaks it). The declaration decides `c`: what
+  variable indexes or bounds and that is never shrunk in the body (growth
+  alone never breaks it). A place re-bound in the body, such as an inlined
+  slice parameter declared anew in each iteration of the caller's loop,
+  still qualifies, but its bound holds in the judging walk only of the
+  variable's current value, and only while a write that the facts place
+  below that length (`StateLeLen`) is more recent than the place's last
+  rebind (`Flow::lestated`, `LeLenHolds`). The declaration decides `c`: what
   its value needs, but at least 0 (`var j = 1` before
   `while j + 4 <= a.len { ...; j += 4; }` stays within `len + 1`, which
   keeps `j + 4` from wrapping). Where the value starts below the length, a
