@@ -1946,6 +1946,37 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
     return v;
 }
 
+// An ordering comparison of an integer with a constant that the integer's
+// type alone decides, `u < 0` of an unsigned `u` or `b > 300` of a u8, is a
+// warning: it is always true or always false, which is rarely what was
+// meant. Generic code is not judged, since another specialization's type
+// may make the comparison matter (as for redundant casts, §6.3).
+inline void TypeCheck::DecidedComparison(Binary *b, const Val &lv, const Val &rv, TypeExpr *lt,
+                                         TypeExpr *rt) {
+    auto isk = [](const Val &v) { return v.ck == CK_INT && !v.uns && !v.unsized; };
+    if (isk(lv) == isk(rv) || InGenericCode()) return;
+    // As `x op k`, the constant on the right.
+    auto op = b->op;
+    if (isk(lv)) op = op == T_LT ? T_GT : op == T_GT ? T_LT : op == T_LTEQ ? T_GTEQ : T_LTEQ;
+    auto xt = isk(lv) ? rt : lt;
+    auto k = isk(lv) ? lv.ival : rv.ival;
+    if (!xt || !IsIntT(xt)) return;
+    auto [lo, hi] = IntRange(xt->intstorage);
+    // A u64 reaches beyond i64, which its range here stops at.
+    auto hiknown = xt->intstorage != IS_U64;
+    int r = -1;   // -1 undecided, else the comparison's value.
+    switch (op) {
+        case T_LT:   r = lo >= k ? 0 : hiknown && hi < k ? 1 : -1; break;
+        case T_LTEQ: r = lo > k ? 0 : hiknown && hi <= k ? 1 : -1; break;
+        case T_GT:   r = lo > k ? 1 : hiknown && hi <= k ? 0 : -1; break;
+        case T_GTEQ: r = lo >= k ? 1 : hiknown && hi < k ? 0 : -1; break;
+        default: break;
+    }
+    if (r < 0) return;
+    Warn(b, cat("comparison is always ", r ? "true" : "false", ": ", TypeStr(xt), " values are ",
+                hiknown ? cat(lo, " to ", hi) : cat(lo, " or more")));
+}
+
 // The value of the numeric operation b, `lv op rv` (§6.1, §6.2): the
 // operands' common type `ct`, which their nodes take, and the result's type
 // and constant. A `trial` changes no node and reports no error: it gives a
@@ -2001,6 +2032,7 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
                 return fail(cat("ordering comparison requires numeric operands, got ",
                                 TypeStr(lt), " and ", TypeStr(rt)));
             retype();
+            if (!trial) DecidedComparison(b, lv, rv, lt, rt);
             v.type = ast.booltype;
             return v;
         case T_EQ: case T_NEQ:
