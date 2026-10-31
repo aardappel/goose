@@ -135,6 +135,7 @@ fn ctz(x: u64) -> i64               // 64 for 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
+A `checkfree` function (spec §7.14) may call all of these except `swap`.
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
 `/arch:AVX` or higher for that), and a loop under TinyCC.
@@ -164,7 +165,8 @@ fn hash(s: u8[:]) -> u64            // 8 bytes per multiply; any u8 array coerce
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
-These hashes mix all of their input into the low 32 bits. `dictionary`
+These hashes mix all of their input into the low 32 bits. The scalar
+overloads and `hash_combine` are `checkfree` (spec §7.14). `dictionary`
 masks those bits to find the home slot and keeps them as the slot's tag.
 A float hashes as its bits, `-0.0` as `0.0`, and an `f32` as the `f64` of
 its value.
@@ -870,6 +872,8 @@ fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
 fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
 fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
 ```
+
+These are `checkfree` (spec §7.14).
 
 ## os
 

@@ -2006,6 +2006,19 @@ struct BCE {
     // parameter bindings of an inlined call.
     Term BoundLenOf(Node *init) {
         if (auto u = Is<Unary>(init); u && u->op == T_BITAND) init = u->child;
+        // A bytes_of view of a fixed array of scalars is its element region:
+        // the count times the scalar's width, a constant.
+        if (auto c = Is<Call>(init); c && c->builtin == B_BYTES_OF && c->args.size() == 1) {
+            auto t = c->args[0]->exprtype;
+            if (t && t->kind == TY_REF) t = t->ref->sub;
+            if (!t || t->kind != TY_ARRAY || t->arr->akind != A_FIXED || t->arr->size < 0)
+                return {};
+            auto e = t->arr->sub;
+            auto w = !e ? 0 : e->kind == TY_INT ? IntBits(e->intstorage) / 8
+                    : e->kind == TY_FLT ? (e->fltstorage == FS_F32 ? 4 : 8) : 0;
+            if (!w || t->arr->size >= CCAP / w) return {};
+            return Term { true, Zero(), t->arr->size * w };
+        }
         if (!Is<Ident>(init) && !Is<Dot>(init)) return {};
         // A field converted to the slice it binds views the field's array
         // whole: its length is that array's, at the place `.len` of the
