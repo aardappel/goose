@@ -80,6 +80,23 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             L("if (!(", x, ")) gs_abort(GS_E_ASSERT, ", LocArgs(ln), ");");
             return {};
         }
+        case B_CONTRACT: {
+            // Only where GS_CONTRACTS is on (debug builds, --check-contracts):
+            // the condition is evaluated inside the #if too.
+            L("#if GS_CONTRACTS");
+            auto msg = GenPure(an[1]);
+            if (BranchChain(an[0])) {
+                auto ok = Lbl();
+                GenBranch(an[0], true, ok);
+                L("gs_abort_msg(", msg, ".data, ", msg, ".len, ", LocArgs(ln), ");");
+                L(ok, ":;");
+            } else {
+                auto x = GenTruth(an[0]);
+                L("if (!(", x, ")) gs_abort_msg(", msg, ".data, ", msg, ".len, ", LocArgs(ln), ");");
+            }
+            L("#endif");
+            return {};
+        }
         case B_ABORT: {
             auto x = GenPure(an[0]);
             L("gs_abort_msg(", x, ".data, ", x, ".len, ", LocArgs(ln), ");");

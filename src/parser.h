@@ -63,6 +63,12 @@ struct Parser {
     // A for binder's type is followed by the loop's own `in`, so an index
     // type there needs parentheses: `for w: (u32 in nodes) in edges`.
     bool forbindtype = false;
+    // Inside a contract clause (docs/design/proofs.md §3, §4): `implies`,
+    // `all`/`any` quantifiers and, in an ensures clause, `old(e)` are
+    // understood. Elsewhere they are ordinary names.
+    bool incontract = false;
+    bool inensures = false;
+    int quantcount = 0;              // Names the expanded quantifiers' flags.
 
     // Namespaces (docs/design/namespaces.md): the file's `namespace` directive,
     // and the namespace of the declaration being parsed -- the file's, or the
@@ -302,6 +308,93 @@ struct Parser {
         auto next = lex.PeekTok();
         return next == T_FN || next == T_RECURSIVE || next == T_THREADFN || next == T_SIMD ||
                next == T_EXTERN || next == T_IDENT;
+    }
+
+    // The contract words (`requires`, `ensures`, `invariant`, `implies`,
+    // `all`, `any`) are keywords only where a clause or a contract expression
+    // can continue, and names everywhere else.
+    bool AtWord(string_view w) { return lex.tok == T_IDENT && lex.attr == w; }
+
+    // A clause after its keyword (docs/design/proofs.md §3.1): its
+    // expression, and its source text for the message a failed check prints.
+    // A body or another clause follows, so no struct literal is read.
+    Node *ParseClause(bool ensures, vector<string> &texts) {
+        lex.Next();
+        auto from = lex.attr.data();
+        struct Scope {
+            Parser &p;
+            bool c, e;
+            Scope(Parser &_p, bool ens) : p(_p), c(_p.incontract), e(_p.inensures) {
+                p.incontract = true;
+                p.inensures = ens;
+            }
+            ~Scope() { p.incontract = c; p.inensures = e; }
+        } cs(*this, ensures);
+        auto sub = Sub(true);
+        auto e = ParseBinary(1);
+        string text;
+        for (auto p = from; p < lex.prevend; p++) {
+            auto ws = isspace((unsigned char)*p);
+            if (!ws) text += *p;
+            else if (!text.empty() && text.back() != ' ') text += ' ';
+        }
+        texts.push_back(std::move(text));
+        return e;
+    }
+
+    // `all i in lo..hi: p` or `any ...` (§4.2): the identifier, then a binder
+    // and `in`.
+    bool AtQuantifier() {
+        if (!incontract || !(AtWord("all") || AtWord("any"))) return false;
+        Lexer save = lex;
+        lex.Next();
+        auto isq = lex.tok == T_IDENT;
+        if (isq) {
+            lex.Next();
+            isq = lex.tok == T_IN;
+        }
+        lex = save;
+        return isq;
+    }
+
+    // A quantifier runs as the loop it means, so a debug build can check it:
+    // `{ var __all0 = true; for i in lo..hi { __all0 = __all0 && p; } __all0 }`.
+    // Its body reaches as far right as an expression can.
+    Node *ParseQuantifier() {
+        auto line = CurLine();
+        auto all = lex.attr == "all";
+        lex.Next();
+        auto var = ExpectIdent("quantifier");
+        Expect(T_IN, "quantifier");
+        auto sub = Sub(true);
+        auto lo = ParseBinary(1);
+        Expect(T_DOTDOT, "quantifier range");
+        auto hi = ParseBinary(1);
+        Expect(T_COLON, "quantifier");
+        auto body = ParseBinary(1);
+        auto flag = ast.Intern(cat(all ? "__all" : "__any", quantcount++));
+        auto b = New<Block>(line);
+        auto vd = New<VarDecl>(line, true);
+        vd->names.push_back(flag);
+        vd->inits.push_back(New<BoolLit>(line, all));
+        b->stmts.push_back(vd);
+        auto step = New<Block>(line);
+        step->stmts.push_back(New<Assign>(line, T_ASSIGN, New<Ident>(line, flag, curns),
+            New<Binary>(line, all ? T_ANDAND : T_OROR, New<Ident>(line, flag, curns), body)));
+        b->stmts.push_back(New<ForLoop>(line, false, var, string_view {},
+                                        New<RangeExpr>(line, lo, hi), step));
+        b->tail = New<Ident>(line, flag, curns);
+        b->quant = all ? "all" : "any";
+        b->quantvar = var;
+        b->quantlo = lo;
+        b->quanthi = hi;
+        b->quantbody = body;
+        return Finish(b);
+    }
+
+    // A loop's `invariant` clauses, between its header and its body (§5.1).
+    void ParseInvariants(vector<Node *> &invs, vector<string> &texts) {
+        while (AtWord("invariant")) invs.push_back(ParseClause(false, texts));
     }
 
     void Expect(TType t, const char *context) {
@@ -847,6 +940,12 @@ struct Parser {
                     if (!IsNext(T_COMMA)) break;
                 }
             }
+            while (!sf->isextern && (AtWord("requires") || AtWord("ensures"))) {
+                if (AtWord("requires"))
+                    sf->requires_.push_back(ParseClause(false, sf->requirestexts));
+                else
+                    sf->ensures.push_back(ParseClause(true, sf->ensurestexts));
+            }
             if (sf->isextern) {
                 // The symbol where a body would go: `fn delay(ms: u32) = "SDL_Delay";`.
                 if (IsNext(T_ASSIGN)) {
@@ -1234,7 +1333,13 @@ struct Parser {
             case T_WHILE: {
                 lex.Next();
                 auto cond = ParseScrutinee();
-                auto e = Finish(New<While>(line, cond, ParseBlockExpr("while body")));
+                vector<Node *> invs;
+                vector<string> texts;
+                ParseInvariants(invs, texts);
+                auto w = New<While>(line, cond, ParseBlockExpr("while body"));
+                w->invariants = std::move(invs);
+                w->invarianttexts = std::move(texts);
+                auto e = Finish(w);
                 if (stmt_level) stmt_ended = true;
                 return e;
             }
@@ -1330,9 +1435,14 @@ struct Parser {
             iter = ParseExpr();
             if (IsNext(T_DOTDOT)) iter = Finish(New<RangeExpr>(line, iter, ParseExpr()));
         }
+        vector<Node *> invs;
+        vector<string> texts;
+        ParseInvariants(invs, texts);
         auto f = New<ForLoop>(line, byref, var, idxvar, iter, ParseBlockExpr("for body"));
         f->vartype = vartype;
         f->idxtype = idxtype;
+        f->invariants = std::move(invs);
+        f->invarianttexts = std::move(texts);
         return Finish(f);
     }
 
@@ -1480,6 +1590,20 @@ struct Parser {
         auto l = ParseUnary();
         for (;;) {
             if (stmt_ended) return l;  // A statement-ending trailing block: stop.
+            // `a implies b`, below every operator and right-associative, is
+            // `!a || b` (docs/design/proofs.md §4.2).
+            if (minprec <= 1 && incontract && AtWord("implies")) {
+                auto line = CurLine();
+                lex.Next();
+                Node *r;
+                {
+                    auto sub = Sub(no_struct_lit);
+                    r = ParseBinary(1);
+                }
+                auto b = New<Binary>(line, T_OROR, New<Unary>(line, T_NOT, l), r);
+                b->implies = true;
+                return Finish(b);
+            }
             auto prec = BinPrec(lex.tok);
             if (prec < minprec || !prec) return l;
             auto op = lex.tok;
@@ -1496,6 +1620,7 @@ struct Parser {
 
     Node *ParseUnary() {
         auto line = CurLine();
+        if (AtQuantifier()) return ParseQuantifier();
         switch (lex.tok) {
             case T_MINUS: case T_NOT: case T_BITNOT: case T_BITAND: {
                 auto op = lex.tok;
@@ -1520,6 +1645,14 @@ struct Parser {
                     Role(R_LIST);
                     lex.Next();
                     e = ParseCallRest(e, {}, e->line);
+                    // `old(e)` in an ensures clause: e's value on entry (§3.1).
+                    if (auto c = Is<Call>(e); c && inensures && !c->trailing && c->args.size() == 1) {
+                        if (auto id = Is<Ident>(c->callee); id && id->name == "old") {
+                            auto o = New<Ident>(c->line, id->name, id->ns);
+                            o->oldof = c->args[0];
+                            e = Finish(o);
+                        }
+                    }
                     continue;
                 case T_LBRACKET:
                     e = ParseIndexOrSlice(e, line);

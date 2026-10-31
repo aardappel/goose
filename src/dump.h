@@ -247,8 +247,26 @@ inline void Block::Dump(string &s, int ind) const {
         vd->inits[0]->Dump(s, ind);
         return;
     }
+    if (!quant.empty()) {
+        Append(s, "(", quant, " ", quantvar, " in ");
+        DumpOperand(s, quantlo, ind);
+        s += "..";
+        DumpOperand(s, quanthi, ind);
+        s += ": ";
+        quantbody->Dump(s, ind);
+        s += ")";
+        return;
+    }
     s += "{";
     DumpBlockBody(s, this, ind);
+}
+
+// The contract clauses before a body: ` requires e`, one per clause.
+inline void DumpClauses(string &s, const char *kw, const vector<Node *> &clauses, int ind) {
+    for (auto c : clauses) {
+        Append(s, " ", kw, " ");
+        c->Dump(s, ind);
+    }
 }
 
 inline void IntLit::Dump(string &s, int) const {
@@ -264,7 +282,15 @@ inline void FltLit::Dump(string &s, int) const {
 
 inline void BoolLit::Dump(string &s, int) const { s += val ? "true" : "false"; }
 inline void StrLit::Dump(string &s, int) const { EscapeString(s, val, '"'); }
-inline void Ident::Dump(string &s, int) const { s += name; }
+inline void Ident::Dump(string &s, int ind) const {
+    if (oldof) {
+        s += "old(";
+        oldof->Dump(s, ind);
+        s += ")";
+        return;
+    }
+    s += name;
+}
 
 inline void ArrayLit::Dump(string &s, int ind) const {
     s += "[";
@@ -354,6 +380,14 @@ inline void Unary::Dump(string &s, int ind) const {
 
 inline void Binary::Dump(string &s, int ind) const {
     // Fully parenthesized: dumps double as a precedence test.
+    if (implies) {
+        s += "(";
+        DumpOperand(s, Is<Unary>(left)->child, ind);
+        s += " implies ";
+        DumpOperand(s, right, ind);
+        s += ")";
+        return;
+    }
     s += "(";
     DumpOperand(s, left, ind);
     Append(s, " ", TName(op), " ");
@@ -507,6 +541,7 @@ inline void EarlyBlock::Dump(string &s, int ind) const {
 inline void While::Dump(string &s, int ind) const {
     s += "while ";
     DumpOperand(s, cond, ind);
+    DumpClauses(s, "invariant", invariants, ind);
     s += " ";
     body->Dump(s, ind);
 }
@@ -533,6 +568,7 @@ inline void ForLoop::Dump(string &s, int ind) const {
     if (idxtype) binder(idxtype);
     s += " in ";
     DumpOperand(s, iter, ind);
+    DumpClauses(s, "invariant", invariants, ind);
     s += " ";
     body->Dump(s, ind);
 }
@@ -692,6 +728,8 @@ inline void FnDecl::Dump(string &s, int ind) const {
         s += ";";
         return;
     }
+    DumpClauses(s, "requires", sf->requires_, ind);
+    DumpClauses(s, "ensures", sf->ensures, ind);
     s += " ";
     sf->body->Dump(s, ind);
 }

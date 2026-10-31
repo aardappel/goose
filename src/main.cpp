@@ -11,6 +11,7 @@
 #include "parser.h"
 #include "resolve.h"
 #include "builtins.h"
+#include "contracts.h"
 #include "gfx.h"
 #include "typecheck.h"
 #include "typecheck_types.h"
@@ -682,6 +683,8 @@ R"(  --stats               Print what the compile did: the declarations parsed,
 constexpr const char *DEBUGOPTION =
 R"(  --debug               Overflow, range and tag checks that name the source
                         line they fail on.
+  --check-contracts     Check requires, ensures and invariant clauses without
+                        --debug (a debug build checks them anyway).
 )";
 
 // The help on a command or topic, `goose help` or `goose --help`'s for ""
@@ -756,6 +759,8 @@ Options:
                         optimizes at every level, unless --debug.
   --debug               Overflow, range and tag checks that name the source
                         line they fail on, and the C built for a debugger.
+  --check-contracts     Check requires, ensures and invariant clauses without
+                        --debug (a debug build checks them anyway).
 )", COMPILEOPTIONS,
 R"(  --cc name|path        The C compiler: msvc, clang-cl, clang, gcc, cc or a
                         path (or GOOSE_CC; by default the first one found).
@@ -1451,6 +1456,7 @@ int Main(int argc, char **argv) {
             debug = true;
             cdefines.push_back("GS_DEBUG=1");
         }
+        else if (arg == "--check-contracts") cdefines.push_back("GS_CONTRACTS=1");
         else if (arg == "-v") verbose = true;
         else if (arg == "--stats") stats = true;
         else if (arg == "--color" && i + 1 < argc) {
