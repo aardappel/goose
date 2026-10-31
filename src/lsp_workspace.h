@@ -14,9 +14,57 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                   const string &exedir, const SourceProvider &sources);
 int RunOnCompilerStack(const function<int()> &fn);
 
+inline bool ExpandSimpleSnippet(const string &body, string &expanded) {
+    vector<pair<bool, string>> parts;
+    map<string, string> defaults;
+    auto escaped = [&](size_t n) {
+        return body[n] == '\\' && n + 1 < body.size() &&
+            (body[n + 1] == '$' || body[n + 1] == '}' || body[n + 1] == '\\');
+    };
+    for (size_t i = 0; i < body.size();) {
+        if (escaped(i)) {
+            parts.emplace_back(false, string(1, body[i + 1]));
+            i += 2; continue;
+        }
+        if (body[i] != '$') {
+            parts.emplace_back(false, string(1, body[i++])); continue;
+        }
+        auto n = i + 1;
+        bool brace = n < body.size() && body[n] == '{';
+        if (brace) n++;
+        auto digits = n;
+        while (n < body.size() && isdigit((unsigned char)body[n])) n++;
+        if (digits == n) return false;
+        auto index = body.substr(digits, n - digits);
+        auto nonzero = index.find_first_not_of('0');
+        index = nonzero == string::npos ? "0" : index.substr(nonzero);
+        if (brace) {
+            if (n < body.size() && body[n] == ':') {
+                n++;
+                string value;
+                while (n < body.size() && body[n] != '}') {
+                    if (body[n] == '$' || body[n] == '{') return false;
+                    if (escaped(n)) n++;
+                    value += body[n++];
+                }
+                auto [it, inserted] = defaults.emplace(index, value);
+                if (!inserted && it->second != value) return false;
+            }
+            if (n == body.size() || body[n] != '}') return false;
+            n++;
+        }
+        parts.emplace_back(true, index);
+        i = n;
+    }
+    for (auto &[placeholder, value] : parts)
+        expanded += placeholder ? defaults[value] : value;
+    return true;
+}
+
 struct Document {
     string path;        // Canonical.
     string text;
+    int64_t version = 0;
 };
 
 // A diagnostic as the protocol's JSON. Its key, the range, severity and
@@ -31,6 +79,7 @@ struct PublishedDiagnostic {
 
 struct Root {
     string path, key;               // CanonicalPath and PathKey.
+    bool indexed = false;
     bool configured = false;        // An entry file the editor configured, else an open file.
     unique_ptr<Analysis> analysis;  // The latest that got past resolution, which queries read.
     set<string> files;              // Keys of the files the latest attempt reached.
@@ -38,6 +87,7 @@ struct Root {
     // URI, an empty list for one it found none in.
     map<string, vector<PublishedDiagnostic>> published;
     bool dirty = true;
+    bool discardFailedAnalysis = false;
     chrono::steady_clock::time_point due;
 
     // Whether the root is the file or its latest attempt reached it.
@@ -50,10 +100,244 @@ struct Workspace {
     vector<string> stdlibdirs;
     map<string, Document> open;     // By PathKey.
     vector<unique_ptr<Root>> roots;
+    set<string> workspaceDirs, declaredDirs, excludedDirs, packageExcludes;
+    bool indexComplete = true;
+    bool discoveryPending = false;
+
+    bool Excluded(const string &path) const {
+        auto key = PathKey(path);
+        for (auto &dir : excludedDirs)
+            if (key == dir || key.rfind(dir + "/", 0) == 0) return true;
+        for (auto &dir : packageExcludes)
+            if (key == dir || key.rfind(dir + "/", 0) == 0) return true;
+        return false;
+    }
+
+    void Discover() {
+        discoveryPending = true;
+        indexComplete = false;
+    }
+
+    void Scan() {
+        auto epoch = rpc.scanEpoch.load(memory_order_relaxed);
+        auto interrupted = [&] {
+            return rpc.scanEpoch.load(memory_order_relaxed) != epoch;
+        };
+        {
+            lock_guard<mutex> lock(rpc.m);
+            for (auto &msg : rpc.queue)
+                if (msg.exit || msg.method == "shutdown" || msg.method == "exit" ||
+                    msg.method.rfind("workspace/did", 0) == 0 ||
+                    msg.method.rfind("textDocument/did", 0) == 0) return;
+        }
+        auto previousExcludes = packageExcludes;
+        auto abort = [&] {
+            packageExcludes = previousExcludes;
+            indexComplete = false;
+            RequestIndexStatus("interrupted", 0, 0);
+        };
+        RequestIndexStatus("scanning", 0, 0);
+        set<string> found;
+        size_t visited = 0;
+        indexComplete = true;
+        packageExcludes.clear();
+        for (auto &r : roots) if (r->configured) {
+            Package pkg { PathStem(r->path), DirOf(r->path), false };
+            try {
+                LoadSidecar(pkg, true);
+                for (auto &path : pkg.exclude) {
+                    auto key = PathKey(path);
+                    while (key.size() > 1 && key.back() == '/') key.pop_back();
+                    packageExcludes.insert(key);
+                }
+            } catch (CompileError &) { indexComplete = false; }
+        }
+        for (auto &dir : workspaceDirs) {
+            std::error_code ec;
+            filesystem::recursive_directory_iterator it(dir,
+                filesystem::directory_options::none, ec), end;
+            if (ec) indexComplete = false;
+            while (it != end && !ec) {
+                if (interrupted()) { abort(); return; }
+                if (++visited > 4096) { indexComplete = false; break; }
+                auto path = it->path();
+                auto name = path.filename().string();
+                if (it->is_symlink(ec) || Excluded(path.string()) ||
+                    (it->is_directory(ec) && (name[0] == '.' || name == "build" || name == "node_modules" ||
+                        filesystem::exists(path / ".git", ec)))) {
+                    it.disable_recursion_pending();
+                } else if (it->is_regular_file(ec) && path.extension() == ".goose") {
+                    if (found.size() >= 256) { indexComplete = false; break; }
+                    found.insert(CanonicalPath(path.string()));
+                }
+                if (it.depth() >= 16) { it.disable_recursion_pending(); indexComplete = false; }
+                it.increment(ec);
+            }
+            if (ec) indexComplete = false;
+            if (!indexComplete) break;
+        }
+        if (interrupted()) { abort(); return; }
+        discoveryPending = false;
+        RequestIndexStatus(indexComplete ? "complete" : "incomplete", visited, found.size());
+        for (auto &r : roots) r->indexed = false;
+        for (auto &path : found) {
+            bool covered = false;
+            for (auto &entry : roots)
+                if (entry->configured && entry->key != PathKey(path) &&
+                    entry->Reaches(PathKey(path))) covered = true;
+            if (covered) continue;
+            auto r = FindRoot(PathKey(path));
+            if (!r) r = AddRoot(path, false);
+            r->indexed = true;
+        }
+        PruneUnreached();
+        for (auto &r : roots) {
+            r->discardFailedAnalysis = true;
+            Dirty(*r, 0);
+        }
+    }
+
+    void RequestIndexStatus(const string &state, size_t entries, size_t sources) {
+        JsonOut j;
+        j.BeginObject();
+        j.Member("jsonrpc", "2.0");
+        j.Member("method", "window/logMessage");
+        j.Key("params"); j.BeginObject();
+        j.Member("type", (int64_t)3);
+        j.Member("message", cat("workspace index ", state, ": ", entries,
+            "/4096 entries, ", sources, "/256 sources, depth limit 16"));
+        j.EndObject(); j.EndObject();
+        rpc.Send(j.s);
+    }
+
+    static string FolderPath(const string &path) {
+        auto canonical = CanonicalPath(path);
+        while (canonical.size() > 1 && canonical.back() == '/') canonical.pop_back();
+        return canonical;
+    }
+
+    void ConfigureFolders(const Json &params) {
+        if (auto folders = params.Get("workspaceFolders"); folders && folders->kind == Json::ARRAY)
+            for (auto &folder : folders->arr) {
+                auto path = PathOfUri(JsonStr(folder.Get("uri")));
+                if (!path.empty()) workspaceDirs.insert(FolderPath(path));
+            }
+        else if (auto uri = params.Get("rootUri"); uri && uri->kind == Json::STRING)
+            if (!PathOfUri(uri->str).empty()) workspaceDirs.insert(FolderPath(PathOfUri(uri->str)));
+        declaredDirs = workspaceDirs;
+    }
+    bool watchDynamic = false, watchRelative = false, watchStarted = false;
+    string watchRequest, watchRegistration;
+    string watchState = "unsupported";
+
+    void WatchStatus(const string &state) {
+        watchState = state;
+        JsonOut j;
+        j.BeginObject(); j.Member("jsonrpc", "2.0");
+        j.Member("method", "window/logMessage");
+        j.Key("params"); j.BeginObject(); j.Member("type", 3);
+        j.Member("message", cat("workspace file watchers: ", state));
+        j.EndObject(); j.EndObject(); rpc.Send(j.s);
+    }
+
+    void RegisterWatchers() {
+        if (!watchStarted) return;
+        if (!watchDynamic) { WatchStatus("unsupported; disk updates require client notifications"); return; }
+        if (!watchRegistration.empty()) {
+            JsonOut u;
+            u.BeginObject(); u.Member("jsonrpc", "2.0");
+            u.Member("id", cat("goose-unwatch-", ++requests));
+            u.Member("method", "client/unregisterCapability");
+            u.Key("params"); u.BeginObject(); u.Key("unregisterations");
+            u.BeginArray(); u.BeginObject(); u.Member("id", watchRegistration);
+            u.Member("method", "workspace/didChangeWatchedFiles");
+            u.EndObject(); u.EndArray(); u.EndObject(); u.EndObject(); rpc.Send(u.s);
+        }
+        watchRegistration.clear(); watchRequest.clear();
+        if (declaredDirs.empty()) { WatchStatus("inactive; no declared workspace folders"); return; }
+        watchRegistration = cat("goose-watch-", ++requests);
+        watchRequest.clear(); JsonQuote(watchRequest, watchRegistration);
+        JsonOut j;
+        j.BeginObject(); j.Member("jsonrpc", "2.0");
+        j.Member("id", watchRegistration); j.Member("method", "client/registerCapability");
+        j.Key("params"); j.BeginObject(); j.Key("registrations"); j.BeginArray();
+        j.BeginObject(); j.Member("id", watchRegistration);
+        j.Member("method", "workspace/didChangeWatchedFiles");
+        j.Key("registerOptions"); j.BeginObject(); j.Key("watchers"); j.BeginArray();
+        for (auto &dir : declaredDirs) for (auto pattern : {"**/*.goose", "**/*.build"}) {
+            j.BeginObject(); j.Key("globPattern");
+            if (watchRelative) {
+                j.BeginObject(); j.Member("baseUri", UriOfPath(dir));
+                j.Member("pattern", pattern); j.EndObject();
+            } else {
+                string escaped;
+                for (char c : dir) { if (string("*?[]{}\\").find(c) != string::npos) escaped += '\\'; escaped += c; }
+                j.Str(cat(escaped, "/", pattern));
+            }
+            j.Member("kind", 7); j.EndObject();
+        }
+        j.EndArray(); j.EndObject(); j.EndObject(); j.EndArray();
+        j.EndObject(); j.EndObject(); rpc.Send(j.s); WatchStatus("pending");
+    }
+
+    void WatchResponse(const Message &m) {
+        if (m.id != watchRequest || watchRequest.empty()) return;
+        watchRequest.clear();
+        if (m.json.Get("error")) WatchStatus("refused; disk updates require client notifications");
+        else if (m.json.Get("result")) WatchStatus("registered");
+        else WatchStatus("invalid response; watcher registration unconfirmed");
+    }
+
+    void RebuildFolders() {
+        workspaceDirs = declaredDirs;
+        for (auto &r : roots) if (r->configured)
+            workspaceDirs.insert(FolderPath(DirOf(r->path)));
+    }
+
+    bool WatchedPath(const string &key) const {
+        for (auto &dir : workspaceDirs) {
+            auto base = PathKey(dir);
+            while (base.size() > 1 && base.back() == '/') base.pop_back();
+            if (key.rfind(base == "/" ? base : base + "/", 0) == 0) return true;
+        }
+        return false;
+    }
+
+    void ChangeFolders(const Json &params) {
+        auto event = params.Get("event");
+        if (!event) return;
+        for (auto name : {"removed", "added"})
+            if (auto list = event->Get(name); list && list->kind == Json::ARRAY)
+                for (auto &folder : list->arr) {
+                    auto path = PathOfUri(JsonStr(folder.Get("uri")));
+                    if (path.empty()) continue;
+                    path = FolderPath(path);
+                    if (string(name) == "removed") declaredDirs.erase(path);
+                    else declaredDirs.insert(path);
+                }
+        RebuildFolders();
+        ++rpc.scanEpoch;
+        for (auto &r : roots) {
+            r->indexed = false;
+            r->discardFailedAnalysis = true;
+            Dirty(*r, 0);
+        }
+        PruneUnreached(); Discover(); RegisterWatchers();
+    }
+
     // The commands the client runs itself, which code lenses may name: the
     // protocol has no way to ask, so its initialization options list them
     // (`commands`).
     set<string> clientcommands;
+    bool snippetSupport = false;
+    bool createFileSupport = false;
+    struct CustomSnippet {
+        string prefix, body, description, scope;
+        bool postfix;
+        vector<string> requirements;
+    };
+    vector<CustomSnippet> customSnippets;
+    function<bool(const string &, size_t, size_t, const vector<string> &, string &)> snippetImports;
     // The refresh requests the client takes (`workspace/codeLens/refresh`,
     // `workspace/semanticTokens/refresh`, `workspace/inlayHint/refresh`),
     // and the id of the last request the server sent.
@@ -111,6 +395,49 @@ struct Workspace {
     // `stdlib`, the standard library's directory.
     void Configure(const Json *options) {
         if (!options || options->kind != Json::OBJECT) return;
+        customSnippets.clear();
+        if (auto list = options->Get("snippets"); list && list->kind == Json::ARRAY) {
+            for (auto &entry : list->arr) {
+                auto prefix = entry.Get("prefix"), body = entry.Get("body");
+                auto scope = entry.Get("scope"), mode = entry.Get("postfix");
+                auto description = entry.Get("description");
+                if (!prefix || prefix->kind != Json::STRING || prefix->str.empty() ||
+                    !body || body->kind != Json::STRING || body->str.empty() ||
+                    !scope || scope->kind != Json::STRING || (scope->str != "expression" && scope->str != "item" && scope->str != "type") ||
+                    !mode || mode->kind != Json::BOOL ||
+                    (description && description->kind != Json::STRING)) continue;
+                bool valid = true;
+                for (auto c : prefix->str) if (!isalnum((unsigned char)c) && c != '_') valid = false;
+                auto receiver = body->str.find("${receiver}");
+                bool postfix = JsonBool(mode);
+                if (postfix && scope->str != "expression") continue;
+                if (postfix ? receiver == string::npos ||
+                    body->str.find("${receiver}", receiver + 11) != string::npos : receiver != string::npos) continue;
+                if (postfix) {
+                    auto before = body->str.substr(0, receiver);
+                    auto after = body->str.substr(receiver + 11);
+                    if (after.size() >= 2 && after.substr(after.size() - 2) == "$0") after.resize(after.size() - 2);
+                    for (char c : before)
+                        if (!isalnum((unsigned char)c) && c != '_' && c != ':' &&
+                            c != '(' && !isspace((unsigned char)c) && c != '!' && c != '-' && c != '+') valid = false;
+                    for (char c : after) if (c != ')' && !isspace((unsigned char)c)) valid = false;
+                }
+                vector<string> requirements;
+                if (auto list = entry.Get("requires")) {
+                    if (list->kind != Json::ARRAY) continue;
+                    for (auto &value : list->arr) {
+                        if (value.kind != Json::STRING || value.str.empty()) valid = false;
+                        else requirements.push_back(value.str);
+                    }
+                }
+                auto validationBody = body->str;
+                if (postfix) validationBody.replace(receiver, 11, "0");
+                string expanded;
+                if (!ExpandSimpleSnippet(validationBody, expanded)) valid = false;
+                if (valid) customSnippets.push_back({prefix->str, body->str,
+                    description ? description->str : "custom snippet", scope->str, postfix, requirements});
+            }
+        }
         if (auto lib = options->Get("stdlib"); lib && lib->kind == Json::STRING && !lib->str.empty())
             stdlibdirs = StdlibDirs(lib->str, exe);
         if (auto entries = options->Get("entryFiles"); entries && entries->kind == Json::ARRAY) {
@@ -119,6 +446,7 @@ struct Workspace {
                 if (e.kind != Json::STRING || e.str.empty()) continue;
                 auto key = PathKey(e.str);
                 keep.insert(key);
+
                 if (auto r = FindRoot(key)) r->configured = true;
                 else AddRoot(e.str, true);
             }
@@ -126,7 +454,14 @@ struct Workspace {
                 if (r->configured && !keep.count(r->key)) r->configured = false;
             PruneUnreached();
         }
-        for (auto &r : roots) Dirty(*r, 0);
+        RebuildFolders();
+        if (auto excludes = options->Get("exclude"); excludes && excludes->kind == Json::ARRAY) {
+            excludedDirs.clear();
+            for (auto &e : excludes->arr) if (e.kind == Json::STRING)
+                for (auto &dir : workspaceDirs)
+                    excludedDirs.insert(PathKey((filesystem::path(dir) / e.str).string()));
+        }
+        Discover();
     }
 
     Root *FindRoot(const string &key) {
@@ -175,7 +510,11 @@ struct Workspace {
             auto &r = *roots[i];
             auto reached = false;
             for (auto &o : roots) if (o.get() != &r && o->Reaches(r.key)) reached = true;
-            if (!r.configured && (reached || !open.count(r.key))) RemoveRoot(&r);
+            bool configuredReach = false;
+            for (auto &o : roots)
+                if (o->configured && o.get() != &r && o->Reaches(r.key)) configuredReach = true;
+            if (!r.configured && (configuredReach ||
+                (!r.indexed && (reached || !open.count(r.key))))) RemoveRoot(&r);
             else i++;
         }
         RootOpenFiles();
@@ -193,11 +532,15 @@ struct Workspace {
         RootOpenFiles();
     }
 
-    void Open(const string &uri, const string &text) {
+    void Open(const string &uri, const string &text, int64_t version = 0) {
         auto path = PathOfUri(uri);
         auto key = PathKey(path);
-        open[key] = Document { CanonicalPath(path), text };
+        open[key] = Document { CanonicalPath(path), text, version };
         Touch(key);
+        if (workspaceDirs.empty()) {
+            workspaceDirs.insert(CanonicalPath(DirOf(path)));
+            Discover();
+        }
     }
 
     // An incremental edit: the range (protocol positions) in `text` that
@@ -221,11 +564,12 @@ struct Workspace {
     // text (textDocumentSync Full, and a client that batches a save behind
     // its edits), so that a client sending fragments never reads as the
     // whole file.
-    void ChangeEdits(const string &uri, const Json &changes) {
+    void ChangeEdits(const string &uri, const Json &changes, int64_t version = 0) {
         if (changes.kind != Json::ARRAY || changes.arr.empty()) return;
         auto key = PathKey(PathOfUri(uri));
         auto it = open.find(key);
-        if (it == open.end()) return;
+        if (it == open.end() || version <= it->second.version) return;
+        it->second.version = version;
         for (auto &c : changes.arr) {
             if (c.kind != Json::OBJECT) continue;
             if (auto r = c.Get("range"); r && r->kind == Json::OBJECT)
@@ -239,7 +583,7 @@ struct Workspace {
     void Close(const string &uri) {
         auto key = PathKey(PathOfUri(uri));
         open.erase(key);
-        if (auto r = FindRoot(key); r && !r->configured) {
+        if (auto r = FindRoot(key); r && !r->configured && !r->indexed) {
             RemoveRoot(r);
             RootOpenFiles();
         } else {
@@ -249,6 +593,7 @@ struct Workspace {
 
     // The next moment an analysis is due, if any root is dirty.
     optional<chrono::steady_clock::time_point> NextDue() const {
+        if (discoveryPending) return chrono::steady_clock::now();
         optional<chrono::steady_clock::time_point> due;
         for (auto &r : roots)
             if (r->dirty && (!due || r->due < *due)) due = r->due;
@@ -257,6 +602,7 @@ struct Workspace {
 
     // The dirty root due first, if any.
     Root *FirstDue() {
+        for (auto &r : roots) if (r->configured && r->dirty) return r.get();
         Root *next = nullptr;
         for (auto &r : roots)
             if (r->dirty && (!next || r->due < next->due)) next = r.get();
@@ -265,9 +611,11 @@ struct Workspace {
 
     // Analyzes the dirty root due first, if its time has come.
     bool AnalyzeDue() {
+        if (discoveryPending) { Scan(); return true; }
         auto next = FirstDue();
         if (!next || next->due > chrono::steady_clock::now()) return false;
         Analyze(*next);
+        PruneUnreached();
         return true;
     }
 
@@ -277,7 +625,9 @@ struct Workspace {
     // yet. A change arriving after the request cancels none of these: the
     // request asks about the text before it.
     void Settle() {
+        if (discoveryPending) Scan();
         while (auto next = FirstDue()) Analyze(*next, false);
+        PruneUnreached();
     }
 
     // The text of a file as the editor has it, else null for the disk's.
@@ -341,7 +691,8 @@ struct Workspace {
         for (auto &[path, text] : ast.sources) r.files.insert(PathKey(path));
         if (!an->indexed) an->IndexFiles();
         Publish(r, *an);
-        if (an->parsed || !r.analysis) {
+        if (an->parsed || !r.analysis || r.discardFailedAnalysis) {
+            r.discardFailedAnalysis = false;
             if (!an->built) an->Build();
             Reap(std::move(r.analysis));
             r.analysis = std::move(an);

@@ -25,6 +25,23 @@ The server's semantic tokens color names by what they resolve to
 cover keywords, strings or comments, and the TextMate grammar is only part
 of the VS Code extension.
 
+## Editing features
+
+The server supports completion and call snippets, definitions and type
+navigation, references, checked rename, document highlights, range formatting,
+and code actions. Refactors include extraction, inlining, and selected syntax
+transformations. The server refuses unsupported or ambiguous edits.
+
+Workspace folders include unopened Goose files, with bounded discovery and
+file watching when the client supports it. Use initialization options `entryFiles`
+for explicit entry points and `exclude` for directories to leave out of discovery.
+An invalid or incomplete workspace can prevent a checked rename. Names that
+coincide with unresolved generic uses can also cause a conservative refusal.
+
+Import completions can add imports; accepting one can run module initialization
+when the program runs. Native builds with `--debug -O0` include Goose source-line
+mapping for a debugger. Generated names and helper frames can remain visible.
+
 ## Neovim
 
 Neovim 0.11 or later, in `init.lua`:

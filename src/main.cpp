@@ -192,6 +192,9 @@ static Diagnostic ImportDiagnostic(const string &file, const Import &imp, const 
 // they are used.
 void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlibdirs,
                   const string &exedir, const SourceProvider &sources = {}) {
+    auto available = [&](const string &path) {
+        return (sources && sources(path)) || FileExists(path);
+    };
     // The program is package 0; a standard library directory becomes a
     // package the first time a module in it is reached.
     auto rootdir = DirOf(rootpath);
@@ -362,11 +365,11 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                     // A package's own name, from inside it, is its own file.
                     if (it != declared.end() && it->second.pkg == pkg) it = declared.end();
                     if (it == declared.end() && failedpkgs.count(first)) continue;
-                    auto blessed = it == declared.end() && !FileExists(local) ? BlessedLookup(first)
+                    auto blessed = it == declared.end() && !available(local) ? BlessedLookup(first)
                                                                                : nullptr;
                     if (blessed) pkgname = blessed->package;
                     if (it != declared.end()) {
-                        if (FileExists(local))
+                        if (available(local))
                             ImportError(filename, imp,
                                         cat(imp.path, " is both a file of this package (", local,
                                             ") and the declared package ", first, "'s module"));
@@ -381,10 +384,10 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                         imppath = cat(ast.packages[imppkg].root, rest, ".goose");
                     } else {
                         imppath = local;
-                        if (!FileExists(local)) {
+                        if (!available(local)) {
                             for (auto &dir : stdlibdirs) {
                                 auto cand = cat(dir, imp.path, ".goose");
-                                if (FileExists(cand)) {
+                                if (available(cand)) {
                                     imppath = cand;
                                     imppkg = stdlibpkg(dir);
                                     break;

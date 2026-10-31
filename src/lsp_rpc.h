@@ -85,6 +85,7 @@ struct Transport {
     condition_variable cv;
     deque<Message> queue;
     atomic<bool> cancel { false };
+    atomic<uint64_t> scanEpoch { 0 };
     set<string> cancelled;
 
     // Content-Length framing: the headers, then the body of that length.
@@ -121,16 +122,22 @@ struct Transport {
             lock_guard<mutex> lock(m);
             if (msg.method == "$/cancelRequest") {
                 if (auto p = msg.Params()) if (auto id = p->Get("id")) cancelled.insert(JsonText(*id));
+                scanEpoch.fetch_add(1, memory_order_relaxed);
                 cv.notify_all();
                 continue;
             }
             if (msg.method == "textDocument/didChange" || msg.method == "textDocument/didOpen" ||
                 msg.method == "textDocument/didClose")
                 cancel.store(true, memory_order_relaxed);
+            if (msg.method == "shutdown" || msg.method == "exit" ||
+                msg.method == "initialize" || msg.method.rfind("workspace/did", 0) == 0 ||
+                msg.method.rfind("textDocument/did", 0) == 0)
+                scanEpoch.fetch_add(1, memory_order_relaxed);
             queue.push_back(std::move(msg));
             cv.notify_all();
         }
         lock_guard<mutex> lock(m);
+        scanEpoch.fetch_add(1, memory_order_relaxed);
         Message end;
         end.exit = true;
         queue.push_back(std::move(end));

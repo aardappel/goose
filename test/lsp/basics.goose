@@ -93,7 +93,7 @@ fn spare(x) { x }
 // lsp: references 37:9 3
 // lsp: references 36:19 2
 // lsp: rename 31:15 plus -> 3
-// lsp: rename 30:9 q -> 3
+// lsp: rename 30:9 point_value -> 3
 // lsp: rename 15:8 U -> 4
 // lsp: rename 24:9 Disc -> 2
 // lsp: rename 36:19 double -> 2

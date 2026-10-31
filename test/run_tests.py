@@ -1081,6 +1081,8 @@ class Runner:
         # naming the shape (optimize_loops.h, BCE's lenbound). Every shape_
         # function of the fixture must have the one it is named for, and no
         # keep_ function any.
+        text = re.sub(r'^#if GS_DEBUG\n#line \d+ "(?:[^"\\]|\\.)*"\n#endif\n',
+                      '', text, flags=re.MULTILINE)
         bodies = {}
         texts = {}
         for m in re.finditer(r"^static [^\n;]*?\b((?:shape|keep)_\w+?)_g\d*\([^\n]*\) \{\n(.*?)^\}\n",

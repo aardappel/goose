@@ -2166,6 +2166,7 @@ inline void TypeCheck::CheckBreak(Break *b) {
     if (si == -2) Error(b, "break cannot cross a const for expansion boundary");
     if (si == -3) JumpLeavesDefer(b, "break");
     if (si < 0) Error(b, "break outside of a loop or block");
+    b->controltarget = scopes[si].node;
     if (b->val) {
         if (!Is<LoopExpr>(scopes[si].node) && !Is<EarlyBlock>(scopes[si].node))
             Error(b, "break with a value exits loop/block only");
@@ -2271,6 +2272,7 @@ inline void TypeCheck::CheckContinue(Node *n) {
     if (si == -2) Error(n, "continue cannot cross a const for expansion boundary");
     if (si == -3) JumpLeavesDefer(n, "continue");
     if (si < 0) Error(n, "continue outside of a loop");
+    Is<Continue>(n)->controltarget = scopes[si].node;
     auto &sc = scopes[si];
     sc.backedge = sc.backedges ? JoinFlow(sc.backedge, SaveFlow()) : SaveFlow();
     sc.backedges = true;

@@ -179,6 +179,7 @@ inline void ResolveTypeNames(Ast &ast) {
         // The use names the alias, whatever else it says wrongly.
         if (!use->args.empty())
             ErrorAt(t, use, cat("type alias ", use->name, " takes no type arguments"));
+        auto sourcealias = ast.LookupAlias(use->name, use->ns);
         auto target = t;
         for (auto depth = 0; target->kind == TY_UNRESOLVED; depth++) {
             assert(depth <= (int)ast.aliases.size());   // checkaliases ended every cycle.
@@ -211,6 +212,7 @@ inline void ResolveTypeNames(Ast &ast) {
             t->cq = t->cq || cq;   // `const Alias` keeps its qualifier.
         }
         t->aliasuse = true;
+        t->sourcealias = sourcealias;
     }
 
     // Variant lookup runs last, when every ADT name is resolved.

@@ -27,6 +27,9 @@ add_executable(goose
     src/lsp_analysis.h
     src/lsp_workspace.h
     src/lsp_features.h
+    src/lsp_assists.h
+    src/lsp_syntax_assists.h
+    src/lsp_workspace_assists.h
     src/lsp.h
     src/format.h
     src/builtin.h

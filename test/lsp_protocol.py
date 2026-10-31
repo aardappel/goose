@@ -164,7 +164,7 @@ def check_lsp_protocol(exe, base):
     # lenses name.
     client.request("initialize", {"processId": None, "rootUri": uri_of(fixtures),
                                   "capabilities": {"workspace": {f: {"refreshSupport": True} for f in REFRESHED}},
-                                  "initializationOptions": {"entryFiles": [str(main)],
+                                  "initializationOptions": {"exclude": [str(fixtures)], "entryFiles": [str(main)],
                                                             "commands": ["goose.run", "goose.showInstantiations"]}})
     client.send("initialized", {}, request=False)
 
@@ -451,6 +451,9 @@ def check_lsp_protocol(exe, base):
     # The names as written where the check rewrites a global's initializer
     # in place, the bindings of the arms a const for generates, and the
     # commas in literals and comments, which are no argument's.
+    # Checked rename requires active programs without errors.
+    for path in (recovery, broken):
+        client.send("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}}, request=False)
     sindex = fixtures / "source_index.goose"
     stext = sindex.read_text(encoding="utf-8")
     queries(sindex, stext, open_fixture(sindex, stext))
@@ -498,8 +501,11 @@ def check_lsp_protocol(exe, base):
     def close_doc(path):
         client.send("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}}, request=False)
 
+    versions = {}
+
     def change_doc(path, body):
-        client.send("textDocument/didChange", {"textDocument": {"uri": uri_of(path), "version": 2},
+        versions[path] = versions.get(path, 1) + 1
+        client.send("textDocument/didChange", {"textDocument": {"uri": uri_of(path), "version": versions[path]},
                                                "contentChanges": [{"text": body}]}, request=False)
 
     def lib_error(when):
@@ -588,7 +594,7 @@ def check_lsp_protocol(exe, base):
     shared = fixtures / "two_shared.goose"
     two = Client(exe, fixtures)
     two.request("initialize", {"processId": None, "rootUri": uri_of(fixtures), "capabilities": {},
-                               "initializationOptions": {"entryFiles": [str(fixtures / "two_a.goose"),
+                               "initializationOptions": {"exclude": [str(fixtures)], "entryFiles": [str(fixtures / "two_a.goose"),
                                                                         str(fixtures / "two_b.goose")]}})
     two.send("initialized", {}, request=False)
     two.send("textDocument/didOpen", {"textDocument": {"uri": uri_of(shared), "languageId": "goose", "version": 1,
@@ -616,12 +622,125 @@ def check_lsp_protocol(exe, base):
                 **sdoc, "position": position("5:4"), "context": {"includeDeclaration": True}})),
              ["two_a.goose:5:19", "two_b.goose:6:11", "two_shared.goose:5:4"]),
             ("incoming 5:4", callers("5:4"), ["two_a.goose:main@5", "two_b.goose:main@6"]),
-            ("rename 8:4", renamed("8:4"), ["two_shared.goose:13:44", "two_shared.goose:8:4"]),
             ("incoming 8:4", callers("8:4"), ["two_shared.goose:apply@13"])):
         if got != want:
             fail(f"two entry files: {what} are not {want}", got)
+    ambiguous = two.request("textDocument/rename", {
+        **sdoc, "position": position("8:4"), "newName": "renamed"}, raw=True)
+    if ambiguous.get("error", {}).get("code") != -32803:
+        fail("rename of an ambiguous exemplar overload was not refused", ambiguous)
     two.request("shutdown", None)
     two.send("exit", request=False)
     code = two.p.wait(timeout=30)
     if code != 0:
         raise RuntimeError(f"goose lsp exited with {code}:\n{tc.decode(two.p.stderr.read())}")
+
+    check_editing_features(exe, base / "editing")
+
+
+def check_editing_features(exe, base):
+    """Apply checked edits and compare the resulting programs' output."""
+    base.mkdir(parents=True, exist_ok=True)
+    main = base / "main.goose"
+    helper = base / "editing_helper.goose"
+    helper.write_text("namespace editing_helper;\nfn calculate(x: i64) -> i64 { let inline_argument_0 = 20; return x + inline_argument_0; }\n")
+    text = ("import std;\nimport editing_helper;\n"
+            "fn not(x: bool) -> bool { x }\n"
+            "fn main() {\n    let first = 1;\n    let second = 2;\n"
+            "    print(first + second);\n    print(editing_helper::calculate(4));\n"
+            "    print(true.not());\n}\n")
+    main.write_text(text)
+    uri = uri_of(main)
+    doc = {"textDocument": {"uri": uri}}
+
+    def pos(needle, offset=0):
+        at = text.index(needle) + offset
+        before = text[:at]
+        return {"line": before.count("\n"), "character": len(before.rsplit("\n", 1)[-1])}
+
+    def run(body):
+        main.write_text(body)
+        code, out, err = tc.run_capture([exe, "run", str(main), "--offline"])
+        if code:
+            raise RuntimeError(f"editing result does not run:\n{out}{err}")
+        return out
+
+    baseline = run(text)
+    client = Client(exe, base)
+    candidates = []
+    try:
+        caps = client.request("initialize", {
+            "rootUri": uri_of(base),
+            "capabilities": {"textDocument": {"completion": {"completionItem": {"snippetSupport": True}}}},
+            "initializationOptions": {"entryFiles": [str(main)]}})["capabilities"]
+        for name in ("documentHighlightProvider", "typeDefinitionProvider", "documentRangeFormattingProvider"):
+            if not caps.get(name):
+                raise RuntimeError(f"editing capability missing: {name}")
+        client.send("initialized", {}, request=False)
+        client.send("textDocument/didOpen", {"textDocument": {
+            "uri": uri, "languageId": "goose", "version": 1, "text": text}}, request=False)
+        if client.diagnostics_for(uri):
+            raise RuntimeError("editing fixture has diagnostics")
+        rename = {**doc, "position": pos("first"), "newName": "second"}
+        unsafe = client.request("textDocument/rename", rename, raw=True)
+        if unsafe.get("error", {}).get("code") != -32803:
+            raise RuntimeError(f"rename did not refuse binding capture: {unsafe}")
+        safe = client.request("textDocument/rename", {**rename, "newName": "checked_first_value"})
+        if len(safe.get("changes", {}).get(uri, [])) != 2:
+            raise RuntimeError(f"safe rename has wrong edits: {safe}")
+        candidates.append(safe["changes"][uri])
+        prepared = client.request("textDocument/prepareRename", {**doc, "position": pos("first")})
+        if not prepared:
+            raise RuntimeError("prepareRename failed")
+        highlights = client.request("textDocument/documentHighlight", {**doc, "position": pos("first")})
+        if len(highlights or []) != 2:
+            raise RuntimeError(f"binding highlights are wrong: {highlights}")
+        start = pos("editing_helper::calculate(4)")
+        end = pos("editing_helper::calculate(4)", len("editing_helper::calculate(4)"))
+        actions = client.request("textDocument/codeAction", {
+            **doc, "range": {"start": start, "end": end}, "context": {"diagnostics": []}})
+        inline = next((a for a in actions or [] if a["title"] == "Inline resolved scalar call"), None)
+        if not inline:
+            raise RuntimeError(f"imported inline action missing: {actions}")
+        changes = inline["edit"]["documentChanges"]
+        if len(changes) != 1 or changes[0]["textDocument"] != {"uri": uri, "version": 1}:
+            raise RuntimeError(f"inline is not versioned: {inline}")
+        candidates.append(changes[0]["edits"])
+        completion = client.request("textDocument/completion", {**doc, "position": pos("true.not", 8)})
+        items = completion if isinstance(completion, list) else completion.get("items", [])
+        method = next((i for i in items if i["label"] == "not"), None)
+        if not method or "!(" in json.dumps(method):
+            raise RuntimeError(f"postfix masks an existing callable: {items}")
+        changed = text.replace("first", "updated")
+        client.send("textDocument/didChange", {"textDocument": {"uri": uri, "version": 2},
+                    "contentChanges": [{"text": changed}]}, request=False)
+        client.request("textDocument/documentSymbol", doc)
+        for version in (1, 2):
+            client.send("textDocument/didChange", {"textDocument": {"uri": uri, "version": version},
+                        "contentChanges": [{"text": text}]}, request=False)
+        hover = client.request("textDocument/hover", {**doc, "position": pos("first")})
+        if not hover or "updated" not in hover["contents"]["value"]:
+            raise RuntimeError(f"stale document version replaced current text: {hover}")
+        client.request("shutdown", None)
+        client.send("exit", request=False)
+        if client.p.wait(timeout=30):
+            raise RuntimeError("editing server failed to shut down")
+    finally:
+        if client.p.poll() is None:
+            client.p.kill()
+            client.p.wait(timeout=30)
+
+    def apply(edits):
+        lines = text.splitlines(keepends=True)
+        offset = lambda p: sum(len(line) for line in lines[:p["line"]]) + p["character"]
+        result = text
+        for edit in sorted(edits, key=lambda e: offset(e["range"]["start"]), reverse=True):
+            result = result[:offset(edit["range"]["start"])] + edit["newText"] + result[offset(edit["range"]["end"]):]
+        return result
+
+    try:
+        for edits in candidates:
+            if run(apply(edits)) != baseline:
+                raise RuntimeError("checked edit changed runtime output")
+    finally:
+        main.write_text(text)

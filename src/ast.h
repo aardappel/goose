@@ -311,6 +311,7 @@ struct TypeExpr {
     // sizes name what they name where the alias is declared, at top level,
     // whatever scope the use is in (TypeCheck::ConstNamesIn).
     bool aliasuse = false;
+    SAlias *sourcealias = nullptr;
     // On a TY_INT: an index or bound type (TypeIndex). Outside the union,
     // since intstorage is the member a TY_INT uses.
     TypeIndex *ix = nullptr;
@@ -1378,12 +1379,14 @@ NODE(Return)
 NODE_END
 
 NODE(Break)
+    Node *controltarget = nullptr;
     BCE_WALK
     Node *val;
     Break(Line l, Node *_val) : Node(l, NKind), val(_val) {}
 NODE_END
 
 NODE(Continue)
+    Node *controltarget = nullptr;
     BCE_WALK
     Continue(Line l) : Node(l, NKind) {}
 NODE_END

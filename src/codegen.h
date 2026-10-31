@@ -641,7 +641,32 @@ struct CodeGen {
     // the generated C must not depend on which one built goose. Two such
     // calls therefore never share an argument list (or any one expression):
     // the earlier goes to a local of its own first.
+    Line debugline { 1, -1, 0 };
+    struct DebugScope {
+        CodeGen &cg;
+        Line saved;
+        DebugScope(CodeGen &cg, Line line) : cg(cg), saved(cg.debugline) {
+            cg.debugline = line;
+        }
+        ~DebugScope() { cg.debugline = saved; }
+    };
+    string DebugLine(Line line) {
+        auto valid = line.line > 0 && line.fileidx >= 0 &&
+                     line.fileidx < (int)ast.sources.size();
+        auto file = valid ? ast.sources[line.fileidx].first : string("<goose-generated>");
+        // A directive needs one literal, unlike CStr's long-string chunks.
+        string escaped = "\"";
+        for (auto c : file) {
+            if (c == '\\' || c == '"') escaped += '\\';
+            if (c == '\n') escaped += "\\n";
+            else if (c == '\r') escaped += "\\r";
+            else escaped += c;
+        }
+        escaped += '"';
+        return cat("#if GS_DEBUG\n#line ", valid ? line.line - 1 : 0, " ", escaped, "\n#endif\n");
+    }
     template<typename... Ts> void L(const Ts &...args) {
+        body += DebugLine(debugline);
         body.append((size_t)ind * 4, ' ');
         Append(body, args...);
         body += '\n';
@@ -1047,10 +1072,14 @@ struct CodeGen {
         return it == fillvalues.end() ? n->CgX(*this) : LoadLoc(it->second, it->second.t, n->line);
     }
     void GenAny(Node *n, Dst d) {
+        DebugScope debugscope(*this, n->line);
         if (fillvalues.count(n)) LeafAny(n, d);
         else n->CgAny(*this, d);
     }
-    void GenStmt2(Node *n) { n->CgStmt(*this); }
+    void GenStmt2(Node *n) {
+        DebugScope debugscope(*this, n->line);
+        n->CgStmt(*this);
+    }
 
     string CtlValX(Node *n);
     void LeafAny(Node *n, const Dst &d);
