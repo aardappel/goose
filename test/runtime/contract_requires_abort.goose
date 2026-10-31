@@ -1,4 +1,3 @@
-// runtime-define: GS_CONTRACTS=1
 // A failed requires aborts with its clause before the body runs. Expected to
 // abort after the first two lines.
 

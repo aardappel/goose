@@ -1,4 +1,3 @@
-// runtime-define: GS_CONTRACTS=1
 // A loop invariant is checked at the top of every iteration, so the
 // iteration after the one that breaks it aborts. Expected to abort after
 // the third line.

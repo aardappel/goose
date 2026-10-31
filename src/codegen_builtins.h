@@ -69,6 +69,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return {};
         }
         case B_ASSERT: {
+            if (c->nobc) return {};   // The facts settle it (bce.h).
             if (BranchChain(an[0])) {
                 auto ok = Lbl();
                 GenBranch(an[0], true, ok);
@@ -81,9 +82,9 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return {};
         }
         case B_CONTRACT: {
-            // Only where GS_CONTRACTS is on (debug builds, --check-contracts):
-            // the condition is evaluated inside the #if too.
-            L("#if GS_CONTRACTS");
+            // A contract clause's check (contracts.h): an assert that aborts
+            // with the clause's text.
+            if (c->nobc) return {};
             auto msg = GenPure(an[1]);
             if (BranchChain(an[0])) {
                 auto ok = Lbl();
@@ -94,7 +95,6 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 auto x = GenTruth(an[0]);
                 L("if (!(", x, ")) gs_abort_msg(", msg, ".data, ", msg, ".len, ", LocArgs(ln), ");");
             }
-            L("#endif");
             return {};
         }
         case B_ABORT: {

@@ -3,10 +3,9 @@
 // `invariant` clauses beside the code they describe, so that the dump shows
 // them as written; LowerContracts, which runs once before typecheck, turns
 // each into a check in the body. A check is a call of the B_CONTRACT builtin,
-// which codegen emits under `#if GS_CONTRACTS` (on in debug builds, or with
-// --check-contracts): every contract is executable, and nothing is proved
-// yet, so a release build pays for none of them and the analyses take no
-// facts from them.
+// which is an assert that aborts with the clause's text: it runs in every
+// build, it narrows and gives bounds-check elimination facts onwards like an
+// assert, and one that the facts already settle is dropped (bce.h).
 //
 //   requires p      at the top of the body, before anything else runs;
 //   ensures q       wherever the function returns: a `return e` returns
@@ -161,7 +160,9 @@ struct ContractLowering {
                     auto g = ast.New<Block>(r->line);
                     if (r->vals.empty()) g->stmts = checks(nullptr);
                     else r->vals[0] = checking(r->vals[0], g->stmts);
-                    g->tail = r;
+                    // A statement, so that the analyses see the block end
+                    // there, as they do a written `{ ...; return v; }`.
+                    g->stmts.push_back(r);
                     slot = g;
                 };
                 for (auto &s : b->stmts) swap(s);

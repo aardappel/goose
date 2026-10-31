@@ -35,8 +35,10 @@ property it cannot prove to a tool that can. This proposal adds both:
 
 * **Contracts** (`requires`, `ensures`, loop `invariant`, `decreases`) and
   **refinement types** (`T where P`), written in ordinary Goose expressions.
-  Every contract is executable, so it is checked at run time in debug builds
-  from day one, with no prover involved.
+  A clause means what an `assert` at the same place means: it is checked in
+  every build, the code after it may rely on it, and the compiler removes it
+  where it proves it. So contracts work from day one, with no prover
+  involved, and every proof only removes checks.
 * **`proven fn`**, which the compiler rejects unless every contract it
   touches, and the absence of every abort of §9.3 other than resource
   exhaustion, is proved statically. `abortfree fn` is the weaker level
@@ -133,27 +135,47 @@ operations satisfy the laws the contract relies on. Laws are stated as
 `lemma`s on the operation (§8), and `std.spec` states them for the builtin
 types.
 
-### 3.3 Run-time behaviour
+### 3.3 Run-time behaviour: a clause is an `assert`
 
-| | Debug build | Release build |
-|---|---|---|
-| Proved statically | Erased | Erased |
-| Not proved | Checked: aborts `goose runtime error: requires failed: <clause>` at the call site, or `ensures failed` at the return | Erased by default. `--check-contracts` keeps them. |
-| In a `proven fn` | Compile error unless proved | Compile error unless proved |
+A clause means what an `assert` written at the same place means, and nothing
+else:
+
+* `requires p` is `assert(p)` on entry, `ensures q` is `assert(q)` at every
+  return, and `invariant i` is `assert(i)` at the head of every iteration,
+  the one that leaves the loop included.
+* Like an assert, a clause is checked in every build, and the code after its
+  check may rely on it: it narrows and is a fact for bounds-check
+  elimination. A `requires` replaces the entry `assert`s that `checkfree`
+  functions use today ([index_types.md §6.3](index_types.md)).
+* A clause the compiler proves is removed, as a proved bounds check is. The
+  same goes for an `assert`. Proofs only ever remove checks, so they never
+  change what a program does.
+
+| | Every build |
+|---|---|
+| Proved statically | Removed |
+| Not proved | Checked: aborts `goose runtime error: requires failed: <clause>` at the call site, or `ensures failed` at the return |
+| In a `proven fn` | Compile error unless proved |
 
 A `requires` is the caller's obligation, so its check, and its error
 location, belong to the caller (the call site is reported, as for library
 aborts in §9.3). An `ensures` belongs to the callee.
 
-Erasing an unproved contract in release builds is the same deal as signed
-overflow (§6.2): debug builds find bugs, and release builds never pay for
-checks that were not proved. A team that wants contracts as a safety net in
-production turns `--check-contracts` on.
+**Why clauses, and not only `assert`.** `assert` already states a fact at a
+point, and a clause adds nothing to its meaning. What a clause adds is
+*where* the fact belongs. `requires` and `ensures` are the function's
+interface: what every caller must establish, and what every caller may rely
+on afterwards. Today a function's entry facts come from its call sites
+(§10.5), so a new caller elsewhere can break a `checkfree` function. With a
+`requires`, each caller is checked against the clause and the body against
+it once. A proved `ensures` becomes a fact at every call site, which an
+`assert` before each `return` cannot be without reading the body. `result`
+and `old(e)` exist only because a postcondition needs to name them.
 
-Proved contracts also **feed bounds-check elimination**: a proved `requires`
-becomes an entry fact of the specialization, and a proved `ensures` becomes
-a fact at every call site. So writing contracts can make code faster, which
-is a better incentive than correctness alone.
+**The cost.** Checking in every build means an unproved clause costs what
+the same `assert` would. Most are a comparison. A quantifier is a loop,
+though: `requires sorted(a)` makes a binary search linear until it is
+proved. §16 lists the ways out.
 
 ### 3.4 Long-distance returns
 
@@ -202,13 +224,13 @@ A contract is a Goose expression that:
 | `any i in lo..hi: P` | Bounded existential quantifier | Yes |
 | `forall x: T: P` | Unbounded quantifier | No: allowed only in `lemma`s and `spec fn`s, never in a run-time check |
 | `a implies b`, `a iff b` | Logical connectives | Yes |
-| `old(e)` | Entry value | Yes: debug builds snapshot what the clause reads, where an `ensures` names `old` |
+| `old(e)` | Entry value | Yes: the function copies what the clause reads on entry, where an `ensures` names `old` |
 | `result` | The single result | Yes |
 | `spec fn` | A function usable only in specs and ghost code; may be recursive with `decreases` | Yes, if its body has no unbounded quantifier |
 
 Bounded quantifiers over index ranges cover nearly all array
 specifications. They have obvious triggers (`a[i]`) for an SMT solver, and
-they run as ordinary loops in debug builds. Unbounded quantifiers are
+they run as ordinary loops. Unbounded quantifiers are
 needed for lemmas but kept out of run-time checks.
 
 ### 4.3 `std.spec`
@@ -224,7 +246,7 @@ spec fn distinct<T>(a: const T[:]) -> bool
 spec fn prefix<T>(a: const T[:], b: const T[:]) -> bool
 ```
 
-`is_perm` is executable in O(n log n) in debug builds (sort and compare
+`is_perm` is executable in O(n log n) (sort and compare
 copies on a scratch stack), so even the property that sorting routines are
 proved for is checkable at run time.
 
@@ -253,8 +275,8 @@ while i < a.len
   `v <= len(P) + c`, wrap-freedom) are added automatically. A written
   invariant is only needed for what the analysis does not infer, which is
   usually the functional part.
-* In debug builds an invariant is checked on entry and after each
-  iteration.
+* An invariant is checked on entry and after each iteration, in every
+  build, like an `assert` (§3.3).
 
 ### 5.2 Termination
 
@@ -356,7 +378,7 @@ Some proofs need facts that are not in the program: a running sum, a model
 of what has been seen, an inductive lemma.
 
 ```goose
-ghost var seen: int = 0;           // erased in every build except --check-contracts
+ghost var seen: int = 0;           // erased from the generated C
 lemma fn sorted_split(a: const i64[:], m: i64)
     requires sorted(a) && 0 <= m <= a.len
     ensures sorted(a[0..m]) && sorted(a[m..a.len])
@@ -652,9 +674,10 @@ No existing program changes meaning.
 Each phase is useful without the ones after it.
 
 1. **Executable contracts.** `requires`, `ensures`, `old`, `result`,
-   `invariant`, bounded quantifiers, `implies`, `std.spec`, run-time checks
-   in debug builds, `--check-contracts`. No prover. Contracts become test
-   oracles immediately, including for LLM-written code.
+   `invariant`, bounded quantifiers, `implies`, `std.spec`, checked like
+   `assert`s in every build, and removed where the existing analysis proves
+   them. No new prover. Contracts become test oracles immediately, including
+   for LLM-written code.
 2. **`abortfree fn`.** Extend `bce.h` to the other aborts of §9.3 and to
    `requires` at call sites. No solver. Proved `requires` start feeding BCE.
 3. **SMT and `proven fn`.** VC generation, SMT-LIB back end, `decreases`,
@@ -706,13 +729,22 @@ an SMT encoding, comparable in size to `bce.h` itself.
 * **`from_bytes` and refinements.** A verified image could also check
   refinement predicates of its element type, making refined data safe to
   load. That extends the verifier, and its cost needs measuring.
+* **Expensive clauses** (§3.3). An unproved quantifier runs in every build.
+  The ways out: a marker on the clause, say `requires sorted(a) unchecked`,
+  which keeps it as a proof obligation but checks it only in debug builds
+  and gives no facts from it; a build flag that does that for every clause;
+  or nothing, leaving the cost visible until `proven` removes it.
+* **Fewer words.** `invariant` could be an `assert` at the head of a loop's
+  body, given the meaning of §5.1 (it also holds when the loop exits), and
+  `implies` is `!a || b`. `requires` and `ensures` carry the function's
+  interface, which an `assert` does not (§3.3).
 * **Spelling.** `all`/`any` versus `forall`/`exists` in executable
   contracts, and whether `implies` should be `==>`.
 
 ## 17. Implementation status
 
-Phase 1 is implemented in part. No prover runs: every clause is a run-time
-check.
+Phase 1 is implemented in part. No new prover runs: every clause is an
+`assert`, which the existing analysis removes where it can prove it.
 
 **What is in.**
 
@@ -732,20 +764,26 @@ check.
 
   A returned variable is checked in place and anything else is first bound
   where it is built, so nonfixed results are not copied.
-* A check is a call of a builtin whose name no program can write. Codegen
-  emits it under `#if GS_CONTRACTS`, which `runtime.h` sets to `GS_DEBUG`
-  unless it is defined. So `--debug` checks contracts, and
-  `--check-contracts` (`-DGS_CONTRACTS=1`) checks them in a release build.
-  A failure aborts with `goose runtime error: <kind> failed: <clause text>`
-  and the clause's location.
-* The checks give the checker and the analyses no facts: they narrow nothing
-  and are not bounds-check facts, since a release build runs without them.
+* A check is a call of a builtin whose name no program can write. It is an
+  `assert` that aborts with `goose runtime error: <kind> failed: <clause
+  text>` and the clause's location. It runs in every build, narrows, and is
+  a fact for bounds-check elimination past its check. So a `requires` makes
+  a `checkfree` function independent of its callers, as an entry `assert`
+  does.
+* Bounds-check elimination removes an `assert` or a clause whose condition
+  its facts already settle: comparisons of integer variables, lengths and
+  constants, joined by `&&`. A condition that indexes, calls or quantifies
+  is always checked. This is the existing analysis of §10.5, not a prover.
 
 **Where it differs from the text above.**
 
 * Contract arithmetic is the program's arithmetic, not mathematical (§3.1,
   §4.2). There is no `int`/`nat` yet.
 * A failed `requires` is reported at the clause, not at the call site (§3.3).
+  Callers do not yet check a `requires`, and a proved `ensures` is not yet a
+  fact at the call site. Inside the function both are facts.
+* An `invariant` is checked at the top of each iteration's body, so not on
+  the exit from the loop (§5.1).
 * `ensures` on a function with several results, and the `ensures (a, b):`
   binding, are not supported. Neither are `escapes`, `decreases`, `spec fn`
   and `std.spec`.
@@ -755,15 +793,12 @@ check.
   with `ensures`, is an error that asks for `{ return; }`.
 * Quantifiers are allowed only in contracts, because there is no `spec fn`
   to name one in yet.
-* `old(e)` copies are made in every build, even where nothing checks them.
-  They are dead in a release build, and the C compiler removes those of
-  fixed-size values.
 * The contract checks are part of a `checkfree` function's text, so a bounds
-  check left in a clause counts against it, even though a release build
-  never runs the clause.
+  check left in a clause counts against it.
 
-**Tests.** `test/typing/contracts.goose` checks every form in a debug run
-whose output matches the other runs. `test/runtime/contract_*_abort.goose`
-check failures under `GS_CONTRACTS=1`, and `contract_unchecked.goose` checks
-that a release build runs past false clauses. `test/errors_tc/contract_*`
-cover the rejections.
+**Tests.** `test/typing/contracts.goose` checks every form, and its debug
+run must print what the others do. `test/runtime/contract_*_abort.goose`
+check failures. `test/optimizer/contract_checks.goose` has a `checkfree`
+function that its `requires` makes check-free, and a function whose
+`ensures` is proved at every return, which `run_tests.py` confirms in the
+generated C. `test/errors_tc/contract_*` cover the rejections.

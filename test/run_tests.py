@@ -1735,6 +1735,24 @@ def main():
         else:
             r.ok("inline fn C")
     r.show_task(inline_fn_c)
+    # Contract clauses are asserts that the facts can settle (proofs.md §17):
+    # clamp's ensures is proved at each of its returns and leaves no check,
+    # and a clause that indexes is always kept.
+    def contract_checks_c():
+        f = HERE / "optimizer" / "contract_checks.goose"
+        cfile = gendir / "contract_checks-shapes.c"
+        code, out, err = r.goose("-O0", "-o", cfile, f)
+        if code != 0:
+            r.fail("contract checks C", out + err)
+            return
+        text = cfile.read_text()
+        ensures = "ensures failed: 0 <= result && result < a.len" in text
+        indexing = "requires failed: a[0] != 99" in text
+        if ensures or not indexing:
+            r.fail("contract checks C", f"ensures kept: {ensures}, indexing requires kept: {indexing}")
+        else:
+            r.ok("contract checks C")
+    r.show_task(contract_checks_c)
     # A slice and a builder parameter are two C parameters each (spec C.3),
     # the slice's data pointer as `void *` (ParamFields).
     def member_params():

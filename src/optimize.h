@@ -1286,7 +1286,7 @@ inline Node *Call::Opt(Optimizer &o) {
                                                            : o.OptIn(this, args[i]);
     if (fvbody) o.OptBlock(fvbody);
     if (defaultinit) defaultinit = o.Opt(defaultinit);
-    if (builtin == B_ASSERT) {
+    if (builtin == B_ASSERT || builtin == B_CONTRACT) {
         if (auto b = Is<BoolLit>(FirstArg()); b && b->val) {
             o.folded++;
             return o.EmptyBlock(this);

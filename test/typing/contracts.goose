@@ -1,7 +1,8 @@
 // runtime-debug
 // Contracts (docs/design/proofs.md, phase 1): requires, ensures with result
 // and old(e), loop invariants, implies and bounded quantifiers. Every clause
-// here holds, so the debug run, which checks them, prints what the others do.
+// here holds, and every build checks them, so a debug run prints what the
+// others do.
 
 fn lower_bound(a: const i64[:], key: i64) -> i64
     requires all i in 1..a.len: a[i - 1] <= a[i]

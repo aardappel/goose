@@ -1,7 +1,5 @@
-// runtime-define: GS_CONTRACTS=1
-// A failed ensures aborts with its clause where contracts are checked: here
-// in every build, by the define that --check-contracts passes. Expected to
-// abort after the first line.
+// A failed ensures aborts with its clause, in every build. Expected to abort
+// after the first line.
 
 fn next_up(x: i64) -> i64
     ensures result > x
