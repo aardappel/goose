@@ -1212,6 +1212,11 @@ struct BCE {
             return Derived(n, [&] {
                 return IsIndexT(n->exprtype) ? IndexTypeTerm(n->exprtype) : TypeRangeTerm(n);
             });
+        // An if's value, as the join named it (IfExpr::BceWalk).
+        if (Is<IfExpr>(n) && !IsIndexT(n->exprtype)) {
+            auto it = mode == M_KILLS ? derived.end() : derived.find(n);
+            return it != derived.end() && it->second.second == nextgen ? it->second.first : Term {};
+        }
         // Any other value of an index or bound type: a branch's, a match's.
         if (IsIndexT(n->exprtype)) return Derived(n, [&] { return IndexTypeTerm(n->exprtype); });
         return {};
@@ -1242,6 +1247,9 @@ struct BCE {
             if (ReturnsTo(b->tail, sf)) return {};
             if (last) for (auto v : last->vals) if (ReturnsTo(v, sf)) return {};
         }
+        // A deferred body runs after the value is read and may re-bind what
+        // the term would name (Block::BceWalk applies its kills first).
+        for (auto st : b->stmts) if (Is<Defer>(st)) return {};
         if (b->tail) return TermOf(b->tail);
         if (b->stmts.empty()) return {};
         auto r = Is<Return>(b->stmts.back());
@@ -3112,7 +3120,19 @@ struct BCE {
         mode = saved;
     }
 
-    Flow Meet(const Flow &a, const Flow &b) {
+    // A value a join names by one base, p, that each incoming flow knows by
+    // a term of its own: ta in the first, tb in the second.
+    struct Phi { Base p; Term ta, tb; };
+
+    // The join keeps the facts both flows state. A variable one of them
+    // re-bound is named after the join by the later generation, which the
+    // other flow never mentions, and an if's value by a base neither does
+    // (vals): for those, the facts the meet compares are what each flow
+    // implies, its shortest paths against every base either flow names,
+    // with the value defined as the flow's own term. A re-bound variable
+    // whose base a flow states nothing about is left out: what that flow
+    // knows of it is only its axioms, which hold of the joined value anyway.
+    Flow Meet(const Flow &a, const Flow &b, span<const Phi> vals = {}) {
         Flow r;
         for (auto &f : a.facts)
             for (auto &g : b.facts)
@@ -3131,6 +3151,70 @@ struct BCE {
         r.pgen = Gens::Max(a.pgen, b.pgen);
         std::set_intersection(a.lestated.begin(), a.lestated.end(), b.lestated.begin(),
                               b.lestated.end(), std::back_inserter(r.lestated));
+        if (mode == M_KILLS) return r;
+        auto named = [](const Flow &f, const Base &x) {
+            if (x.kind == BK_ZERO) return true;
+            for (auto &g : f.facts) if (g.l == x || g.r == x) return true;
+            return false;
+        };
+        small_vector<Phi, 4> phis;
+        for (auto &v : vals)
+            if (named(a, v.ta.b) && named(b, v.tb.b)) phis.push_back(v);
+        for (auto &g : r.vgen.gens) {
+            auto ga = Base { BK_VAR, g.id, a.vgen.Get(g.id) };
+            auto gb = Base { BK_VAR, g.id, b.vgen.Get(g.id) };
+            if (ga.gen != gb.gen && IntBaseVar(varof[g.id]) && named(a, ga) && named(b, gb))
+                phis.push_back({ Base { BK_VAR, g.id, g.gen }, { true, ga, 0 }, { true, gb, 0 } });
+        }
+        if (phis.empty()) return r;
+        small_vector<Base, 32> to = { Zero() };
+        auto add = [&](const Base &x) {
+            for (auto &y : to) if (y == x) return;
+            to.push_back(x);
+        };
+        for (auto &f : a.facts) { add(f.l); add(f.r); }
+        for (auto &f : b.facts) { add(f.l); add(f.r); }
+        for (auto &ph : phis) add(ph.p);
+        // The implied facts about each phi in one flow, from a scratch copy
+        // of it in which the phis are defined. Either flow may be the
+        // current one itself.
+        auto implied = [&](const Flow &f, bool first) {
+            auto scratch = f;
+            std::swap(flow, scratch);
+            for (auto &ph : phis) {
+                auto &t = first ? ph.ta : ph.tb;
+                if (t.b == ph.p && !t.off) continue;
+                flow.facts.push_back({ ph.p, t.b, t.off });
+                flow.facts.push_back({ t.b, ph.p, SatSub(0, t.off) });
+            }
+            vector<Fact> out;
+            for (auto &ph : phis) {
+                auto up = DistsFrom(ph.p, to), dn = DistsFrom(ph.p, to, true);
+                for (size_t i = 0; i < to.size(); i++) {
+                    if (to[i] == ph.p) continue;
+                    // Bounds as far out as the axioms' only crowd the table.
+                    if (SmallOff(up[i])) out.push_back({ ph.p, to[i], up[i] });
+                    if (SmallOff(dn[i])) out.push_back({ to[i], ph.p, dn[i] });
+                }
+            }
+            std::swap(flow, scratch);
+            return out;
+        };
+        auto fa = implied(a, true), fb = implied(b, false);
+        for (auto &f : fa)
+            for (auto &g : fb) {
+                if (!(f.l == g.l && f.r == g.r)) continue;
+                auto c = std::max(f.c, g.c);
+                auto known = false;
+                for (auto &h : r.facts)
+                    if (h.l == f.l && h.r == f.r) {
+                        h.c = std::min(h.c, c);
+                        known = true;
+                        break;
+                    }
+                if (!known && r.facts.size() < MAXFACTS) r.facts.push_back({ f.l, f.r, c });
+                break;
+            }
         return r;
     }
 
@@ -3877,7 +3961,24 @@ inline bool IfExpr::BceWalk(BCE &b) {
     if (fellthen && !fellelse) { b.flow = std::move(thenf); return true; }
     if (!fellthen && fellelse) return true;   // b.flow is already the else path.
     if (!fellthen && !fellelse) return false;
-    b.flow = b.Meet(thenf, b.flow);
+    // An integer value both branches give a term to: one base, which the
+    // join relates to what each branch knew of its own (TermOf reads it
+    // back while no generation has advanced).
+    small_vector<BCE::Phi, 1> val;
+    if (elseb && BCE::MachineInt(exprtype)) {
+        auto et = b.TermOf(elseb);
+        std::swap(thenf, b.flow);
+        auto tt = b.TermOf(thenb);
+        auto admissible = b.CmpAdmissible(tt);
+        std::swap(thenf, b.flow);
+        if (admissible && b.CmpAdmissible(et)) {
+            auto p = b.IndexTypeTerm(exprtype);
+            val.push_back({ p.ok ? p.b : b.TmpBase(), tt, et });
+        }
+    }
+    b.flow = b.Meet(thenf, b.flow, val);
+    b.derived.erase(this);
+    if (!val.empty()) b.derived[this] = { BCE::Term { true, val[0].p, 0 }, b.nextgen };
     return true;
 }
 
