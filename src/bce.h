@@ -245,6 +245,9 @@ struct BCE {
         vector<Fact> facts;
         Gens vgen, pgen;   // By var id / place id.
         small_vector<Lin, 4> lins;
+        // Sorted var ids whose current value a write has placed against a
+        // re-bindable place's length since its last rebind (LeLenHolds).
+        small_vector<int, 4> lestated;
     };
     Flow flow;
     int nextgen = 0;
@@ -630,6 +633,9 @@ struct BCE {
         return &c;
     }
     map<VarDef *, vector<pair<int, int64_t>>> lelen;   // v <= len(P) + c, as (P, c).
+    // The places the body re-binds (RebindKill), such as an inlined slice
+    // or reference parameter declared anew in each iteration of a loop.
+    set<int> rebound;
     map<VarDef *, int> mono;   // +1 nondecreasing / -1 nonincreasing, wrap-free.
 
     bool Reach(VarDef *v) {
@@ -789,9 +795,11 @@ struct BCE {
         if (!lelen.empty())
             for (size_t i = 0; i < nodes.size(); i++) {
                 if (nodes[i].kind != BK_VAR) continue;
-                auto it = lelen.find(varof[nodes[i].id]);
+                auto v = varof[nodes[i].id];
+                auto it = lelen.find(v);
                 if (it != lelen.end())
-                    for (auto [pid, c] : it->second) add(LenBase(pid));
+                    for (auto [pid, c] : it->second)
+                        if (LeLenHolds(nodes[i], v, pid)) add(LenBase(pid));
             }
         auto idx = [&](const Base &b) {
             for (size_t i = 0; i < nodes.size(); i++) if (nodes[i] == b) return (int)i;
@@ -826,6 +834,7 @@ struct BCE {
                 auto it = lelen.find(v);
                 if (it != lelen.end())
                     for (auto [pid, c] : it->second) {
+                        if (!LeLenHolds(b, v, pid)) continue;
                         auto li = idx(LenBase(pid));
                         if (li >= 0) edges.push_back({ (int)i, li, c });
                     }
@@ -1396,6 +1405,7 @@ struct BCE {
     Mode mode = M_JUDGE;
     set<int> *ksum = nullptr;          // Killscan summary: bumped place ids...
     set<int> *shsum = nullptr;         // ...those a non-growing bump can hit...
+    set<int> *rbsum = nullptr;         // ...those a rebind of their root bumps...
     set<VarDef *> *vksum = nullptr;    // ...and re-bound/killed variables.
     bool anybump = false;
     // While HasKillEffects runs: the variables its node declares, whose
@@ -1411,14 +1421,15 @@ struct BCE {
         Flow flow;
         Mode mode;
         bool anybump;
-        set<int> *ksum, *shsum;
+        set<int> *ksum, *shsum, *rbsum;
         set<VarDef *> *vksum;
         KillsScope(BCE &b, set<int> *ks = nullptr, set<int> *sh = nullptr,
-                   set<VarDef *> *vks = nullptr)
+                   set<VarDef *> *vks = nullptr, set<int> *rb = nullptr)
             : b(b), flow(b.flow), mode(b.mode), anybump(b.anybump), ksum(b.ksum),
-              shsum(b.shsum), vksum(b.vksum) {
+              shsum(b.shsum), rbsum(b.rbsum), vksum(b.vksum) {
             b.ksum = ks;
             b.shsum = sh;
+            b.rbsum = rb;
             b.vksum = vks;
             b.anybump = false;
             b.mode = M_KILLS;
@@ -1429,6 +1440,7 @@ struct BCE {
             b.anybump = anybump;
             b.ksum = ksum;
             b.shsum = shsum;
+            b.rbsum = rbsum;
             b.vksum = vksum;
         }
     };
@@ -1450,12 +1462,15 @@ struct BCE {
         return false;
     }
 
-    void BumpPlace(int pid, int dir) {   // dir: +1 grow, -1 shrink, 0 unknown.
+    // A rebind is told apart from a shrink: the invariants survive it
+    // where a write restates them after it (LeLenHolds).
+    void BumpPlace(int pid, int dir, bool rebind = false) {   // dir: +1 grow, -1 shrink, 0 unknown.
         if (!freshvars || !freshvars->count(places[pid].rootv)) anybump = true;
         auto old = LenBase(pid);
         flow.pgen.Set(pid, ++nextgen);
         if (ksum) ksum->insert(pid);
-        if (shsum && dir <= 0) shsum->insert(pid);
+        if (rebind && rbsum) rbsum->insert(pid);
+        else if (shsum && dir <= 0) shsum->insert(pid);
         // The direction carries the facts about the old length over to the
         // new one. With none to carry it is left out: a growth of storage
         // that may be anything bumps every place in the program, and their
@@ -1603,7 +1618,15 @@ struct BCE {
     void RebindKill(VarDef *root) {
         NoteStorage(OwnerTarget(root));
         for (size_t i = 0; i < places.size(); i++)
-            if (places[i].rootv == root) BumpPlace((int)i, 0);
+            if (places[i].rootv == root) BumpPlace((int)i, 0, true);
+        // What a variable was placed below no longer bounds it here.
+        erase_if(flow.lestated, [&](int id) {
+            auto it = lelen.find(varof[id]);
+            if (it == lelen.end()) return false;
+            for (auto [pid, c] : it->second)
+                if (places[pid].rootv == root) return true;
+            return false;
+        });
     }
 
     // A reference stored into a field or element slot, in storage tu owns
@@ -2194,7 +2217,21 @@ struct BCE {
         if (Ge0(v)) AddFactB(Zero(), vb, 0);
         auto it = lelen.find(v);
         if (it != lelen.end())
-            for (auto [pid, c] : it->second) AddFactB(vb, LenBase(pid), c);
+            for (auto [pid, c] : it->second)
+                if (LeLenHolds(vb, v, pid)) AddFactB(vb, LenBase(pid), c);
+    }
+
+    // Whether the granted `v <= len(P) + c` holds of v's base vb. Every
+    // write of v placed its value so against P's length then, and P only
+    // grows after, so it holds of any value v had, unless the body re-binds
+    // P: then only of v's current value, where a write placed it since P's
+    // last rebind (RebindKill). That is how a probe index declared in an
+    // inlined body keeps its bound in each iteration of the caller's loop,
+    // which binds the body's slice parameter anew.
+    bool LeLenHolds(const Base &vb, VarDef *v, int pid) {
+        if (!rebound.count(pid)) return true;
+        auto &st = flow.lestated;
+        return vb == VarBase(v) && std::binary_search(st.begin(), st.end(), VarId(v));
     }
 
     // Whether base + off is the value computed at storage s, rather than one
@@ -2257,6 +2294,24 @@ struct BCE {
             AddFactB(nb, t.b, t.off);
             AddFactB(t.b, nb, SatSub(0, t.off));
         }
+        if (mode == M_JUDGE) StateLeLen(v);
+    }
+
+    // A value the facts place below each re-bindable length v is granted
+    // to stay below states those bounds anew, past any earlier rebind
+    // (LeLenHolds). Shifts and steps keep what was stated: the recording
+    // walk proved they keep v within every granted bound.
+    void StateLeLen(VarDef *v) {
+        auto it = lelen.find(v);
+        if (it == lelen.end()) return;
+        auto &st = flow.lestated;
+        auto id = VarId(v);
+        auto at = std::lower_bound(st.begin(), st.end(), id);
+        if (at != st.end() && *at == id) st.erase(at);
+        auto vb = VarBase(v);
+        for (auto [pid, c] : it->second)
+            if (rebound.count(pid) && !Query(vb, LenBase(pid), c)) return;
+        st.insert(std::lower_bound(st.begin(), st.end(), id), id);
     }
 
     // `v + rhs` for the compound assignment `v += rhs` (or `-=`), which a
@@ -3050,6 +3105,8 @@ struct BCE {
                 }
         r.vgen = Gens::Max(a.vgen, b.vgen);
         r.pgen = Gens::Max(a.pgen, b.pgen);
+        std::set_intersection(a.lestated.begin(), a.lestated.end(), b.lestated.begin(),
+                              b.lestated.end(), std::back_inserter(r.lestated));
         return r;
     }
 
@@ -3075,6 +3132,7 @@ struct BCE {
         cands.clear();
         ge0.clear();
         lelen.clear();
+        rebound.clear();
         mono.clear();
         ownvars.clear();
         classparams.clear();
@@ -3107,7 +3165,7 @@ struct BCE {
         set<int> bumped, shrunk;
         set<VarDef *> vbumped;
         {
-            KillsScope ks(*this, &bumped, &shrunk, &vbumped);
+            KillsScope ks(*this, &bumped, &shrunk, &vbumped, &rebound);
             flow = Flow {};
             Walk(sp->body);
         }
@@ -3124,7 +3182,8 @@ struct BCE {
             if (rit != relpids.end())
                 for (auto pid : rit->second) {
                     // `v <= len(P)` survives any growth of P, so only a
-                    // shrink (or a re-bound access path) rules P out.
+                    // shrink (or a re-bound access path) rules P out. A
+                    // rebind of P's root does not (LeLenHolds).
                     if (shrunk.count(pid) || vbumped.count(places[pid].rootv)) continue;
                     if (c.le.size() >= 8) break;
                     c.le.push_back({ pid, 0 });
