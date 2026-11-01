@@ -286,25 +286,21 @@ struct Workspace {
         return it == open.end() ? nullptr : &it->second.text;
     }
 
-    // One analysis of a root: the whole program as `check` sees it, from
-    // the editor's buffers, fetching nothing. Its diagnostics are
-    // published for every file it reached; one that got past resolution
-    // replaces the analysis queries read. A cancelled one leaves the root
-    // dirty for the next; one not cancellable runs to its end.
-    void Analyze(Root &r, bool cancellable = true) {
+    // Build indexes without publishing diagnostics or changing roots.
+    unique_ptr<Analysis> AnalyzeSources(const string &entry, const SourceProvider &sources,
+                                       bool cancellable = false, bool optimize = false) {
         auto an = make_unique<Analysis>();
         an->ast = make_unique<Ast>();
         auto &ast = *an->ast;
         ast.cancel = cancellable ? &rpc.cancel : nullptr;
         ast.exemplars = true;
-        ast.sink = [&](const Diagnostic &d) { an->diags.push_back(d); };
-        SourceProvider sources = [&](const string &path) { return TextOf(path); };
+        ast.sink = [an = an.get()](const Diagnostic &d) { an->diags.push_back(d); };
         try {
             RunOnCompilerStack([&]() -> int {
                 // The parser and the checker go on past the errors they
                 // recover from, which the sink collects; the passes after
                 // the check want a program without any.
-                ParseProgram(ast, r.path, stdlibdirs, DirOf(exe), sources);
+                ParseProgram(ast, entry, stdlibdirs, DirOf(exe), sources);
                 ResolveTypeNames(ast);
                 an->parsed = true;
                 // The source's indexes stand on the tree as written, which
@@ -316,7 +312,7 @@ struct Workspace {
                 an->IndexSource();
                 TypeCheckProgram(ast, false, true);
                 an->Build();
-                if (!ast.errors.empty()) return 0;
+                if (!optimize || !ast.errors.empty()) return 0;
                 // At the level a run or build defaults to, so that the
                 // checkfree verdicts here are theirs.
                 Optimizer opt(ast, 2);
@@ -334,8 +330,21 @@ struct Workspace {
                 an->diags.insert(an->diags.end(), e.diags.begin(), e.diags.end());
             }
         } catch (Cancelled &) {
-            return;
+            return nullptr;
         }
+        return an;
+    }
+
+    // One analysis of a root: the whole program as `check` sees it, from
+    // the editor's buffers, fetching nothing. Its diagnostics are
+    // published for every file it reached; one that got past resolution
+    // replaces the analysis queries read. A cancelled one leaves the root
+    // dirty for the next; one not cancellable runs to its end.
+    void Analyze(Root &r, bool cancellable = true) {
+        SourceProvider sources = [&](const string &path) { return TextOf(path); };
+        auto an = AnalyzeSources(r.path, sources, cancellable, true);
+        if (!an) return;
+        auto &ast = *an->ast;
         r.dirty = false;
         r.files.clear();
         for (auto &[path, text] : ast.sources) r.files.insert(PathKey(path));
