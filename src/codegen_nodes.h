@@ -218,11 +218,35 @@ inline string Binary::CgX(CodeGen &cg) {
         auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len);
         return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
     }
-    // Order of evaluation is left-to-right (§2): the left operand lands in
-    // a temp before the right one runs, where the right one can change what
-    // it read (GenOperandVal).
-    auto l = cg.GenOperandVal(left, cg.HasStmts(right));
-    auto r = cg.GenVal(right);
+    // A composite with self-relative fields is not copyable. Equality reads
+    // it in its original storage, as it does a bytes value; save its address
+    // before the right operand runs, not a copy of its relative offsets.
+    string l, r;
+    if ((op == T_EQ || op == T_NEQ) && cg.IsFix(lt) && cg.HasSelfRelRef(lt)) {
+        auto value = [&](Node *n) {
+            // A spliced reference return can have the context's decayed
+            // exprtype. Receive the reference, not a copy of its pointee.
+            auto ib = Is<InlineBlock>(n);
+            auto rt = ib && ib->spec && ib->spec->rets.size() == 1
+                          ? ib->spec->rets[0] : nullptr;
+            if (rt && IsPlainRef(rt)) {
+                auto p = cg.T();
+                cg.FixedLocal(rt, p);
+                cg.GenAny(n, Dst { DK_LVALUE, p, rt });
+                return cat("(*", p, ")");
+            }
+            return cg.GenVal(n);
+        };
+        auto x = value(left);
+        auto p = cg.T();
+        cg.L("const ", cg.CT(lt), " *", p, " = &(", x, ");");
+        l = cat("(*", p, ")");
+        r = value(right);
+    } else {
+        // Copyable fixed operands are read before later statements (§2).
+        l = cg.GenOperandVal(left, cg.HasStmts(right));
+        r = cg.GenVal(right);
+    }
     if (exprtype && (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY))
         return cg.GenElemwise(this, l, r);
     auto isint = lt->kind == TY_INT && lt->intstorage != IS_VARINT;
