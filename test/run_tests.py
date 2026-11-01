@@ -119,6 +119,15 @@ def debug_fixture(f, line):
     return f.stem == "codegen_exec" or "runtime-debug" in line
 
 
+def gcc_style_only(f):
+    """Whether a fixture's generated C builds only with a GCC-style compiler
+    (GCC or Clang): shared_atomics.goose, whose native u64 atomics are
+    __atomic_* builtins that codegen guards with a #error on any other
+    backend. Where the suite's compiler is MSVC such a fixture is a skip,
+    not a failure: there is nothing to build, by design."""
+    return f.stem == "shared_atomics"
+
+
 def fixture_levels(levels, line):
     """Selected optimizer regressions exercise O1 as well as the profile levels."""
     return tuple(sorted(set(levels) | {"1"})) if "all-levels" in line else levels
@@ -313,7 +322,7 @@ class Fixture:
     def __init__(self):
         self.front, self.bce, self.cgen, self.dump = Out(), Out(), Out(), Out()
         self.debug, self.jit, self.jitdebug = Out(), Out(), Out()
-        self.nativeskips, self.jitskips = [], []
+        self.nativeskips, self.jitskips, self.ccskips = [], [], []
         # What fixture() found and generated, for the rest of the fixture.
         self.line, self.dumped = "", False
         # By build_options key, the compiler run that wrote the C and where.
@@ -806,7 +815,8 @@ class Runner:
         executable (CC.compile_programs), where there are two or more and
         they build; {fixture: the argv that runs its program} for those."""
         fixtures = [f for f, future in generated.items()
-                    if self.builds_together(future.result(), key)]
+                    if self.builds_together(future.result(), key)
+                    and not (gcc_style_only(f) and self.cc.style == "msvc")]
         if len(fixtures) < 2:
             return {}
         exe = self.gendir / "programs" / f"{fixtures[0].stem}-{key}{tc.EXE_SUFFIX}"
@@ -825,6 +835,12 @@ class Runner:
         name = f.stem
         modules = res.modules
         levels = fixture_levels(self.levels, first_line(f)) if self.cc else ()
+        if levels and self.cc.style == "msvc" and gcc_style_only(f):
+            # Unbuildable here by design (see gcc_style_only); the parse and
+            # typecheck still covered the fixture, and the platforms whose
+            # compiler is GCC or Clang build and run it.
+            res.ccskips.append(f.name)
+            levels = ()
         jitlevels, gen, cfiles = res.jitlevels, res.gen, res.c
         if levels:
             with self.into(res.cgen):
@@ -2003,12 +2019,20 @@ def main():
             r.say(f"skip running {len(set(skipped))} audio, gfx, physics or ui test(s) (no "
                   f"layer for them, or no GPU device): " + ", ".join(sorted(set(skipped))))
 
+    def cc_skips():
+        skipped = [name for f in tests for name in fixtures[f].result().ccskips]
+        if skipped:
+            r.say(f"skip building {len(set(skipped))} test(s) whose generated C needs a "
+                  f"GCC-style compiler, which this suite's compiler is not: "
+                  + ", ".join(sorted(set(skipped))))
+
     r.section("generated C, built and run at " + " and ".join(f"-O{ol}" for ol in r.levels))
     if not cc:
         r.show_later(r.say, "skip codegen run tests (no C compiler found or --nocgen)")
     for f in tests if cc else ():
         r.show(lambda f=f: fixtures[f].result().cgen)
     r.show_later(native_skips)
+    r.show_later(cc_skips)
     if cc:
         for kind, title in (("dump", "dump-runtime programs"), ("debug", "GS_DEBUG programs")):
             r.section(title)
