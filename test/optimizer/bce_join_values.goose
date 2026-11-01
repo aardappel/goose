@@ -54,6 +54,35 @@ fn deferred(xs: f64[:], z: i64) -> f64 {
     return xs[k];                              // bce:keep
 }
 
+// Each inlined symbol() joins four times. What the joins relate stays to
+// what is current after them, and goes where eviction takes it first, so
+// the loop's guards on s.len and d.len survive every call.
+inline fn symbol(b: u8) -> u8 {
+    var d: u8 = 65;
+    if b >= 26 { d = 71; }
+    if b >= 52 { d = 252; }
+    if b == 62 { d = 237; }
+    if b == 63 { d = 240; }
+    return b + d;
+}
+
+fn encode(s0: u8[:], d0: u8[:]) -> i64 {
+    var s = s0;
+    var d = d0;
+    var t = 0;
+    while s.len >= 3 && d.len >= 4 {
+        t += symbol(s[0] >> 2);                // bce:elide
+        t += symbol(s[1] >> 2);                // bce:elide
+        t += symbol(s[2] >> 2);                // bce:elide
+        t += symbol(s[0] & 63);                // bce:elide
+        t += symbol(s[1] & 63);                // bce:elide
+        t += symbol(s[2] & 63) + d[3];         // bce:elide
+        s = s[3..];
+        d = d[4..];
+    }
+    return t;
+}
+
 fn main() {
     let xs: f64[>..] = [1.0, 2.0, 3.0, 4.0];
     var ks: i64[>..] = [9, 1, 0];
@@ -61,4 +90,7 @@ fn main() {
     print(clamped_let(xs, ks[0]), " ", clamped_var(xs, ks[0]), " ",
           either(xs, ks[1], cs[0]), " ", chain(xs, ks[0]), " ", past_end(xs, ks[1]));
     print(deferred(xs, ks[0]));
+    var bytes: u8[>..] = [1, 2, 3, 4, 5, 6];
+    var out: u8[>..] = [0, 0, 0, 0, 0, 0, 0, 0];
+    print(encode(bytes, out));
 }

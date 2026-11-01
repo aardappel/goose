@@ -3170,17 +3170,29 @@ struct BCE {
                 phis.push_back({ Base { BK_VAR, g.id, g.gen }, { true, ga, 0 }, { true, gb, 0 } });
         }
         if (phis.empty()) return r;
+        // The bases the joined flow still names: zero, lengths and variables
+        // at their joined generations, and the phis. A temporary or an older
+        // generation, left from an inlined call or a branch, would only give
+        // facts nothing reads, which crowd out the guards the join sits under.
+        auto current = [&](const Base &x) {
+            switch (x.kind) {
+                case BK_ZERO: return true;
+                case BK_LEN: return x.gen == r.pgen.Get(x.id);
+                case BK_VAR: return x.gen == r.vgen.Get(x.id);
+                default: return false;
+            }
+        };
         small_vector<Base, 32> to = { Zero() };
         auto add = [&](const Base &x) {
             for (auto &y : to) if (y == x) return;
             to.push_back(x);
         };
-        for (auto &f : a.facts) { add(f.l); add(f.r); }
-        for (auto &f : b.facts) { add(f.l); add(f.r); }
+        for (auto &f : a.facts) { if (current(f.l)) add(f.l); if (current(f.r)) add(f.r); }
+        for (auto &f : b.facts) { if (current(f.l)) add(f.l); if (current(f.r)) add(f.r); }
         for (auto &ph : phis) add(ph.p);
-        // The implied facts about each phi in one flow, from a scratch copy
-        // of it in which the phis are defined. Either flow may be the
-        // current one itself.
+        // What one flow implies about each phi against each base, both ways
+        // (INF where nothing), from a scratch copy of it in which the phis
+        // are defined. Either flow may be the current one itself.
         auto implied = [&](const Flow &f, bool first) {
             auto scratch = f;
             std::swap(flow, scratch);
@@ -3190,34 +3202,43 @@ struct BCE {
                 flow.facts.push_back({ ph.p, t.b, t.off });
                 flow.facts.push_back({ t.b, ph.p, SatSub(0, t.off) });
             }
-            vector<Fact> out;
+            vector<int64_t> out;
+            out.reserve(phis.size() * to.size() * 2);
             for (auto &ph : phis) {
                 auto up = DistsFrom(ph.p, to), dn = DistsFrom(ph.p, to, true);
                 for (size_t i = 0; i < to.size(); i++) {
-                    if (to[i] == ph.p) continue;
-                    // Bounds as far out as the axioms' only crowd the table.
-                    if (SmallOff(up[i])) out.push_back({ ph.p, to[i], up[i] });
-                    if (SmallOff(dn[i])) out.push_back({ to[i], ph.p, dn[i] });
+                    out.push_back(up[i]);
+                    out.push_back(dn[i]);
                 }
             }
             std::swap(flow, scratch);
             return out;
         };
         auto fa = implied(a, true), fb = implied(b, false);
-        for (auto &f : fa)
-            for (auto &g : fb) {
-                if (!(f.l == g.l && f.r == g.r)) continue;
-                auto c = std::max(f.c, g.c);
-                auto known = false;
-                for (auto &h : r.facts)
-                    if (h.l == f.l && h.r == f.r) {
-                        h.c = std::min(h.c, c);
-                        known = true;
-                        break;
-                    }
-                if (!known && r.facts.size() < MAXFACTS) r.facts.push_back({ f.l, f.r, c });
-                break;
-            }
+        // A bound both flows imply, at the weaker constant. Bounds as far
+        // out as the axioms' only crowd the table, and one the joined facts
+        // already state is only tightened. The new ones go in front, where
+        // AddFactB evicts first, so the facts both flows state outlast them.
+        vector<Fact> extra;
+        for (size_t k = 0, j = 0; k < phis.size(); k++)
+            for (size_t i = 0; i < to.size(); i++, j += 2)
+                for (size_t dir = 0; dir < 2; dir++) {
+                    if (to[i] == phis[k].p) continue;
+                    if (!SmallOff(fa[j + dir]) || !SmallOff(fb[j + dir])) continue;
+                    auto c = std::max(fa[j + dir], fb[j + dir]);
+                    auto l = dir ? to[i] : phis[k].p, rb = dir ? phis[k].p : to[i];
+                    auto known = false;
+                    for (auto &h : r.facts)
+                        if (h.l == l && h.r == rb) {
+                            h.c = std::min(h.c, c);
+                            known = true;
+                            break;
+                        }
+                    if (!known) extra.push_back({ l, rb, c });
+                }
+        auto room = MAXFACTS > r.facts.size() ? MAXFACTS - r.facts.size() : 0;
+        if (extra.size() > room) extra.resize(room);
+        r.facts.insert(r.facts.begin(), extra.begin(), extra.end());
         return r;
     }
 

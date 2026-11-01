@@ -4712,8 +4712,12 @@ by the later generation, which the other branch never mentions, and an `if`
 value of integer type by a fresh base neither does (`Phi`; `TermOf` reads it
 back while no generation has advanced). For those the meet compares what
 each branch *implies*: the shortest paths from and to every base either
-branch names, in a copy of the branch where the phi equals the branch's own
-term. So `let k = if k0 < n { k0 } else { n - 1 }` keeps `k >= 0` from
+branch names that is still current after the join (zero, lengths and
+variables at the joined generations, the phis), in a copy of the branch
+where the phi equals the branch's own term. The bounds both imply go in
+front of the joined facts, where `AddFactB` evicts first, so the facts both
+branches state, the guards a join sits under among them, outlast them. So
+`let k = if k0 < n { k0 } else { n - 1 }` keeps `k >= 0` from
 `n > 0`, and `if k > last { k = last; }` keeps `k <= last`. A variable a
 branch states nothing about is no phi: that branch knows only its axioms,
 which hold of the joined value too. The cost is two shortest-path runs per
