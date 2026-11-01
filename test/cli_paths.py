@@ -10,7 +10,6 @@ says it cannot find the runtime's sources."""
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -26,9 +25,8 @@ def check_cli_paths(exe, cc, base):
         env = {k: v for k, v in os.environ.items() if k not in ("GOOSE_STDLIB", "GOOSE_RUNTIME")}
 
         def run(argv, cwd=root):
-            r = subprocess.run([str(a) for a in argv], cwd=cwd, env=env, capture_output=True,
-                               text=True, errors="replace", timeout=300)
-            return r.returncode, r.stdout + r.stderr
+            code, out, err = tc.run_capture(argv, cwd=cwd, env=env, timeout=300)
+            return code, out + err
 
         def require(good, what, text):
             if not good:

@@ -641,7 +641,7 @@ def run_measured(exe, args=(), *, stdin_path=None):
                      err=decode(errf.read_bytes()).strip(), code=code)
 
 
-def run_capture(argv, cwd=None, stdin_path=None):
+def run_capture(argv, cwd=None, stdin_path=None, *, env=None, timeout=None):
     """Run a tool, returning (exit code, stdout, stderr) as LF-normalised
     text. Used where the output is a result rather than something to time."""
     argv = [str(a) for a in argv]
@@ -653,7 +653,8 @@ def run_capture(argv, cwd=None, stdin_path=None):
         # that child execs, so the run is retried for a moment.
         for attempt in range(100):
             try:
-                r = subprocess.run(argv, cwd=cwd, stdin=stdin_f, capture_output=True)
+                r = subprocess.run(argv, cwd=cwd, stdin=stdin_f, capture_output=True,
+                                   env=env, timeout=timeout)
                 break
             except OSError as e:
                 if e.errno != errno.ETXTBSY or attempt == 99:
