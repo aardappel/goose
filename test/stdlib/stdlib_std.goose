@@ -335,6 +335,29 @@ fn strings() {
     print(over.len, " ", over[0].len, " ", over[1]);                           // 2 0 a
     let whole = split("a b", "");
     print(whole.len, " ", whole[0]);                                           // 1 a b
+    let key, value, kv = split_once("k=v=w", '=');
+    print(key, "|", value, "|", kv);                                           // k|v=w|true
+    let ka, va, okc = split_once("a::b::c", "::");
+    print(ka, "|", va, "|", okc);                                              // a|b::c|true
+    let nf, nfa, nfok = split_once("abc", "x");
+    print(nf, "|", nfa.len, "|", nfok);                                        // abc|0|false
+    let nb, nba, nbok = split_once("abc", 'x');
+    print(nb, "|", nba.len, "|", nbok);                                        // abc|0|false
+    let lead, rest, lok = split_once("=x", '=');
+    print(lead.len, "|", rest, "|", lok);                                      // 0|x|true
+    let body, tail, tok = split_once("ab--", "--");
+    print(body, "|", tail.len, "|", tok);                                      // ab|0|true
+    let es, esa, esok = split_once("", ',');
+    let es2, esa2, esok2 = split_once("", "--");
+    print(es.len, esa.len, esok, " ", es2.len, esa2.len, esok2);               // 00false 00false
+    let eb, ea, eok = split_once("ab", "");
+    print(eb, "|", ea.len, "|", eok);                                          // ab|0|false
+    let lng, lnga, lngok = split_once("ab", "abc");
+    print(lng, "|", lnga.len, "|", lngok);                                     // ab|0|false
+    var buf: u8[>..] = [];
+    format(buf, "name: goose");
+    let bk, bv, bok = split_once(buf, ": ");
+    print(bk, "|", bv, "|", bok);                                              // name|goose|true
     var line: u8[>..] = [];
     format(line, "  take \t the\r\nsword  ");
     let cmd = words(line);

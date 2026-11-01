@@ -1422,6 +1422,20 @@ fn each_split<F>(s: u8[:], sep: u8[:]) {
     F(s[start..]);
 }
 
+// The parts before and after the first sep, as slices into s, and true; or
+// s whole, an empty slice and false when sep is not in s. An empty sep is
+// never found, as split has it: s, "", false.
+fn split_once(s: u8[:], sep: u8) -> const u8[:], const u8[:], bool {
+    let i = position(s, sep);
+    if i < 0 { return s, s[s.len..], false; }
+    return s[..i], s[i + 1..], true;
+}
+fn split_once(s: u8[:], sep: u8[:]) -> const u8[:], const u8[:], bool {
+    let i = if sep.len == 0 { -1 } else { find(s, sep) };
+    if i < 0 { return s, s[s.len..], false; }
+    return s[..i], s[i + sep.len..], true;
+}
+
 // The words of s, as slices into it: the runs of bytes between ASCII
 // whitespace (is_space, as trim), so no word is empty.
 fn words(s: u8[:]) -> const u8[:][>..] {
