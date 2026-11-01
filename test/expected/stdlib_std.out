@@ -71,6 +71,8 @@ HELLO WORLD
 -123 true
 0 false
 255 true
+18446744073709551615 true
+0 false
 -150.0 true
 false
 true true
