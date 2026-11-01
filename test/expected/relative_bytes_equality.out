@@ -1,0 +1,11 @@
+targets true false
+records true false false true
+controls true true false false false
+ranges true
+adt targets true
+adt true false false
+variant true
+varint adt targets true
+varint adt true false
+mixed targets true false
+mixed true false
