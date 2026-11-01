@@ -3836,6 +3836,20 @@ static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
 )GSRT"
+R"GSRT(/* binary's float reads (stdlib/binary.goose): a value from its bits, which
+   memcpy keeps exactly, NaN payloads included. */
+static float gs_f32_from_bits(uint32_t bits) {
+    float x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+static double gs_f64_from_bits(uint64_t bits) {
+    double x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+
+)GSRT"
 R"GSRT(/* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
    where the code is built for FMA, as two roundings elsewhere
    (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the

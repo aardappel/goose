@@ -94,6 +94,76 @@ fn main() {
     let goodname, goodnameok = binary::read_name(names, 4);
     assert(goodnameok && goodname == "A" && names.pos == 4);
 
+    // Every width, both byte orders. wide holds 0x0102030405060708, then
+    // 1.5f32 and 1.5f64 little-endian, then the same two big-endian.
+    let wide: u8[32] = [1, 2, 3, 4, 5, 6, 7, 8,
+                        0, 0, 192, 63, 0, 0, 0, 0, 0, 0, 248, 63,
+                        63, 192, 0, 0, 63, 248, 0, 0, 0, 0, 0, 0];
+    let b8, b8ok = binary::read_u8(data, 3);
+    let s8, s8ok = binary::read_i8(data, 3);
+    let p8, p8ok = binary::read_i8(wide, 0);
+    assert(b8ok && b8 == 128 && s8ok && s8 == -128 && p8ok && p8 == 1);
+    let u16be, u16beok = binary::read_u16be(wide, 0);
+    let u32be, u32beok = binary::read_u32be(wide, 0);
+    let u64be, u64beok = binary::read_u64be(wide, 0);
+    let u64le, u64leok = binary::read_u64le(wide, 0);
+    assert(u16beok && u16be == 0x0102 && u32beok && u32be == 0x01020304);
+    assert(u64beok && u64be == 0x0102030405060708 && u64leok && u64le == 0x0807060504030201);
+    let i16be, i16beok = binary::read_i16be(data, 2);
+    let i32le, i32leok = binary::read_i32le(data, 4);
+    let i32be, i32beok = binary::read_i32be(data, 0);
+    let i64le, i64leok = binary::read_i64le(data, 0);
+    let i64be, i64beok = binary::read_i64be(data, 0);
+    assert(i16beok && i16be == 128 && i32leok && i32le == -1 && i32beok && i32be == -65408);
+    assert(i64leok && i64le == -2147418113 && i64beok && i64be == -280920925929473);
+    let f32le, f32leok = binary::read_f32le(wide, 8);
+    let f64le, f64leok = binary::read_f64le(wide, 12);
+    let f32be, f32beok = binary::read_f32be(wide, 20);
+    let f64be, f64beok = binary::read_f64be(wide, 24);
+    assert(f32leok && f32le == 1.5 && f64leok && f64le == 1.5);
+    assert(f32beok && f32be == 1.5 && f64beok && f64be == 1.5);
+    let nan32, nan32ok = binary::read_f32le(data, 4);
+    let nan64, nan64ok = binary::read_f64be(data, 0);
+    assert(nan32ok && nan32 != nan32 && nan64ok && nan64 != nan64);
+    let nan_bits: f64[1] = [nan64]; // The payload survives the read.
+    assert(bytes_of(nan_bits)[7] == 255 && bytes_of(nan_bits)[0] == 255);
+    let short64, short64ok = binary::read_u64le(data, 5);
+    let shortf, shortfok = binary::read_f64be(data, 5);
+    let short8, short8ok = binary::read_u8(data, data.len);
+    let neg32, neg32ok = binary::read_i32be(data, -1);
+    assert(!short64ok && short64 == 0 && !shortfok && shortf == 0.0);
+    assert(!short8ok && short8 == 0 && !neg32ok && neg32 == 0);
+    let last8, last8ok = binary::read_i8(data, 11);
+    assert(last8ok && last8 == 89);
+
+    var w = binary::reader(wide);
+    let wu8, wu8ok = binary::read_u8(w);
+    let wi8, wi8ok = binary::read_i8(w);
+    let wu16, wu16ok = binary::read_u16be(w);
+    let wi32, wi32ok = binary::read_i32be(w);
+    let wf32, wf32ok = binary::read_f32le(w);
+    let wf64, wf64ok = binary::read_f64le(w);
+    assert(wu8ok && wu8 == 1 && wi8ok && wi8 == 2 && wu16ok && wu16 == 0x0304);
+    assert(wi32ok && wi32 == 0x05060708 && wf32ok && wf32 == 1.5 && wf64ok && wf64 == 1.5);
+    let wbf32, wbf32ok = binary::read_f32be(w);
+    let wbf64, wbf64ok = binary::read_f64be(w);
+    assert(wbf32ok && wbf32 == 1.5 && wbf64ok && wbf64 == 1.5 && w.pos == 32);
+    let wtoo_far, wtoo_farok = binary::read_u8(w);
+    assert(!wtoo_farok && wtoo_far == 0 && w.pos == 32);
+    var e = binary::reader(wide);
+    let eu32, eu32ok = binary::read_u32le(e);
+    let ei16, ei16ok = binary::read_i16le(e);
+    let eu16, eu16ok = binary::read_u16le(e);
+    let eu64, eu64ok = binary::read_u64le(e);
+    let ei64, ei64ok = binary::read_i64be(e);
+    let eu32b, eu32bok = binary::read_u32be(e);
+    let ei16b, ei16bok = binary::read_i16be(e);
+    let ei64l, ei64lok = binary::read_i64le(e);
+    assert(eu32ok && eu32 == 0x04030201 && ei16ok && ei16 == 0x0605 && eu16ok && eu16 == 0x0807);
+    assert(eu64ok && eu64 == 0x3FC00000 && ei64ok && ei64 == 0xF83F3FC00000);
+    assert(eu32bok && eu32b == 0x3FF80000 && ei16bok && ei16b == 0);
+    assert(!ei64lok && ei64l == 0 && e.pos == 30);
+
     // Returned data borrows the original storage, including through a child.
     var source: u8[4] = [65, 66, 67, 68];
     var borrowed = binary::reader(source);
@@ -101,5 +171,5 @@ fn main() {
     let view, viewok = binary::read_name(borrowed_child, 4);
     source[0] = 90;
     assert(borrowedok && viewok && view == "ZBCD");
-    print("binary: checked offsets, names, cursors and subreaders passed");
+    print("binary: checked offsets, widths, byte orders, names, cursors and subreaders passed");
 }
