@@ -1947,7 +1947,7 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
 }
 
 // An ordering comparison of an integer with a constant that the integer's
-// type alone decides, `u < 0` of an unsigned `u` or `b > 300` of a u8, is a
+// type alone decides, `u < 0` of an unsigned `u` or `b <= 255` of a u8, is a
 // warning: it is always true or always false, which is rarely what was
 // meant. Generic code is not judged, since another specialization's type
 // may make the comparison matter (as for redundant casts, §6.3).

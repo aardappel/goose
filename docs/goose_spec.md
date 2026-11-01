@@ -2070,6 +2070,16 @@ on a `u64` above `i64.max` silently compares as negative, and the checked
 compare. When the rule permits it, use the direct comparison to preserve the values
 without conversion overhead.
 
+**Decided comparisons.** An ordering comparison of an integer with an
+integer constant (a literal or a named constant, §3.1) that the integer's
+type alone decides is a warning naming the type's range. Of a `u32` or an
+index type `e`, `e < 0` and `0 > e` are always false and `e >= 0` always
+true; so is `b <= 255` of a `u8`, and `x < -128` of an `i8` is always
+false. A constant the type cannot hold is an error instead (`b > 300` of a
+`u8`), and a `u64` is judged at 0 only. Comparisons in a generic function's body, in a
+function value's body, and in what is declared in either are exempt, as
+redundant casts are (§6.3): another instantiation may need them.
+
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
 integers or all floats, none of an index or bound type (§3.11); the
