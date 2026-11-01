@@ -1808,6 +1808,9 @@ struct VarDef {
     // that class's storage holds (RootAlt::classread).
     Roots contents;
     bool contentbyteview = false; // A stored reference may view raw typed storage.
+    // A store other than a parameter's binding has been made into it, in
+    // any round of a cycle's check (TypeCheck::HeldParam).
+    bool storedinto = false;
     // A literal parameter (§7.7): reads as a constant of unknown value.
     // A function-value parameter bound from one stands for that one.
     bool unsized = false;
@@ -2187,6 +2190,11 @@ struct RetRoot {
     bool byteview = false;
     bool freshview = false;    // Prov::freshview.
     bool set = false;          // A non-null return has recorded its root.
+    // The by-value holder parameter every return gives as it was passed,
+    // nothing stored into it since its binding: the result holds what the
+    // argument held (TypeCheck::CallResult). -1 where any return gives
+    // something else.
+    int heldparam = -1;
 };
 
 // A literal parameter's contact with a type (§7.7): what the literal at
@@ -2290,6 +2298,14 @@ struct FnRecord {
     vector<ShrinkOrder> shrinkorders;
     size_t eventstart = 0;         // storeevents.size() when the body's check began.
     size_t eventend = 0;           // And when it ended.
+    // Where those events pointed as the check left them, at the body's
+    // classes: each call maps them afresh, where a call before it left them
+    // mapped for its own arguments (TypeCheck::ApplyCalleeStores).
+    struct BodyEvent {
+        VarDef *container, *root, *src;
+        bool exact, classread;
+    };
+    vector<BodyEvent> bodyevents;
 };
 
 // One monomorphic specialization of a function: the unit of typechecking and

@@ -1584,6 +1584,7 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
 // the container is storage of the caller's, which a parameter's class root
 // stands for -- the call sites map those back (§3.5).
 inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
+    e.container->storedinto = true;
     storeevents.push_back(e);
     madestores.push_back(e);
     NoteSlotStore(e);
@@ -1821,6 +1822,16 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         }
         return exact ? r : Bounds(r);
     };
+    // A container the caller can name: its own variables and its lexical
+    // parents', a class root, a global. Anything else is the callee's own.
+    auto callerside = [&](VarDef *x) {
+        if (!x || x->isglobal || IsClassRoot(x)) return true;
+        auto named = false;
+        EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
+            named = named || vars[i] == x;
+        });
+        return named;
+    };
     // A class as the container a stored value was copied or read out of, as
     // seen from here: the one container the argument, or the slice a view's
     // slot held, names exactly, if it does (StoreSource). Anywhere else the
@@ -1828,10 +1839,11 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // several places, or only within one, or at a slice variable's slot,
     // whose binding says what it holds. What came out of a class's storage
     // alone (StoreEvent::classread) still did where that container is one
-    // of the caller's classes.
+    // of the caller's classes. A container of the callee's own is none:
+    // its stores are mapped for whichever call maps them last.
     auto source = [&](VarDef *src) {
         Roots r;
-        if (classat(src, r) < 0) return src;
+        if (classat(src, r) < 0) return callerside(src) ? src : nullptr;
         return r.Exact() ? StoreSource(r.alts[0].root) : nullptr;
     };
     NoteClassUses(spec, argvals);
@@ -1876,7 +1888,17 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     }
     auto end = min(rec->eventend, storeevents.size());
     for (auto i = rec->eventstart; i < end; i++) {
+        // Mapped from the body's own record, which an earlier call to it
+        // left mapped for that call's arguments.
         auto e = storeevents[i];
+        if (auto k = i - rec->eventstart; k < rec->bodyevents.size()) {
+            auto &b = rec->bodyevents[k];
+            e.container = b.container;
+            e.root = b.root;
+            e.src = b.src;
+            e.exact = b.exact;
+            e.classread = b.classread;
+        }
         // A call back into a body still being checked leaves the events of
         // that body's own variables as they are: a cycle's rounds keep the
         // variables, so they are those of the activation being checked, which
@@ -1962,7 +1984,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // A slice writes the caller's elements just as an array reference does.
     // Only a read-back from the same container preserves its existing
     // contents provenance (for example a permutation).
-    auto applyevent = [&](const StoreEvent &e, const Roots &mappedroots, bool first) {
+    auto applyevent = [&](const StoreEvent &e, const Roots &mappedroots, bool first,
+                          const StoreEvent *key) {
         // A place the mapping names exactly whose storage cannot hold the
         // stored reference's pointee is none it points into: a view the
         // argument's storage holds that leads elsewhere (a `u8[>..]&` beside
@@ -1979,8 +2002,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         auto classread = e.classread && IsClassRoot(src);
         auto once = [&](VarDef *target, VarDef *root) {
             for (auto &m : made)
-                if (m.e == &e && m.target == target && m.root == root) return false;
-            made.push_back({ &e, target, root });
+                if (m.e == key && m.target == target && m.root == root) return false;
+            made.push_back({ key, target, root });
             return true;
         };
         if (p < 0) {
@@ -2023,6 +2046,106 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                                            widen ? ", which may name it" : "") });
         }
     };
+    // What a holder of the callee's own holds at this call, where a store
+    // copied one (source drops those): a by-value holder parameter nothing
+    // else was stored into holds the argument's contents, each where it came
+    // from; any other holder what the body stored there, as the body's check
+    // left it (FnRecord::bodyevents), followed through the holders it was
+    // copied from. A copy back into a holder still being followed adds
+    // nothing to it, so what a holder on such a cycle holds is kept only
+    // where the walk began. Null where it cannot be followed: the store
+    // falls back on its bound.
+    struct Leaf {
+        RootAlt a;
+        VarDef *src;
+        bool classread;
+    };
+    map<VarDef *, vector<size_t>> bodystores;
+    map<VarDef *, vector<Leaf>> leaves;
+    deque<vector<Leaf>> partial;
+    set<VarDef *> failed, onpath;
+    static const vector<Leaf> none;
+    auto cycled = false;
+    std::function<const vector<Leaf> *(VarDef *)> holds = [&](VarDef *x) -> const vector<Leaf> * {
+        if (onpath.count(x)) {
+            cycled = true;
+            return &none;
+        }
+        if (!x || !x->type || IsRefOrSlice(x->type) || callerside(x) || failed.count(x))
+            return nullptr;
+        if (auto it = leaves.find(x); it != leaves.end()) return &it->second;
+        vector<Leaf> out;
+        set<tuple<VarDef *, VarDef *, VarDef *, int>> seen;
+        auto add = [&](const Leaf &l) {
+            if (seen.insert({ l.a.root, l.a.from, l.src,
+                              (int)l.a.exact | l.a.slotread << 1 | l.a.classread << 2 |
+                                  l.classread << 3 })
+                    .second)
+                out.push_back(l);
+        };
+        auto ok = true;
+        auto p = find(spec->params.begin(), spec->params.end(), x) - spec->params.begin();
+        if (p < (ptrdiff_t)min(spec->params.size(), argvals.size())) {
+            auto &v = argvals[(size_t)p];
+            ok = !x->storedinto && !ContentsOf(v).unknown;
+            auto copied = StoreSource(v.holderfrom);
+            for (auto &h : ContentsOf(v).alts) {
+                auto from = h.classread ? h.root : h.from;
+                auto src = h.exact ? nullptr : from ? StoreSource(from) : copied;
+                add({ h, src, IsClassRoot(src) && (h.classread || src == copied) });
+            }
+        } else {
+            if (bodystores.empty())
+                for (size_t k = 0; k < rec->bodyevents.size(); k++)
+                    bodystores[rec->bodyevents[k].container].push_back(k);
+            onpath.insert(x);
+            auto outer = cycled;
+            cycled = false;
+            for (auto k : bodystores[x]) {
+                auto &b = rec->bodyevents[k];
+                if (b.src && !callerside(b.src)) {
+                    auto l = holds(b.src);
+                    if (!l) {
+                        ok = false;
+                        break;
+                    }
+                    for (auto &f : *l) add(f);
+                    continue;
+                }
+                auto src = source(b.src);
+                for (auto &m : mapped(b.root, b.exact).alts) {
+                    ok = ok && callerside(m.root);
+                    add({ m, src, b.classread && IsClassRoot(src) });
+                }
+            }
+            onpath.erase(x);
+            auto incomplete = cycled && !onpath.empty();
+            cycled = outer || incomplete;
+            if (ok && incomplete) return &partial.emplace_back(std::move(out));
+        }
+        if (!ok) {
+            failed.insert(x);
+            return nullptr;
+        }
+        return &(leaves[x] = std::move(out));
+    };
+    auto applystore = [&](const StoreEvent &e, const Roots &mappedroots, bool first) {
+        auto ls = spec->inprogress ? nullptr : holds(e.src);
+        if (!ls) {
+            applyevent(e, mappedroots, first, &e);
+            return;
+        }
+        for (auto &l : *ls) {
+            auto c = e;
+            c.root = l.a.root;
+            c.exact = l.a.exact;
+            c.src = l.src;
+            c.classread = l.classread;
+            Roots one;
+            one.alts.push_back(l.a);
+            applyevent(c, one, first, &e);
+        }
+    };
     // A store of a view read out of the storage of one of the callee's
     // classes holds what that storage holds, which the call's other stores
     // may add to where they land in the same storage: those are applied
@@ -2037,7 +2160,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         }
         auto from = storeevents.size();
         replay.origin = (int)(&e - rec->classevents.data());
-        applyevent(e, mapped(e.root, e.exact), true);
+        applystore(e, mapped(e.root, e.exact), true);
         replay.origin = -1;
         tag(from, (int)(&e - rec->classevents.data()));
     }
@@ -2050,7 +2173,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             again = true;
             auto from = storeevents.size();
             replay.origin = (int)(e - rec->classevents.data());
-            applyevent(*e, r, first);
+            applystore(*e, r, first);
             replay.origin = -1;
             tag(from, (int)(e - rec->classevents.data()));
         }

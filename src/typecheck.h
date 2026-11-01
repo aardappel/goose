@@ -2402,6 +2402,7 @@ struct TypeCheck {
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
     void NamedResultCopyWarning(FnSpec *spec);
     Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
+    int HeldParam(FnSpec *spec, const Val &v);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void ReturnThroughCalls(Val &v, int tf, Return *r);
     void CheckReturn(Return *r);
