@@ -47,6 +47,20 @@ fn wide(tab: i64[:], s: u16[:]) -> i64 {
     return t;
 }
 
+// A narrowing cast keeps its operand's i64 term, so the step's lower side
+// must be checked against the type: for i == -1, (i + 1) as u8 is 0 and
+// one less wraps to 255, past the table.
+fn byte_back(xs: f64[:], i: i64) -> f64 {
+    guard i >= -1 && i <= 253 else { return -1.0; }
+    guard xs.len >= 255 else { return -2.0; }
+    return xs[((i + 1) as u8) - 1];            // bce:keep
+}
+fn byte_back_more(xs: f64[:], i: i64) -> f64 {
+    guard i >= -5 && i <= 250 else { return -1.0; }
+    guard xs.len >= 255 else { return -2.0; }
+    return xs[((i + 5) as u8) - 3];            // bce:keep
+}
+
 // The ids come out of storage, so the callees know only their types.
 fn main() {
     for v in 4 { nodes.push(v as i32 * 10); }
@@ -63,5 +77,9 @@ fn main() {
     bytes.push(255);
     var shorts: u16[>..] = [7, 200];
     print(shifted(counts, bytes), " ", wide(counts, shorts));
+    var table: f64[>..] = [];
+    for k in 255 { table.push(k); }
+    var is: i64[>..] = [3];
+    print(byte_back(table, is[0]), " ", byte_back_more(table, is[0]));
     print(prev_edge(e));
 }

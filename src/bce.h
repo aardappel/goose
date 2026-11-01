@@ -993,7 +993,10 @@ struct BCE {
     // fits the type. A wrap moves the result by 2^N against the sign of d (x
     // lies in the type and |d| < 2^N, so it wraps at most once), which keeps
     // one side of the relation either way: the u32 `e + 1` of an index of a
-    // is at most e + 1, so `upto a` holds it, wrapped or not (§3.11).
+    // is at most e + 1, so `upto a` holds it, wrapped or not (§3.11). The
+    // other side needs x + d within the type on the side d moves towards,
+    // stated of x's base: that may be an i64 the term only shifts, as a
+    // narrowing cast's is (CastTerm), so x's own type says nothing of it.
     Term NarrowStepTerm(TypeExpr *t, const Term &x, int64_t d) {
         if (mode == M_KILLS || !CmpAdmissible(x)) return {};
         auto [lo, hi] = IntRange(t->intstorage);
@@ -1002,8 +1005,8 @@ struct BCE {
         if (!SmallOff(off)) return {};
         auto s = IvalTerm(t, lo, hi);
         if (!s.ok) return {};
-        auto fits = x.b.kind == BK_ZERO ? off >= lo && off <= hi
-                                        : NoWrap(Term { true, x.b, off }, t->intstorage);
+        auto fits = d >= 0 ? Query(x.b, Zero(), SatSub(hi, off))
+                           : Query(Zero(), x.b, SatSub(off, lo));
         if (d >= 0 || fits) AddFactB(s.b, x.b, off);              // s <= x + d.
         if (d <= 0 || fits) AddFactB(x.b, s.b, SatSub(0, off));   // x + d <= s.
         return s;
