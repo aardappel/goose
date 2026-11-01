@@ -1427,18 +1427,17 @@ A worker that increments a global increments *its own copy*, and `main`'s
 copy is unchanged. Goose managed data structures never share memory between
 threads. This model needs no locks, atomics or memory ordering in Goose code.
 
-The standard library does not share memory between threads either. Where it accesses stateful OS functionality, that access is
-thread-safe.
+The standard library is thread-safe where it accesses stateful OS
+functionality.
 
-Non-standard packages can access C code through FFI, outside these guarantees.
-For example, copying an integer handle does not copy the native resource it
-names, so two workers can still reach the same resource. The compiler cannot
-inspect the C code or determine what a handle refers to.
+For non-standard FFI and C code, all bets are off: Goose's guarantees do not
+extend to that code. It can access shared native state even though Goose's
+managed data never shares memory. The compiler cannot inspect the C code or
+check how it uses that state.
 
-As a community convention, C code accessed by a non-standard package should
-be at least thread-safe unless otherwise specified. Packages should clearly
-mark any code that is not thread-safe. Follow the package's synchronization
-and lifetime rules for native resources shared between workers.
+The community convention is to treat C code as thread-safe unless stated
+otherwise. Packages should clearly document any code that is not thread-safe,
+and callers must follow the package's synchronization and lifetime rules.
 
 (Threads need an external C compiler: the in-process TinyCC backend cannot
 place thread-local storage, so compile threaded programs with `-o`.)
