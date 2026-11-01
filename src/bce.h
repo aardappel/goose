@@ -3982,6 +3982,8 @@ inline bool IfExpr::BceWalk(BCE &b) {
     b.flow = std::move(base);
     if (killfree) b.CondFacts(cond, false);
     auto fellelse = b.Walk(elseb);
+    // An earlier walk's value base, which this one replaces or drops.
+    b.derived.erase(this);
     if (fellthen && !fellelse) { b.flow = std::move(thenf); return true; }
     if (!fellthen && fellelse) return true;   // b.flow is already the else path.
     if (!fellthen && !fellelse) return false;
@@ -4001,7 +4003,6 @@ inline bool IfExpr::BceWalk(BCE &b) {
         }
     }
     b.flow = b.Meet(thenf, b.flow, val);
-    b.derived.erase(this);
     if (!val.empty()) b.derived[this] = { BCE::Term { true, val[0].p, 0 }, b.nextgen };
     return true;
 }
