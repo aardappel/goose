@@ -321,7 +321,7 @@ against it (`goose version` prints the runtime's hash, which must match).
 |---|---|
 | `-o out.c` | Write the program's C, and do not run it. |
 | `--standalone` | Write C that holds the whole runtime, and builds on its own: `cc -O2 tour.c -o tour -lm -pthread`. |
-| `--header out.h` | Also write a header for a C host, declaring the program's `export fn`s, of which there must be one at least. The C then has no `main`: the host calls `goose_init(argc, argv)` once, which runs the program's `main`, and then calls the exported functions. |
+| `--header out.h` | Also write a header for a C host, declaring the program's `export fn`s, of which there must be one at least. The C then has no `main`: the host calls `goose_init(argc, argv)` once, which runs the program's `main`, and then calls the exported functions; `goose_exit()` ends the program, after which `goose_init` may start it again. |
 | `--include header.h` | Have the generated C include this header, for small shims written against the generated types (spec §7.10). May be repeated. |
 | `--jit` | Also run the program in this process. |
 | `--emit-runtime out.c` | Write the runtime's C. |

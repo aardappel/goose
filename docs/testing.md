@@ -112,7 +112,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
 | `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks, and `runtime_trim_memory.c`, the native test of releasing unused data-stack memory. |
 | `storage/` | Relative references, pools and serialization. |
-| `threads/` | Workers, queues, shared globals, contained workers' aborts and `runtime_threads_lifecycle.c`, the native runtime lifecycle test. Imported helpers live in `threads/spawn/`. |
+| `threads/` | Workers, queues, shared globals, contained workers' aborts and `runtime_threads_lifecycle.c`, the native runtime lifecycle test; `host_exit.c` is the C host of `host_exit.goose`, a library build the host starts, ends with `goose_exit` and starts again (the `host_exit` task). Imported helpers live in `threads/spawn/`. |
 | `stdlib/` | Standard-library modules. |
 | `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated self-checks of the stage-2 compiler, and compare JIT/native self-compilation. |
 | `audio/` | The `audio` module: the offline PCM mixer advanced by exact frame counts; the rejection of bad rates, PCM, parameters and output; voice and sound capacity and stale handles; and the threading rejection. |
@@ -190,7 +190,13 @@ form too.
 The direct `test/threads/runtime_threads_lifecycle.c` regression checks allocations,
 mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits, children outliving their parents and contained
-workers that abort. The direct `test/runtime/runtime_trim_memory.c` test
+workers that abort; and that `gs_rt_stop` ends the main program with every
+allocation and mapping released and the fault handling restored, after
+which a program starts and ends again. The `host_exit` task builds
+`test/threads/host_exit.goose` for its C host, `host_exit.c`, which starts,
+uses and ends the program three times over, each round over fresh globals
+and queues, and once ends it while a worker still runs, which is a runtime
+error. The direct `test/runtime/runtime_trim_memory.c` test
 checks that releasing unused data-stack memory decommits the pages on
 Windows and drops them from the resident set on Linux and macOS, while
 keeping live partial pages and other stacks. It also checks that discarded

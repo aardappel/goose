@@ -1675,12 +1675,14 @@ int main(int argc, char **argv) {
 The host calls `goose_init` once before anything else. It sets up the
 runtime and the globals and then runs your Goose `fn main()`, so `main` is the
 place for a library's own start-up code. A library with nothing to start up
-may leave `main` out. A `const u8[:]` result comes back as a pointer plus an
-extra `int64_t *` parameter that receives its length; scalars and flat
-fixed-size values are returned by value. The generated functions are not
-thread-safe: call them from the thread that called `goose_init`. The
-signatures that may cross are the ones from [section 16](#16-calling-c), with
-a few more limits; see
+may leave `main` out. When the host is done with the program, `goose_exit()`
+releases what `goose_init` set up, and `goose_init` can start it again: that
+is how a host reloads a library it has rebuilt. A `const u8[:]` result comes
+back as a pointer plus an extra `int64_t *` parameter that receives its
+length; scalars and flat fixed-size values are returned by value. The
+generated functions are not thread-safe: call them from the thread that
+called `goose_init`. The signatures that may cross are the ones from
+[section 16](#16-calling-c), with a few more limits; see
 [spec §7.11](goose_spec.md#711-exporting-goose-functions-to-c).
 
 ---

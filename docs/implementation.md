@@ -6414,6 +6414,19 @@ enforced. Workers that hold no regions leave `hardware_threads()` uncapped.
 built with `-DGS_STACK_STATS=1` reports each thread program's stacks and
 regions on stderr as that thread program ends.
 
+**Ending a program.** A library build (`--header`) ends with `goose_exit`,
+which gives back what `goose_init` took, so that a host can start a program
+in the process again (one it has rebuilt and reloaded, say): main's stack
+block; then `gs_rt_stop`, which refuses while a worker still runs, drops
+the records of the workers that aborted, releases main's regions and
+registry as a worker's end does (`gs_release_regions`) and puts back the
+fault handling the runtime found (`gs_fault_uninstall`); then the queues
+(`gs_qfree`). The JIT host does the same after each run (`gs_rt_release`),
+without the worker check: a program it runs may return from `main` with
+workers running, which the process ends. Where programs share a runtime
+object, `gs_rt_start` refuses to start one while another's regions are
+live, rather than forget them.
+
 **Native stacks.** Recursion consumes only the native call stack (spec
 §7.8), whose size is set when its thread starts. Running out of it ends the
 program with `goose runtime error: native call stack overflow` and exit

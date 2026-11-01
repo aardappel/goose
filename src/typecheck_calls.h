@@ -2672,7 +2672,7 @@ inline void TypeCheck::CheckExport(SFunction *sf) {
         fail("must be a top-level Goose function");
     if (!sf->generics.empty()) fail("cannot be generic");
     if (sf->cname.empty()) fail("needs a C symbol");
-    if (sf->cname == "main" || sf->cname == "goose_init")
+    if (sf->cname == "main" || sf->cname == "goose_init" || sf->cname == "goose_exit")
         fail(cat("C symbol ", sf->cname, " is reserved"));
     if (sf->cname.rfind("gs_", 0) == 0)
         fail("C symbols beginning with gs_ are reserved for Goose internals");

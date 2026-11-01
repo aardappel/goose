@@ -929,6 +929,11 @@ GS_API void gs_stack_stats(int64_t stacks);
 /* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
+/* Ends the main program, gs_rt_start's inverse, for a host that may start
+   a program again in this process (goose_exit): releases its regions, and
+   what handled faults before the runtime started does again. A thread
+   program still running is a runtime error. */
+GS_API void gs_rt_stop(void);
 
 /* ---------------------------------------------------------------------------
    Dynamic externs (§7.10): the shared libraries the program's extern blocks
@@ -993,6 +998,9 @@ GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qwait(gs_queue *q, int64_t ms);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
 GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
+/* Frees a queue and the messages left in it, once no thread program can
+   use it (goose_exit); gs_qinit makes it again. */
+GS_API void gs_qfree(gs_queue *q);
 
 #ifndef GS_RUNTIME_OBJECT
 

@@ -3425,9 +3425,21 @@ thread. `--header` requires generated C output and at least one export, and
 writes declarations and the required packed C type definitions for the
 exported API.
 
+The header also declares `goose_exit()`, which ends the program: it releases
+what `goose_init` set up (the data stack regions, the queues, and the
+runtime's handling of faults, which returns to the host's), after which
+`goose_init` may start a program in the process again, this one or another
+build of it, as a host that reloads a library does. It must be called from
+the initializing thread, with no thread program of the program still
+running, which is a runtime error; exported functions may not be called
+again until `goose_init` has. Before `goose_init`, it does nothing. What the
+Goose `main` set up outside the runtime is not undone. Where programs share
+a runtime object, starting one while another is started is a runtime error,
+rather than the first's regions being forgotten.
+
 An exported C symbol is emitted as written, as an `extern` one is, and must be a
 C identifier that is not a C keyword and that the program does not otherwise
-reserve (`main`, `goose_init`, or a name beginning with `gs_`).
+reserve (`main`, `goose_init`, `goose_exit`, or a name beginning with `gs_`).
 
 The wrapper calls the normal generated Goose specialization, not its hidden
 internal C signature. This keeps Goose's stack argument and other compiler

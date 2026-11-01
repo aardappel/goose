@@ -79,22 +79,11 @@ int goose_jit_run(int (*entry)(int, char **), void (*cleanup)(void),
     gs_jit_status = 0;
     if (!setjmp(gs_jit_jump)) gs_jit_status = entry(argc, argv);
     fflush(NULL);
-    gs_release_regions();
+    /* Main's regions and fault handling, then the program's stack block.
+       Workers the program left running are the process's to end, as a
+       built program's are (spec 11.2). */
+    gs_rt_release();
     cleanup();
-#ifdef _WIN32
-    if (gs_jit_fault_handler) RemoveVectoredExceptionHandler(gs_jit_fault_handler);
-    gs_jit_fault_handler = NULL;
-#else
-    if (gs_jit_fault_installed) {
-        sigaction(SIGSEGV, &gs_prev_segv, NULL);
-#ifdef SIGBUS
-        if (gs_jit_fault_installed & 2) sigaction(SIGBUS, &gs_prev_bus, NULL);
-#endif
-    }
-    gs_jit_fault_installed = 0;
-#endif
-    gs_argc = 0;
-    gs_argv = NULL;
     gs_jit_resource_dir = NULL;
     return gs_jit_status;
 }

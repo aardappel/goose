@@ -1012,6 +1012,11 @@ GS_API void gs_stack_stats(int64_t stacks);
 /* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
+/* Ends the main program, gs_rt_start's inverse, for a host that may start
+   a program again in this process (goose_exit): releases its regions, and
+   what handled faults before the runtime started does again. A thread
+   program still running is a runtime error. */
+GS_API void gs_rt_stop(void);
 
 )GSRT"
 R"GSRT(/* ---------------------------------------------------------------------------
@@ -1083,6 +1088,9 @@ GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qwait(gs_queue *q, int64_t ms);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
 GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
+/* Frees a queue and the messages left in it, once no thread program can
+   use it (goose_exit); gs_qinit makes it again. */
+GS_API void gs_qfree(gs_queue *q);
 
 )GSRT"
 R"GSRT(#ifndef GS_RUNTIME_OBJECT
@@ -1708,9 +1716,8 @@ R"GSRT(#define WIN32_LEAN_AND_MEAN
 
 )GSRT"
 R"GSRT(static size_t gs_page_size = 0;
-#ifdef GS_HOSTED_JIT
-static void *gs_jit_fault_handler;
-#endif
+/* The vectored handler gs_regions_init registered, for gs_fault_uninstall. */
+static void *gs_fault_handle;
 #define GS_COMMIT_CHUNK (1u << 20)
 /* What each thread program keeps of its native stack for reporting that
    stack's overflow (gs_native_stack_init). */
@@ -1771,14 +1778,11 @@ static size_t gs_os_page_size(void) {
 }
 
 )GSRT"
-R"GSRT(/* Installed once by main, before any worker can start. */
+R"GSRT(/* Installed by main as the runtime starts, before any worker can. */
 static void gs_regions_init(void) {
     gs_page_size = gs_os_page_size();
-    void *handler = AddVectoredExceptionHandler(1, gs_fault_filter);
-#ifdef GS_HOSTED_JIT
-    gs_jit_fault_handler = handler;
-#endif
-    if (!handler)
+    gs_fault_handle = AddVectoredExceptionHandler(1, gs_fault_filter);
+    if (!gs_fault_handle)
         gs_panic("cannot install data stack fault handler");
 }
 
@@ -1814,6 +1818,23 @@ R"GSRT(static void gs_release_region(const gs_region *r) {
 }
 
 )GSRT"
+R"GSRT(/* Faults are handled as before gs_regions_init (gs_rt_stop). TinyCC's
+   kernel32.def does not list RemoveVectoredExceptionHandler, so a program
+   it builds looks it up, as gs_native_stack_init does. */
+static void gs_fault_uninstall(void) {
+    if (gs_fault_handle) {
+        #ifdef __TINYC__
+            ULONG (WINAPI *remove)(PVOID) = (ULONG (WINAPI *)(PVOID))GetProcAddress(
+                GetModuleHandleA("kernel32.dll"), "RemoveVectoredExceptionHandler");
+            if (remove) remove(gs_fault_handle);
+        #else
+            RemoveVectoredExceptionHandler(gs_fault_handle);
+        #endif
+    }
+    gs_fault_handle = NULL;
+}
+
+)GSRT"
 R"GSRT(/* Whether this is the first call of gs_end; and where the later ones wait. */
 static int gs_end_first(void) {
     static volatile LONG ended;
@@ -1843,11 +1864,10 @@ static GS_TLS uintptr_t gs_native_lo, gs_native_hi;
 /* The alternate signal stack gs_native_stack_init allocated, if it did. */
 static GS_TLS void *gs_sigstack;
 #define GS_SIGSTACK_MIN (64u << 10)
-/* What the fault handler replaced, for the faults that are not its own. */
+/* What the fault handler replaced, for the faults that are not its own,
+   and which of them it did (1: SIGSEGV, 2: SIGBUS), for gs_fault_uninstall. */
 static struct sigaction gs_prev_segv, gs_prev_bus;
-#ifdef GS_HOSTED_JIT
-static int gs_jit_fault_installed;
-#endif
+static int gs_fault_installed;
 
 )GSRT"
 R"GSRT(/* For gs_trim_memory, which discards whole pages only. */
@@ -1894,15 +1914,11 @@ R"GSRT(static void gs_regions_init(void) {
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
         gs_panic("cannot install data stack fault handler");
-#ifdef GS_HOSTED_JIT
-    gs_jit_fault_installed = 1;
-#endif
+    gs_fault_installed = 1;
     #ifdef SIGBUS
         if (sigaction(SIGBUS, &sa, &gs_prev_bus))
             gs_panic("cannot install data stack fault handler");
-#ifdef GS_HOSTED_JIT
-        gs_jit_fault_installed |= 2;
-#endif
+        gs_fault_installed |= 2;
     #endif
 }
 
@@ -1995,6 +2011,16 @@ static uint8_t *gs_os_reserve(size_t usable, size_t size) {
 )GSRT"
 R"GSRT(static void gs_release_region(const gs_region *r) {
     if (munmap(r->base, r->size)) gs_panic("cannot release data stack address space");
+}
+
+)GSRT"
+R"GSRT(/* Faults are handled as before gs_regions_init (gs_rt_stop). */
+static void gs_fault_uninstall(void) {
+    if (gs_fault_installed & 1) sigaction(SIGSEGV, &gs_prev_segv, NULL);
+    #ifdef SIGBUS
+        if (gs_fault_installed & 2) sigaction(SIGBUS, &gs_prev_bus, NULL);
+    #endif
+    gs_fault_installed = 0;
 }
 
 )GSRT"
@@ -2939,6 +2965,11 @@ R"GSRT(GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, i
 )GSRT"
 R"GSRT(GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions) {
+    /* A host's goose_init of a second program (an image it reloaded, say)
+       over the regions of the first, which share this runtime: starting
+       would forget them rather than release them. */
+    if (gs_regions)
+        gs_panic("a program is already started in this process: call its goose_exit first");
     gs_argc = argc;
     gs_argv = argv;
     /* A region's usable part is whole pages: the guard gap behind it has to
@@ -2982,6 +3013,18 @@ R"GSRT(GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t
     gs_regions_begin(mainregions);
     gs_native_stack_init();
     gs_scan_init();
+}
+
+)GSRT"
+R"GSRT(/* The inverse, on main's thread: its regions and registry, then the fault
+   handling and the arguments. gs_rt_stop (runtime_threads.h) adds the
+   thread programs' part; the JIT host calls this directly, since a program
+   it runs may return from main with workers still running (jit_runtime.c). */
+static void gs_rt_release(void) {
+    gs_release_regions();
+    gs_fault_uninstall();
+    gs_argc = 0;
+    gs_argv = NULL;
 }
 
 )GSRT"
@@ -3763,7 +3806,46 @@ R"GSRT(GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line)
 }
 
 )GSRT"
+R"GSRT(/* No lock: nothing else can use the queue once no thread program runs. */
+GS_API void gs_qfree(gs_queue *q) {
+    struct gs_qstate *s = *q;
+    if (!s) return;
+    while (s->head) free(gs_qtake(s));
+    #ifndef _WIN32
+        pthread_mutex_destroy(&s->mutex);
+        pthread_cond_destroy(&s->cond);
+    #endif
+    free(s);
+    *q = NULL;
+}
+
+)GSRT"
 R"GSRT(#endif  /* GS_NEED_THREADS */
+
+)GSRT"
+R"GSRT(/* The records of the thread programs that aborted go with the program
+   whose workers they were, so that a program started next in the process
+   gets ids and thread_wait answers of its own; then main's part
+   (gs_rt_release). */
+GS_API void gs_rt_stop(void) {
+#if GS_NEED_THREADS
+    gs_mutex_lock(&gs_threads_mutex);
+    if (gs_threads) {
+        gs_mutex_unlock(&gs_threads_mutex);
+        gs_panic("goose_exit: a thread program is still running");
+    }
+    for (int64_t i = 0; i < gs_naborted; i++) free(gs_aborted[i].msg);
+    free(gs_aborted);
+    gs_aborted = NULL;
+    gs_naborted = gs_abortedcap = 0;
+    free(gs_abortbits);
+    gs_abortbits = NULL;
+    gs_abortbytes = 0;
+    gs_numthreads = 0;
+    gs_mutex_unlock(&gs_threads_mutex);
+#endif
+    gs_rt_release();
+}
 )GSRT"
     ) },
     { "runtime_ext.h", string_view(

@@ -869,8 +869,9 @@ the program at hand.
 Options:
   -o out.c              Write the program's C rather than run it.
   --standalone          Write C that holds the whole runtime and builds alone.
-  --header out.h        Also write a header for a C host, which supplies main
-                        and starts the program through goose_init.
+  --header out.h        Also write a header for a C host, which supplies main,
+                        starts the program through goose_init and may end it
+                        through goose_exit.
   --include header.h    Have the C include this header (may be repeated).
   --jit                 Also run the program in this process.
   --emit-runtime out.c  Write the runtime's C.
@@ -1546,7 +1547,7 @@ int Main(int argc, char **argv) {
         return 1;
     }
     // A header is for a C host, which supplies its own main and starts the
-    // program through goose_init.
+    // program through goose_init (and may end it through goose_exit).
     auto library = !headername.empty();
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||

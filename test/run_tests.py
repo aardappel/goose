@@ -2035,6 +2035,31 @@ def main():
         r.show_task(runtime_lifecycle, "runtime_threads_lifecycle", "threads")
         r.show_task(runtime_lifecycle, "runtime_trim_memory", "runtime")
 
+        # A library build's C host: goose_exit ends the program and goose_init
+        # starts it again over fresh globals and queues, and ending it while a
+        # worker still runs is a runtime error.
+        def host_exit():
+            src = HERE / "threads" / "host_exit.goose"
+            cfile = gendir / "host_exit.c"
+            code, out, err = r.goose("-O1", "--header", gendir / "host_exit.h", "-o", cfile, src)
+            if code != 0:
+                r.fail("host-exit cgen host_exit.goose", out + err)
+                return
+            # Beside the header it includes.
+            host = gendir / "host_exit_main.c"
+            shutil.copyfile(HERE / "threads" / "host_exit.c", host)
+            out_exe = gendir / f"host_exit{tc.EXE_SUFFIX}"
+            ok, log = cc.compile([host, cfile], out_exe, opt=1, extra=extra, strict_decls=True,
+                                 runtime=r.runtime, log=gendir / "host_exit.cc.log")
+            if not ok:
+                r.fail("host-exit cc host_exit", "\n".join(log.splitlines()[:8]))
+                return
+            for name, argv in (("host_exit_c", []), ("host_exit_live", ["live"])):
+                out = r.run_expected([out_exe] + argv, name, name)
+                if out is not None and r.check_stdout(name, name, out):
+                    r.ok(f"host {name}")
+        r.show_task(host_exit)
+
         # The same coverage test through clang, release and debug. A compiler
         # that accepts more C than the standard does is not what checks the
         # generated C is actually valid: a call to a function defined only in
