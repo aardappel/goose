@@ -47,6 +47,11 @@ fn main() {
         "layout(location = 0) out vec4 result; void main() { result = vec4(doubled(0.5)); }");
     describe("through a second global", chained);
 
+    describe("fragment depth", embed_shader("frag", """
+        layout(location = 0) out vec4 result;
+        void main() { result = vec4(1.0); gl_FragDepth = 0.5; }
+        """));
+
     // The other two stages.
     describe("vertex", embed_shader("vert", """
         layout(location = 0) in vec3 a_pos;
