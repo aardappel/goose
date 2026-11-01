@@ -1,5 +1,6 @@
-// Checked reads of external binary formats, independent of from_bytes' image
-// format. Slices and names borrow the input; no read allocates or copies bytes.
+// Checked reads and appending writes of external binary formats, independent
+// of from_bytes' image format. Slices and names borrow the input; no read
+// allocates or copies bytes.
 namespace binary;
 import std;
 
@@ -26,6 +27,8 @@ fn u64be(data: const u8[:], at: i64) -> u64 { (u32be(data, at) as u64 << 32) | u
 // Floats keep their bits exactly, NaN payloads included.
 extern fn f32_of_bits(bits: u32) -> f32 = "gs_f32_from_bits";
 extern fn f64_of_bits(bits: u64) -> f64 = "gs_f64_from_bits";
+extern fn bits_of_f32(v: f32) -> u32 = "gs_f32_to_bits";
+extern fn bits_of_f64(v: f64) -> u64 = "gs_f64_to_bits";
 
 fn read_u8(data: const u8[:], at: i64) -> u8, bool {
     if !range_ok(data, at, 1) { return 0, false; }
@@ -214,3 +217,42 @@ fn subreader(r: Reader&, size: i64) -> Reader, bool {
     let data, ok = read_bytes(r, size);
     return reader(data), ok;
 }
+
+// Writes append to out, the inverse of the reads: the le writes put the least
+// significant byte first, the be writes the most significant.
+fn write_u8(out: u8[>..]&, v: u8) { out.push(v); }
+fn write_i8(out: u8[>..]&, v: i8) { out.push(v as! u8); }
+fn write_u16le(out: u8[>..]&, v: u16) {
+    out.push(v as! u8);
+    out.push((v >> 8) as! u8);
+}
+fn write_i16le(out: u8[>..]&, v: i16) { write_u16le(out, v as! u16); }
+fn write_u32le(out: u8[>..]&, v: u32) {
+    write_u16le(out, v as! u16);
+    write_u16le(out, (v >> 16) as! u16);
+}
+fn write_i32le(out: u8[>..]&, v: i32) { write_u32le(out, v as! u32); }
+fn write_u64le(out: u8[>..]&, v: u64) {
+    write_u32le(out, v as! u32);
+    write_u32le(out, (v >> 32) as! u32);
+}
+fn write_i64le(out: u8[>..]&, v: i64) { write_u64le(out, v as! u64); }
+fn write_f32le(out: u8[>..]&, v: f32) { write_u32le(out, bits_of_f32(v)); }
+fn write_f64le(out: u8[>..]&, v: f64) { write_u64le(out, bits_of_f64(v)); }
+fn write_u16be(out: u8[>..]&, v: u16) {
+    out.push((v >> 8) as! u8);
+    out.push(v as! u8);
+}
+fn write_i16be(out: u8[>..]&, v: i16) { write_u16be(out, v as! u16); }
+fn write_u32be(out: u8[>..]&, v: u32) {
+    write_u16be(out, (v >> 16) as! u16);
+    write_u16be(out, v as! u16);
+}
+fn write_i32be(out: u8[>..]&, v: i32) { write_u32be(out, v as! u32); }
+fn write_u64be(out: u8[>..]&, v: u64) {
+    write_u32be(out, (v >> 32) as! u32);
+    write_u32be(out, v as! u32);
+}
+fn write_i64be(out: u8[>..]&, v: i64) { write_u64be(out, v as! u64); }
+fn write_f32be(out: u8[>..]&, v: f32) { write_u32be(out, bits_of_f32(v)); }
+fn write_f64be(out: u8[>..]&, v: f64) { write_u64be(out, bits_of_f64(v)); }

@@ -1027,9 +1027,9 @@ if SDL_Init(0x20) < 0 { abort(str("SDL: ", ffi::cstr(SDL_GetError()))); }
 
 ## binary
 
-Checked reads of external formats, little- and big-endian, written in Goose
-(floats take their bits through one small runtime helper).
-`import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
+Checked reads and appending writes of external formats, little- and
+big-endian, written in Goose (floats take their bits through small runtime
+helpers). `import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
 returned byte slices and fixed-width names borrow that input without copying
 or allocating. Their lifetimes and read-only access are checked normally.
 This API does not interpret Goose serialization images (`from_bytes`).
@@ -1106,6 +1106,35 @@ Use offset reads for random access and cursors for sequential records.
 Applications still validate signatures, counts, indices and format-specific
 limits after checking the read. The WAD loader in
 [`31_mini_doom.goose`](../samples/31_mini_doom.goose) shows both styles.
+
+### Writes
+
+```goose
+fn write_u8(out: u8[>..]&, v: u8)
+fn write_i8(out: u8[>..]&, v: i8)
+fn write_u16le(out: u8[>..]&, v: u16)    // and write_u16be
+fn write_i16le(out: u8[>..]&, v: i16)    // and write_i16be
+fn write_u32le(out: u8[>..]&, v: u32)    // and write_u32be
+fn write_i32le(out: u8[>..]&, v: i32)    // and write_i32be
+fn write_u64le(out: u8[>..]&, v: u64)    // and write_u64be
+fn write_i64le(out: u8[>..]&, v: i64)    // and write_i64be
+fn write_f32le(out: u8[>..]&, v: f32)    // and write_f32be
+fn write_f64le(out: u8[>..]&, v: f64)    // and write_f64be
+```
+
+Each write appends the value's bytes to `out`, in the order the read of the
+same name takes them, so a write followed by that read gives the value back.
+A float write keeps the value's bits exactly, NaN payloads included. The
+writes cannot fail; `out` grows as an append does.
+
+```goose
+var out: u8[>..] = [];
+binary::write_u32be(out, 0x89504E47);    // a signature, most significant byte first
+binary::write_u16le(out, 3);
+binary::write_f32le(out, 1.5);
+let version, version_ok = binary::read_u16le(out, 4);
+assert(version_ok && version == 3);
+```
 
 ## base64
 
