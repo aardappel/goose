@@ -49,4 +49,83 @@ fn main() {
     let o = mul_add(big[0], big[1], -big[0]);
     let of = mul_add(bigf[0], bigf[1], -bigf[0]);
     print(o == 1.0e308 || is_inf(o), " ", of == bigf[0] || is_inf(of));   // true true
+    // hypot cbrt exp2 expm1 log1p sinh cosh tanh are libm's, so only the
+    // values C's Annex F fixes are printed exactly, and the rest within a
+    // tolerance. Read from arrays, so no value is known to the optimizer.
+    var hx: f64[>..] = [3.0, 4.0, 27.0, -8.0, 10.0, 1e-10, 1.0, 1e300];
+    print(abs(hypot(hx[0], hx[1]) - 5.0) < 1e-12, " ", abs(cbrt(hx[2]) - 3.0) < 1e-12, " ",
+          abs(cbrt(hx[3]) + 2.0) < 1e-12, " ", abs(exp2(hx[4]) - 1024.0) < 1e-9);   // true true true true
+    print(hypot(hx[7], hx[7]) > 1e300, " ", is_finite(hypot(hx[7], hx[7])));   // true true
+    // expm1 and log1p keep a tiny x's digits, x + x^2/2 and x - x^2/2,
+    // which exp(x) - 1 and log(1 + x) lose.
+    let tiny = hx[5];
+    print(abs(expm1(tiny) / (tiny * (1.0 + tiny / 2.0)) - 1.0) < 1e-14, " ",
+          abs(log1p(tiny) / (tiny * (1.0 - tiny / 2.0)) - 1.0) < 1e-14, " ",
+          abs((exp(tiny) - 1.0) / tiny - 1.0) > 1e-9);   // true true true
+    print(abs(sinh(hx[6]) - (E - 1.0 / E) / 2.0) < 1e-12, " ", abs(cosh(hx[6]) - (E + 1.0 / E) / 2.0) < 1e-12, " ",
+          abs(tanh(hx[6]) - sinh(hx[6]) / cosh(hx[6])) < 1e-12, " ", abs(exp(1.0) - E) < 1e-15);   // true true true true
+    // Annex F's special cases: -0.0 kept, and the limits at the infinities.
+    var sp: f64[>..] = [0.0, -0.0, -1.0];
+    let inf = INF;
+    print(expm1(sp[1]), " ", log1p(sp[1]), " ", sinh(sp[1]), " ", tanh(sp[1]), " ", cbrt(sp[1]), " ", cosh(sp[0]),
+          " ", exp2(sp[0]));   // -0.0 -0.0 -0.0 -0.0 -0.0 1.0 1.0
+    print(tanh(inf), " ", tanh(-inf), " ", cosh(-inf), " ", sinh(-inf), " ", expm1(-inf), " ", exp2(-inf), " ",
+          log1p(sp[2]), " ", cbrt(-inf), " ", hypot(-inf, NAN));   // 1.0 -1.0 inf -inf -1.0 0.0 -inf -inf inf
+    let hf: f32 = 3.0;
+    let hf4: f32 = 4.0;
+    let tf: f32 = 0.5;
+    print(hypot(hf, hf4), " ", abs(cbrt(hf * 9.0) - 3.0) < 1e-5, " ", abs(exp2(hf) - 8.0) < 1e-5, " ",
+          abs(tanh(tf) - sinh(tf) / cosh(tf)) < 1e-6, " ", abs(expm1(tf) - (exp(tf) - 1.0)) < 1e-6, " ",
+          abs(log1p(tf) - log(1.5 as f32)) < 1e-6);   // 5.0 true true true true true
+    // copysign reads the sign bit: -0.0's, and an infinity's.
+    var cs: f64[>..] = [3.0, -0.0, 0.0, -2.0];
+    var csf: f32[>..] = [3.0, -1.0];
+    print(copysign(cs[0], cs[1]), " ", copysign(cs[2], cs[3]), " ", copysign(cs[3], cs[2]), " ",
+          copysign(cs[0], -inf), " ", copysign(inf, cs[3]), " ", copysign(csf[0], csf[1]));   // -3.0 -0.0 2.0 -3.0 -inf -3.0
+    print(E, " ", INF, " ", -INF, " ", is_nan(NAN), " ", is_inf(INF), " ", INF > 1e308);   // 2.718281828459045 inf -inf true true true
+    let inf32: f32 = INF;
+    print(is_inf(inf32), " ", is_nan(NAN as f32));   // true true
+    // fract is x - floor(x), as GLSL: never negative.
+    var fr: f64[>..] = [2.75, -0.25, -0.0, -3.0, 1e300];
+    let frf: f32 = -1.75;
+    print(fract(fr[0]), " ", fract(fr[1]), " ", fract(fr[2]), " ", fract(fr[3]), " ", fract(fr[4]), " ", fract(frf),
+          " ", is_nan(fract(inf)), " ", is_nan(fract(NAN)));   // 0.75 0.75 0.0 0.0 0.0 0.25 true true
+    // inverse_lerp undoes lerp and is not clamped.
+    let ia: f32 = 2.0;
+    let ib: f32 = 6.0;
+    let iv: f32 = 3.0;
+    print(inverse_lerp(10.0, 20.0, 15.0), " ", inverse_lerp(10.0, 20.0, 25.0), " ", inverse_lerp(10.0, 20.0, 5.0),
+          " ", inverse_lerp(20.0, 10.0, 12.5), " ", inverse_lerp(ia, ib, iv), " ",
+          inverse_lerp(10.0, 20.0, lerp(10.0, 20.0, 0.375)), " ", is_nan(inverse_lerp(1.0, 1.0, 1.0)));   // 0.5 1.5 -0.5 0.75 0.25 0.375 true
+    // smoothstep as GLSL; reversed edges run it backwards, and equal edges
+    // step, with NaN at the edge.
+    let s0: f32 = 0.0;
+    let s1: f32 = 4.0;
+    let sx: f32 = 1.0;
+    print(smoothstep(0.0, 1.0, -1.0), " ", smoothstep(0.0, 1.0, 0.0), " ", smoothstep(0.0, 1.0, 0.25), " ",
+          smoothstep(0.0, 1.0, 0.5), " ", smoothstep(0.0, 1.0, 1.0), " ", smoothstep(0.0, 1.0, 2.0), " ",
+          smoothstep(1.0, 0.0, 0.25), " ", smoothstep(s0, s1, sx));   // 0.0 0.0 0.15625 0.5 1.0 1.0 0.84375 0.15625
+    print(smoothstep(1.0, 1.0, 0.5), " ", smoothstep(1.0, 1.0, 1.5), " ", is_nan(smoothstep(1.0, 1.0, 1.0)), " ",
+          is_nan(smoothstep(0.0, 1.0, NAN)));   // 0.0 1.0 true true
+    // wrap_angle brings an angle into [-PI, PI): PI goes to -PI, and -0.0
+    // stays.
+    var wa: f64[>..] = [0.5, PI, -PI, 3.0 * PI / 2.0, -0.0, 7.0 * TAU + 1.0, -5.0 * TAU - 1.0, 1e10];
+    print(wrap_angle(wa[0]), " ", wrap_angle(wa[1]) == -PI, " ", wrap_angle(wa[2]) == -PI, " ",
+          abs(wrap_angle(wa[3]) + PI / 2.0) < 1e-12, " ", wrap_angle(wa[4]), " ", abs(wrap_angle(wa[5]) - 1.0) < 1e-12,
+          " ", abs(wrap_angle(wa[6]) + 1.0) < 1e-12);   // 0.5 true true true -0.0 true true
+    let wbig = wrap_angle(wa[7]);
+    print(wbig >= -PI && wbig < PI, " ", is_nan(wrap_angle(inf)), " ", is_nan(wrap_angle(NAN)));   // true true true
+    var waf: f32[>..] = [3.1415927, -3.1415927, 7.0, -7.0];
+    let pif: f32 = PI;
+    print(wrap_angle(waf[0]) == -pif, " ", wrap_angle(waf[1]) == -pif, " ", abs(wrap_angle(waf[2]) - (7.0 - pif * 2.0)) < 1e-5,
+          " ", abs(wrap_angle(waf[3]) + (7.0 - pif * 2.0)) < 1e-5);   // true true true true
+    // Every wrapped value lies in [-PI, PI), at both widths.
+    var ok = true;
+    for i in 0..2000 {
+        let a = (i - 1000) as f64 * 0.0377;
+        let w = wrap_angle(a);
+        let wf = wrap_angle(a as f32);
+        ok = ok && w >= -PI && w < PI && wf >= -pif && wf < pif && abs(fract(a) - (a - floor(a))) == 0.0;
+    }
+    print(ok);   // true
 }

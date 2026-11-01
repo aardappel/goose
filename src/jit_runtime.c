@@ -62,6 +62,13 @@ static const GooseJitSymbol gs_jit_symbols[] = {
     GS_JIT_MATH(fmod)
     GS_JIT_MATH(cbrt)
     GS_JIT_MATH(hypot)
+    GS_JIT_MATH(exp2)
+    GS_JIT_MATH(expm1)
+    GS_JIT_MATH(log1p)
+    GS_JIT_MATH(sinh)
+    GS_JIT_MATH(cosh)
+    GS_JIT_MATH(tanh)
+    GS_JIT_MATH(copysign)
     GS_JIT_MATH(ldexp)
     GS_JIT_MATH(frexp)
 #undef GS_JIT_MATH
