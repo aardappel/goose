@@ -1124,6 +1124,7 @@ struct CodeGen {
                        bool inroot = true);
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln);
     bool HasRelRef(TypeExpr *t);
+    bool IsFlatFixed(TypeExpr *t);
     bool NeedsResultLocation(TypeExpr *t) { return IsFix(t) && t->kind != TY_REF && HasRelRef(t); }
     bool HasSelfRelRef(TypeExpr *t);
     void NoSelfRelCopy(Node *val);
@@ -1480,11 +1481,16 @@ struct CodeGen {
     // has nothing left to do for them (§11.1), with the initializer, which
     // a later global's initializer naming one is spelled out from.
     map<const VarDef *, Node *> gstatic;
+    // Constant globals of flat fixed type whose initializer has no static
+    // spelling: a C static of its own that gs_init_globals fills once, read
+    // in place by every instance (§11.2) rather than copied to a worker.
+    set<const VarDef *> gshared;
 
     // Spelling out more elements of a fill or a string than this would trade
     // startup work for source size; such a value keeps its runtime
-    // initialization, a loop or a copy. Listed elements are spelled out
-    // either way, so their static initializer has no limit.
+    // initialization, a loop or a copy, as a shared static (gshared). Listed
+    // elements are spelled out either way, so their static initializer has
+    // no limit.
     static constexpr int64_t MAXSTATICELEMS = 256;
 
     bool StaticInitX(Node *n, TypeExpr *t, string &out);

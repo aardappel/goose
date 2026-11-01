@@ -5131,7 +5131,7 @@ them (section 6.10).
 
 ### 6.3 Globals and program instances
 
-Every global that is not read-only static data is a member of one
+Every global that is not a static (below) is a member of one
 `gs_globals_t` struct per program instance, which also holds the dedicated
 stacks of the resizable globals. Main's struct is a static; a worker's is
 allocated by its entry thunk and filled from the spawn image (§6.8). Access
@@ -5143,9 +5143,14 @@ shared by every instance, which the C compiler folds into the code reading
 it. The initializer may name earlier globals of that kind, anywhere a
 literal could stand. C cannot read another object in an initializer, so the
 named global's own initializer is written out in its place (`gstatic`
-keeps them). A `var` of such a type can be assigned as a whole and is a
-member like any other. Everything but the statics is initialized by
-`gs_init_globals` in declaration order.
+keeps them). One whose initializer has no static spelling, a fill or a
+string past 256 elements (`MAXSTATICELEMS`) or a name the static form
+cannot spell, is a plain C static all the same (`gshared`):
+`gs_init_globals` fills it once, before any worker exists, and every
+instance reads it in place, so a worker never copies it (`ThreadGlobals`
+leaves both kinds out). A `var` of such a type can be assigned as a whole
+and is a member like any other. Everything but the `static const`s is
+initialized by `gs_init_globals` in declaration order.
 
 ### 6.4 The calling convention (C.3)
 

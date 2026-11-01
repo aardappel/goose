@@ -865,6 +865,13 @@ inline void CodeGen::EmitGlobalDecls() {
                     Append(data, "static const ", VarCT(d), " ", name, " = ", init, ";\n");
                     gstatic[d] = g->inits[di];
                     gnames[d] = cat("(*(", VarCT(d), " *)&", name, ")");
+                } else if (!d->isvar && d->type->cq && !PrefVar(d) && IsFlatFixed(d->type)) {
+                    // Written once, by gs_init_globals before any worker
+                    // exists (a long fill, say), then read in place by every
+                    // instance: a static all the same, if not a const one.
+                    Append(data, "static ", VarCT(d), " ", name, ";\n");
+                    gshared.insert(d);
+                    gnames[d] = name;
                 } else {
                     member(cat(VarCT(d), " ", name));
                 }

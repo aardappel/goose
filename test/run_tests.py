@@ -1953,7 +1953,8 @@ def main():
             r.ok(f"member stores {f.name}")
     r.show_task(member_stores)
     # A constant array of listed elements is static data at any length, and
-    # a long fill keeps its runtime initialization (MAXSTATICELEMS).
+    # a long fill keeps its runtime initialization (MAXSTATICELEMS), in a
+    # static of its own outside the globals struct.
     def static_arrays():
         f = HERE / "codegen" / "const_global_folding.goose"
         cfile = gendir / "const_global_folding-static.c"
@@ -1963,13 +1964,31 @@ def main():
             return
         text = cfile.read_text()
         listed = re.search(r"^static const a260_i64 LONG_g\w* = ", text, re.MULTILINE)
-        filled = re.search(r"^static const \w+ FILLED_g", text, re.MULTILINE)
-        if not listed or filled:
+        filled = re.search(r"^static a300_i64 FILLED_g\w*;$", text, re.MULTILINE)
+        if not listed or not filled or "GS_GL->FILLED_g" in text:
             r.fail(f"static arrays {f.name}",
-                   f"LONG static: {bool(listed)}, FILLED static: {bool(filled)}")
+                   f"LONG static: {bool(listed)}, FILLED shared: {bool(filled)}")
         else:
             r.ok(f"static arrays {f.name}")
     r.show_task(static_arrays)
+    # A constant fill or string past MAXSTATICELEMS is a static of its own,
+    # read in place by every worker rather than copied at spawn (§11.2).
+    def shared_fills():
+        f = HERE / "threads" / "thread_shared_fills.goose"
+        cfile = gendir / "thread_shared_fills-shared.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"shared fills {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        bad = [n for n in ("TABLE", "ZEROS", "TEXT")
+               if not re.search(rf"^static \w+ {n}_g\w*;$", text, re.MULTILINE) or
+                  f"GS_GL->{n}_g" in text]
+        if bad:
+            r.fail(f"shared fills {f.name}", "copied or not static: " + ", ".join(bad))
+        else:
+            r.ok(f"shared fills {f.name}")
+    r.show_task(shared_fills)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the O1 pass; O0/O2 execution checks semantics.

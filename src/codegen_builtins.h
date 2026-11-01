@@ -1086,8 +1086,8 @@ inline void CodeGen::EmitRzImage(Loc src, TypeExpr *t, const string &stk, Line l
 }
 
 // The globals a thread program can name (CheckThreadGlobals admits flat
-// ones only), in declaration order: read-only static data is not among
-// them, since every instance shares it as it is.
+// ones only), in declaration order: read-only static data, spelled out or
+// shared, is not among them, since every instance reads it in place.
 inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
     auto it = threadglobals.find(entry);
     if (it != threadglobals.end()) return it->second;
@@ -1100,7 +1100,7 @@ inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
             if (!n) return;
             NodeNamedArrays(n, namedtypes, [&](VarDef *a, bool) { named.insert(a); });
             if (auto id = Is<Ident>(n))
-                if (auto v = id->vdef; v && v->isglobal && !gstatic.count(v)) named.insert(v);
+                if (auto v = id->vdef; v && v->isglobal) named.insert(v);
             if (auto c = Is<Call>(n)) {
                 rec(c->spec);
                 for (auto d : c->dispatch) rec(d);
@@ -1113,7 +1113,8 @@ inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
     rec(entry);
     auto &out = threadglobals[entry];
     for (auto g : ast.globals)
-        for (auto d : g->defs) if (named.count(d)) out.push_back(d);
+        for (auto d : g->defs)
+            if (named.count(d) && !gstatic.count(d) && !gshared.count(d)) out.push_back(d);
     return out;
 }
 

@@ -281,6 +281,20 @@ inline bool CodeGen::HasRelRef(TypeExpr *t) {
     }
 }
 
+// Flat (§1.1) and fixed: no reference, slice or relative reference at any
+// depth, so one object of it serves every program instance in place.
+inline bool CodeGen::IsFlatFixed(TypeExpr *t) {
+    if (!IsFix(t)) return false;
+    switch (t->kind) {
+        case TY_REF: case TY_SLICE: return false;
+        case TY_STRUCT: return SI(t)->flat;
+        case TY_ENUM: return EIOf(t)->flat;
+        case TY_VARIANT: return !AnyField(t, [&](TypeExpr *ft) { return !IsFlatFixed(ft); });
+        case TY_ARRAY: return IsFlatFixed(t->arr->sub);
+        default: return true;
+    }
+}
+
 // Does a value of type t hold a self-relative reference by value, at any
 // depth, variable-size parts included? Its offsets depend on where it sits.
 inline bool CodeGen::HasSelfRelRef(TypeExpr *t) {
