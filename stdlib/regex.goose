@@ -115,8 +115,6 @@ fn add_range(s: bool[256]&, lo: u8, hi: u8) {
     for b in (lo as i64)..(hi as i64) + 1 { s[b] = true; }
 }
 
-fn is_letter(b: u8) -> bool { (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
-
 // Adds the other case of every ASCII letter in the set.
 fn fold_case(s: bool[256]&) {
     for b in ('A' as i64)..('Z' as i64) + 1 {
@@ -156,14 +154,7 @@ fn escaped_byte(c: u8) -> i64 {
     if c == 'r' { return '\r'; }
     if c == 'f' { return 0x0c; }
     if c == 'v' { return 0x0b; }
-    if c >= 0x21 && c < 0x7f && !is_letter(c) && !(c >= '0' && c <= '9') { return c; }
-    return -1;
-}
-
-fn hex_value(c: u8) -> i64 {
-    if c >= '0' && c <= '9' { return c - '0'; }
-    if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
-    if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
+    if c >= 0x21 && c < 0x7f && !ascii::is_alnum(c) { return c; }
     return -1;
 }
 
@@ -236,7 +227,7 @@ fn build(pattern: u8[:], err: u8[>..]&, aborts: bool) -> Regex {
     fn number() -> i32 {
         let start = pos;
         var v = 0;
-        while more() && pattern[pos] >= '0' && pattern[pos] <= '9' {
+        while more() && ascii::is_digit(pattern[pos]) {
             v = v * 10 + (pattern[pos] - '0');
             guard v <= MAX_REPEAT else { return fail("repetition count too large"); }
             pos++;
@@ -253,10 +244,10 @@ fn build(pattern: u8[:], err: u8[>..]&, aborts: bool) -> Regex {
         let c = pattern[pos];
         pos++;
         if c == 'x' {
-            guard pos + 2 <= pattern.len && hex_value(pattern[pos]) >= 0 && hex_value(pattern[pos + 1]) >= 0 else {
+            guard pos + 2 <= pattern.len && ascii::hex_value(pattern[pos]) >= 0 && ascii::hex_value(pattern[pos + 1]) >= 0 else {
                 return fail_at("bad \\x escape", at) as! u8;
             }
-            let v = hex_value(pattern[pos]) * 16 + hex_value(pattern[pos + 1]);
+            let v = ascii::hex_value(pattern[pos]) * 16 + ascii::hex_value(pattern[pos + 1]);
             pos += 2;
             return v as u8;
         }

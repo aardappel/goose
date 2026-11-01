@@ -108,7 +108,8 @@ The library uses these conventions:
 * The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, and `os` names are global;
   `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
   `physics`, `ui` and `exception` use their own namespaces, and so do the
-  helpers `std` and `json` read and write float text with, in `float_text`.
+  helpers `std` and `json` read and write float text with, in `float_text`,
+  and `std`'s ASCII character classes, in `ascii`.
   A local named `fill` or `count` shadows the global function of that name,
   so a call to that function is an error. A global variable of such a name does not
   shadow it, because the name in a call resolves past global variables to
@@ -379,6 +380,10 @@ fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/sli
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])
 fn each_utf8<F>(s: u8[:])                                  // F(codepoint); malformed bytes give 0xFFFD
 fn push_utf8(out: u8[>..]&, cp: i64)                       // 0xFFFD's bytes for cp outside 0..0x10FFFF
+fn ascii::is_digit(c: u8) -> bool                          // '0'-'9'
+fn ascii::is_alpha(c: u8) -> bool                          // 'a'-'z', 'A'-'Z'
+fn ascii::is_alnum(c: u8) -> bool                          // either
+fn ascii::hex_value(c: u8) -> i64                          // 0-15 for 0-9, a-f, A-F; -1 otherwise
 ```
 
 The builtins `format`/`str`/`print` do the plain rendering of scalars and
@@ -389,6 +394,23 @@ the decimal, as C's `strtod` does, so a float's text from `print` or
 `format` reads back as the same value. Strings are `u8` arrays: input is a
 `u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
 `u8[..k]`.
+
+The character classes are ASCII only, as C's `<ctype.h>` is in the C
+locale and Rust's `u8::is_ascii_digit` and its kin are: no byte from 0x80
+up is in any of them. They live in the namespace `ascii`, which `import
+std;` brings in, so that short, common names like `is_digit` stay free in
+the global one.
+
+```goose
+let text = "1f8B rest";
+var v = 0;
+var i = 0;
+while i < text.len && ascii::hex_value(text[i]) >= 0 {
+    v = v * 16 + ascii::hex_value(text[i]);
+    i++;
+}
+print(v, " ", i, " ", ascii::is_alpha(text[i + 1]));   // 8075 4 true
+```
 
 `each_utf8` decodes as the WHATWG decoder does. A sequence cut short, an
 overlong form, a surrogate or a code point past 0x10FFFF gives one 0xFFFD

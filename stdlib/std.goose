@@ -1341,6 +1341,24 @@ fn compare(a: u8[:], b: u8[:]) -> i64 {
 
 fn is_space(c: u8) -> bool { c == ' ' || c == '\t' || c == '\n' || c == '\r' }
 
+// ASCII character classes, as C's <ctype.h> has them in the C locale: no
+// byte from 0x80 up is in any of them. They are declared into a namespace
+// of their own, `ascii`, which keeps such common names out of the global
+// one. u8 arithmetic wraps, so each range test is one subtraction and one
+// compare, and `c | 32` folds an upper-case letter onto its lower case.
+fn ascii::is_digit(c: u8) -> bool { c - '0' < 10 }
+fn ascii::is_alpha(c: u8) -> bool { (c | 32) - 'a' < 26 }
+fn ascii::is_alnum(c: u8) -> bool { is_digit(c) || is_alpha(c) }
+
+// The value of a hexadecimal digit, either case: 0 to 15, -1 for any other
+// byte.
+fn ascii::hex_value(c: u8) -> i64 {
+    if c - '0' < 10 { return c - '0'; }
+    let lower = c | 32;
+    if lower - 'a' < 6 { return lower - 'a' + 10; }
+    return -1;
+}
+
 // ASCII whitespace trimmed: a sub-slice of s, no copy.
 fn trim_start(s: u8[:]) -> u8[:] {
     var i = 0;

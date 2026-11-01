@@ -58,10 +58,9 @@ fn parse(text: u8[:]) -> Node?, u8[>..] {
     }
 
     fn hex_digit(c: u8) -> i64 {
-        if c >= '0' && c <= '9' { return c - '0'; }
-        if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
-        if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
-        return null, fail("bad hex digit") from parse;
+        let d = ascii::hex_value(c);
+        guard d >= 0 else { return null, fail("bad hex digit") from parse; }
+        return d;
     }
 
     // A string's decoded bytes, built straight into the field that receives
@@ -95,7 +94,7 @@ fn parse(text: u8[:]) -> Node?, u8[>..] {
 
     fn parse_number() -> f64 {
         let start = pos;
-        while pos < text.len && ((text[pos] >= '0' && text[pos] <= '9') || text[pos] == '-' ||
+        while pos < text.len && (ascii::is_digit(text[pos]) || text[pos] == '-' ||
                                  text[pos] == '+' || text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E') { pos++; }
         let v, ok = parse_flt(text[start..pos]);
         guard ok else { return null, fail("bad number") from parse; }
