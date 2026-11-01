@@ -1384,9 +1384,8 @@ functions or files.
 
 ## 14. Threads that share nothing
 
-For ordinary Goose values, there is no shared mutable memory. A worker is
-declared `thread_fn`, and the
-compiler compiles it and everything it calls as a **separate program** with
+Threads share nothing. A worker is declared `thread_fn`, and the compiler
+compiles it and everything it calls as a **separate program** with
 its own data stacks and its own copies of the globals it uses.
 
 Values pass between threads through typed queues, with one queue per type,
