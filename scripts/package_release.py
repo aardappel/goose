@@ -22,9 +22,10 @@ directory:
                        libraries are built from
   README.md, LICENSE
 
-Configure with -DGOOSE_BUILTIN_LIBS=all and build the configuration given
-here first. Files from this tree are the ones git tracks, so nothing a run
-left in samples/ or docs/ is shipped.
+Configure with -DGOOSE_BUILTIN_LIBS=all (or a subset) and build the configuration
+given here first. Files from this tree are the ones git tracks, so nothing a run
+left in samples/ or docs/ is shipped. If no packages are compiled in, the release
+will omit the pkg/ directory.
 
   python scripts/package_release.py --build build --config Release --out dist/goose
 """
@@ -179,8 +180,6 @@ def main():
     shutil.copytree(tcclib, out / "tcclib")
 
     packages = builtin_packages(build)
-    if not packages:
-        fail("the compiler has no packages compiled in: configure with -DGOOSE_BUILTIN_LIBS=all")
     for name, srcdir in packages:
         pkgout = out / "pkg" / name
         package_sources(name, srcdir, pkgout)
