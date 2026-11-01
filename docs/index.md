@@ -104,9 +104,11 @@ and the reference describe what was built; these say why.
   by people: contracts in the prover's own fact language, `abortfree`,
   `pure`, a race-free `par for` by proof, owning pool handles, and what
   each costs; a research note.
-* [Debugging](design/debugging.md): Goose source lines and values in the
-  native debuggers through `#line` and generated visualizers, compared
-  with a debugger built into the compiler (`goose dap`); a proposal.
+* [Debugging](design/debugging.md): Goose source lines, names and values
+  in a debugger, through `#line` and a compiler-written map read by a
+  `goose dap` adapter in front of `lldb-dap`, compared with visualizers in
+  the native debuggers and with a debugger built into the compiler; a
+  proposal.
 
 ## Getting the compiler
 

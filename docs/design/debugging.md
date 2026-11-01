@@ -22,55 +22,75 @@
   - [5.5 Built programs and threads](#55-built-programs-and-threads)
   - [5.6 What it cannot do](#56-what-it-cannot-do)
   - [5.7 What it costs to keep](#57-what-it-costs-to-keep)
-- [6. A and B compared](#6-a-and-b-compared)
-- [7. Recommendation and order of work](#7-recommendation-and-order-of-work)
-- [8. Open questions](#8-open-questions)
+- [6. Option C: `goose dap` in front of lldb-dap](#6-option-c-goose-dap-in-front-of-lldb-dap)
+  - [6.1 Shape](#61-shape)
+  - [6.2 The debug map](#62-the-debug-map)
+  - [6.3 What the adapter shows](#63-what-the-adapter-shows)
+  - [6.4 What it depends on](#64-what-it-depends-on)
+  - [6.5 What it cannot do](#65-what-it-cannot-do)
+  - [6.6 What to tighten](#66-what-to-tighten)
+- [7. The three compared](#7-the-three-compared)
+- [8. Recommendation and order of work](#8-recommendation-and-order-of-work)
+- [9. Open questions](#9-open-questions)
 - [References](#references)
 
 </details>
 
-Research note, November 2026. Nothing here is implemented. The question
-was how a Goose program should be debugged in VS Code and in other
-editors, given that the compiler emits C: by default a debugger shows that
-C, with C names and C types. Two options are compared. Option A gives the C
+Research note, November 2026. Nothing here is on master. The question was
+how a Goose program should be debugged in VS Code and in other editors,
+given that the compiler emits C: by default a debugger shows that C, with
+C names and C types. Three options are compared. Option A gives the C
 compilers' debug information Goose's source lines and names, and leaves
 the debugging to the native debuggers that already speak the Debug Adapter
-Protocol. Option B builds a debugger into the compiler, `goose dap`, which
-runs the program itself and shows it in Goose terms. Section 3 is A,
-section 5 is B, section 6 compares them, section 7 gives the
-recommendation and the order to build it in.
+Protocol, with visualizers inside them for Goose values. Option B builds a
+debugger into the compiler, `goose dap`, which runs the program itself and
+shows it in Goose terms. Option C, which a prototype on a fork implements,
+is also a `goose dap`, but one that stands in front of LLDB's adapter: LLDB
+runs the program, and the compiler's adapter turns what LLDB reports into
+Goose. Section 3 is A, section 5 is B, section 6 is C, section 7 compares
+them, section 8 gives the recommendation and the order to build it in.
 
 ## 0. Summary
 
-**Option A** is recommended. `#line` directives map the generated C back to
-Goose lines in every C compiler's debug information (PDB or DWARF). Under
-`--debug` the generated C is shaped so that a C debugger reads it well
-(typed resizable headers, named structs, compiler temporaries out of the
-way), and the compiler writes a description of how each Goose type is
-represented. Visualizers built from that description show Goose values:
-a natvis file generated per program for Microsoft's debugger, and one
-static LLDB module for every other editor and platform. The VS Code
-extension builds with `--debug` and hands the session to an existing
-debug adapter. Nobody writes a debugger.
+**Option C** is recommended. `#line` directives map the generated C back to
+Goose lines in every C compiler's debug information (PDB or DWARF), which
+every option needs. `goose build --debug` writes a map of each function's
+locals and each type's representation, and `goose dap` speaks DAP to the
+editor while driving `lldb-dap` underneath: LLDB does breakpoints,
+stepping, threads and unwinding, and the adapter reads values out of
+memory by their Goose types, names frames and locals as the source does,
+steps past the compiler's code and stops on failed checks. The Goose
+knowledge is in one place, in the compiler, changing with the code
+generator and tested by the suite, and every editor with a DAP client runs
+the same command. It depends on how `lldb-dap` behaves, not only on the
+protocol, and leaves out Microsoft's debugger.
+
+**Option A** puts the Goose knowledge into the debuggers instead: a natvis
+file generated per program for Microsoft's debugger and an LLDB module for
+the rest, interpreting the same kind of description, with the generated C
+reshaped under `--debug` so that a C debugger reads it well. It keeps
+Visual Studio and `cppvsdbg`, but it has two interpreters of the
+description, shows C names and C expressions, and needs configuration in
+each editor. Its natvis half stays worth having if Visual Studio users ask.
 
 **Option B**, a DAP server in the compiler driving the program through
 hooks the code generator inserts, is the only way to debug under the JIT
-and the only way to get Goose names, exact scopes and Goose-syntax watch
-expressions everywhere. It costs a debugger's worth of code (stopping,
-stepping, frames, a value printer, an expression compiler, a protocol
-server), it cannot see into C, and it cannot debug programs with threads
-under the JIT. It is the option to revisit if debugging without a C
-toolchain turns out to matter to many users.
+and the only way to get Goose-syntax watch expressions with calls. It
+costs a debugger's worth of code (stopping, stepping, frames, a value
+printer, an expression compiler, a protocol server), it cannot see into C,
+and it cannot debug programs with threads under the JIT. It is the option
+to revisit if debugging without a C toolchain turns out to matter to many
+users, and C's map, value printer and tests carry over to it.
 
-**The JIT** gets no interactive debugger under A. What it can get cheaply
-is a stack trace in Goose lines when a program crashes, from TinyCC's own
-backtracer (section 4).
+**The JIT** gets no interactive debugger under A or C. What it can get
+cheaply is a stack trace in Goose lines when a program crashes, from
+TinyCC's own backtracer (section 4).
 
 ## 1. What a debugger sees today
 
 `goose build --debug` compiles the C with `/Od /Zi` or `-O0 -g`
-(`src/build.h`) and turns on the overflow, range and tag checks. That is
-all the support there is. The VS Code extension contributes a `goose`
+(`src/build.h`) and turns on the overflow, range and tag checks. On master
+that is all the support there is. The VS Code extension contributes a `goose`
 debug type, but it only runs the program with the JIT in a task
 (`noDebug`) and refuses `attach`.
 
@@ -109,8 +129,8 @@ C debugger has to work with:
   header is the same `gs_rhdr { uint8_t *base; int64_t len; }`, so nothing
   in the debug information says that `shapes_g` holds `Shape_g` values. No
   visualizer can show its elements. This is the one representation that
-  blocks Option A, and it is fixed in the C (section 3.2), not in a
-  visualizer.
+  blocks Option A's visualizers; A fixes it in the C (section 3.2), and C
+  by naming the element type in its map (section 6.2).
 * **The rest is bytes.** Variable-mode ADT values and arrays of them
   (`r_Shape_g_vm` is a `uint8_t *`), varints, self-relative and
   pool-relative references (integers), fat references (`gs_rref`, a header
@@ -196,7 +216,7 @@ writes, never what it does:
 * **Locals in C blocks** where the Goose scopes allow it, so a shadowed
   variable leaves the Locals view when its Goose scope ends. Whether the
   code generator can declare locals where their scopes begin, rather than
-  at the top, is an open question (section 8).
+  at the top, is an open question (section 9).
 * Possibly **no `_g` suffix** on locals whose names cannot collide with a
   C keyword or a runtime name, so that a C watch expression of a plain
   variable reads like Goose.
@@ -323,7 +343,7 @@ breaks a visualizer then fails a test instead of a user's session.
 
 ## 4. The JIT
 
-Under Option A the JIT gets no interactive debugging. A native debugger
+Under A and C the JIT gets no interactive debugging. A native debugger
 would attach to the `goose` process, and the program's code in it has no
 debug information any debugger loads:
 
@@ -387,8 +407,8 @@ to go on. A breakpoint marks the sites on its line. Stepping compares the
 depth of the frame stack (5.3): over stops at the next site at the same
 depth or shallower, in at the next site, out at the next shallower one. A
 pause sets `gs_dbg_armed` from the server's thread. Since a site knows its
-column, stepping can go statement by statement within a line, which
-Option A cannot.
+column, stepping can go statement by statement within a line, which A and
+C cannot.
 
 When nothing is set, a site costs a load and a branch not taken. Under
 TinyCC, which inlines nothing and keeps locals in memory, that adds less,
@@ -461,7 +481,7 @@ read) reaches no site, and the debugger has to report it as running.
   outside its data, but C code can, and a stray write from it can corrupt
   the debugger and the compiler's state, which the printer then reads.
 * Compiler work still needs a native debugger on the generated C, so
-  Option A's `#line` and debug builds are needed anyway.
+  the `#line` and debug builds of A and C are needed anyway.
 
 ### 5.7 What it costs to keep
 
@@ -485,71 +505,251 @@ B tests well: like the language server, the suite can drive `goose dap`
 from Python (`test/lsp_protocol.py`'s client, with DAP messages) and
 compare stops, stacks and values without any debugger installed.
 
-## 6. A and B compared
+## 6. Option C: `goose dap` in front of lldb-dap
 
-| | A: native debuggers | B: `goose dap` |
-|---|---|---|
-| Needs a C compiler and a debugger | yes | no, under the JIT |
-| Programs with threads | yes | not under the JIT until it has thread-local storage; built programs only with B's own stop-the-world |
-| Editors | every DAP client, plus Visual Studio; Microsoft's debugger only in VS Code and Visual Studio | every DAP client |
-| Breakpoints and steps | by line | by line and column |
-| Locals | C names, all of a function's, temporaries grouped | Goose names, exactly those in scope |
-| Values | visualizers interpreting a compiler-written description, natvis and LLDB | the compiler's own types |
-| Watch expressions | C | Goose, calls included |
-| Runtime errors | a function breakpoint on the runtime's failure path | a stop on the failing line |
-| C and extern frames | yes | invisible |
-| Crash dumps, attach, optimized builds | yes | no |
-| Cost in the program | none beyond a debug build | a check per statement, a frame link per call |
-| When a representation changes | a description kind, a natvis template, a Python class | printer code |
-| When control flow changes | nothing (the C compiler places lines) | site and scope placement |
-| What there is to own | `#line` and debug shapes in the code generator, a natvis generator, one Python module, extension glue | a debugger: protocol server, stop and step machinery, printer, expression compiler, frame records; more for built programs and threads |
-| First useful result | `#line` and the VS Code launch: breakpoints, steps and stacks in Goose source | most of the debugger has to exist before one breakpoint works |
+A prototype on a fork implements this option (`pdoane/goose`, branch
+`dap-prototype`, commits `190a9e6a` and `4f2c161e`, November 2026). Its
+`#line` half comes from the source-debugging part of goose#169. This
+section describes that prototype as its code reads; it has not been built
+or run for this note.
 
-Rough sizes, for scale only: A is low thousands of lines, mostly
-data-driven; B is several thousand for the JIT alone, and more for built
-programs and threads.
+### 6.1 Shape
 
-## 7. Recommendation and order of work
+`goose dap` speaks DAP on stdin and stdout, like `goose lsp`, and starts
+`lldb-dap` as a child process that it speaks DAP to in turn (`src/dap.h`,
+about 1,400 lines). A launch whose program is a `.goose` file runs
+`goose build --debug -O0` on it and launches the executable under
+`lldb-dap`. LLDB places the breakpoints (through the `#line` information),
+runs, steps, stops and unwinds the program, and reads its memory. The
+adapter answers `stackTrace`, `scopes`, `variables`, `threads`, `evaluate`
+and `exceptionInfo` itself, adds to `setFunctionBreakpoints`, and looks at
+every stop before the editor sees it; every other request and event passes
+through unchanged. It finds `lldb-dap` through `--lldb-dap`,
+`GOOSE_LLDB_DAP`, `xcrun` on macOS, or `PATH`.
 
-Option A, in steps that are each useful on their own:
+Compared with A, the debugger underneath is the same, but the Goose
+knowledge sits in front of it rather than inside it, and the editor talks
+to the compiler. Compared with B, the protocol server and the value printer
+are the same idea, but nothing in the generated C stops the program: LLDB
+does.
 
-1. **Source lines.** `#line` in the generated C, `--debug` implying the
-   Goose compiler's `-O0`, the `breakpoints` contribution and the debug
-   launch in the VS Code extension. After this, VS Code, Visual Studio and
-   `lldb-dap` step through Goose source with Goose call stacks, and
-   scalars, structs, fixed arrays and fixed ADTs are readable.
-2. **Debug shapes** in the code generator (3.2), typed resizable headers
-   first.
-3. **The description and `goose_lldb.py`**, with the batch-mode tests.
-   This covers every editor on every platform.
-4. **Generated natvis**, embedded in the PDB.
-5. **JIT backtraces** (section 4), independent of the rest.
-6. Editor snippets in `docs/editors.md`; GDB's front end when asked for.
+### 6.2 The debug map
+
+`goose build --debug` writes `<program>.debug.json` into the build
+directory (`src/codegen_debugmap.h`):
+
+* For each type: its kind, and its size when it is fixed. The kinds are
+  integer (with its signedness, or varint), float, bool, struct (its fields
+  and pads), ADT (its tag size and variants), slice, array (fixed, limited,
+  variable or resizable) and reference (optional, fat, self-relative or
+  pool-relative).
+* For each C function: the Goose function's name, and its locals: the
+  Goose name, the C lvalue, the declaration line, the line its block ends
+  on, the type, whether it arrives as a captured pointer, and a root
+  struct's components. Named constants come with their values.
+* The program's globals, its typed queues, and whether it uses
+  `return … from`.
+
+The map calls itself a private contract between the compiler and its own
+adapter, so that both change together. It is the description of section
+3.3, with one interpreter of it instead of two, and that interpreter in the
+compiler. Under `--debug` the optimizer also stops propagating constants
+into their uses, so that a `let` stays a variable a debugger can read.
+
+### 6.3 What the adapter shows
+
+* **Call stacks** of Goose functions by their Goose names. Frames of
+  functions the map does not know (the runtime, C) are left out.
+* **Locals** by their Goose names: the parameters, and the locals declared
+  before the stopped line whose block has not yet ended. An inner one
+  shadows an outer by declaration line, and temporaries never appear.
+  Globals and queues are scopes of their own.
+* **Values** read by type, from memory the adapter asks `lldb-dap` for in
+  4 KB pages, cached for the stop: text as text, ADTs as
+  `Note.Count {n: 300}`, variable-mode arrays walked, varints decoded,
+  self-relative references followed, pool-relative ones shown as their
+  offset. A value's one-line form is read 4 levels deep and 64 elements
+  long, and the rest when the editor expands it, which also stops a cycle
+  of references.
+* **Threads** named by the Goose function they run, their line, and what
+  they wait on (`qget`, `thread_wait`).
+* **Stepping** that lands outside the `.goose` files in the program's
+  directory, in generated C or in the standard library, steps on. A
+  breakpoint that lands in a function's prologue steps into its first
+  line. While a `return … from` is unwinding (the runtime's in-flight flag
+  is set), a step carries on until it lands.
+* **Failed checks** stop as an exception, through a function breakpoint on
+  the runtime's `gs_fail` that the adapter always sets, with the check's
+  message and the failing Goose line.
+* **The console** evaluates a small Goose expression language over memory:
+  names in scope, fields, indexing, `.len`, arithmetic (with Goose's
+  Euclidean `%`), comparisons, `&&` and `||`. It cannot call functions.
+
+`test/dap_protocol.py` drives the adapter from the suite, with fixtures
+under `test/dap/`, wherever `lldb-dap` is installed. It checks breakpoints,
+names and values, stepping past generated code, threads, `return … from`
+and failed checks.
+
+### 6.4 What it depends on
+
+Much of what the adapter relies on is how `lldb-dap` behaves rather than
+what the protocol says:
+
+* It parses `lldb-dap`'s text for values: a `uint8_t` rendered as a
+  character literal, the `0x` in a pointer's rendering, the quoted bytes of
+  a failure message.
+* It asks for the threads twice after a stop, since `lldb-dap`'s first
+  answer can hold only the stopped thread.
+* It replaces `lldb-dap`'s scope references, which are the same for every
+  frame.
+* It finds each local's address by having LLDB evaluate `&x_g`, a C
+  expression, once per local per stop, and a frame object's size by
+  evaluating `sizeof`.
+
+Each of these depends on a version of `lldb-dap`, where A depends on the
+debuggers' documented formatter interfaces. Some layout facts are also in
+the adapter rather than in the map: a resizable's length 8 bytes after its
+base, a runtime-sized limited array's two `u32` counts, a frame object's
+tail 16 bytes before the end of its C struct, a queue node's 16-byte
+header. A code generator change to any of them breaks the adapter, and
+only a fixture that covers that shape notices.
+
+LLDB is the only debugger underneath. Microsoft's debugger is licensed only
+for use with Microsoft's editors (section 3.4), which rules it out behind
+`goose dap` in other editors and makes it doubtful in VS Code too, so
+Visual Studio and `cppvsdbg` get none of the Goose view. On Windows the
+adapter is `lldb-dap` reading an MSVC build's PDB or a clang build's debug
+information; `lldb-dap.exe` ships with Visual Studio's LLVM component. The
+prototype's paths assume `/`, and its suite test runs only on macOS or
+where `lldb-dap` is on `PATH`, so it does not look to have been run on
+Windows yet.
+
+### 6.5 What it cannot do
+
+* **No debugging under the JIT**, as with A.
+* **Console expressions are a subset**, without calls, and their parser is
+  the adapter's own, not the compiler's, so it does not follow the
+  language as the language changes.
+* **Scopes are line ranges.** Two declarations on one line, and the copies
+  of a `const for` body (which all show, since a stop does not say which
+  copy runs), are approximate.
+* **C frames are hidden** from the call stack, so a stop in extern code
+  shows only the Goose frames above it, though LLDB has the rest.
+* **Every value is a round trip** to `lldb-dap`, cached by page for the
+  stop, and every local an evaluation. How that feels on large frames or
+  with many threads has not been measured.
+* **No Microsoft debugger** (6.4).
+
+### 6.6 What to tighten
+
+* **`#line` only where the line changes, and only for debug builds.** The
+  prototype writes `#if GS_DEBUG`, `#line` and `#endif` before every line
+  of generated C in every build, four lines for each, in release output and
+  in the C the JIT compiles too. For code the compiler writes itself it
+  writes `#line 0`, outside the range C allows for `#line` (1 to
+  2147483647).
+* **The layout in the map**, every offset the adapter needs, from the C
+  compiler rather than worked out a second time: an `offsetof` and
+  `sizeof` table compiled into the debug build, which the adapter reads
+  once at launch.
+* **Addresses from the protocol.** A DAP variable can carry a
+  `memoryReference`. Where `lldb-dap` gives a variable's address that way,
+  it replaces evaluating `&x_g` and parsing the result; whether it does for
+  every kind of local is to be checked.
+* **The console on the compiler's front end.** The text is parsed and
+  checked as a Goose expression in the scope of the stopped line (the
+  language server already resolves names at a position), and the checked
+  tree is evaluated over memory, so the console understands what the
+  compiler does.
+* **`--debug` alone implies `-O0` and kept variables**, for every command,
+  rather than the adapter passing `-O0` and the optimizer keeping
+  variables only for `build`.
+* **Windows**: separators in paths, and a run of the adapter's tests with
+  `lldb-dap` from Visual Studio's LLVM, against an MSVC build and a clang
+  build.
+
+## 7. The three compared
+
+| | A: native debuggers, visualizers | C: `goose dap` in front of `lldb-dap` | B: `goose dap` alone |
+|---|---|---|---|
+| Runs the program: breakpoints, steps, threads | the native debugger | `lldb-dap` | the compiler, through hooks in the generated C |
+| Needs a C compiler and a debugger | yes | yes, and `lldb-dap` | no, under the JIT |
+| Programs with threads | yes | yes | not under the JIT until it has thread-local storage; built programs only with B's own stop-the-world |
+| Editors | every DAP client, configured per editor, plus Visual Studio | every DAP client, running one command | every DAP client, running one command |
+| Microsoft's debugger | yes, in VS Code and Visual Studio | no | not involved |
+| Breakpoints and steps | by line | by line, past the compiler's code and through `return … from` | by line and column |
+| Call stack | C function names | Goose names, C frames left out | Goose names |
+| Locals | C names, all of a function's | Goose names, by line range | Goose names, exactly those in scope |
+| Values | natvis and an LLDB module interpreting a description | the compiler's adapter interpreting its map | the compiler's own types |
+| Console | C | a Goose subset over memory, no calls | Goose, calls included |
+| Runtime errors | a function breakpoint on the runtime's failure path | an exception stop on the failing line | a stop on the failing line |
+| C and extern frames | yes | in LLDB, hidden from the stack | invisible |
+| Crash dumps and attach | yes | LLDB can; the adapter does not ask it to yet | no |
+| Optimized builds | as well as C debugging of them goes | no (the map is for debug builds) | no |
+| Cost in the program | none beyond a debug build | none beyond a debug build | a check per statement, a frame link per call |
+| Depends on | the debuggers' formatter interfaces | `lldb-dap`'s behaviour | nothing outside `goose` |
+| When a representation changes | a description kind, a natvis template, a Python class | the map and the adapter's reader | printer code |
+| When control flow changes | nothing | nothing, unless stepping needs a new rule | site and scope placement |
+| What there is to own | `#line`, debug shapes, a natvis generator, an LLDB module, extension glue | `#line`, the map, the adapter | a debugger: protocol server, stop and step machinery, printer, expression compiler, frame records |
+
+Sizes: C's prototype is about 1,400 lines of adapter, 240 of map and some
+50 of code generator and optimizer changes, plus its tests. A would be of
+the same order, most of it the natvis generator and the LLDB module. B
+would be several thousand lines for the JIT alone. The sizes of A and B
+are estimates.
+
+## 8. Recommendation and order of work
+
+Option C, in steps that are each useful on their own:
+
+1. **Source lines.** `#line` in debug builds where the Goose line changes,
+   and `--debug` implying `-O0` and kept variables (6.6). This alone gives
+   every native debugger Goose lines, and every later step needs it.
+2. **`goose dap` in front of `lldb-dap`**, from the prototype, with the
+   layout in the map and run on all three platforms.
+3. **VS Code**: the `breakpoints` contribution (3.4), and the `goose` debug
+   type's debug launch served by `goose dap` as its adapter executable,
+   while `noDebug` keeps running the JIT task. Other editors get a snippet
+   each in `docs/editors.md`, as they have for the language server.
+4. **The console on the compiler's front end** (6.6).
+5. **Generated natvis**, from the same map, for Visual Studio and
+   `cppvsdbg`, if their users ask: the one part of A still worth having,
+   and cheap once the map exists.
+6. **JIT backtraces** (section 4), independent of the rest.
+
+Option A's debug shapes in the code generator (3.2) and its LLDB module are
+not needed under C: the adapter hides the temporaries, and the map gives a
+resizable's element type.
 
 Option B is worth revisiting if a large share of users debug without a C
-toolchain, if Goose-syntax evaluation turns out to matter more than C
-watch expressions suggest, or if the visualizers cannot show
-variable-mode, relative or root data acceptably. Much of A carries over:
-the line and scope information the code generator collects for `#line`,
-the description of representations (which B's printer could consume rather
-than walking the compiler's model), the test fixtures, and the `goose`
-debug type in the extension, which would become a real adapter.
+toolchain, or if Goose watch expressions with calls turn out to matter. C
+carries over to it: the protocol server, the map, the value reader (which
+reads through one memory-reading function, which under B would read the
+process's own memory), the console, the tests and the editor
+configuration. C is a step toward B rather than away from it.
 
-## 8. Open questions
+## 9. Open questions
 
-* Can locals be declared where their scopes begin, or does the code
-  generator's structure (temporaries live across statements, jumps for
-  `defer` and `return … from`) need them at the top?
+* Is LLDB's PDB support good enough for C on Windows (locals, unions,
+  packed structs), so that one adapter over `lldb-dap` serves every editor
+  there?
+* Which versions of `lldb-dap` to support, and how the suite pins and
+  tests them, given section 6.4.
 * Should `#line` be written in release builds too? Profilers and crash
   dumps would then name Goose lines; generated C read by people, and the
-  corpus diffs (`test/emit_order.py`, the differential harness) would see
+  corpus diffs (`test/emit_order.py`, the differential harness), would see
   more churn.
-* Is LLDB's PDB support good enough for C on Windows (locals, unions,
-  bit-exact packed structs), so that one Python module really serves every
-  non-Microsoft editor there?
-* Where does the description live: a file beside the executable, or a
-  section in it? A file is simplest; a section cannot be separated from
-  the executable it describes.
+* Are line ranges good enough for scopes, or should the map carry exact
+  statement ranges?
+* Should the adapter show C frames, collapsed, when a program stops in
+  extern code?
+* Where does the map live: a file in the build directory, as in the
+  prototype, or a section in the executable? A file is simplest; a section
+  cannot be separated from the executable it describes.
+* For A's debug shapes: can locals be declared where their scopes begin,
+  or does the code generator's structure (temporaries live across
+  statements, jumps for `defer` and `return … from`) need them at the
+  top?
 * What does TinyCC's own debug information (`-g` to a file) give LLDB on
   Windows? A TinyCC debug build would let a machine with no other C
   compiler debug with LLDB alone.
@@ -567,3 +767,5 @@ debug type in the extension, which would become a real adapter.
 * GDB's `.debug_gdb_scripts` section: https://sourceware.org/gdb/current/onlinedocs/gdb.html/dotdebug_005fgdb_005fscripts-section.html
 * Rust's embedded debugger visualizers: https://doc.rust-lang.org/reference/attributes/debugger.html
 * The licence of Microsoft's debugger: https://github.com/OmniSharp/omnisharp-vscode/wiki/Microsoft-.NET-Core-Debugger-licensing-and-Microsoft-Visual-Studio-Code
+* The Option C prototype: https://github.com/pdoane/goose/tree/dap-prototype
+* goose#169, whose `#line` mapping the prototype uses: https://github.com/aardappel/goose/pull/169
