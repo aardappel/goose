@@ -1076,6 +1076,34 @@ class Runner:
                 valid = False
         return valid
 
+    def check_abandoned_accumulator(self, level, specs):
+        bodies = {}
+        for spec in specs.split("// spec ")[1:]:
+            match = re.search(r"^fn (\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
+            if match:
+                bodies[match[1]] = spec[match.end():]
+        optimized = level != "-O0"
+        shapes = {
+            "leave_arg": (False, True),
+            "leave_block": (optimized, True),
+            "leave_mixed": (optimized, True),
+            "leave_sequence": (optimized, True),
+            "safe_block": (optimized, not optimized),
+            "safe_plain_block": (optimized, not optimized),
+        }
+        valid = True
+        for name, want in shapes.items():
+            body = bodies.get(name)
+            got = None if body is None else (
+                bool(re.search(r"\bloop \{", body)),
+                bool(re.search(rf"\b{name}\(", body)),
+            )
+            if got != want:
+                self.fail(f"abandoned-accumulator {level} {name}",
+                          f"(loop, self call): got {got}, want {want}")
+                valid = False
+        return valid
+
     def check_loop_shapes(self, text):
         # The loops codegen restates mark themselves in the C with a comment
         # naming the shape (optimize_loops.h, BCE's lenbound). Every shape_
@@ -1672,6 +1700,16 @@ def main():
             r.ok(f"optimize {lvl}")
     for lvl in ("-O0", "-O1", "-O2"):
         r.show_task(optimize, lvl)
+
+    def abandoned_accumulator(lvl):
+        code, out, err = r.goose(lvl, "--check", "--specs",
+                                 HERE / "optimizer" / "tre_abandoned_accumulator.goose")
+        if code != 0:
+            r.fail(f"abandoned-accumulator {lvl}", out + err)
+        elif r.check_abandoned_accumulator(lvl, out):
+            r.ok(f"abandoned-accumulator {lvl}")
+    for lvl in ("-O0", "-O1", "-O2"):
+        r.show_task(abandoned_accumulator, lvl)
 
     # The data stack report (--stacks): a program with a worker, whose
     # first-line budget caps the workers at one, a recursive one whose

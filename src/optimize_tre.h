@@ -173,6 +173,21 @@ struct TailRecursion {
         return Locate(it->second) == LOC_ANY ? LOC_ANY : LOC_HOLDSOUT;
     }
 
+    // An argument can abandon the call before its step commits. A nested
+    // block or loop catches its own breaks, but returns still leave us.
+    bool Abandons(Node *n, bool breaks = true) {
+        if (!n) return false;
+        if (auto r = Is<Return>(n); r && r->target == sp->sf) return true;
+        if (breaks && Is<Break>(n)) return true;
+        if (auto fl = Is<ForLoop>(n))
+            return Abandons(fl->iter, breaks) || Abandons(fl->body, false);
+        if (Is<EarlyBlock>(n) || Is<While>(n) || Is<LoopExpr>(n))
+            breaks = false;
+        auto found = false;
+        RunChildren(n, [&](Node *ch) { found = found || Abandons(ch, breaks); });
+        return found;
+    }
+
     // The parameter rebindings one tail call needs; arguments that are
     // already the parameter itself need none only if its value cannot change
     // while later arguments run. Storing into a reference
@@ -188,6 +203,7 @@ struct TailRecursion {
     bool Rebinds(Call *c, vector<pair<VarDef *, Node *>> &out) {
         auto an = c->ValueArgNodes();
         if (an.size() != sp->params.size()) return false;
+        if (Abandons(c)) return false;
         for (size_t i = 0; i < an.size(); i++) {
             auto p = sp->params[i];
             if (auto id = Is<Ident>(an[i]); id && id->vdef == p &&
