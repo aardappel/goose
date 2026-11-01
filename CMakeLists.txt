@@ -205,3 +205,17 @@ else()
     # the rest are value-initialised.
     target_compile_options(goose PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 endif()
+
+option(GOOSE_BUILD_LSP_TESTS "Build deterministic language server tests" OFF)
+if(GOOSE_BUILD_LSP_TESTS)
+    get_target_property(goose_lsp_sources goose SOURCES)
+    list(REMOVE_ITEM goose_lsp_sources src/main.cpp)
+    add_executable(goose_lsp_test test/lsp_server.cpp ${goose_lsp_sources})
+    foreach(prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_OPTIONS LINK_LIBRARIES)
+        set_property(TARGET goose_lsp_test PROPERTY ${prop} "$<TARGET_PROPERTY:goose,${prop}>")
+    endforeach()
+    add_dependencies(goose_lsp_test tcc_runtime)
+    enable_testing()
+    add_test(NAME lsp_call_hierarchy COMMAND goose_lsp_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/stdlib" "${CMAKE_CURRENT_BINARY_DIR}/lsp_calls.goose")
+endif()
