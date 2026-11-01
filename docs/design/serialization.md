@@ -97,7 +97,13 @@ For a candidate payload of `T[...]`:
 4. **Excluded types.** Plain references and slices (they are addresses) and
    `in pool` references (they mean an offset into a *named* global pool, not
    into the image) are rejected for all three builtins. Resizable fields
-   cannot be array elements in the first place.
+   cannot be array elements in the first place. A grow-shrink `from_bytes`
+   result whose elements hold relative references is rejected as well: the
+   verifier checks a link against the loaded image, but a shrink of the
+   result frees the element the link names while the array's own contents
+   still hold it, and the store rule that keeps references into a `T[>..<]`
+   out of storage (§5.2 of the spec) never runs, since the verified copy is
+   not a store. Load the same image as a `T[>..]` instead.
 
 What §3.9 already guarantees for a self-relative structure built by the
 program (both ends of a link in one root array) is exactly what step 3
@@ -146,7 +152,9 @@ so it needs no new rule in §9. `from_bytes` builds any array kind whose
 contents are an element run plus a count: `T[>..]`, `T[>..<]`, and the `T[]`
 family, whose count goes into the destination's own length prefix. A fixed
 or limited array would also need the count to match a capacity that the
-image does not carry, so those are rejected.
+image does not carry, so those are rejected. A `T[>..<]` whose elements
+hold relative references is rejected too: a shrink of the result frees what
+its own links still name (§4, excluded types).
 
 The `bool` is the verifier's verdict; on failure the array is empty. It may be
 dropped (`var a = from_bytes<T>(b);`), when the caller accepts an empty

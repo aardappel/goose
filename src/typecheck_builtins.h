@@ -220,6 +220,15 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             string why;
             if (!VerifiableElem(el, el, why))
                 Error(c, cat("from_bytes<", TypeStr(t), "> has no verifier: ", why));
+            // The verifier checks a link against the loaded image, but a
+            // grow-shrink result can free the element it names while the
+            // array's own contents still hold it: the store rule that keeps
+            // references into a T[>..<] out of storage (§5.2) never ran,
+            // because the verified copy is not a store.
+            if (ak == A_GROWSHRINK && HoldsRelRef(el))
+                Error(c, cat("from_bytes<", TypeStr(t),
+                             "> cannot hold relative references: a shrink would free "
+                             "what they still name"));
             CheckArg(args[0], u8slice);
             c->rettypes.push_back(t);
             c->rettypes.push_back(ast.booltype);
