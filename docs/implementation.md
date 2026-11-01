@@ -4664,8 +4664,9 @@ resizes no place whose array type is surely another (`DistinctTypes` in
 Likewise, a callee's write through an argument that is an array of
 scalars, or of any element type holding no length and no reference (a
 struct of scalars), which holds no other array and leads to none, kills
-only places of that array's type (`OtherArray` in `KillArgStorage`). A shrink of a reference parameter's
-array thus leaves a global of another type alone.
+only places of that array's type (`OtherArray` in `KillArgStorage`). A
+shrink of a reference parameter's array thus leaves a global of another
+type alone.
 
 A directional bump records that the new length is at least (or at most) the
 old one only where a fact names the old length (`BumpPlace`). A growth
@@ -4949,14 +4950,14 @@ its length reaches it. A variable of an index type gets the axioms
 length's *current* generation (`IndexBoundOf` in `DistsFrom`). So does a
 one-shot base standing for a value of an index type that is read out of
 storage or comes from a call (inlined or not), a branch or a conversion
-(`IndexTypeTerm`, `tmplen`). The array never shrinks, so a value below any earlier length is
-below the current one, and no bridge facts are involved. A `u64` of an
-index type is a base, since it is below a length. So every write of one
-kills it, as it does any other integer variable (`IntBaseVar`): an
-assignment, a callee's write to it through a reference or as a global, or a
-write through a reference that may name it. `JudgeIndexCast` judges a
-conversion into an index type as `a[x]` would be judged, sets
-`AsCast::nobc`, and states the completed check's facts.
+(`IndexTypeTerm`, `tmplen`). The array never shrinks, so a value below any
+earlier length is below the current one, and no bridge facts are involved.
+A `u64` of an index type is a base, since it is below a length. So every
+write of one kills it, as it does any other integer variable
+(`IntBaseVar`): an assignment, a callee's write to it through a reference or
+as a global, or a write through a reference that may name it.
+`JudgeIndexCast` judges a conversion into an index type as `a[x]` would be
+judged, sets `AsCast::nobc`, and states the completed check's facts.
 
 **checkfree.** A kept check belongs to the source text it is written in, as
 for `--bce-test`. The source lines that each `checkfree` function spans
