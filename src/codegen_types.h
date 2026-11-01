@@ -1279,8 +1279,8 @@ inline bool CodeGen::ZeroDefaultValue(Node *n, TypeExpr *t) {
 
 // ------------------------------------------------------------------
 // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
-// bytes values as pointers. Gap-free fixed types without floats of more
-// than a few scalars shortcut to memcmp.
+// bytes values as pointers. Gap-free fixed types without floats or relative
+// references of more than a few scalars shortcut to memcmp.
 
 inline bool CodeGen::BitwiseEq(TypeExpr *t) {
     if (!IsFix(t)) return false;
@@ -1295,6 +1295,7 @@ inline bool CodeGen::BitwiseEq(TypeExpr *t) {
             if (t->arr->akind == A_LIMITED) return false;   // Uninitialized slots.
             return BitwiseEq(t->arr->sub);
         case TY_FLT: return false;       // IEEE: -0.0 == 0.0, NaN != NaN.
+        case TY_REF: return !IsRelRef(t); // Offsets are not target addresses.
         default: return true;
     }
 }
@@ -1306,7 +1307,7 @@ inline bool CodeGen::ScalarEq(TypeExpr *t) {
 
 // How many scalars an equality test of fixed type t compares, counting
 // no further than cap. A leaf EqX has no comparison of its own for (a
-// relative reference, a function) counts as cap, which keeps memcmp.
+// function) counts as cap, which keeps memcmp.
 inline int64_t CodeGen::EqScalars(TypeExpr *t, int64_t cap) {
     switch (t->kind) {
         case TY_STRUCT: case TY_VARIANT: {
@@ -1322,7 +1323,7 @@ inline int64_t CodeGen::EqScalars(TypeExpr *t, int64_t cap) {
             return per && size > cap / per ? cap : per * size;
         }
         default:
-            return ScalarEq(t) || (t->kind == TY_REF && IsFatRef(t)) ||
+            return ScalarEq(t) || t->kind == TY_REF ||
                    (t->kind == TY_SLICE && !IsBytesT(t->sub)) ? 1 : cap;
     }
 }
@@ -1349,6 +1350,28 @@ inline string CodeGen::EqX(TypeExpr *t, const string &a, const string &b) {
 
 inline string CodeGen::EqFn(TypeExpr *t) {
     auto m = Mangle(t);
+    // C type mangles omit reference origins, including those in array
+    // elements and generic arguments. Equality must keep those origins:
+    // pool offsets share a base; self-relative offsets use each field.
+    // Nominal types already identify their declared fields, so inspect
+    // their arguments rather than walking possibly recursive fields.
+    auto origins = [&](auto &&visit, TypeExpr *x) -> void {
+        switch (x->kind) {
+            case TY_REF:
+                if (IsRelRef(x)) m += x->ref->pool ? "_pool" : "_self";
+                break;
+            case TY_ARRAY: visit(visit, x->arr->sub); break;
+            case TY_STRUCT:
+                for (auto arg : x->struc->args) visit(visit, arg);
+                break;
+            case TY_ENUM:
+                for (auto arg : x->enu->args) visit(visit, arg);
+                break;
+            case TY_VARIANT: visit(visit, x->var->adt); break;
+            default: break;
+        }
+    };
+    origins(origins, t);
     auto name = cat("gs_eq_", m);
     if (eqfns.count(m)) return name;
     eqfns.insert(m);
@@ -1359,7 +1382,27 @@ inline string CodeGen::EqFn(TypeExpr *t) {
     Append(protos, sig, ";\n");
     string bo;
     Append(bo, sig, " {\n");
-    if (bytes) EmitEqBytes(bo, t);
+    if (IsRelRef(t)) {
+        Loc a, b;
+        a.t = b.t = t;
+        a.s = "((const uint8_t *)a)";
+        b.s = "((const uint8_t *)b)";
+        string fa, fb, oa, ob;
+        RelParts(a, fa, oa);
+        RelParts(b, fb, ob);
+        Append(bo, "    int64_t oa = ", oa, ", ob = ", ob, ";\n");
+        if (t->ref->pool) {
+            // Both fields name the same pool, so equal offsets identify
+            // the same target (including its zero null encoding).
+            Append(bo, "    return oa == ob;\n");
+        } else {
+            auto target = [&](const string &field, const string &off) {
+                auto p = cat("(", field, " + ", off, ")");
+                return t->ref->optional ? cat("(", off, " ? ", p, " : NULL)") : p;
+            };
+            Append(bo, "    return ", target(fa, "oa"), " == ", target(fb, "ob"), ";\n");
+        }
+    } else if (bytes) EmitEqBytes(bo, t);
     else EmitEqFixed(bo, t);
     Append(bo, "}\n\n");
     code += bo;
@@ -1458,14 +1501,15 @@ inline void CodeGen::EmitEqFixed(string &bo, TypeExpr *t) {
 
 inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
     // Canonical encodings (minimal varints) make bytewise comparison exact
-    // for any pad-free, float-free bytes value; walk-compare covers the rest.
+    // without pads, floats or relative references; walk-compare covers the rest.
     auto bitwise = [&](TypeExpr *tt) {
         // Bytes layouts have no bare-pad alignment, but explicit pads,
         // embedded fixed-mode ADTs and floats still defeat memcmp.
         function<bool(TypeExpr *)> rec = [&](TypeExpr *x) -> bool {
             if (IsFix(x)) return BitwiseEq(x);
             switch (x->kind) {
-                case TY_INT: case TY_REF: return true;
+                case TY_INT: return true;
+                case TY_REF: return false;
                 // A runtime-capacity limited array's capacity and the slots
                 // past its length are no part of its value.
                 case TY_ARRAY: return x->arr->akind != A_LIMITED && rec(x->arr->sub);
@@ -1508,7 +1552,12 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
         return;
     }
     switch (t->kind) {
-        case TY_INT: case TY_REF: {  // varint / varint relref: canonical bytes.
+        case TY_REF:
+            Append(bo, I, "if (!", EqFn(t), "(", pa, ", ", pb, ")) return 0;\n",
+                   I, pa, " += gs_uleb_size(", pa, "); ", pb, " += gs_uleb_size(", pb,
+                   ");\n");
+            return;
+        case TY_INT: {  // varint: canonical bytes.
             Append(bo, I, "{ int64_t n = gs_uleb_size(", pa, ");\n",
                    I, "  if (gs_uleb_size(", pb, ") != n || memcmp(", pa, ", ", pb,
                    ", (size_t)n) != 0) return 0;\n",
