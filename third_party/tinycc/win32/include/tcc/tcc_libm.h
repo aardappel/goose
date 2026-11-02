@@ -416,7 +416,7 @@ __CRT_INLINE long double __cdecl nexttowardl(long double x, long double to) {
 /* Override msvcrt fabs(): 6.3x speedup! */
 
 __CRT_INLINE double __cdecl fabs(double x) {
-  return x < 0 ? -x : x;
+    return x < 0.0 ? -x : (x == 0.0 ? 0.0 : x);
 }
 __CRT_INLINE float __cdecl fabsf(float x) {
   return x < 0 ? -x : x;
