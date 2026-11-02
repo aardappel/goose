@@ -15,8 +15,10 @@ must turn the text into what `goose format` writes, change only the lines
 that change, and be none for a formatted document; a document that does
 not parse, or one not open, gets null. A second client, with two_a.goose and two_b.goose as its entry
 files, renames a function both import and finds its references and callers
-in both programs. Each server is seen out. The row of docs/testing.md on
-this file has the details."""
+in both programs. Then a client per offer of position encodings opens
+encodings.goose and checks its columns are UTF-8 bytes where it offered
+those, else UTF-16 units. Each server is seen out. The row of
+docs/testing.md on this file has the details."""
 import json
 import re
 import subprocess
@@ -625,3 +627,96 @@ def check_lsp_protocol(exe, base):
     code = two.p.wait(timeout=30)
     if code != 0:
         raise RuntimeError(f"goose lsp exited with {code}:\n{tc.decode(two.p.stderr.read())}")
+
+    check_position_encodings(exe, fixtures, fail)
+
+
+def check_position_encodings(exe, fixtures, fail):
+    """Position encodings (docs/design/language_server.md §10): a client
+    offering UTF-8 gets byte columns, and one that does not, UTF-16 units,
+    in what it asks and in what it is told. Each client opens
+    encodings.goose, whose names follow characters that differ in the two."""
+    path = fixtures / "encodings.goose"
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    uri = uri_of(path)
+    doc = {"textDocument": {"uri": uri}}
+
+    def line_of(needle):
+        """The 1-based line holding needle."""
+        return next(i + 1 for i, line in enumerate(lines) if needle in line)
+
+    for offered, want in ((None, "utf-16"), (["utf-16"], "utf-16"), (["utf-32"], "utf-16"),
+                          (["utf-8", "utf-16"], "utf-8"), (["utf-32", "utf-16", "utf-8"], "utf-8")):
+        what = f"offering {offered}"
+
+        def col(line, needle, nth=0):
+            """needle's 0-based column on the 1-based line, in the encoding."""
+            at = -1
+            for _ in range(nth + 1):
+                at = lines[line - 1].index(needle, at + 1)
+            prefix = lines[line - 1][:at]
+            return len(prefix.encode()) if want == "utf-8" else len(prefix.encode("utf-16-le")) // 2
+
+        def pos(line, needle, nth=0):
+            return {"line": line - 1, "character": col(line, needle, nth)}
+
+        caps = {} if offered is None else {"general": {"positionEncodings": offered}}
+        client = Client(exe, fixtures)
+        init = client.request("initialize", {"processId": None, "rootUri": uri_of(fixtures), "capabilities": caps,
+                                             "initializationOptions": {"entryFiles": [str(path)]}})
+        got = init["capabilities"].get("positionEncoding")
+        if got != want:
+            fail(f"{what}: the position encoding is not {want}", init["capabilities"])
+        client.send("initialized", {}, request=False)
+        client.send("textDocument/didOpen", {"textDocument": {
+            "uri": uri, "languageId": "goose", "version": 1, "text": text}}, request=False)
+        diags = client.diagnostics_for(uri, lambda d: len(d) > 0)
+
+        # The error at `missing`, after é and 🦆 on its line.
+        bad = line_of("missing")
+        errors = [d for d in diags if d["severity"] == 1]
+        if (len(errors) != 1 or errors[0]["range"]["start"] != pos(bad, "missing") or
+                errors[0]["range"]["end"] != {"line": bad - 1, "character": col(bad, "missing") + len("missing")}):
+            fail(f"{what}: the error is not at `missing` in {want} columns", diags)
+
+        # A use after 🦆🦆, and its declaration after é∑🦆: the position
+        # asked is read in the encoding, and the place answered written in it.
+        decl, use = line_of("let total"), line_of("print(")
+        got = client.request("textDocument/definition", {**doc, "position": pos(use, "total")})
+        if not got or got["range"]["start"] != pos(decl, "total"):
+            fail(f"{what}: the definition of total is not at {decl}:{col(decl, 'total')}", got)
+        got = client.request("textDocument/hover", {**doc, "position": pos(use, "total")})
+        if not got or "total" not in got["contents"]["value"]:
+            fail(f"{what}: no hover of total", got)
+        got = client.request("textDocument/references", {**doc, "position": pos(decl, "total"),
+                                                         "context": {"includeDeclaration": True}})
+        if sorted((r["range"]["start"]["line"], r["range"]["start"]["character"]) for r in got or []) != \
+                sorted([(decl - 1, col(decl, "total")), (use - 1, col(use, "total"))]):
+            fail(f"{what}: the references of total", got)
+
+        # Semantic tokens: total's at its use starts where it does in the
+        # encoding and is five units long in both.
+        got = client.request("textDocument/semanticTokens/full", doc)
+        data, tokens, line, char = got["data"], {}, 0, 0
+        for i in range(0, len(data), 5):
+            dline, dchar, length = data[i:i + 3]
+            line += dline
+            char = char + dchar if dline == 0 else dchar
+            tokens[(line, char)] = length
+        if tokens.get((use - 1, col(use, "total"))) != len("total"):
+            fail(f"{what}: no five-unit token for total at {use}:{col(use, 'total')}", tokens)
+
+        # A UTF-8 column inside 🦆 is taken back to the duck's start, which
+        # holds no name; in UTF-16 the same number is a column of its own.
+        if want == "utf-8":
+            inside = {"line": use - 1, "character": col(use, "🦆") + 2}
+            got = client.request("textDocument/hover", {**doc, "position": inside})
+            if got:
+                fail(f"{what}: a hover inside 🦆", got)
+
+        client.request("shutdown", None)
+        client.send("exit", request=False)
+        code = client.p.wait(timeout=30)
+        if code != 0:
+            raise RuntimeError(f"goose lsp exited with {code}:\n{tc.decode(client.p.stderr.read())}")

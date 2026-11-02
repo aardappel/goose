@@ -198,7 +198,8 @@ easy to replace a complete analysis.
 4. **Positions are byte offsets with lengths.** Nodes and declarations get
    a start column and an end; the server converts to line and UTF-16
    column at the protocol boundary, since VS Code's client asks for
-   UTF-16. The compiler never deals in the protocol's units.
+   UTF-16 (a client offering UTF-8 gets byte columns, §10). The compiler
+   never deals in the protocol's units.
 
 5. **Diagnostics are data first, text second.** A `CompileError` carries a
    structured diagnostic (file, range, message, severity, the chain as
@@ -288,6 +289,7 @@ show is affordable (parsing is a tenth of a check).
 **Positions.** The server holds the text of every file of every analysis
 (the `Ast` does already). A protocol position becomes a byte offset by
 walking the line, counting UTF-16 units; the reverse walk makes ranges.
+For a client that negotiated UTF-8 the column already is the byte.
 `LoadSource` strips a byte-order mark, and the server strips it from an
 overlay text too, so offsets agree with the editor's, which never shows
 the mark.
@@ -628,10 +630,11 @@ provided.
   under the node as the lexer does. The test runner and the extension's
   parser both accept the column already (§2), so this is a choice of
   presentation for after phase 0, with the JSON form available either way.
-* **Position encoding.** VS Code negotiates UTF-16; the server converts.
-  Supporting `utf-8` for clients that offer it means returning a
-  `positionEncoding` in the initialize result and skipping the conversion,
-  once a client wants it.
+* **Position encoding.** Done. A client that lists `utf-8` in
+  `general.positionEncodings` (Neovim, Helix) gets `"positionEncoding":
+  "utf-8"` in the initialize result, and its columns are bytes, with no
+  conversion; any other client gets UTF-16, as VS Code asks. A UTF-8 column
+  inside a character is taken back to its start. `utf-32` is not offered.
 * **A browser extension.** Running the compiler in the extension host as
   WebAssembly would serve `vscode.dev`; the compile thread, the process
   runner and TinyCC make that a port, not a build flag. Not planned.

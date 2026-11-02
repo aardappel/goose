@@ -7393,9 +7393,11 @@ statement (`Ast::CheckCancel`). When it is set, they throw `Cancelled`,
 which is not a `CompileError`, so neither a tentative parse nor a driver's
 catch mistakes it for one. `JsonOut` writes the replies, and `JsonQuote`
 (`json.h`) writes their strings. The protocol's positions are UTF-16 columns
-on 0-based lines; the compiler's are byte columns on 1-based lines.
-`TextIndex` converts between these positions and byte offsets over a file's
-text, and `Utf16Col` and `ByteCol` convert within a line. `PathOfUri` and
+on 0-based lines, or byte columns when the client offered `utf-8` in
+`general.positionEncodings` at `initialize` (`utf8_positions`); the
+compiler's are byte columns on 1-based lines. `TextIndex` converts between
+these positions and byte offsets over a file's text, and `ProtocolCol` and
+`ByteCol` convert within a line. `PathOfUri` and
 `UriOfPath` convert between paths and `file:` URIs as VS Code writes them
 (`file:///c%3A/dir/a.goose`). `PathKey` is the form that two ways of writing
 one file's path share; it is lower case on Windows.

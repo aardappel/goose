@@ -3,7 +3,7 @@
 // stdin and stdout, a reader thread feeding the queue the worker drains,
 // the JSON writer the replies are built with, and the conversions between
 // the protocol's places and the compiler's: file URIs and paths, UTF-16
-// columns and byte columns.
+// (or, where the client offers it, UTF-8) columns and byte columns.
 #pragma once
 
 namespace goose {
@@ -231,9 +231,15 @@ inline string PathKey(const string &path) {
 // counts as one.
 inline size_t Utf8Len(uint8_t c) { return c < 0xC0 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4; }
 
-// The UTF-16 units of `line` before its byte `bytecol` (0-based): the
+// What the protocol's columns count: UTF-16 units, unless the client
+// offered UTF-8 at `initialize`, when they are bytes, the compiler's own.
+// Set once, before the first document opens.
+inline atomic<bool> utf8_positions { false };
+
+// The protocol's units of `line` before its byte `bytecol` (0-based): the
 // protocol's column for the compiler's.
-inline int Utf16Col(string_view line, size_t bytecol) {
+inline int ProtocolCol(string_view line, size_t bytecol) {
+    if (utf8_positions) return (int)min(bytecol, line.size());
     auto units = 0;
     for (size_t i = 0; i < bytecol && i < line.size();) {
         auto len = Utf8Len((uint8_t)line[i]);
@@ -243,9 +249,15 @@ inline int Utf16Col(string_view line, size_t bytecol) {
     return units;
 }
 
-// The byte in `line` that UTF-16 unit `units` starts: the compiler's column
-// for the protocol's.
+// The byte in `line` that protocol unit `units` starts: the compiler's
+// column for the protocol's. A UTF-8 column inside a character is taken
+// back to the character's start.
 inline size_t ByteCol(string_view line, int64_t units) {
+    if (utf8_positions) {
+        auto i = (size_t)clamp<int64_t>(units, 0, (int64_t)line.size());
+        while (i > 0 && i < line.size() && ((uint8_t)line[i] & 0xC0) == 0x80) i--;
+        return i;
+    }
     size_t i = 0;
     for (int64_t u = 0; u < units && i < line.size();) {
         auto len = Utf8Len((uint8_t)line[i]);
@@ -287,8 +299,8 @@ struct TextIndex {
         if (line < 1 || line > Lines() || col < 1) return -1;
         return (int64_t)linestarts[(size_t)line - 1] + col - 1;
     }
-    // A protocol position (0-based line, UTF-16 column) as an offset,
-    // clamped to the text.
+    // A protocol position (0-based line, column in the protocol's units)
+    // as an offset, clamped to the text.
     size_t OffsetOfPosition(int64_t line, int64_t character) const {
         if (line < 0) return 0;
         if (line >= Lines()) return text.size();
@@ -299,7 +311,7 @@ struct TextIndex {
     pair<int, int> PositionOf(size_t offset) const {
         auto line = LineOf(offset);
         auto start = linestarts[(size_t)line];
-        return { line, Utf16Col(LineText(line), offset - start) };
+        return { line, ProtocolCol(LineText(line), offset - start) };
     }
     // The identifier, qualified or not (`ns::name`, `::name`), at an
     // offset: its length, 0 for none.
