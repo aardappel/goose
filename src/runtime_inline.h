@@ -3890,7 +3890,7 @@ GS_API void gs_rt_stop(void) {
 #endif
     gs_rt_release();
 }
-R"GSRT(/* Native shared memory. Registry mutation is serialized. Descriptors live in
+/* Native shared memory. Registry mutation is serialized. Descriptors live in
    stable reusable slabs; generation tombstones survive close. Routine atomic
    operations (emitted by the compiler) never take this mutex. Worker leases
    are acquired before native spawn and prevent close/reuse through cleanup. */
