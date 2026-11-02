@@ -44,7 +44,7 @@ fn degrees(rad: f32) -> f32 { rad * 57.29577951308232 }
 // x - x is 0 for every finite x, and NaN for an infinity or a NaN.
 fn is_nan(x: f64) -> bool { x != x }
 fn is_nan(x: f32) -> bool { x != x }
-fn is_inf(x: f64) -> bool { x == x && (x - x) != (x - x) }
-fn is_inf(x: f32) -> bool { x == x && (x - x) != (x - x) }
+fn is_infinite(x: f64) -> bool { x == x && (x - x) != (x - x) }
+fn is_infinite(x: f32) -> bool { x == x && (x - x) != (x - x) }
 fn is_finite(x: f64) -> bool { x - x == 0.0 }
 fn is_finite(x: f32) -> bool { x - x == 0.0 }

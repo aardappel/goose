@@ -12,7 +12,7 @@ fn main() {
     print(radians(180.0) == PI, " ", degrees(PI) == 180.0, " ", TAU == 2.0 * PI);   // true true true
     let z = 0.0;
     let nan = z / z;
-    print(is_nan(nan), " ", is_inf(1.0 / z), " ", is_nan(1.0), " ", is_inf(1.0));   // true true false false
+    print(is_nan(nan), " ", is_infinite(1.0 / z), " ", is_nan(1.0), " ", is_infinite(1.0));   // true true false false
     print(is_finite(1.0), " ", is_finite(1.0 / z), " ", is_finite(nan), " ", is_finite(-1e308));   // true false false true
     // The f32 forms stay f32, and degrees multiplies by 180 / pi rounded to
     // f32 once (57.29578, where 180 / PI in f32 is 57.295776).
@@ -20,7 +20,7 @@ fn main() {
     let one_rad: f32 = 1.0;
     print(radians(half_turn), " ", degrees(one_rad), " ", degrees(radians(half_turn)));   // 3.1415927 57.29578 180.0
     let zf: f32 = 0.0;
-    print(is_nan(zf / zf), " ", is_inf(-1.0 / zf), " ", is_finite(zf), " ", is_finite(zf / zf));   // true true true false
+    print(is_nan(zf / zf), " ", is_infinite(-1.0 / zf), " ", is_finite(zf), " ", is_finite(zf / zf));   // true true true false
     let y: f32 = 0.5;
     print(floor(y), " ", pow(x, y));                                              // 0.0 1.5
     // sqrt is the runtime's, with no errno: the correctly rounded root, -0.0
@@ -48,5 +48,5 @@ fn main() {
     var bigf: f32[>..] = [3.0e38, 2.0];
     let o = mul_add(big[0], big[1], -big[0]);
     let of = mul_add(bigf[0], bigf[1], -bigf[0]);
-    print(o == 1.0e308 || is_inf(o), " ", of == bigf[0] || is_inf(of));   // true true
+    print(o == 1.0e308 || is_infinite(o), " ", of == bigf[0] || is_infinite(of));   // true true
 }

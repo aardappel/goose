@@ -33,16 +33,16 @@ tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the following parts, all reached
 through `extern fn` (spec §7.10):
 
-* the C behind `os` (`src/runtime/runtime_os.h`);
-* the byte search behind `std`'s `find_any` and `find_pair`
+- the C behind `os` (`src/runtime/runtime_os.h`);
+- the byte search behind `std`'s `find_any` and `find_pair`
   (`src/runtime/runtime_impl.h`);
-* `std`'s `popcount`, `clz` and `ctz`, and `ffi`'s two copies
+- `std`'s `popcount`, `clz` and `ctz`, and `ffi`'s two copies
   (`src/runtime/runtime_ext.h`);
-* libm, behind `math`;
-* the graphics layer behind `gfx`, the ui layer behind `ui` and the PCM
+- libm, behind `math`;
+- the graphics layer behind `gfx`, the ui layer behind `ui` and the PCM
   mixer behind `audio`, which are in the
   [goose_gfx](https://github.com/aardappel/goose_gfx) package;
-* the physics layer behind `physics`, which is in the
+- the physics layer behind `physics`, which is in the
   [goose_physics](https://github.com/aardappel/goose_physics) package.
 
 Both packages are repositories of their own. The design and its rationale
@@ -61,32 +61,32 @@ serialization format. Text formats have modules of their own:
 
 The library uses these conventions:
 
-* A function that reads or mutates elements in place takes `xs: T[:]`; every
+- A function that reads or mutates elements in place takes `xs: T[:]`; every
   array kind and every slice coerces to it: `sort(arr)`, `sort(arr[1..])`.
-* A function that changes the length takes `xs: A&`, the whole array by
+- A function that changes the length takes `xs: A&`, the whole array by
   reference, and instantiates for whatever array kind it is given, provided
   that kind has the operations used. A grow-only array shrinks through the
   reference wherever nothing in the caller points into it (spec §5.1), so
   `remove_at(xs, i)` works on a `[>..]` local; the checker rejects the
   call if a live reference or slice could be invalidated.
-* Nothing non-fixed is taken by value (spec §4.1): `f(xs)` binds by
+- Nothing non-fixed is taken by value (spec §4.1): `f(xs)` binds by
   reference, and a function that wants its own copy calls `copy(xs)`.
-* Fresh arrays come back as `T[>..]`, built directly in the caller's
+- Fresh arrays come back as `T[>..]`, built directly in the caller's
   destination: `let ys = filter(xs) { it > 0 };`, `out.append(map(xs) { … })`.
-* "Maybe an element" is a `T?`: a reference into the input, or null for
+- "Maybe an element" is a `T?`: a reference into the input, or null for
   none. Narrow it with `if`/`guard`. Positions are `i64`, `-1` for none.
   Two-outcome scalars return a trailing `bool`: `let v, ok = parse_int(s);`.
-* Blocks: `xs.find() { it > 3 }`, `sort(xs) { a, b => a.age < b.age }`. A
+- Blocks: `xs.find() { it > 3 }`, `sort(xs) { a, b => a.age < b.age }`. A
   comparator is always "a goes before b". Sorting, heap and extremum
   functions come with and without a block; without a block they compare
   with `<`.
-* Text output goes into a `u8[>..]&` builder the caller passes; `str(…)` is
+- Text output goes into a `u8[>..]&` builder the caller passes; `str(…)` is
   the fresh-string form.
-* UFCS applies: `xs.sort()`, `d.insert(k, v)`, `r.rand_int(6)`.
-* A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
+- UFCS applies: `xs.sort()`, `d.insert(k, v)`, `r.rand_int(6)`.
+- A function taking an element _by value_ (`push_n`, `insert_at`, `fill`,
   `heap_push`) cannot take one that contains self-relative references, because
   those values cannot be copied (spec §3.9). Construct them in place.
-* The functions that move elements around (`swap_at`, `reverse`, `shuffle`,
+- The functions that move elements around (`swap_at`, `reverse`, `shuffle`,
   `sort`, `stable_sort`, `fill`, `copy_into`, `insert_at`, `remove_at`,
   `swap_remove`, `retain`, `dedup`, the heap functions) move the elements
   themselves, including references: `reverse(refs)` reorders an array of
@@ -105,7 +105,7 @@ The library uses these conventions:
   `T` the reference type. `stable_sort` sorts an array of `in pool` links,
   but its temporary array cannot hold copies of self-relative links (spec
   §3.9).
-* The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, and `os` names are global;
+- The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, and `os` names are global;
   `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
   `physics`, `ui` and `exception` use their own namespaces, and so do the
   helpers `std` and `json` read and write float text with, in `float_text`.
@@ -470,21 +470,21 @@ directly. Owned text is copied before the frames containing it exit.
 
 The language's checks and limitations still apply:
 
-* Every throw must have a handler on every compile-time call path, including
+- Every throw must have a handler on every compile-time call path, including
   throws from a catch. An incompatible error type is a compile error.
-* References carried by a long-distance return must point to globals or
+- References carried by a long-distance return must point to globals or
   static data. Use owned `u8[]`, not a slice into a local string, and owned
   fields in error records.
-* Recursive code can throw to an outer handler. A `try` cannot itself be
+- Recursive code can throw to an outer handler. A `try` cannot itself be
   re-entered recursively: its non-fixed handler result would hold a data
   stack across the recursive call (§7.8).
-* The checker propagates calls that never resume their caller. A function
+- The checker propagates calls that never resume their caller. A function
   declared to return a value may end with `exception::throw(error);`, and a
   throwing branch needs no result. This does not give `throw` a value type:
   use it as a statement or branch, rather than `return throw(error);` or as
   an argument that requires a value. Recursive inference is conservative
   (spec §7.3).
-* Only calls to `throw` are caught. Runtime failures, `abort` and `exit`
+- Only calls to `throw` are caught. Runtime failures, `abort` and `exit`
   remain uncatchable. There is no stack-trace facility.
 
 `try<E>(body, catch, finally)` runs `finally` after the body completes, after
@@ -568,18 +568,18 @@ if c { c.v += 1; }
 `reusable` and `reusable[]` are deprecated; their builtins are still available.
 Import `slot_pool` for individual slots or `slice_pool` for contiguous runs.
 
-| Existing spelling | Library spelling |
-|---|---|
-| `reusable var p: T[>..] = [];` | `var p = slot_pool<T> {};` |
-| `reusable[] var p: T[>..] = [];` | `var p = slice_pool<T> {};` |
-| pool parameter `p: T[>..]&` | `p: slot_pool<T>&` or `p: slice_pool<T>&` |
-| `p[i]`, `p.len`, `for x in p` | `p.items[i]`, `p.items.len`, `for x in p.items` |
-| `u32 in p`, `Node&<u32 in p>` | `u32 in p.items`, `Node&<u32 in p.items>` |
-| `p.alloc_ref(value)` | same for copyable values; `p.alloc_with() { fresh_value }` for in-place construction |
-| `p.alloc_index(value)` | same for copyable values; `p.alloc_index_with() { fresh_value }` for in-place construction |
-| `p.free(i)` | same; or `p.free_ref(node)` when the element is not itself a reference |
-| `p.alloc_slice(n)`, `p.free_slice(s)`, `p.realloc_slice(s, n)` | same method spellings on `slice_pool` |
-| allocate a slice, then copy into it | `p.alloc_copy(source)` |
+| Existing spelling                                              | Library spelling                                                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `reusable var p: T[>..] = [];`                                 | `var p = slot_pool<T> {};`                                                                 |
+| `reusable[] var p: T[>..] = [];`                               | `var p = slice_pool<T> {};`                                                                |
+| pool parameter `p: T[>..]&`                                    | `p: slot_pool<T>&` or `p: slice_pool<T>&`                                                  |
+| `p[i]`, `p.len`, `for x in p`                                  | `p.items[i]`, `p.items.len`, `for x in p.items`                                            |
+| `u32 in p`, `Node&<u32 in p>`                                  | `u32 in p.items`, `Node&<u32 in p.items>`                                                  |
+| `p.alloc_ref(value)`                                           | same for copyable values; `p.alloc_with() { fresh_value }` for in-place construction       |
+| `p.alloc_index(value)`                                         | same for copyable values; `p.alloc_index_with() { fresh_value }` for in-place construction |
+| `p.free(i)`                                                    | same; or `p.free_ref(node)` when the element is not itself a reference                     |
+| `p.alloc_slice(n)`, `p.free_slice(s)`, `p.realloc_slice(s, n)` | same method spellings on `slice_pool`                                                      |
+| allocate a slice, then copy into it                            | `p.alloc_copy(source)`                                                                     |
 
 Both libraries keep stable, initialized backing storage. `items.len` is the
 high-water count, including free entries, and iteration visits those entries.
@@ -867,7 +867,7 @@ The module also has:
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;
 fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
-fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
+fn is_nan(x: f64) -> bool     fn is_infinite(x: f64) -> bool        // and f32
 fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
 ```
 
@@ -1364,19 +1364,19 @@ slice the text by the slots instead.
 
 The supported syntax is:
 
-* literal bytes;
-* `.` (which matches a newline only under `s`);
-* classes `[a-z]` and `[^...]`, where a `]` first or a `-` first or last is
+- literal bytes;
+- `.` (which matches a newline only under `s`);
+- classes `[a-z]` and `[^...]`, where a `]` first or a `-` first or last is
   literal;
-* `\d \w \s` and their complements `\D \W \S`, also inside classes;
-* escapes `\n \t \r \f \v \xHH` and any punctuation (`\.`, `\\`);
-* groups `(...)`, `(?:...)` and named groups `(?P<name>...)` or
+- `\d \w \s` and their complements `\D \W \S`, also inside classes;
+- escapes `\n \t \r \f \v \xHH` and any punctuation (`\.`, `\\`);
+- groups `(...)`, `(?:...)` and named groups `(?P<name>...)` or
   `(?<name>...)`, whose names are accepted but not used;
-* flags `i` (letters match either case) and `s`, written `(?i)` to apply to
+- flags `i` (letters match either case) and `s`, written `(?i)` to apply to
   the end of the group or `(?i:...)` to apply within, and `(?-i)` to turn
   one off;
-* alternation `|`;
-* `* + ? {n} {n,} {n,m}`, each made lazy by a `?` after it.
+- alternation `|`;
+- `* + ? {n} {n,} {n,m}`, each made lazy by a `?` after it.
 
 The classes and the case folding are ASCII, as the crate's are with Unicode
 off. Anchors and word boundaries (`^ $ \A \z \b \B`), class set operations
@@ -1472,15 +1472,15 @@ instance names, and each storage buffer block holds one runtime array
 
 Resources go where SDL_GPU expects them, which the compiler checks:
 
-| Stage | `set` | holds, each set's bindings numbered from 0 in this order |
-|---|---|---|
-| vertex | 0 | samplers, then storage textures, then storage buffers (read-only) |
-| vertex | 1 | uniform blocks |
-| fragment | 2 | samplers, then storage textures, then storage buffers (read-only) |
-| fragment | 3 | uniform blocks |
-| compute | 0 | samplers, then read-only storage textures, then read-only storage buffers |
-| compute | 1 | read-write storage textures, then read-write storage buffers |
-| compute | 2 | uniform blocks |
+| Stage    | `set` | holds, each set's bindings numbered from 0 in this order                  |
+| -------- | ----- | ------------------------------------------------------------------------- |
+| vertex   | 0     | samplers, then storage textures, then storage buffers (read-only)         |
+| vertex   | 1     | uniform blocks                                                            |
+| fragment | 2     | samplers, then storage textures, then storage buffers (read-only)         |
+| fragment | 3     | uniform blocks                                                            |
+| compute  | 0     | samplers, then read-only storage textures, then read-only storage buffers |
+| compute  | 1     | read-write storage textures, then read-write storage buffers              |
+| compute  | 2     | uniform blocks                                                            |
 
 The `slot` of a `bind_*` call counts within one kind: the first storage buffer
 is slot 0 no matter how many samplers precede it. A compute shader's
@@ -1558,12 +1558,12 @@ fn open_count() -> i64              // times gfx was opened: older handles are g
 The state functions report the state at a frame; `events()` reports what
 happened between two frames, which text editing needs. The events are:
 
-* key presses and releases, with their scancode, the character their key
+- key presses and releases, with their scancode, the character their key
   types (`keycode`) and the `MOD_*` keys held;
-* typed characters;
-* mouse motion;
-* buttons (`MOUSE_*`, with X1 and X2), with their click count;
-* the wheel.
+- typed characters;
+- mouse motion;
+- buttons (`MOUSE_*`, with X1 and X2), with their click count;
+- the wheel.
 
 When headless, gfx uses a clipboard of its own rather than the system's.
 
@@ -1762,21 +1762,21 @@ device. `import audio;` uses the `audio::` namespace. It is a module of the
 compiler with `-DGOOSE_BUILTIN_LIBS=all` and otherwise built on first use;
 `goose build` links it. See the package's [docs/audio.md](https://github.com/aardappel/goose_gfx/blob/main/docs/audio.md) for the mixer.
 
-| Function | Behavior |
-|---|---|
-| `available() -> bool` | True when the native layer is linked; no device probe. |
-| `open(sample_rate = 48000) -> bool` | Open the default output device, stereo output. |
-| `open_offline(sample_rate = 48000) -> bool` | Open the same mixer without a device or background thread. |
-| `close()` | Stop playback, free every sound, invalidate handles; safe to repeat. |
-| `create_sound(samples: const f32[:], sample_rate = 48000, channels = 1) -> Sound` | Copy mono or interleaved stereo PCM into owned storage. |
-| `release_sound(sound) -> bool` | Stop its voices and free the PCM. Zero is harmless. |
-| `play(sound, volume = 1.0, pan = 0.0, pitch = 1.0, looping = false) -> Voice` | Start an independent voice, allowing overlapping repeats. |
-| `playing(voice) -> bool` | Whether the voice is still mixing. Stale/zero handles return false. |
-| `stop(voice)`, `stop_all()` | Stop one or every voice. Completed/stale/zero voices are harmless. |
-| `set_voice(voice, volume, pan, pitch) -> bool` | Change a live voice without restarting. |
-| `render(out: f32[:]) -> bool` | Offline only: write interleaved stereo output and advance playback. |
-| `error() -> u8[>..]` | Most recent failure; successful calls do not clear it. |
-| `error_into(out: u8[:]) -> i64` | Copy as much error text as fits, returning its full length. |
+| Function                                                                          | Behavior                                                             |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `available() -> bool`                                                             | True when the native layer is linked; no device probe.               |
+| `open(sample_rate = 48000) -> bool`                                               | Open the default output device, stereo output.                       |
+| `open_offline(sample_rate = 48000) -> bool`                                       | Open the same mixer without a device or background thread.           |
+| `close()`                                                                         | Stop playback, free every sound, invalidate handles; safe to repeat. |
+| `create_sound(samples: const f32[:], sample_rate = 48000, channels = 1) -> Sound` | Copy mono or interleaved stereo PCM into owned storage.              |
+| `release_sound(sound) -> bool`                                                    | Stop its voices and free the PCM. Zero is harmless.                  |
+| `play(sound, volume = 1.0, pan = 0.0, pitch = 1.0, looping = false) -> Voice`     | Start an independent voice, allowing overlapping repeats.            |
+| `playing(voice) -> bool`                                                          | Whether the voice is still mixing. Stale/zero handles return false.  |
+| `stop(voice)`, `stop_all()`                                                       | Stop one or every voice. Completed/stale/zero voices are harmless.   |
+| `set_voice(voice, volume, pan, pitch) -> bool`                                    | Change a live voice without restarting.                              |
+| `render(out: f32[:]) -> bool`                                                     | Offline only: write interleaved stereo output and advance playback.  |
+| `error() -> u8[>..]`                                                              | Most recent failure; successful calls do not clear it.               |
+| `error_into(out: u8[:]) -> i64`                                                   | Copy as much error text as fits, returning its full length.          |
 
 All calls run on the main thread; calls reachable from `thread_fn` are rejected.
 `Sound { id: u64 }` and `Voice { id: u64 }` are explicit resources. Sound creation
@@ -2097,17 +2097,17 @@ fn constraint_tuning(j) -> f32, f32     fn set_constraint_tuning(j, hertz, dampi
 fn force_threshold(j) -> f32        fn torque_threshold(j) -> f32     // and set_...
 ```
 
-| Kind | What it does | Its own |
-|---|---|---|
-| `RevoluteJoint` | a hinge about the frames' z axis | `angle`, `enable_limit`/`set_limits`/`lower_limit`/`upper_limit`, `enable_motor`/`set_motor_speed`/`set_max_motor_torque`/`motor_torque`, `enable_spring`/`set_spring_hertz`/`set_spring_damping_ratio`/`set_target_angle` |
-| `PrismaticJoint` | a slider along the frames' x axis | `translation`, `speed`, limits, a motor (`set_max_motor_force`, `motor_force`), a spring to `set_target_translation` |
-| `DistanceJoint` | two anchors a distance apart | `rest_length`/`set_rest_length`, `current_length`, `set_length_range`/`min_length`/`max_length`, a spring with `set_spring_force_range`, a motor |
-| `SphericalJoint` | a ball and socket | `enable_cone_limit`/`set_cone_limit`/`cone_angle`, `set_twist_limits`/`twist_angle`, a spring to `set_target_rotation`, a motor to `set_motor_velocity` |
-| `WeldJoint` | two bodies as one | `set_linear_hertz`, `set_angular_hertz` and their damping ratios; 0 hertz is rigid |
-| `WheelJoint` | a wheel on a suspension | `enable_suspension`/limits, `enable_spin_motor`/`set_spin_motor_speed`/`spin_speed`, `enable_steering`/`set_target_steering_angle`/`steering_angle` |
-| `MotorJoint` | drives body b relative to body a | `set_linear_velocity`, `set_angular_velocity`, their limits, and springs |
-| `ParallelJoint` | keeps the frames' z axes parallel | `set_spring_hertz`, `set_spring_damping_ratio`, `set_max_torque` |
-| `FilterJoint` | only stops the two colliding | |
+| Kind             | What it does                      | Its own                                                                                                                                                                                                                    |
+| ---------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RevoluteJoint`  | a hinge about the frames' z axis  | `angle`, `enable_limit`/`set_limits`/`lower_limit`/`upper_limit`, `enable_motor`/`set_motor_speed`/`set_max_motor_torque`/`motor_torque`, `enable_spring`/`set_spring_hertz`/`set_spring_damping_ratio`/`set_target_angle` |
+| `PrismaticJoint` | a slider along the frames' x axis | `translation`, `speed`, limits, a motor (`set_max_motor_force`, `motor_force`), a spring to `set_target_translation`                                                                                                       |
+| `DistanceJoint`  | two anchors a distance apart      | `rest_length`/`set_rest_length`, `current_length`, `set_length_range`/`min_length`/`max_length`, a spring with `set_spring_force_range`, a motor                                                                           |
+| `SphericalJoint` | a ball and socket                 | `enable_cone_limit`/`set_cone_limit`/`cone_angle`, `set_twist_limits`/`twist_angle`, a spring to `set_target_rotation`, a motor to `set_motor_velocity`                                                                    |
+| `WeldJoint`      | two bodies as one                 | `set_linear_hertz`, `set_angular_hertz` and their damping ratios; 0 hertz is rigid                                                                                                                                         |
+| `WheelJoint`     | a wheel on a suspension           | `enable_suspension`/limits, `enable_spin_motor`/`set_spin_motor_speed`/`spin_speed`, `enable_steering`/`set_target_steering_angle`/`steering_angle`                                                                        |
+| `MotorJoint`     | drives body b relative to body a  | `set_linear_velocity`, `set_angular_velocity`, their limits, and springs                                                                                                                                                   |
+| `ParallelJoint`  | keeps the frames' z axes parallel | `set_spring_hertz`, `set_spring_damping_ratio`, `set_max_torque`                                                                                                                                                           |
+| `FilterJoint`    | only stops the two colliding      |                                                                                                                                                                                                                            |
 
 Every setter has its getter. Kinds are `JOINT_REVOLUTE` and so on; using a
 kind's function on a joint of another kind is a misuse.
@@ -2630,9 +2630,9 @@ coordinates, clipped to the scissor. Together with `widget`, they are the
 way to draw a widget of the program's own. Once a frame's windows have
 ended, its drawing is available to any renderer in two forms:
 
-* Nuklear's commands: one `Command` per shape, image or text, with the
+- Nuklear's commands: one `Command` per shape, image or text, with the
   points of polygons and the bytes of texts stored beside them;
-* triangles from `convert`: vertices with a position, texture coordinate
+- triangles from `convert`: vertices with a position, texture coordinate
   and color, 32-bit indices, and draw calls that each have a scissor and a
   texture (shapes use the null texture).
 
@@ -2655,13 +2655,13 @@ resources it keeps (a pipeline, a sampler and buffers) are made once, and
 again after gfx is closed and opened. `input_from_gfx` passes gfx's last
 frame of input to the context, in order:
 
-* the mouse;
-* editing keys (Delete, Backspace, Enter, Tab, Home, End, the arrows, Page
+- the mouse;
+- editing keys (Delete, Backspace, Enter, Tab, Home, End, the arrows, Page
   Up and Down, Escape);
-* shortcuts with Ctrl or Command (A, C, X, V, Z, Y);
-* typed text (it turns gfx's text input on);
-* the frame's duration;
-* the clipboard in both directions, pasting the system clipboard's text and
+- shortcuts with Ctrl or Command (A, C, X, V, Z, Y);
+- typed text (it turns gfx's text input on);
+- the frame's duration;
+- the clipboard in both directions, pasting the system clipboard's text and
   putting there what a field copied.
 
 `render` and `input_from_gfx` both work in the screen's pixels, so on a
