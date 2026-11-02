@@ -1026,7 +1026,7 @@ inline bool SemanticTokens(Workspace &ws, const Json &params, JsonOut &j) {
         auto [line, character] = f.text.PositionOf(occ.start);
         auto ltext = f.text.LineText(line);
         auto startbyte = occ.start - f.text.linestarts[(size_t)line];
-        auto length = Utf16Col(ltext, startbyte + occ.len) - character;
+        auto length = ProtocolCol(ltext, startbyte + occ.len) - character;
         if (length <= 0) continue;
         j.Int(line - lastline);
         j.Int(line == lastline ? character - lastchar : character);
