@@ -20,7 +20,7 @@
   - [5.1 R5 restated](#51-r5-restated)
   - [5.2 Design A: `own` joins R1](#52-design-a-own-joins-r1)
   - [5.3 Design B: own frames and `cancel`](#53-design-b-own-frames-and-cancel)
-  - [5.4 What B changes in coroutines.md](#54-what-b-changes-in-coroutinesmd)
+  - [5.4 What B would change in coroutines.md](#54-what-b-would-change-in-coroutinesmd)
   - [5.5 The server, both ways](#55-the-server-both-ways)
   - [5.6 Prior art specific to frames](#56-prior-art-specific-to-frames)
 - [6. Where the compiler changes, and where it does not](#6-where-the-compiler-changes-and-where-it-does-not)
@@ -80,7 +80,9 @@ and that the cheap one is enough for both problems.
   consume what the element still holds. The cleanest form is a finalizer
   block the program writes once per pool and the checker verifies to be
   complete: [scope_exit_cleanup.md §3.3](scope_exit_cleanup.md#33-pool-finalizers)
-  with a completeness check. Arrays of `own` outside pools stay out (4.6).
+  with a completeness check. A plain array of such elements removes them the
+  same way: `pop` moves an element out, a bulk removal takes a finalizer
+  block, and a local array may not reach its scope exit holding any (4.6).
 * **For coroutines, own-ness is exactly the missing property.** R5 is not
   about `defer`. It is that a frame may be dropped or copied, and `defer` is
   the one construct whose meaning depends on neither happening. Two
@@ -190,7 +192,9 @@ compiler assumes:
   since an accepted program contains no copy of an `own` value;
 * a scope exit is watermark stores and the defers written there — unchanged,
   since an accepted program consumed every `own` value before the exit or
-  wrote a `defer` that does;
+  wrote a `defer` that does; the one addition is a length compare at the
+  exit of a local array of `own`-holding elements (4.6), a check in the
+  sense a bounds check is one, not a call;
 * a pool slot is a valid value of its type at all times (§5.4, §9.4) —
   unchanged, since freeing a slot does nothing to its bytes;
 * threads receive flat values; images hold image-safe values — unchanged,
@@ -443,16 +447,40 @@ block on `release` is library-expressible. It is the recommended form. The
 first is the fallback for a pool whose release the program does not want to
 write out. The second belongs with the affine increment.
 
-**What stays out.** Arrays of `own` values outside a pool's `items`: a
-`T[>..]` whose element holds an `own` field may be grown only by the pool
-library and never popped, cleared or reassigned by anyone (an error at the
-instantiation of the builtin, as "elements must be fixed-size" is today).
-`own` in a global other than inside a pool: no scope exit ever comes, so
-nothing could consume it; forbidden in v1. A local pool of `own`-holding
-elements dying with live slots: the exit walk of §3.3 as a library call
-(`conns.release_all { … }`), or a runtime check that the pool is empty at
-its scope's end; the server's pools are globals and never exit, so this is
-not on the path.
+**Arrays.** What makes an array different from a variable is bulk death:
+`clear`, `pop_n`, `resize` down, assignment of the whole array, and the
+scope exit of a local array end many elements at once, with no program
+text per element, so the checker cannot know what each element's `own`
+fields hold. The rules that keep this static, except for one compare:
+
+* `pop` of an `own`-holding element is a move out, like `take`: the bytes
+  leave the array and the local that receives them holds the obligation. A
+  grow-shrink slot reused by another type afterwards holds nothing of it.
+* The bare `clear`, `pop_n`, `resize` and whole assignment are errors on
+  such elements at the instantiation of the builtin, as "elements must be
+  fixed-size" is today. The stdlib offers the forms that take a finalizer
+  block (`tasks.clear_all { cancel(it); }`), which walk the elements, are
+  checked to empty `it` exactly as the pool's `release` is, and end in the
+  privileged clear.
+* A global such array never exits, which is the per-worker task table of
+  coroutines.md §5. A local one must hold nothing at its scope exit: its
+  length is compared with zero and the program aborts otherwise, with the
+  line. This is the one runtime check the design adds at a scope exit; it
+  is paid only by a local whose elements are declared to own something,
+  and it is the same shape as the pool boundary above. The affine form of
+  4.5 would walk the elements with the declared release instead, which is
+  the one O(n) scope exit in the whole space and the reason the linear
+  form asks for the compare.
+* Reads are borrows: `for &e in xs`, `xs[i].f`, `resume(xs[i], ev)`;
+  `xs[i]` by value is rejected, as for self-relative elements.
+
+The same applies to a pool itself: a local pool of `own`-holding elements
+must have every slot free at its scope exit (`free_slots.len == items.len`,
+one compare), since the finalizer block emptied each element as it was
+freed, or it releases them all through a library walk
+(`conns.release_all { … }`). The server's pools are globals and never exit.
+`own` in a plain global variable, outside an array or a pool, has no scope
+exit and nothing that could consume it, and is forbidden in v1.
 
 ### 4.7 Threads, images, generics, `return … from`
 
@@ -638,9 +666,9 @@ guard suspended else {
 The first reader of that frame's generated C sees a `serve_resume` and a
 `serve_cancel`, each a `switch` over the same tag, and recognizes both.
 
-### 5.4 What B changes in coroutines.md
+### 5.4 What B would change in coroutines.md
 
-* **R5** becomes: a `defer` in scope at a yield, or an `own` local in scope
+* **R5** would become: a `defer` in scope at a yield, or an `own` local in scope
   at one, makes the frame type `own`; an `own` local in scope at a yield
   must be claimed by a `defer` written before it. Under A alone, R5 stands
   and R1 gains `own`.
@@ -735,7 +763,7 @@ For the linear design with A, then B:
 | coroutines, B | frame own-ness from the yields' scopes; a `cancel` function per `own` frame type: a `switch` over tags, each arm the pending defers via `EmitDeferBody` | the one codegen change in the whole design; bounded by the number of `own` frame types |
 | stdlib | `take`/`release`/`handle_of` on `slot_pool` and `slice_pool` beside the existing operations, with the finalizer-block form of `release` | tens of lines of Goose |
 | spec | a section beside §9.5 (writability) for the qualifier and the flow rules; pool additions in §5.4's successor; coroutines' R1/R5 | comparable to §5.2 |
-| codegen of copies, assignments, exits, returns; optimizer; runtime; JIT; Wasm; threads; serialization | nothing | the invariants of section 2 hold by construction |
+| codegen of copies, assignments, exits, returns; optimizer; runtime; JIT; Wasm; threads; serialization | nothing, apart from the length compare at the scope exit of a local array of `own`-holding elements (4.6) | the invariants of section 2 hold by construction |
 
 The last row is the answer to the question this note was asked. The sites
 that must know about `own` are the checker's copy sites (already
@@ -749,7 +777,7 @@ it to do anything new.
 | Direction | What it is | Guarantees | What it rejects that compiles today | Compiler | Runtime |
 |---|---|---|---|---|---|
 | 0. Status quo plus `gen_pool` | generations in a library; finalizers and scoped allocations as scope_exit_cleanup.md recommends | stale reads and double frees abort; leaks reported in debug | nothing | none | a generation compare per lookup |
-| 1. Linear `own`, design A | sections 3, 4 (linear), 5.2 | a handle in the `own` world is released exactly once; a pool element's fields are released at its free; a coroutine holds nothing across a yield | handles kept in plain arrays or globals; early release plus `defer` on one handle; `own` through queues and images; `own` across a yield | checker and front end, as section 6 | none |
+| 1. Linear `own`, design A | sections 3, 4 (linear), 5.2 | a handle in the `own` world is released exactly once; a pool element's fields are released at its free; a coroutine holds nothing across a yield | `own` in a plain global; a bulk removal of `own`-holding elements without a finalizer block; early release plus `defer` on one handle; `own` through queues and images; `own` across a yield | checker and front end, as section 6 | none |
 | 2. Direction 1 plus design B | 5.3 | plus: cleanup written inside a coroutine runs exactly once, on exit or cancel; `own` frames cannot be forked or forgotten | plus: copying or queuing a frame that holds a resource | plus one emitted function per `own` frame type | none |
 | 3. Affine release | 4.5 on top of 1 or 2 | the same guarantees with the compiler writing the release the program omitted | removes the early-release-plus-`defer` rejection | a release declaration per handle kind; emission through the `defer` path | none |
 | 4. Destructor types | scope_exit_cleanup.md §3.2 | release on every death, in every container | nothing | §4.7's list | walks at container death |
@@ -760,34 +788,40 @@ release-is-a-shrink is an increment on 1 with no dependents.
 
 ## 8. Recommendation and order
 
-1. **Decide the vocabulary now, build nothing yet.** Write into the spec's
+`own` is a decision of its own. coroutines.md is the coroutine design of
+record and stands without it: R5 and §4.10 are consistent on their own
+terms, the loop's convention plus `gen_pool`'s debug report is the leak
+story in that case, and nothing in this note is a precondition for
+building it. If `own` is adopted, it is built first and the coroutine
+design is built on top of it, with design A as one line in R1 and design B
+as the later relaxation; if it is declined, coroutines go ahead as written.
+The order below is for the first case.
+
+1. **Decide the vocabulary, build nothing yet.** Write into the spec's
    TODO list that ownership in Goose, if it comes, is an obligation on
    handles and never a release of memory: `own` as a qualifier, linear with
-   `defer` claims, pools as the only containers, no destructor on plain data.
-   This costs a paragraph and prevents the two notes from drifting apart,
-   and it follows llm_frontier.md §5.5's lesson to decide before `i64`
-   handles are everywhere in user code.
-2. **Put `own` into R1 when coroutines are specified** (coroutines.md §8
-   step 1), whether or not `own` is ever built: it is the rule that keeps
-   frames plain, and it is one line. Keep R5. Record design B as the
-   relaxation, so that the frame layout and the tag are designed knowing a
-   `cancel` function may switch over them later (they need nothing extra for
-   it).
-3. **Ship `gen_pool` first**, as llm_frontier.md §7 step 2 says. It costs
+   `defer` claims, pools and finalizer-block removals as the only ways an
+   element dies, no destructor on plain data. This costs a paragraph, and
+   it follows llm_frontier.md §5.5's lesson to decide before `i64` handles
+   are everywhere in user code.
+2. **Ship `gen_pool` first**, as llm_frontier.md §7 step 2 says. It costs
    nothing to write and it produces the evidence this note cannot: whether
    leaks and double frees in real pool code are frequent enough to pay for a
    checker feature.
-4. **If they are, build direction 1**: the qualifier at the section 3
+3. **If they are, build direction 1**: the qualifier at the section 3
    sites, the flow bit, the trusted end, `take`/`replace`, the pool
-   operations with the finalizer block, two predicate lines, the spec
-   section. Rewrite `26_file_tree`'s `release` and the LRU benchmark's
-   eviction on it as the acceptance test, and measure that the generated C
-   for both is unchanged apart from the finalizer calls the program wrote.
-5. **Build design B when a coroutine body wants to hold a resource across a
+   operations and array removals with the finalizer block, two predicate
+   lines, the spec section. Rewrite `26_file_tree`'s `release` and the LRU
+   benchmark's eviction on it as the acceptance test, and measure that the
+   generated C for both is unchanged apart from the finalizer calls the
+   program wrote. Design A's rule goes into R1 at the same time, whether
+   coroutines are specified by then or not.
+4. **Design B when a coroutine body wants to hold a resource across a
    wait** and A's field discipline is what stops it: the `cancel` emitter
-   and the three rule changes of 5.4. The server benchmark of coroutines.md
-   §8 step 2 is where that want would first show.
-6. **Affine release (direction 3) and release-is-a-shrink (4.8)**: wait for
+   and the rule changes of 5.4, on top of direction 1 and the coroutine v1,
+   never instead of either. The server benchmark of coroutines.md §8 step 2
+   is where that want would first show.
+5. **Affine release (direction 3) and release-is-a-shrink (4.8)**: wait for
    demand, as `errdefer` waits.
 
 ## 9. Open questions
@@ -807,7 +841,7 @@ release-is-a-shrink is an increment on 1 with no dependents.
 * **Owned relative links** (`own Node&<u32 in nodes.items>` stored in a run
   of children): §5.4 defers them and so does this note. The finalizer block
   of the parent would have to consume each link, which is a loop over a run
-  of `own` values, i.e. the arrays-of-`own` question.
+  of `own` values: the finalizer-block form of 4.6 applied to `free_slice`.
 * **Cancel while running.** `cancel` on a frame whose body is executing
   (through an alias, from inside a `defer`) is the re-entry case of
   coroutines.md §4.10, a logic error with a debug-build abort; whether the
