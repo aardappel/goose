@@ -152,6 +152,17 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             }
             return first;
         }
+        case B_FILE: {
+            // The base name of the file that contains this call. A default
+            // cloned from the function that declared it is restamped with
+            // the call that left the argument out (AddParamDefaults).
+            c->rettypes.push_back(cu8slice);
+            Val v;
+            v.type = cu8slice;
+            v.Set(nullptr, true);
+            v.writable = false;
+            return v;
+        }
         case B_EMBED_SHADER:
         case B_EMBED_FILE: {
             // The shader compiled, or the file read, now, and the result a

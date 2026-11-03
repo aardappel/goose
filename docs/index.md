@@ -67,6 +67,8 @@ and the reference describe what was built; these say why.
   structures of relative references.
 * [Namespaces](design/namespaces.md): minimal namespaces and qualified
   names.
+* [Call location](design/call_location.md): `file()` and `line()`, and why
+  a default is stamped with the call that left it out.
 * [Builds and packages](design/packages.md): the design behind `goose
   build` and packages from git.
 * [The in-process backend](design/jit_backend.md): how TinyCC runs a
