@@ -164,6 +164,99 @@ fn main() {
     assert(eu32bok && eu32b == 0x3FF80000 && ei16bok && ei16b == 0);
     assert(!ei64lok && ei64l == 0 && e.pos == 30);
 
+    // Writes append the bytes the reads take. out starts with a byte of its
+    // own, which every write leaves in place.
+    var out: u8[>..] = [9];
+    binary::write_u64be(out, 0x0102030405060708);
+    binary::write_f32le(out, 1.5);
+    binary::write_f64le(out, 1.5);
+    binary::write_f32be(out, 1.5);
+    binary::write_f64be(out, 1.5);
+    assert(out.len == 33 && out[0] == 9 && out[1..] == wide[..]);
+    out.clear();
+    binary::write_u8(out, 255);
+    binary::write_i8(out, -128);
+    binary::write_u16le(out, 0x0102);
+    binary::write_u16be(out, 0x0102);
+    binary::write_i16le(out, -2);
+    binary::write_i16be(out, -32768);
+    binary::write_u32le(out, 0x01020304);
+    binary::write_i32be(out, -2);
+    binary::write_u64le(out, 0x0102030405060708);
+    binary::write_i64le(out, -9223372036854775807 - 1);
+    binary::write_i64be(out, -2);
+    let expect: u8[42] = [255, 128, 2, 1, 1, 2, 254, 255, 128, 0,
+                          4, 3, 2, 1, 255, 255, 255, 254,
+                          8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 128,
+                          255, 255, 255, 255, 255, 255, 255, 254];
+    assert(out.len == 42 && out[..] == expect[..]);
+
+    // Every extreme of every width reads back as it was written.
+    out.clear();
+    binary::write_i8(out, 127);
+    binary::write_i16le(out, 32767);
+    binary::write_i16be(out, -1);
+    binary::write_u16be(out, 65535);
+    binary::write_i32le(out, -2147483647 - 1);
+    binary::write_u32be(out, 4294967295);
+    binary::write_i32be(out, 2147483647);
+    binary::write_u64be(out, 18446744073709551615);
+    binary::write_i64le(out, 9223372036854775807);
+    binary::write_f64be(out, -0.0);
+    var x = binary::reader(out);
+    let xi8, xi8ok = binary::read_i8(x);
+    let xi16, xi16ok = binary::read_i16le(x);
+    let xi16b, xi16bok = binary::read_i16be(x);
+    let xu16b, xu16bok = binary::read_u16be(x);
+    let xi32, xi32ok = binary::read_i32le(x);
+    let xu32b, xu32bok = binary::read_u32be(x);
+    let xi32b, xi32bok = binary::read_i32be(x);
+    let xu64b, xu64bok = binary::read_u64be(x);
+    let xi64, xi64ok = binary::read_i64le(x);
+    let xz, xzok = binary::read_u64be(x);
+    assert(xi8ok && xi8 == 127 && xi16ok && xi16 == 32767 && xi16bok && xi16b == -1);
+    assert(xu16bok && xu16b == 65535 && xi32ok && xi32 == -2147483647 - 1);
+    assert(xu32bok && xu32b == 4294967295 && xi32bok && xi32b == 2147483647);
+    assert(xu64bok && xu64b == 18446744073709551615 && xi64ok && xi64 == 9223372036854775807);
+    assert(xzok && xz == 0x8000000000000000 && x.pos == out.len);
+
+    // A float keeps its bits through a read and a write: signaling and quiet
+    // NaNs with payloads, in either sign, and negative zero.
+    let nans: u8[24] = [1, 0, 160, 127, 69, 35, 193, 255,
+                        1, 0, 0, 0, 0, 0, 240, 127,
+                        255, 255, 255, 255, 255, 255, 248, 255];
+    out.clear();
+    for at in [0, 4] {
+        let v, ok = binary::read_f32le(nans, at);
+        assert(ok && v != v);
+        binary::write_f32le(out, v);
+        binary::write_f32be(out, v);
+    }
+    for at in [8, 16] {
+        let v, ok = binary::read_f64le(nans, at);
+        assert(ok && v != v);
+        binary::write_f64le(out, v);
+        binary::write_f64be(out, v);
+    }
+    assert(out.len == 48 && out[0..4] == nans[0..4] && out[8..12] == nans[4..8]);
+    assert(out[16..24] == nans[8..16] && out[32..40] == nans[16..]);
+    // The be copies hold the same bits, most significant byte first.
+    let sn32, _ = binary::read_u32le(nans, 0);
+    let qn32, _ = binary::read_u32le(nans, 4);
+    let sn64, _ = binary::read_u64le(nans, 8);
+    let qn64, _ = binary::read_u64le(nans, 16);
+    let sn32b, _ = binary::read_u32be(out, 4);
+    let qn32b, _ = binary::read_u32be(out, 12);
+    let sn64b, _ = binary::read_u64be(out, 24);
+    let qn64b, _ = binary::read_u64be(out, 40);
+    assert(sn32b == sn32 && qn32b == qn32 && sn64b == sn64 && qn64b == qn64);
+    let zero32: u8[4] = [0, 0, 0, 128];
+    let negzero, negzerook = binary::read_f32le(zero32, 0);
+    let zero32be: u8[4] = [128, 0, 0, 0];
+    out.clear();
+    binary::write_f32be(out, negzero);
+    assert(negzerook && negzero == 0.0 && out[..] == zero32be[..]);
+
     // Returned data borrows the original storage, including through a child.
     var source: u8[4] = [65, 66, 67, 68];
     var borrowed = binary::reader(source);
@@ -171,5 +264,5 @@ fn main() {
     let view, viewok = binary::read_name(borrowed_child, 4);
     source[0] = 90;
     assert(borrowedok && viewok && view == "ZBCD");
-    print("binary: checked offsets, widths, byte orders, names, cursors and subreaders passed");
+    print("binary: checked offsets, widths, byte orders, names, cursors, subreaders and writes passed");
 }

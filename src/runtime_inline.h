@@ -3918,8 +3918,8 @@ static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
 )GSRT"
-R"GSRT(/* binary's float reads (stdlib/binary.goose): a value from its bits, which
-   memcpy keeps exactly, NaN payloads included. */
+R"GSRT(/* binary's float reads and writes (stdlib/binary.goose): a value from its
+   bits and back, which memcpy keeps exactly, NaN payloads included. */
 static float gs_f32_from_bits(uint32_t bits) {
     float x;
     memcpy(&x, &bits, sizeof x);
@@ -3929,6 +3929,16 @@ static double gs_f64_from_bits(uint64_t bits) {
     double x;
     memcpy(&x, &bits, sizeof x);
     return x;
+}
+static uint32_t gs_f32_to_bits(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+static uint64_t gs_f64_to_bits(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
 }
 
 )GSRT"
