@@ -16,6 +16,7 @@
   - [4.6 Containers: the boundary where static becomes checked](#46-containers-the-boundary-where-static-becomes-checked)
   - [4.7 Threads, images, generics, `return … from`](#47-threads-images-generics-return--from)
   - [4.8 The other half of 5.4: a release is a shrink](#48-the-other-half-of-54-a-release-is-a-shrink)
+  - [4.9 `own` beside `defer`](#49-own-beside-defer)
 - [5. Coroutines](#5-coroutines)
   - [5.1 R5 restated](#51-r5-restated)
   - [5.2 Design A: `own` joins R1](#52-design-a-own-joins-r1)
@@ -74,7 +75,9 @@ and that the cheap one is enough for both problems.
   function the compiler calls on its own. The affine form (the compiler
   releases what the program did not) needs one release function per handle
   kind and is the only destructor-shaped thing in the design. Build the
-  first; the second is an increment on the `defer` emission (4.5).
+  first; the second is an increment on the `defer` emission (4.5). `defer`
+  keeps its place beside both forms, as the cleanup a call site writes
+  for itself (4.9).
 * **At a container boundary the static guarantee needs help.** An `own`
   field of a pool element is read destructively, and the pool's `free` must
   consume what the element still holds. The cleanest form is a finalizer
@@ -389,7 +392,8 @@ to the letter, since a `defer` is in the source. It is also what coroutines
 need (5.3 uses the claim rule and nothing else). The affine form is an
 increment that adds one declaration and routes it through emission that
 `defer` already has; it can wait for evidence that the double-consume
-restriction bites in real code, as `errdefer` is waiting.
+restriction bites in real code, as `errdefer` is waiting. 4.9 sets `defer`
+beside the two forms.
 
 ### 4.6 Containers: the boundary where static becomes checked
 
@@ -526,6 +530,83 @@ adds no codegen either. It is listed here as a separable increment because
 the leak and double-free guarantees do not depend on it, and because it is
 the part of §5.4 whose checker cost is least clear until the first part
 exists.
+
+### 4.9 `own` beside `defer`
+
+Both attach a cleanup to the exits of a scope, so the overlap has to be
+stated. The forms differ in who *forces* the cleanup and who *writes* the
+release call:
+
+| form | who forces the cleanup | who writes the release call |
+|---|---|---|
+| `defer` alone | nobody | the call site, at every use |
+| linear `own` | the producer's declaration (`-> own T&`) | the call site, as `defer release(h)`; the checker verifies it is on every exit |
+| affine `own` | the producer's declaration | the declaration, once per handle kind; the compiler emits the call |
+
+Under the linear rules, then, a `defer` is not a way to satisfy the
+checker. It *is* the release, and `own` is what makes omitting it,
+doubling it, or using the handle after it an error. The affine form moves
+the release text from every call site to one declaration, and leaves
+`defer` four jobs:
+
+* **Cleanup the producer's author cannot know.** A release is a function
+  of the handle's payload, fixed by the producer. A `defer` body is a block
+  over the scope's locals, read at the exit. Of the defers in the
+  repository, all but one are handle-shaped or a global-state pair an empty
+  guard covers, the conditional `defer if sound_ready { audio::close(); }`
+  of `31_mini_doom` included (an `own Audio?` whose empty state is the
+  condition). The one that is not is `defer Finally();` in
+  `stdlib/exception.goose`: it runs a function value the caller passed,
+  spliced in at the call, which no field can hold. Outside the repository
+  the common shape is the scoped push a compiler writes,
+  `scopes.push(s); defer scopes.pop();`, which acts on another local. A
+  handle for it is not empty: it carries a reference to `scopes`, which
+  makes it a holder under the reference-field rules, and it needs a type, a
+  producer returning `own` and a release declaration besides. Four
+  declarations for one line.
+* **Pay per kind against pay per site.** An empty guard fits a
+  global-state pair (`let w = gfx::open(…)` returning `own Window`,
+  released by `gfx::close`): the declaration is paid once per kind, and
+  every call site is then correct without writing anything, which is the
+  stronger form for the machine authors of llm_frontier.md §3. `defer` pays
+  a line per site and declares nothing. The library should model what has
+  many sites (pools, windows, files, locks), and `defer` stays for the
+  one-off. The conclusion is `own` producers in the stdlib, not fewer
+  defers in the language.
+* **The vehicle.** The affine release is a `defer` the compiler wrote: it
+  is emitted through `RegisterDefer`, it obeys the `defer` body rules (no
+  yield, no long-distance return), and under design B `cancel` runs the
+  pending defers and the pending releases through the same switch (5.3).
+  Removing `defer` would mean rebuilding it inside the compiler.
+* **Until affine exists.** Section 8 has it wait for demand; until then
+  the claim is the only release text there is.
+
+Two things the overlap gives:
+
+* **The affine release is `errdefer` for handles.** In
+  [scope_exit_cleanup.md §3.6](scope_exit_cleanup.md#36-only-on-failure)'s
+  one example, `let id = nodes.take(…); … return id;` consumes on the
+  success path, and a `return … from` passing through before it releases,
+  with no keyword. The linear form cannot write this: `defer
+  nodes.release(id)` beside `return id` is a double consume, so each
+  failing path releases by hand. For handles, the demand section 8 step 5
+  waits for and the demand `errdefer` waits for are one demand.
+* **Under affine the explicit `defer release(h)` is deleted, not kept.**
+  Beside an early `release(h)` on one path it stays a double consume, since
+  the body names a consumed `h`. The idiom becomes: release early where
+  the program wants to, or write nothing.
+
+On spelling, `let h: own Foo? = init();` is longer than it needs to be. A
+local needs no `?`: held or consumed is a flow fact, and `?` is for fields,
+where emptiness has to be a state at run time (4.6). It needs no
+annotation either, since the type comes from the producer, so
+`let g = lock(m);` is the whole guard (the first question of section 9).
+What needs a rule is the *unnamed* guard, a bare `lock(m);` that drops its
+result. Under the linear rules that is an error already: an `own` value
+died unconsumed. The affine form should keep it an error and require a
+name, rather than release at the end of the statement, which is the
+mistake Rust's `let _ = m.lock()` makes: the guard is gone before the code
+it was meant to cover.
 
 ## 5. Coroutines
 
@@ -779,7 +860,7 @@ it to do anything new.
 | 0. Status quo plus `gen_pool` | generations in a library; finalizers and scoped allocations as scope_exit_cleanup.md recommends | stale reads and double frees abort; leaks reported in debug | nothing | none | a generation compare per lookup |
 | 1. Linear `own`, design A | sections 3, 4 (linear), 5.2 | a handle in the `own` world is released exactly once; a pool element's fields are released at its free; a coroutine holds nothing across a yield | `own` in a plain global; a bulk removal of `own`-holding elements without a finalizer block; early release plus `defer` on one handle; `own` through queues and images; `own` across a yield | checker and front end, as section 6 | none |
 | 2. Direction 1 plus design B | 5.3 | plus: cleanup written inside a coroutine runs exactly once, on exit or cancel; `own` frames cannot be forked or forgotten | plus: copying or queuing a frame that holds a resource | plus one emitted function per `own` frame type | none |
-| 3. Affine release | 4.5 on top of 1 or 2 | the same guarantees with the compiler writing the release the program omitted | removes the early-release-plus-`defer` rejection | a release declaration per handle kind; emission through the `defer` path | none |
+| 3. Affine release | 4.5 on top of 1 or 2 | the same guarantees with the compiler writing the release the program omitted | as 1, less the early-release restriction: a handle released on one path is released at the exit on the others (4.9) | a release declaration per handle kind; emission through the `defer` path | none |
 | 4. Destructor types | scope_exit_cleanup.md §3.2 | release on every death, in every container | nothing | §4.7's list | walks at container death |
 
 Dependencies: 1 needs nothing (the pools are in the stdlib; `defer` exists);
@@ -822,7 +903,7 @@ The order below is for the first case.
    never instead of either. The server benchmark of coroutines.md §8 step 2
    is where that want would first show.
 5. **Affine release (direction 3) and release-is-a-shrink (4.8)**: wait for
-   demand, as `errdefer` waits.
+   demand, as `errdefer` waits; for handles the two demands are one (4.9).
 
 ## 9. Open questions
 
