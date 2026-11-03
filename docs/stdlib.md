@@ -373,6 +373,8 @@ fn split(s: u8[:], sep: u8) -> const u8[:][>..]            // read-only slices i
 fn split(s: u8[:], sep: u8[:]) -> const u8[:][>..]         // matched from the left; an empty sep: [s]
 fn each_split<F>(s: u8[:], sep: u8)                        // F(part); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
+fn split_once(s: u8[:], sep: u8) -> const u8[:], const u8[:], bool    // before, after the first sep
+fn split_once(s: u8[:], sep: u8[:]) -> const u8[:], const u8[:], bool // not found: s, "", false
 fn words(s: u8[:]) -> const u8[:][>..]                     // split at runs of ASCII whitespace; no empty words
 fn each_word<F>(s: u8[:])                                  // F(word)
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
@@ -390,6 +392,11 @@ the decimal, as C's `strtod` does, so a float's text from `print` or
 `u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
 `u8[..k]`.
 
+`split_once` cuts s at the first sep, as Go's `strings.Cut` does: the part
+before and the part after, read-only slices into s, and `true`. When sep is
+not in s it gives s whole, an empty slice and `false`, so the first part is
+the whole field either way. An empty sep is never found, as in `split`.
+
 `each_utf8` decodes as the WHATWG decoder does. A sequence cut short, an
 overlong form, a surrogate or a code point past 0x10FFFF gives one 0xFFFD
 for each maximal subpart (Unicode §3.9), and the byte that broke a sequence
@@ -403,6 +410,7 @@ format(line, "x=");
 format_int(line, x, 16, 8, '0');
 each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
+let key, value, has_value = split_once(arg, '=');   // "-o=out": "-o", "out", true
 let cmd = words(input);                   // "take  the sword": ["take", "the", "sword"]
 if cmd.len > 1 && cmd[0] == "take" { take(cmd[cmd.len - 1]); }
 ```
