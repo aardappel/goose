@@ -135,16 +135,14 @@ BENCHMARKS = [
         name="records",
         what="Build a log of N variant records, aggregate it four times.",
         sizes=[500000, 4000000, 16000000],
-        goose=[dict(label="goose variable enum", file="records_var.goose"),
-               dict(label="goose fixed enum", file="records_fixed.goose")],
+        goose=[dict(label="goose variable enum", file="records_var.goose")],
         cpp=[dict(label="cpp virtual + unique_ptr", file="records.cpp", variant=0, tier="idiomatic"),
              dict(label="cpp variant + string", file="records.cpp", variant=1, tier="idiomatic"),
              dict(label="cpp variant + buffer", file="records.cpp", variant=2, tier="expert")],
         rust=[dict(label="rust enum + String", file="records.rs")],
         summary=(
             "The variable enum stores each record at the size of its own variant, "
-            "including inline text. The fixed-enum Goose row controls for that "
-            "representation choice. C++ variant and Rust enum reserve space for the "
+            "including inline text. C++ variant and Rust enum reserve space for the "
             "largest payload in every element; their owned strings may also allocate "
             "separately."),
     ),
