@@ -11,3 +11,21 @@ true true true false
 1.4142135623730951 -0.0 true 1e+154 1.4142135 true
 10.0 true 10.0 true
 true true
+true true true true
+true true
+true true true
+true true true true
+-0.0 -0.0 -0.0 -0.0 -0.0 1.0 1.0
+1.0 -1.0 inf -inf -1.0 0.0 -inf -inf inf
+5.0 true true true true true
+-3.0 -0.0 2.0 -3.0 -inf -3.0
+2.718281828459045 inf -inf true true true
+true true
+0.75 0.75 0.0 0.0 0.0 0.25 true true
+0.5 1.5 -0.5 0.75 0.25 0.375 true
+0.0 0.0 0.15625 0.5 1.0 1.0 0.84375 0.15625
+0.0 1.0 true true
+0.5 true true true -0.0 true true
+true true true
+true true true true
+true

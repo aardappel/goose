@@ -66,6 +66,13 @@ GS_JIT_MATH2(pow)
 GS_JIT_MATH2(fmod)
 GS_JIT_MATH1(cbrt)
 GS_JIT_MATH2(hypot)
+GS_JIT_MATH1(exp2)
+GS_JIT_MATH1(expm1)
+GS_JIT_MATH1(log1p)
+GS_JIT_MATH1(sinh)
+GS_JIT_MATH1(cosh)
+GS_JIT_MATH1(tanh)
+GS_JIT_MATH2(copysign)
 double ldexp(double, int);
 float ldexpf(float, int);
 double frexp(double, int *);

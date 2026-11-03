@@ -828,12 +828,15 @@ scalar converts to the component type, so an `f64` variable scaling a
 
 `math` provides libm at both widths (`sin(x)` picks `sin` or `sinf` by the
 argument's type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10
-pow floor ceil round trunc`. These return floats as C does (`as i64`
-converts).
+pow hypot cbrt exp2 expm1 log1p sinh cosh tanh floor ceil round trunc
+copysign`. These return floats as C does (`as i64` converts). `expm1(x)`
+and `log1p(x)` are `exp(x) - 1` and `log(1 + x)` without the loss of a
+small `x`'s digits; `copysign(x, y)` is `x`'s magnitude with `y`'s sign
+bit, which tells `-0.0` from `0.0`.
 `sqrt` is implemented in the runtime (`gs_sqrt`, `gs_sqrtf`). It gives the
 same correctly rounded root as C, and NaN below zero, but without C's
 errno, so it is the bare square root instruction where the C compiler
-allows. The other functions for which C sets errno (`sin` to `pow`) are
+allows. The other functions for which C sets errno (`sin` to `tanh`) are
 libm's own functions under runtime names (`gs_exp`, `gs_expf`, ...), which
 gcc and clang are told depend only on their arguments. Since Goose has no
 errno, a call does not make the C compiler reload values that a loop
@@ -874,10 +877,35 @@ The module also has:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;
+let E = 2.718281828459045;    let INF = 1.0 / 0.0;   let NAN = 0.0 / 0.0;
 fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
 fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
 fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
+fn fract(x: f64) -> f64                                        // x - floor(x); and f32
+fn inverse_lerp(a: f64, b: f64, v: f64) -> f64                 // (v - a) / (b - a); and f32
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64           // and f32
+fn wrap_angle(x: f64) -> f64                                   // into [-PI, PI); and f32
 ```
+
+`fract`, `smoothstep` and `inverse_lerp` follow GLSL and std's `lerp`:
+
+- `fract(x)` is `x - floor(x)`, so it is never negative: `fract(-0.25)` is
+  `0.75`. A tiny negative `x` rounds to `1.0`, as in GLSL.
+- `inverse_lerp(a, b, v)` undoes `lerp(a, b, t)`: 0 at `a`, 1 at `b`, and
+  not clamped, so `v` past `b` gives more than 1. It is NaN or an infinity
+  when `a == b`.
+- `smoothstep(edge0, edge1, x)` is 0 up to `edge0`, 1 from `edge1`, and
+  `3t² - 2t³` of the clamped `t = inverse_lerp(edge0, edge1, x)` between.
+  Edges in reverse run it backwards. Equal edges, which GLSL leaves
+  undefined, give 0 below the edge, 1 above it and NaN at it.
+- `wrap_angle(x)` adds or takes whole turns to bring radians into
+  `[-PI, PI)`, as a floored remainder would: `PI` wraps to `-PI`, and `-0.0`
+  stays `-0.0`. The f32 form's bounds are `PI` rounded to f32.
+
+Each gives NaN for a NaN argument, and `fract` and `wrap_angle` give NaN
+for an infinity. `NAN`'s sign is unspecified.
+`INF` and `NAN` take the type the context asks for, as `PI` does
+(`let inf32: f32 = INF;`).
 
 ## os
 
