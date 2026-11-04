@@ -102,13 +102,20 @@ struct Transport {
                 length = strtoull(line.c_str() + 15, nullptr, 10);
         }
         if (length == SIZE_MAX) return false;
+        // A frame is an editor's message, kilobytes at most; one claiming
+        // gigabytes would throw out of resize on the reader thread and take
+        // the process down, so the stream ends instead.
+        if (length > (64u << 20)) return false;
         body.resize(length);
         return length == 0 || fread(body.data(), 1, length, in) == length;
     }
 
-    // The reader thread's life: every message until the stream ends.
+    // The reader thread's life: every message until the stream ends. It has
+    // no handler of its own, so nothing may throw past this frame: the
+    // stream ends instead of the process.
     void ReadAll(FILE *in) {
         string body;
+        try {
         while (ReadMessage(in, body)) {
             Message msg;
             try {
@@ -129,6 +136,8 @@ struct Transport {
                 cancel.store(true, memory_order_relaxed);
             queue.push_back(std::move(msg));
             cv.notify_all();
+        }
+        } catch (...) {
         }
         lock_guard<mutex> lock(m);
         Message end;
