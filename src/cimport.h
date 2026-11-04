@@ -504,9 +504,27 @@ struct Writer {
 inline CImported CImport(const string &header, const string &dir, const vector<string> &cincludes,
                          const vector<string> &cdefines, const string &libpath) {
     using namespace cimport;
-    vector<string> sysinc = { cat(libpath, "/goose/include"), cat(libpath, "/include") };
+    // TinyCC's own headers (stdarg.h, stddef.h, ...), then the system's,
+    // then goose's minimal stdint.h and friends as a fallback where there is
+    // no system C library: put first, they hid the system's (the macOS SDK's
+    // <inttypes.h> found no intmax_t).
+    vector<string> sysinc = { cat(libpath, "/include") };
     auto sdk = MacSdkPath();
     if (!sdk.empty()) sysinc.push_back(cat(sdk, "/usr/include"));
+    #if !defined(_WIN32) && !defined(__APPLE__)
+        for (auto d : { "/usr/local/include",
+                        #if defined(__x86_64__)
+                            "/usr/include/x86_64-linux-gnu",
+                        #elif defined(__aarch64__)
+                            "/usr/include/aarch64-linux-gnu",
+                        #endif
+                        "/usr/include" })
+            {
+                error_code ec;
+                if (filesystem::is_directory(filesystem::path(d), ec)) sysinc.push_back(d);
+            }
+    #endif
+    sysinc.push_back(cat(libpath, "/goose/include"));
     vector<string> inc;
     if (!dir.empty()) inc.push_back(dir);
     for (auto &d : cincludes) inc.push_back(d);
