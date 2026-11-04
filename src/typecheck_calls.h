@@ -811,6 +811,11 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
                 auto at = st && st->kind == TY_REF ? StorageType(av) : av.type;
                 why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(at), " as ",
                           TypeStr(p.type));
+                if (p.type->cfnsig && av.cfn) {
+                    fitfail.clear();
+                    CFnSigOk(p.type, av);
+                    Append(why, " (", fitfail, ")");
+                }
                 if (CPointerNarrowInt(p.type, av))
                     Append(why, " (C would take its value for an address: a cptr takes an address "
                                 "held as u64, a reference (&x), a slice or an array, or null)");
@@ -915,7 +920,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     };
     if (av.isnull) {
         auto ct = own();
-        if (ct && (ct->cstr || ct->cptr)) {   // null at a C string or pointer parameter: NULL
+        if (ct && (ct->cstr || ct->cptr || ct->cfnsig)) {   // null at a C string or pointer: NULL
             tier = std::max(tier, 2);
             return ct;
         }
@@ -930,6 +935,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
         return own();
     }
     if (CPointerNarrowInt(pt, av)) return nullptr;
+    if (pt->cfnsig && av.cfn && !CFnSigOk(pt, av)) return nullptr;
     // A [] takes an array parameter's type, and at a slice parameter is a
     // temporary array of its elements, viewed whole (§4.2).
     if (av.emptyarr) {
@@ -2594,6 +2600,21 @@ inline bool TypeCheck::ExternValueOk(TypeExpr *t, string &why) {
 }
 
 inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why) {
+    // A C function pointer's signature: scalars, which is what an export fn
+    // C calls back takes and returns by value (pointers as u64).
+    if (t->cfnsig) {
+        auto scalar = [](TypeExpr *a) {
+            return (a->kind == TY_INT && a->intstorage != IS_VARINT) || a->kind == TY_FLT ||
+                   a->kind == TY_BOOL;
+        };
+        for (auto a : t->cfnsig->fn->args)
+            if (!scalar(a)) { why = "a C function pointer's signature takes scalars (a pointer as u64)"; return false; }
+        if (t->cfnsig->fn->rets.size() > 1 || (!t->cfnsig->fn->rets.empty() && !scalar(t->cfnsig->fn->rets[0]))) {
+            why = "a C function pointer's signature returns a scalar or nothing";
+            return false;
+        }
+        return true;
+    }
     if (t->kind == TY_REF) {
         // An optional reference crosses as a pointer that may be NULL.
         if (t->ref->lenstorage >= 0) {
@@ -2673,6 +2694,25 @@ inline bool TypeCheck::CPointerArgOk(TypeExpr *pt, Val &v) {
         return false;
     }
     return true;
+}
+
+// cfn(f) at a C function pointer parameter: f's parameters and result must
+// be the ones the pointer's signature names (§7.10), since C calls it so.
+inline bool TypeCheck::CFnSigOk(TypeExpr *pt, Val &v) {
+    auto sig = pt->cfnsig->fn;
+    auto sf = v.cfn;
+    auto ok = sf->params.size() == sig->args.size() && sf->rets.size() == sig->rets.size();
+    for (size_t i = 0; ok && i < sig->args.size(); i++)
+        ok = sf->params[i].type && TypeEq(sf->params[i].type, sig->args[i]);
+    for (size_t i = 0; ok && i < sig->rets.size(); i++) ok = TypeEq(sf->rets[i], sig->rets[i]);
+    if (ok) return true;
+    string have = "fn(";
+    for (size_t i = 0; i < sf->params.size(); i++)
+        Append(have, i ? ", " : "", sf->params[i].type ? TypeStr(sf->params[i].type) : "?");
+    have += ")";
+    if (!sf->rets.empty()) Append(have, " -> ", TypeStr(sf->rets[0]));
+    fitfail = cat("cfn(", sf->name, ") is ", have, ", where C calls ", TypeStr(pt));
+    return false;
 }
 
 // An integer other than a u64 at a `cptr`: C would take its value for an

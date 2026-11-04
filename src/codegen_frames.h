@@ -401,6 +401,14 @@ inline void CodeGen::CollectSpecs() {
                         calls.push_back(e);
                 };
                 if (c->builtin < 0) add(c->spec);
+                // C may call back any export fn cfn handed out, during any
+                // extern call: those are its callees too, which then run
+                // on the data stacks above the caller's (gs_export_sp).
+                if (c->builtin < 0 && c->spec && c->spec->sf->isextern && !ast.cfnexports.empty()) {
+                    si.needssp = true;
+                    for (auto ex : ast.cfnexports)
+                        if (ex->specs.size() == 1) add(ex->specs[0]);
+                }
                 for (auto d : c->dispatch) add(d);
                 // Formatting a user type calls its format overload, and print
                 // and thread_spawn assemble their text or packet on a stack.

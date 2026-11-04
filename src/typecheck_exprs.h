@@ -1076,6 +1076,7 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
 inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     if ((dt->cptr || (dt->kind == TY_REF && dt->cpointer)) && !v.isnull && CPointerArgOk(dt, v))
         return true;
+    if (dt->cfnsig && v.cfn && !CFnSigOk(dt, v)) return false;
     if (CPointerNarrowInt(dt, v)) {
         fitfail = cat("a ", TypeStr(v.type), " where C wants a pointer: a cptr takes an address held "
                       "as u64, a reference (&x), a slice or an array, or null");
@@ -1093,7 +1094,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     // The null literal fits any optional (plain or relative).
     if (v.isnull) {
         if (dt->kind == TY_REF && dt->ref->optional) { v.type = dt; return true; }
-        if (dt->cstr || dt->cptr) { v.type = dt; return true; }   // NULL to C (§7.10)
+        if (dt->cstr || dt->cptr || dt->cfnsig) { v.type = dt; return true; }   // NULL to C (§7.10)
         fitfail = cat("null is only a value of optional types, not ", TypeStr(dt));
         return false;
     }

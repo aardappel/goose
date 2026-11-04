@@ -42,6 +42,9 @@ long long ci_sum_ints(const int *xs, size_t n); /* a pointer and a length: a sli
 void ci_fill(int *out, size_t n, int v);
 unsigned long long ci_addr(const void *p);     /* an address held as u64 crosses as it is */
 int ci_maybe(int *out);                        /* NULL-able */
+
+typedef int (*ci_visit)(void *ud, int value);  /* a callback: cfn(f) of an export fn */
+int ci_each(const int *xs, size_t n, ci_visit f, void *ud);
 int ci_call_count(void);
 
 int ci_printf(const char *fmt, ...);           /* variadic: left out */

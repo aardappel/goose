@@ -851,6 +851,17 @@ struct Parser {
                         p.type = ParseType();
                         if (sf->isextern && p.type->kind == TY_REF && p.type->ref->optional)
                             p.type->cpointer = true;
+                        // `fn(...) -> R`: a C function pointer, which takes
+                        // cfn(f) of an export fn of that signature, an
+                        // address C gave, or null.
+                        if (sf->isextern && p.type->kind == TY_FN) {
+                            if (!p.type->fn->has_sig)
+                                Error("a C function pointer parameter needs its signature, fn(...) -> R");
+                            auto t = ast.NewType(TY_INT, CurLine());
+                            t->intstorage = IS_U64;
+                            t->cfnsig = p.type;
+                            p.type = t;
+                        }
                     }
                 }
                 if (IsNext(T_ASSIGN)) {

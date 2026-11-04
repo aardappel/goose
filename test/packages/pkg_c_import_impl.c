@@ -52,6 +52,14 @@ unsigned long long ci_addr(const void *p) {
     return (unsigned long long)(uintptr_t)p;
 }
 
+int ci_each(const int *xs, size_t n, ci_visit f, void *ud) {
+    int s = 0;
+    calls++;
+    if (!f) return -1;
+    for (size_t i = 0; i < n; i++) s += f(ud, xs[i]);
+    return s;
+}
+
 int ci_sum_bytes(const void *p, size_t n) {
     const unsigned char *b = p;
     int s = 0;

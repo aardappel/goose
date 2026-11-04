@@ -806,6 +806,11 @@ struct TypeCheck {
         if (IsUntypedEmptyArray(t)) return "[]";
         if (t->cptr) return t->cq ? "const cptr" : "cptr";
         if (t->cstr) return "cstr";
+        if (t->cfnsig) {
+            string s;
+            t->cfnsig->Dump(s);
+            return s;
+        }
         string s;
         t->Dump(s);
         return s;
@@ -2388,6 +2393,7 @@ struct TypeCheck {
     bool ExternParamOk(TypeExpr *t, string &why);
     bool CPointerArgOk(TypeExpr *pt, Val &v);
     bool CPtrBindsLValue(const Val &v, TypeExpr *dt);
+    bool CFnSigOk(TypeExpr *pt, Val &v);
     bool CPointerNarrowInt(TypeExpr *pt, Val &v);
     bool DylibValueOk(SFunction *sf, TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);

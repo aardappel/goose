@@ -323,6 +323,10 @@ struct TypeExpr {
     // An optional reference parameter of an extern fn, a C pointer: it also
     // takes a slice or an array of its pointee, as its elements' address.
     bool cpointer = false;
+    // A C function pointer parameter of an extern fn (§7.10), a u64 that
+    // crosses as the pointer: the C signature `fn(...) -> R` it was written
+    // with, which a `cfn(f)` argument's export fn must have.
+    TypeExpr *cfnsig = nullptr;
     // On a TY_INT: an index or bound type (TypeIndex). Outside the union,
     // since intstorage is the member a TY_INT uses.
     TypeIndex *ix = nullptr;
@@ -708,6 +712,7 @@ struct Val : Prov {
     bool strlit = false;         // String literal: adaptable to u8 array types.
     bool emptyarr = false;       // [] with as yet unknown element type.
     bool isnull = false;         // The null literal: adaptable to any optional.
+    SFunction *cfn = nullptr;    // cfn(f): the export fn whose address it is (§7.10).
     // A literal parameter read inside its specialization (§7.7): a constant
     // of unknown value at its nominal type, adapting to any type of its
     // kind; the parameter it came from is where the adaptation is recorded.
@@ -2513,6 +2518,9 @@ struct Ast {
     // those only, as a header declares functions a library may be built
     // without.
     set<string> cimportfiles;
+    // The export fns whose address `cfn` hands C, which C may call back
+    // during any extern call (codegen keeps the data stacks for them).
+    set<SFunction *> cfnexports;
     map<int, set<string>> cimportcalled;
 
     // The message for an unknown name: `prefix name`, or why an `import c`

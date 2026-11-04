@@ -5,6 +5,14 @@ import std;
 import ffi;
 import c "pkg_c_import.h";
 
+// C calls it back for each element, with the user data ci_each was given.
+var visti: u8[>..] = [];
+export fn visita(ud: u64, v: i32) -> i32 {
+    // Text built on the data stacks, while main holds one of its own.
+    format(visti, "[", ud, ":", str(v, "!"), "]");
+    return v * 2;
+}
+
 fn main() {
     // Constants: integer, wide, unsigned, floating, string, pointer, enum.
     print(CI_ANSWER, " ", CI_NEG, " ", CI_BIG, " ", CI_MASK, " ", CI_RATIO, " ", CI_NAME);
@@ -52,5 +60,12 @@ fn main() {
     print(ci_sum_ints(xs, 3), " ", ci_sum_ints(tutti[1..], 3), " ", ci_sum_ints(tutti[0..0], 0));
     ci_fill(xs, xs.len as u64, 7);
     print(xs[0], " ", xs[1], " ", xs[2]);
+
+    // A callback: cfn(f) of an export fn of the signature C calls, with an
+    // integer as its user data; null where C allows none.
+    var tenuto: u8[>..] = "prima ";
+    let doppi = ci_each(xs, 3, cfn(visita), 5);
+    tenuto.append("dopo");
+    print(doppi, " ", visti, " ", tenuto, " ", ci_each(xs, 3, null, null));
     print(ci_call_count());
 }

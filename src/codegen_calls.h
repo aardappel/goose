@@ -166,11 +166,40 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
                 continue;
             }
         }
+        if (pt->cfnsig) {
+            // A C function pointer: cfn(f), an address C gave, or null.
+            if (Is<NullLit>(an[i])) {
+                argstr += "NULL";
+                continue;
+            }
+            auto p = T();
+            auto x = GenXD(an[i], pt);
+            auto decl = CFnPtrType(pt->cfnsig, p);
+            auto fty = CFnPtrType(pt->cfnsig, "");
+            L(decl, " = (", fty, ")(uintptr_t)", x, ";");
+            argstr += p;
+            continue;
+        }
         auto x = pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
         argstr += Snapshot(pt, x);
         if (HoldsFatRef(pt)) grows = true;
     }
     if (sp->sf->takesloc) Append(argstr, an.empty() ? "" : ", ", CallerLoc(c->line));
+    // C may call back an export fn cfn handed out: it runs on the data
+    // stacks above this function's, from gs_export_sp, and may append to
+    // what a cached top caches.
+    string savedsp;
+    if (!ast.cfnexports.empty()) {
+        grows = true;
+        for (auto ex : ast.cfnexports)
+            if (ex->specs.size() == 1 && sinfo.count(ex->specs[0]) && sinfo[ex->specs[0]].needssp) {
+                NoStackAcrossCycleCall(ex->specs[0], c->line);
+                NoteStackCall(ex->specs[0], c->line);
+            }
+        savedsp = T();
+        L("int64_t ", savedsp, " = gs_export_sp;");
+        L("gs_export_sp = ", SpTop(), ";");
+    }
     if (grows) MarkFlush();
     vector<string> rets;
     if (sp->rets.empty()) {
@@ -180,9 +209,20 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
         L(CT(sp->rets[0]), " ", r0, " = ", callee, "(", argstr, ");");
         rets.push_back(r0);
     }
+    if (!savedsp.empty()) L("gs_export_sp = ", savedsp, ";");
     for (auto &f : cstrs) L(f);
     if (grows) MarkReload();
     return rets;
+}
+
+// The C type of a pointer to a function of the signature `fn(...) -> R`
+// (a C function pointer parameter, §7.10), declaring `name`.
+inline string CodeGen::CFnPtrType(TypeExpr *sig, const string &name) {
+    string s = sig->fn->rets.empty() ? string("void") : CT(sig->fn->rets[0]);
+    Append(s, " (*", name, ")(");
+    for (size_t i = 0; i < sig->fn->args.size(); i++) Append(s, i ? ", " : "", CT(sig->fn->args[i]));
+    if (sig->fn->args.empty()) s += "void";
+    return s + ")";
 }
 
 // The C prototype of an extern fn, from its Goose declaration (§7.10); for
@@ -207,7 +247,8 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
         // A C string parameter (`cstr`) is the C library's own type.
         auto at = sp->argtypes[i];
         auto ct = at->cstr ? string("const char *")
-                  : at->cptr ? string(at->cq ? "const void *" : "void *") : CT(at);
+                  : at->cptr ? string(at->cq ? "const void *" : "void *")
+                  : at->cfnsig ? CFnPtrType(at->cfnsig, "") : CT(at);
         s += ct;
         Append(params, ct, " a", i);
         Append(args, "a", i);

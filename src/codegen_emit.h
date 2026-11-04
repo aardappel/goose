@@ -1060,10 +1060,13 @@ inline void CodeGen::EmitExports() {
         if (returnslice) Append(params, params.empty() ? "" : ", ", "gs_i64 *", outlen);
         if (params.empty()) params = "void";
         if (!args.empty() && si.needssp) args += ", ";
-        if (si.needssp) args += "0";
+        // C calls one cfn handed out back during an extern call, above the
+        // caller's data stacks (EmitExternCall); a host calls it at 0.
+        if (si.needssp) args += ast.cfnexports.count(sf) ? "gs_export_sp" : "0";
         auto ret = sp->rets.empty() ? string("void")
                    : returnslice ? string("const uint8_t *") : CT(sp->rets[0]);
         Append(exportprotos, ret, " ", sf->cname, "(", params, ");\n");
+        if (ast.cfnexports.count(sf)) Append(protos, ret, " ", sf->cname, "(", params, ");\n");
         Append(code, ret, " ", sf->cname, "(", params, ") {\n"
                      "    if (!gs_program_initialized)\n"
                      "        gs_panic(\"goose_init must be called before exported functions\");\n");

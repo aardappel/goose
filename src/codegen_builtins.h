@@ -166,6 +166,12 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return { t };
         }
         case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: return EmitThreadSpawn(c, an);
+        case B_CFN: {
+            // The address of the export fn's C wrapper (§7.10).
+            auto t = T();
+            L("uint64_t ", t, " = (uint64_t)(uintptr_t)&", Is<Ident>(an[0])->fnref->cname, ";");
+            return { t };
+        }
         case B_QPUT: {
             auto t = an[0]->exprtype;
             auto q = QueueFor(t);

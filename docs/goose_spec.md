@@ -3304,6 +3304,13 @@ These values can cross the boundary (with layouts per C.2):
   reference, a slice or an array stored somewhere (its elements' address),
   or other storage, which binds by reference as at a `T&` (§4.1). Another
   integer is an error, since C would take its value for an address;
+* a C function pointer, written as the parameter's type `fn(P...) -> R`
+  with scalar `P` and `R` (pointers as `u64`): it takes `cfn(f)`, the
+  address of the C wrapper of the `export fn f` (§7.11), whose parameters
+  and result must be the signature's; an address held as `u64`; or `null`.
+  C may call `f` back during any extern call. It runs on the data stacks
+  above those of the function that made the call, and may read and write
+  globals like any function;
 * `T[:]` of such a `T`, as the slice struct (`{ data, len }`);
 * `T[>..]&` of such a `T`, as the resizable's header plus its stack
   (`gs_rref`). C sees the elements as blocks of `T`'s packed size: it may

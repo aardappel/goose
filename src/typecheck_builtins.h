@@ -49,6 +49,27 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             else CheckIntAny(args[0]);
             reachable = false;
             return VoidVal();
+        case B_CFN: {
+            // cfn(f): the address of the export fn f's C wrapper, as a u64,
+            // for C to call back (§7.10).
+            auto id = Is<Ident>(args[0]);
+            SFunction *ex = nullptr;
+            auto vd = id ? LookupVar(id->name, id->ns) : nullptr;
+            if (id && !(vd && !vd->isglobal))
+                for (auto sf : ast.LookupFunctions(id->name, id->ns))
+                    if (sf->isexport) {
+                        if (ex) Error(c, cat("cfn(", id->name, "): more than one export fn has that name"));
+                        ex = sf;
+                    }
+            if (!ex) Error(c, "cfn's argument names an export fn, whose C wrapper C calls back (§7.10)");
+            id->fnref = ex;
+            id->exprtype = fntype;
+            ast.cfnexports.insert(ex);
+            Val v;
+            v.type = ast.inttypes[IS_U64];
+            v.cfn = ex;
+            return v;
+        }
         case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: {
             auto wid = Is<Ident>(args[0]);
             vector<SFunction *> workers;

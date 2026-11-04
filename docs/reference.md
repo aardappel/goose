@@ -4041,9 +4041,21 @@ prototype in terms of Goose's shapes:
   array it keeps, also comes back as a `u64`. `ffi::cstr(p)` and
   `ffi::bytes(p, n)` ([stdlib.md](stdlib.md#ffi)) copy what is there into
   Goose storage: `print(ffi::cstr(SDL_GetError()))`.
-* **Still an adapter's job**: callbacks (a function pointer the library
-  wants) and variadic functions, which cannot be bound at all. Each needs
-  a few lines of C in a native part.
+* **Callbacks**: a parameter declared `fn(P...) -> R` is a C function
+  pointer. It takes `cfn(f)`, the address of an `export fn f` (below) of
+  that signature, which C may call back during any extern call; user data
+  goes through a `cptr` as an integer, an index into the program's own
+  table:
+
+  <!-- fragment -->
+  ```goose
+  extern fn each(xs: const i32?, n: u64, f: fn(u64, i32) -> i32, ud: cptr) -> i32;
+  export fn visit(ud: u64, v: i32) -> i32 { v * 2 }
+  print(each(xs, xs.len as u64, cfn(visit), 5));
+  ```
+
+* **Still an adapter's job**: variadic functions, which cannot be bound at
+  all, need a few lines of C in a native part.
 
 Only a member a call reaches is bound, and a library none of whose
 members is called is never opened, so a block may declare an interface
@@ -4083,6 +4095,8 @@ fn main() {
   which passes its elements' address, an empty slice's too. So
   `(const int *xs, size_t n)` takes `(v, v.len as u64)`, with no dummy
   element for an empty `v`.
+* A function pointer parameter is `fn(P...) -> R`, with pointers as `u64`:
+  it takes `cfn(f)` of an export fn of that signature, or `null`.
 * `void *` is `cptr` (`const void *`, `const cptr`): a slice or an array
   (its elements), other storage (bound by reference, as `&x`), an address
   held as `u64`, or `null`. Any other pointer, and every pointer a function
@@ -4156,6 +4170,7 @@ standard library, written in Goose under `stdlib/` and documented in
 | `qput(v)`, `qget<T>()`, `qpoll<T>()`, `qlimit<T>(n)` | the typed queues | [22](#22-threads) |
 | `to_bytes(a)`, `to_bytes(a, out)`, `bytes_of(a)`, `from_bytes<T[>..]>(b)` | serialization | [23](#23-serialization) |
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |
+| `cfn(f) -> u64` | the address of the `export fn f`'s C wrapper, for C to call back | [24](#24-calling-c-and-being-called-from-c) |
 
 The array members, `.len`, `.cap`, `.push`, `.append`, `.pop`, `.pop_n`,
 `.resize`, `.clear`, `.index_of`, `.range_index`, `.check_length`, `.move_from` are in

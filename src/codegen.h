@@ -975,6 +975,7 @@ struct CodeGen {
     };
 
     string Snapshot(TypeExpr *t, const string &x);
+    string CFnPtrType(TypeExpr *sig, const string &name);
     // Fill operands are evaluated once; literal shells containing relative
     // links are replayed at each slot using these captured leaf values.
     unordered_map<Node *, Loc> fillvalues;
@@ -1605,9 +1606,6 @@ struct CodeGen {
             }
             externs += "};\n";
         }
-        // A C header's module was made for the machine the compiler runs on
-        // (`import c`, cimport.h): built for another, this C stops here
-        // rather than passing values in the wrong shapes.
         // The copies a `cstr` argument crosses as (§7.10): on the caller's
         // C stack when short, else allocated, and freed after the call.
         if (usescstr)
@@ -1622,6 +1620,12 @@ struct CodeGen {
                           "static void gs_cstr_out(const char *s, char *buf) {\n"
                           "    if (s != buf) free((void *)s);\n"
                           "}\n", externs);
+        // Where an export fn C calls back starts its data stacks: above the
+        // ones in use where the extern call that led to it was made.
+        if (!ast.cfnexports.empty()) externs = cat("static int64_t gs_export_sp;\n", externs);
+        // A C header's module was made for the machine the compiler runs on
+        // (`import c`, cimport.h): built for another, this C stops here
+        // rather than passing values in the wrong shapes.
         for (auto &a : ast.cimportasserts)
             Append(externs, "_Static_assert(", a, ", ", CStr(cat("import c assumes ", a)), ");\n");
         string includes;
