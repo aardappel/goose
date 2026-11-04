@@ -134,7 +134,9 @@ inline vector<string> PackageExternNames(const Ast &ast, int pkg, set<string> *l
     set<string> names;
     if (pkg == 0) {
         for (size_t i = 0; i < ast.sources.size(); i++)
-            if (ast.filepkg[i] == pkg) {
+            // An `import c` module's functions are named only where called
+            // (BuildNativePart).
+            if (ast.filepkg[i] == pkg && !ast.cimportfiles.count(ast.sources[i].first)) {
                 try {
                     ExternNamesIn(ast.sources[i].first, *ast.sources[i].second, names, libs);
                 } catch (CompileError &) {}
@@ -475,8 +477,37 @@ inline bool BuildNativePart(const Ast &ast, int pkg, const string &rootfile,
     string sidecartext;
     LoadFile(p.sidecar, sidecartext);
     // The JIT library's symbol table names every extern fn, so a new one
-    // rebuilds it.
+    // rebuilds it. Of an `import c` module's, it names those a program
+    // calls: a header declares functions the library may be built without
+    // (sqlite's for options left out), which would not link. They add up
+    // in the build directory, so that programs calling different ones do
+    // not rebuild it in turn.
     auto externs = PackageExternNames(ast, pkg);
+    auto importedfile = cat(dir, "/imported-externs");
+    set<string> imported;
+    {
+        string have;
+        if (LoadFile(importedfile, have)) {
+            size_t a = 0;
+            for (size_t e; (e = have.find('\n', a)) != string::npos; a = e + 1)
+                if (e > a) imported.insert(have.substr(a, e - a));
+        }
+    }
+    auto importedbefore = imported.size();
+    if (auto it = ast.cimportcalled.find(pkg); it != ast.cimportcalled.end())
+        imported.insert(it->second.begin(), it->second.end());
+    {
+        set<string> all(externs.begin(), externs.end());
+        all.insert(imported.begin(), imported.end());
+        externs.assign(all.begin(), all.end());
+    }
+    if (!b.opts.dryrun && imported.size() != importedbefore) {
+        string text;
+        for (auto &n : imported) Append(text, n, "\n");
+        std::error_code mec;
+        filesystem::create_directories(filesystem::path(dir), mec);
+        WriteFileIfChanged(importedfile, text);
+    }
     string externtext;
     for (auto &n : externs) Append(externtext, n, "\n");
     // The stamp: what the build was made from, then whether it holds the

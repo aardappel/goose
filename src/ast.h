@@ -2500,6 +2500,12 @@ struct Ast {
     // error that says so, instead of an unknown name (as Zig's translate-c
     // does, the error comes only where the name is used).
     map<string, string, less<>> cimportskipped;
+    // The sources that are `import c` modules, and per package the C
+    // functions of theirs the program calls: a JIT library's table names
+    // those only, as a header declares functions a library may be built
+    // without.
+    set<string> cimportfiles;
+    map<int, set<string>> cimportcalled;
 
     // The message for an unknown name: `prefix name`, or why an `import c`
     // left the name out.

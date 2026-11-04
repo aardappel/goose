@@ -298,6 +298,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                                      p.cdefines, JitLibPath(exedir));
                     imppath = cat(m.files.empty() ? imp.cheader : m.files[0], ".goose");
                     cmodules[imppath] = m.text;
+                    ast.cimportfiles.insert(imppath);
                     for (auto &[name, why] : m.skipped)
                         ast.cimportskipped.emplace(name, cat("not imported from ", imp.cheader, " (", why, ")"));
                     for (auto &a : m.asserts)
@@ -1740,6 +1741,10 @@ int Main(int argc, char **argv) {
         // each before the packages it requires, which is the order a
         // linker resolves their archives in.
         nativepkgs = NativePackagesUsed(ast, cg.usedexterns);
+        for (auto sp : cg.usedexterns)
+            if (sp->sf->dylib.empty() &&
+                ast.cimportfiles.count(ast.sources[sp->sf->line.fileidx].first))
+                ast.cimportcalled[ast.filepkg[sp->sf->line.fileidx]].insert(sp->sf->cname);
         // Assemble: compiler-set feature defines, the embedded runtime, then
         // the generated program. A program built with a separate runtime
         // holds what runtime.h has of it and the extern support's

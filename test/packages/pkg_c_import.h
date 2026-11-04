@@ -42,6 +42,7 @@ int ci_maybe(int *out);                        /* NULL-able */
 int ci_call_count(void);
 
 int ci_printf(const char *fmt, ...);           /* variadic: left out */
+int ci_absent(int x);                         /* never built: a JIT run that does not call it links */
 extern int ci_global;                          /* a variable: left out */
 
 #endif
