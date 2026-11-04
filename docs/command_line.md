@@ -97,6 +97,11 @@ What a run cannot do, a build can:
   `goose run` refuses it.
 * TinyCC does not optimize, so a run is for trying things out, and
   timing is done on a build.
+* An `extern fn` that binds a C library function resolves in a run only
+  for the C99 `<math.h>` functions, in both widths (all but
+  `nexttoward`). Any other is not found when the run links; it needs a
+  build, the program's own C, or an `extern "lib" { ... }` block naming
+  the library ([reference.md](reference.md#24-calling-c-and-being-called-from-c)).
 * A run keeps its data relative to the root file: `resource_dir()`
   returns the root file's directory, where a built program's is the
   executable's ([stdlib.md](stdlib.md#os)). Relative paths are relative to

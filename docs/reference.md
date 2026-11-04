@@ -3961,7 +3961,12 @@ by value, optionals) is rejected at the declaration. A parameter is as
 writable as its type says, so a read-only argument needs it declared
 `const`. C must not keep a borrowed argument beyond the call. The
 program's own C goes in a sidecar `foo.build` beside `foo.goose`
-(`c_sources = ["impl.c"];`). Headers supplied by `c_headers` in that sidecar
+(`c_sources = ["impl.c"];`). A program run in-process (`goose run`) links
+only against the compiler itself, which supplies the C99 `<math.h>`
+functions in both widths (all but `nexttoward`) and little else of the C
+library; other C library functions need `goose build`, the program's own
+C or an `extern "lib"` block
+([command_line.md](command_line.md#2-running-a-program)). Headers supplied by `c_headers` in that sidecar
 or by `--include header.h` can use Goose's generated types directly; see
 [Using Goose types in a C header](packages.md#using-goose-types-in-a-c-header).
 

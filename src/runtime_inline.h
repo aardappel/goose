@@ -5594,6 +5594,43 @@ double ldexp(double, int);
 float ldexpf(float, int);
 double frexp(double, int *);
 float frexpf(float, int *);
+GS_JIT_MATH1(acosh)
+GS_JIT_MATH1(asinh)
+GS_JIT_MATH1(atanh)
+GS_JIT_MATH1(erf)
+GS_JIT_MATH1(erfc)
+GS_JIT_MATH1(tgamma)
+GS_JIT_MATH1(lgamma)
+GS_JIT_MATH1(logb)
+GS_JIT_MATH1(rint)
+GS_JIT_MATH1(nearbyint)
+GS_JIT_MATH2(fmin)
+GS_JIT_MATH2(fmax)
+GS_JIT_MATH2(fdim)
+GS_JIT_MATH2(nextafter)
+GS_JIT_MATH2(remainder)
+double fma(double, double, double);
+float fmaf(float, float, float);
+double scalbn(double, int);
+float scalbnf(float, int);
+double scalbln(double, long);
+float scalblnf(float, long);
+int ilogb(double);
+int ilogbf(float);
+long lrint(double);
+long lrintf(float);
+long long llrint(double);
+long long llrintf(float);
+long lround(double);
+long lroundf(float);
+long long llround(double);
+long long llroundf(float);
+double modf(double, double *);
+float modff(float, float *);
+double remquo(double, double, int *);
+float remquof(float, float, int *);
+double nan(const char *);
+float nanf(const char *);
 #undef GS_JIT_MATH1
 #undef GS_JIT_MATH2
 #endif
