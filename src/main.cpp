@@ -298,6 +298,8 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                                      p.cdefines, JitLibPath(exedir));
                     imppath = cat(m.files.empty() ? imp.cheader : m.files[0], ".goose");
                     cmodules[imppath] = m.text;
+                    for (auto &[name, why] : m.skipped)
+                        ast.cimportskipped.emplace(name, cat("not imported from ", imp.cheader, " (", why, ")"));
                     for (auto &a : m.asserts)
                         if (std::find(ast.cimportasserts.begin(), ast.cimportasserts.end(), a) ==
                             ast.cimportasserts.end())

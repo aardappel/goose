@@ -2496,6 +2496,18 @@ struct Ast {
     // What the modules of `import c` assume of the target (cimport.h), as C
     // conditions the generated C asserts: `sizeof(long) == 8`.
     vector<string> cimportasserts;
+    // The C names an `import c` module left out, with why: using one is an
+    // error that says so, instead of an unknown name (as Zig's translate-c
+    // does, the error comes only where the name is used).
+    map<string, string, less<>> cimportskipped;
+
+    // The message for an unknown name: `prefix name`, or why an `import c`
+    // left the name out.
+    string UnknownName(string_view prefix, string_view name) const {
+        auto it = cimportskipped.find(name);
+        if (it == cimportskipped.end()) return cat(prefix, name);
+        return cat(name, ": ", it->second);
+    }
 
     // The text the terminal shows for d (RenderDiagnostic), the source line
     // it is on included where `withsource`: an error echoes its line, a

@@ -80,7 +80,7 @@ inline void ResolveTypeNames(Ast &ast) {
             t->enu = d;
         } else if (!ast.LookupAlias(nm->name, nm->ns)) {
             if (SplitName(nm->name, nm->ns).qualified) {
-                ErrorAt(t, nm, cat("unknown type: ", nm->name), nm->name);
+                ErrorAt(t, nm, ast.UnknownName("unknown type: ", nm->name), nm->name);
                 MakeUnknown(t, nm, nm->name);
             } else {
                 t->kind = TY_GENERIC;  // Keeps its TypeName detail, varmode included.
@@ -108,7 +108,7 @@ inline void ResolveTypeNames(Ast &ast) {
                     if (generics)
                         for (auto &g : *generics)
                             if (g.name == nm->name) return;
-                    ErrorAt(t, nm, cat("unknown type: ", nm->name), nm->name);
+                    ErrorAt(t, nm, ast.UnknownName("unknown type: ", nm->name), nm->name);
                     MakeUnknown(t, nm, nm->name);
                     break;
                 }

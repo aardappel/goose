@@ -25,6 +25,7 @@ struct CImported {
     string text;                 // The Goose module.
     vector<string> asserts;      // C conditions the module assumes of the target.
     vector<string> files;        // The header's own files (not the system ones).
+    vector<pair<string, string>> skipped;  // The names left out, and why.
 };
 
 namespace cimport {
@@ -88,6 +89,7 @@ struct Reader {
     vector<Macro> macros;
     vector<string> deps;
     set<string> names;           // Every name declared (also macros).
+    vector<string> fmacros;      // Function-like macros.
     string errors;
 
     int TagOf(const void *tag, bool isunion) {
@@ -160,6 +162,7 @@ struct Reader {
 extern "C" inline void OnDecl(void *ctx, int kind, const char *name, const void *sym) {
     auto &r = *(Reader *)ctx;
     r.names.insert(name);
+    if (kind == GCD_MACRO_FUNCTION) r.fmacros.push_back(name);
     if (kind == GCD_MACRO || kind == GCD_MACRO_FUNCTION) return;
     if (kind == GCD_TAG) {
         auto t = sym;
@@ -236,6 +239,7 @@ struct Writer {
     Reader &r;
     set<string> &system;         // Names the system headers declare.
     string out, skipped;
+    vector<pair<string, string>> skiplist;
     set<int> handles;            // Tags used as handles.
     set<int> returned;           // Structs a function returns a pointer to.
     vector<int> structs;         // Tags emitted as structs, in order.
@@ -409,7 +413,10 @@ struct Writer {
         return ParamType(t, why);
     }
 
-    void Skip(const string &name, const string &why) { Append(skipped, "//   ", name, ": ", why, "\n"); }
+    void Skip(const string &name, const string &why) {
+        Append(skipped, "//   ", name, ": ", why, "\n");
+        skiplist.emplace_back(name, why);
+    }
 
     bool Visible(const string &name) { return !Reserved(name) && !system.count(name) && !IsGooseKeyword(name); }
 
@@ -598,6 +605,15 @@ inline CImported CImport(const string &header, const string &dir, const vector<s
     res.text = cat("// import c \"", header, "\": the Goose declarations of a C header, made by the\n",
                    "// compiler from what TinyCC reads in it (goose --c-import shows them).\n\n",
                    types.empty() ? "" : cat(types, "\n"), consts.empty() ? "" : cat(consts, "\n"), fns);
+    // Function-like macros, and object-like ones with no constant value, are
+    // not imported either; they are not listed in the module (a header has
+    // many, mostly internal), but using one says why it is missing.
+    for (auto &m : r.fmacros)
+        if (w.Visible(m) && !w.globals.count(m)) res.skipped.emplace_back(m, "a function-like macro");
+    for (auto &m : r.macros)
+        if (m.kind == GCD_MACRO_NONE && w.Visible(m.name) && !w.globals.count(m.name))
+            res.skipped.emplace_back(m.name, "a macro with no constant value");
+    for (auto &k : w.skiplist) res.skipped.push_back(k);
     if (!w.skipped.empty()) Append(res.text, "\n// Not imported:\n", w.skipped);
     if (w.usedptr) res.asserts.push_back("sizeof(void *) == 8");
     if (w.usedlong) res.asserts.push_back(cat("sizeof(long) == ", (int)sizeof(long)));

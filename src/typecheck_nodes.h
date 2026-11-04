@@ -173,7 +173,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         if (cands.size() > 1) v.fnv.set = &cands;
         return v;
     }
-    tc.Error(this, cat("unknown identifier: ", name));
+    tc.Error(this, tc.ast.UnknownName("unknown identifier: ", name));
 }
 
 inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {

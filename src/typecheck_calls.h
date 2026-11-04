@@ -93,7 +93,7 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
     if (!bd) {
         if (LookupVar(id->name, id->ns))
             Error(c, cat(id->name, " is a variable, not a function"));
-        Error(c, cat("unknown function: ", id->name));
+        Error(c, ast.UnknownName("unknown function: ", id->name));
     }
     if (bd->flags & BF_PROPERTY)
         Error(c, cat(id->name, " is a property (use a.", id->name, "), not a call"));
@@ -232,7 +232,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
     }
     if (bd) Error(c, cat(".", d->name, " is a property, not a call"));
     if (LacksByError(rt)) throw Abandoned {};
-    Error(c, cat("unknown function or member: ", d->name));
+    Error(c, ast.UnknownName("unknown function or member: ", d->name));
 }
 
 // A non-fixed lvalue argument passes by reference (§4.1): it becomes `&a`

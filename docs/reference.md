@@ -4087,7 +4087,9 @@ fn main() {
   `let`s with the value C gives them.
 * Variadic functions, variables, and functions passing a union, a bitfield,
   `long double` or a padded struct by value are left out; the module says
-  which, and why, at its end.
+  which, and why, at its end. Using one, or a function-like macro, is an
+  error that says why it is missing:
+  `sqlite3_mprintf: not imported from sqlite3.h (variadic)`.
 
 `goose --c-import x.h` prints the module. Sizes and layouts are those of
 the machine the compiler runs on; the generated C asserts the ones the
