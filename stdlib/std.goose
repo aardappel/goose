@@ -214,32 +214,31 @@ fn rand_int(r: rng&, n: i64) -> i64 {
     return (x % m) as i64;
 }
 
-// Uniform in [lo, lo + size), size > 0; the range has to fit in i64. A
-// size, not an end, so a range is never empty by an off-by-one.
+// Uniform in [0, size), or [lo, lo + size), size > 0; the range has to fit
+// in i64. A size, not an end, so a range is never empty by an off-by-one.
+fn rand_range(r: rng&, size: i64) -> i64 { rand_int(r, size) }
 fn rand_range(r: rng&, lo: i64, size: i64) -> i64 {
     assert(size > 0);
     return lo + rand_int(r, size);
 }
-
-// The top bit: splitmix64's output bits are equally good.
-fn rand_bool(r: rng&) -> bool { (rand_u64(r) >> 63) != 0 }
 
 // Uniform in [0, 1): the top 53 (24) bits, scaled by 2^-53 (2^-24), so every
 // result is a multiple of that step and each is equally likely.
 fn rand_flt(r: rng&) -> f64 { (rand_u64(r) >> 11) * (1.0 / 9007199254740992.0) }
 fn rand_f32(r: rng&) -> f32 { (rand_u64(r) >> 40) * (1.0 / 16777216.0) }
 
-// std imports nothing, so it names the two libm functions rand_normal needs
+// std imports nothing, so it names the two libm functions rand_gaussian needs
 // itself, in a namespace of their own, apart from math's sqrt and log.
 extern fn rand_detail::sqrt(x: f64) -> f64 = "gs_sqrt";
 extern fn rand_detail::log(x: f64) -> f64 = "gs_log";
 
-// Standard normal (mean 0, variance 1), by Marsaglia's polar method: a point
+// Gaussian: the standard normal distribution (mean 0, variance 1), by
+// Marsaglia's polar method. A point
 // drawn uniformly in the square is kept once it lands inside the unit circle
-// (about 79% of tries), and gives two independent normals. rng holds only
+// (about 79% of tries), and gives two independent draws. rng holds only
 // its seed, so the second is dropped, and a seed always gives the same
 // draws. Those are the same everywhere that libm's log agrees.
-fn rand_normal(r: rng&) -> f64 {
+fn rand_gaussian(r: rng&) -> f64 {
     loop {
         let u = 2.0 * rand_flt(r) - 1.0;
         let v = 2.0 * rand_flt(r) - 1.0;

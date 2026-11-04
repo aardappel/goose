@@ -142,10 +142,12 @@ fn random_helpers() {
     for i in 8 { a[i] = r.rand_range(-10, 21); }
     // -8 -3 5 4 2 -8 -10 -7
     print(a[0], " ", a[1], " ", a[2], " ", a[3], " ", a[4], " ", a[5], " ", a[6], " ", a[7]);
+    // Without lo, rand_range starts at 0 and draws as rand_int does.
     var b = rng { 2 };
-    var bits = 0;
-    for i in 16 { bits = bits * 10 + (if b.rand_bool() { 1 } else { 0 }); }
-    print(bits);                                      // 1111001101001010
+    var c = rng { 2 };
+    var same_int = true;
+    for i in 100 { if b.rand_range(7) != c.rand_int(7) { same_int = false; } }
+    print(same_int);                                  // true
     // rand_f32 is the top 24 bits over 2^24, exactly.
     var f = rng { 3 };
     let f0 = (f.rand_f32() * 16777216.0) as i64;
@@ -171,24 +173,27 @@ fn random_helpers() {
         if x * 16777216.0 != (x * 16777216.0) as i64 { ok = false; }
     }
     print(ok, " ", seen[0] && seen[1] && seen[2]);   // true true
-    var ones = 0;
-    for i in 10000 { if r.rand_bool() { ones += 1; } }
-    print(ones > 4700 && ones < 5300);                // true
+    var low_ok = true;
+    for i in 1000 {
+        let v = r.rand_range(3);
+        if v < 0 || v > 2 { low_ok = false; }
+    }
+    print(low_ok);                                    // true
 
-    // rand_normal: the same seed gives the same draws, and 100000 of them
+    // rand_gaussian: the same seed gives the same draws, and 100000 of them
     // have mean 0 and variance 1 (standard errors 0.0032 and 0.0045), with
     // 68.3% inside one standard deviation.
     var n1 = rng { 99 };
     var n2 = rng { 99 };
     var same = true;
-    for i in 10 { if n1.rand_normal() != n2.rand_normal() { same = false; } }
+    for i in 10 { if n1.rand_gaussian() != n2.rand_gaussian() { same = false; } }
     print(same);                                      // true
     let n = 100000;
     var sum = 0.0;
     var sum_sq = 0.0;
     var inside = 0;
     for i in n {
-        let z = n1.rand_normal();
+        let z = n1.rand_gaussian();
         sum += z;
         sum_sq += z * z;
         if z > -1.0 && z < 1.0 { inside += 1; }
