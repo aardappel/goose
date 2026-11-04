@@ -1264,6 +1264,25 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
         c->dispatch.push_back(spec);
     }
+    // A case taking a non-fixed-size variant by value gets a copy of the
+    // argument, taken before the tag is read and held to the end of the call
+    // on a data stack (EmitDispatch), so also across the other cases. Where
+    // one of them is a call into the caller's cycle, that copy is a non-fixed
+    // temporary argument of the call (§7.8 (a)).
+    if (auto cur = frames.back().spec; cur && cur->incycle) {
+        FnSpec *into = nullptr;
+        for (auto spec : c->dispatch)
+            if (spec->incycle && CycleHead(spec) == CycleHead(cur)) into = spec;
+        for (size_t vi = 0; into && vi < en->variants.size(); vi++) {
+            auto vt = ast.VariantTypeOf(enumtype, &en->variants[vi], c->line);
+            if (matches[vi].paramtypes[found]->kind == TY_REF || !NeedsCycleStack(vt)) continue;
+            Error(c, cat(FrameFnName((int)frames.size() - 1), " calls into its recursive cycle "
+                         "through ", into->sf->name, " while case parameter ",
+                         matches[vi].sf->params[found].name, " holds a by-value copy of "
+                         "non-fixed-size ", TypeStr(vt), " (§7.8): take it by reference: ",
+                         TypeStr(vt), "&"));
+        }
+    }
     // Phase 2 for the non-dispatch args (before CallResult, so nested
     // calls cannot clobber lastcallrets); the dispatch arg keeps its type.
     auto argsreach = reachable;
