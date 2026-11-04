@@ -1250,6 +1250,7 @@ struct TypeCheck {
     // back to. Both walk the element type; `why` explains a refusal.
     bool ImageSafe(TypeExpr *t, string &why);
     bool VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why);
+    bool HoldsRelRef(TypeExpr *t);
 
     // Is this a type an uninitialized `var x: T;` may have: fixed-size, so a
     // later whole-value assignment fully constructs it.

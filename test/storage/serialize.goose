@@ -345,13 +345,16 @@ fn framing() {
     print("view ", raw.len, " ", fok, " ", f2.len, " ", v, " ", k);
                                                         // view 48 true 4 48 1
 
-    // The kinds whose contents are an element run plus a count.
+    // The kinds whose contents are an element run plus a count. Tree's own
+    // image cannot build a T[>..<]: its links would name elements a shrink
+    // frees (serialize_grow_shrink_refs), so the grow-shrink kind is
+    // exercised with an element type that holds none.
     var img: u8[>..] = pool.to_bytes();
-    var gs, gok = from_bytes<Tree[>..<]>(img);
+    var ints, iok = from_bytes<i64[>..<]>(img);
     var va, vok = from_bytes<Tree[]>(img);
     var vv, wok = from_bytes<Tree[varint]>(img);
-    print("kinds ", gok, " ", gs.len, " ", vok, " ", va.len, " ", wok, " ",
-          vv.len, " ", va[3].v);                        // kinds true 4 true 4 true 4 44
+    print("kinds ", iok, " ", ints.len, " ", vok, " ", va.len, " ", wok, " ",
+          vv.len, " ", va[3].v);                        // kinds true 24 true 4 true 4 44
 
     // A prefix that does not account for exactly the rest is not an image.
     img[0] = img[0] + 1;
