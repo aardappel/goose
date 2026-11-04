@@ -236,14 +236,16 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
 }
 
 // A non-fixed lvalue argument passes by reference (§4.1): it becomes `&a`
-// before any candidate sees it. The user's own `&` on one is redundant. A
-// control construct's value is no storage, even where its one branch is: a
-// reference parameter binds its branches instead (BindBranchesByRef).
+// before any candidate sees it. The user's own `&` on one is redundant,
+// except in generic code, where another instantiation may need it, as a
+// cast's (§6.3). A control construct's value is no storage, even where its
+// one branch is: a reference parameter binds its branches instead
+// (BindBranchesByRef).
 inline void TypeCheck::RefArg(Node *&a, Val &v) {
     // A resizable without a header of its own (C.2) stays a value, which a
     // slice parameter still takes whole.
     if (IsNonFixedLValue(v) && !v.storagebranches && Referenceable(a, v)) a = AutoRef(a, v);
-    else if (UserRefOf(a) && IsNonFixedRef(v))
+    else if (UserRefOf(a) && IsNonFixedRef(v) && !InGenericCode())
         Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
                     " is passed by reference without it (§4.1)"));
 }
@@ -3823,6 +3825,12 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
         params.push_back(p);
     } else if (!argvals.empty()) {
         Error(c, "a block with multiple arguments needs named parameters (x, y => ...)");
+    }
+    // A non-fixed lvalue binds an untyped parameter by reference (§4.1).
+    for (size_t i = 0; i < params.size(); i++) {
+        if (params[i].type) continue;
+        RefArg(c->args[i], argvals[i]);
+        c->args[i]->exprtype = argvals[i].type;
     }
     // Parameter types: annotations resolve in the defining environment.
     vector<TypeExpr *> ptypes;

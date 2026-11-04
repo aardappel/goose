@@ -1176,7 +1176,8 @@ depends on its size class (§1.1):
 * **Non-fixed values are never copied implicitly.** A variable- or
   resizable-class *lvalue* (a variable, field or element) binds by reference
   when its destination has a reference or slice type, or is an untyped
-  parameter (§7.7), an un-annotated `let`/`var`, a `for` binding, or a
+  parameter of a function or a block (§7.6, §7.7), an un-annotated
+  `let`/`var`, a `for` binding, or a
   result whose type is inferred (§7.1). At a value-typed destination such an
   lvalue is an error.
   A value-typed destination takes an **rvalue** (a literal, a call's result,
@@ -1192,7 +1193,11 @@ needs to be written `out.push(copy(w))` when `w` names storage. `x.f(a)`
 destination, a reference to a *fixed* value is still written `&x`
 (`let r = &n;`, or equivalently `let r .= n;`, §3.8; `f(&n)` into an untyped
 parameter). Wherever the destination's own type is a reference, the `&` is
-redundant, and a redundant `&` is a warning.
+redundant, and a redundant `&` is a warning. An argument's `&` in a generic
+function's body, in a function value's body, and in what is declared in
+either is exempt, as a redundant cast is (§6.3): another instantiation may
+need it, as `F(N, &value.A)` over `fields<T>` (§6.5) needs it for a
+fixed-size field and not for a non-fixed one.
 
 These destinations give an `if`, `match`, `block`, `loop` or bare `{ }` no
 destination type: an un-annotated `let`/`var`, a result whose type is
