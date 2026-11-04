@@ -310,6 +310,10 @@ fn strings() {
     print(v2, " ", ok2);                                                       // 0 false
     let v3, ok3 = parse_int("ff", 16);
     print(v3, " ", ok3);                                                       // 255 true
+    let u, oku = parse_uint("18446744073709551615");
+    print(u, " ", oku);                                                        // 18446744073709551615 true
+    let u2, oku2 = parse_uint("-1");
+    print(u2, " ", oku2);                                                      // 0 false
     let fl, okf = parse_flt("-1.5e2");
     print(fl, " ", okf);                                                       // -150.0 true
     let fl2, okf2 = parse_flt("abc");
