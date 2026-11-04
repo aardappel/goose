@@ -2008,8 +2008,9 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
         return true;
     };
     // A shift of a constant by a count that is no constant, and integer
-    // operations whose operands are constants and such values, are no
-    // constants that adapt (Val::flexint).
+    // operations whose operands are constants, constructs of constants
+    // (Val::litint) and such values, are no constants that adapt
+    // (Val::flexint).
     auto flexint = [&](Val &v, bool shift) {
         int64_t llo, lhi, rlo, rhi;
         if (v.ck == CK_INT || !FlexConsts(lv, llo, lhi)) return;
@@ -2017,7 +2018,8 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
             v.flexint = true;
             v.litlo = llo;
             v.lithi = lhi;
-        } else if ((lv.flexint || rv.flexint) && FlexConsts(rv, rlo, rhi)) {
+        } else if ((lv.flexint || rv.flexint || lv.litint || rv.litint) &&
+                   FlexConsts(rv, rlo, rhi)) {
             v.flexint = true;
             v.litlo = std::min(llo, rlo);
             v.lithi = std::max(lhi, rhi);

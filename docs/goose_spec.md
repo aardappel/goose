@@ -2035,10 +2035,12 @@ constant keeps the constant's freedom to adapt. `1 << k` is not a constant,
 but it takes the integer type of its destination or other operand, as a
 constant does, where the constant fits that type (`let m: u64 = 1 << k;`,
 `m | (1 << k)`, a `u8` field), and is an `i64` where nothing gives it a
-type. An integer operation over such shifts and constants does the same
-(`(1 << k) - 1`, `~(1 << k)`), and is computed at that type throughout; a
-typed operand, unary `-` or a cast gives it a type of its own. So does `~c`
-of a constant `c >= 0`, whose value depends on the width it is computed at.
+type. An integer operation over such shifts, constants and constructs whose
+branches are all integer constants (§6.4) does the same (`(1 << k) - 1`,
+`~(1 << k)`, `(if c { 1 } else { 0 }) + 1`), and is computed at that type
+throughout; a typed operand, unary `-` or a cast gives it a type of its own.
+So does `~c` of a constant `c >= 0`, whose value depends on the width it is
+computed at.
 It adapts where `c` fits, so `let a: u8 = ~4;` is 251 and `flags & ~F_ROAD`
 clears a flag in a `u8`, while `~4` is -5 at a signed type or where nothing
 gives it a type. `-~c` is the constant `c + 1`, and a named constant `~c`
@@ -2296,7 +2298,9 @@ it meets a type, as at a typed destination:
 * integer constants adapt to any integer type every one of them fits
   (`g(if c { 1 } else { 2 })` passes an `i32` to `fn g(x: i32)`, and
   `(if c { 200 } else { 100 }) + b` is a `u8` add for a `b: u8`), and are an
-  `i64` where nothing gives them a type;
+  `i64` where nothing gives them a type. An integer operation over them and
+  other constants adapts as a whole, as one over `1 << k` does (§6.1):
+  `let n: i32 = (if c { 1 } else { 0 }) + 1;` is an `i32` add;
 * float literals, and floats of literals and the integers among them, adapt
   to either float width (`k(if c { 0.5 } else { 0.25 })` passes an `f32` to
   `fn k(x: f32)`), and are an `f64` where nothing gives them a type;
@@ -2966,7 +2970,11 @@ takes a `u8`. What the body cannot do with an unknown value, it cannot do
 with a literal parameter either: `[0; n]` needs a constant, and `v + 1` is
 an ordinary `i64` expression, just as `let y = v;` commits `y` to `i64`,
 so a recursive call on `v + 1` passes a typed value and terminates. `var`
-parameters and `extern` functions take literals as ordinary values.
+parameters and `extern` functions take literals as ordinary values. Only a
+scalar literal makes a literal parameter: an array literal that is the only
+thing binding a type variable gives it its default type (`[7, 8]` an
+`i64[2]`), so a signature that ties the types (`v: T` beside `xs: T[>..]&`)
+lets it adapt instead.
 
 Passing arrays by reference is the generic way to write mutating range
 algorithms (each array-family type instantiates its own copy); slices are

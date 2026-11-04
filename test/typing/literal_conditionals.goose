@@ -32,6 +32,16 @@ fn main() {
     // An operand gives them its type.
     print((if yes {100} else {50}) * x8, " ", (if yes {0.1} else {0.25}) * x32);  // 244 0.05
 
+    // An integer operation over them and other constants adapts as a whole,
+    // and is computed at the type it meets (§6.1), or i64 where none.
+    let p: i32 = (if yes {1} else {0}) + 1;
+    var count: i32 = 0;
+    count += (if yes {1} else {0}) + (if no {1} else {0});
+    let q: i32 = (if yes {1} else {2}) * (if yes {3} else {4}) - 1;
+    let m: u8 = (if no {1} else {2}) | 4;
+    print(p, " ", count, " ", q, " ", m, " ", g((if yes {1} else {0}) - 3));   // 2 1 2 6 -2
+    print(u((if yes {200} else {0}) + 100), " ", (if yes {200} else {0}) + 100);  // 44 300
+
     // A literal branch beside a typed one takes its type.
     let a = if no { x32 } else { 0.62 };
     let b = if no { x8 } else { 100 };
