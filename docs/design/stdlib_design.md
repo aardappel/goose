@@ -538,6 +538,10 @@ fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])   // T any u8 array/slice typ
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])   // `from` is a keyword
 fn each_utf8<F>(s: u8[:])                        // F(cp: i64); malformed bytes yield 0xFFFD
 fn push_utf8(out: u8[>..]&, cp: i64)             // the UTF-8 bytes of a code point
+fn ascii::is_digit(c: u8) -> bool                // ASCII only, as <ctype.h> in the C locale
+fn ascii::is_alpha(c: u8) -> bool
+fn ascii::is_alnum(c: u8) -> bool
+fn ascii::hex_value(c: u8) -> i64                // 0-15, -1 if not a hex digit
 ```
 
 Plain rendering of scalars and strings is the builtin `format` (§8.1); the

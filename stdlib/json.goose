@@ -412,7 +412,7 @@ fn valid_escapes(text: u8[:], from: i64, to: i64) -> bool {
         if e == 'u' {
             guard pos + 6 <= to else { return false; }
             for i in 4 {
-                if hex_digit(text[pos + 2 + i]) < 0 { return false; }
+                if ascii::hex_value(text[pos + 2 + i]) < 0 { return false; }
             }
             pos += 6;
         } else if e == '"' || e == '\\' || e == '/' || e == 'b' || e == 'f' || e == 'n' || e == 'r' || e == 't' {
@@ -422,13 +422,6 @@ fn valid_escapes(text: u8[:], from: i64, to: i64) -> bool {
         }
     }
     return true;
-}
-
-fn hex_digit(c: u8) -> i64 {
-    if c >= '0' && c <= '9' { return c - '0'; }
-    if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
-    if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
-    return -1;
 }
 
 // The escaped string text[at..end] decoded onto the end of out, and false
@@ -452,7 +445,7 @@ fn decode_string(text: u8[:], at: i64, end: i64, out: u8[>..]&) -> const u8[:], 
             guard pos + 4 <= end else { return out[first..], false; }
             var cp = 0;
             for i in 4 {
-                let d = hex_digit(text[pos + i]);
+                let d = ascii::hex_value(text[pos + i]);
                 guard d >= 0 else { return out[first..], false; }
                 cp = cp * 16 + d;
             }
@@ -462,7 +455,7 @@ fn decode_string(text: u8[:], at: i64, end: i64, out: u8[>..]&) -> const u8[:], 
             if cp >= 0xD800 && cp < 0xDC00 && pos + 6 <= end && text[pos] == '\\' && text[pos + 1] == 'u' {
                 var lo = 0;
                 for i in 4 {
-                    let d = hex_digit(text[pos + 2 + i]);
+                    let d = ascii::hex_value(text[pos + 2 + i]);
                     guard d >= 0 else { return out[first..], false; }
                     lo = lo * 16 + d;
                 }
@@ -494,7 +487,7 @@ fn scan_number(text: u8[:], at: i64) -> Number {
     if pos < text.len && text[pos] == '-' { neg = true; pos++; }
     let int_start = pos;
     var mant: u64 = 0;
-    while pos < text.len && text[pos] >= '0' && text[pos] <= '9' {
+    while pos < text.len && ascii::is_digit(text[pos]) {
         mant = mant * 10 + (text[pos] - '0');
         pos++;
     }
@@ -504,7 +497,7 @@ fn scan_number(text: u8[:], at: i64) -> Number {
     if pos < text.len && text[pos] == '.' {
         pos++;
         let frac_start = pos;
-        while pos < text.len && text[pos] >= '0' && text[pos] <= '9' {
+        while pos < text.len && ascii::is_digit(text[pos]) {
             mant = mant * 10 + (text[pos] - '0');
             pos++;
         }
@@ -540,14 +533,14 @@ fn scan_number_general(text: u8[:], at: i64) -> Number {
     var neg = false;
     if pos < text.len && text[pos] == '-' { neg = true; pos++; }
     let int_start = pos;
-    while pos < text.len && text[pos] >= '0' && text[pos] <= '9' { pos++; }
+    while pos < text.len && ascii::is_digit(text[pos]) { pos++; }
     let int_digits = pos - int_start;
     guard int_digits > 0 && (int_digits == 1 || text[int_start] != '0') else { return none; }
     var frac_digits = 0;
     if pos < text.len && text[pos] == '.' {
         pos++;
         let frac_start = pos;
-        while pos < text.len && text[pos] >= '0' && text[pos] <= '9' { pos++; }
+        while pos < text.len && ascii::is_digit(text[pos]) { pos++; }
         frac_digits = pos - frac_start;
         guard frac_digits > 0 else { return none; }
     }
@@ -583,7 +576,7 @@ fn scan_exponent(text: u8[:], at: i64) -> i64, i64 {
     }
     let start = pos;
     var e = 0;
-    while pos < text.len && text[pos] >= '0' && text[pos] <= '9' {
+    while pos < text.len && ascii::is_digit(text[pos]) {
         if e < 100000 { e = e * 10 + (text[pos] - '0'); }
         pos++;
     }
@@ -676,7 +669,7 @@ fn parse(text: u8[:], doc: Node[>..]&, decoded: u8[>..]&) -> Node?, u8[>..] {
         if c == 'n' { word("null"); return Value.Null; }
         let n = scan_number(text, pos);
         guard n.end > pos else {
-            let what = if c == '-' || (c >= '0' && c <= '9') { "bad number" } else { "expected a value" };
+            let what = if c == '-' || ascii::is_digit(c) { "bad number" } else { "expected a value" };
             return parse_error(what, pos) from parse;
         }
         pos = n.end;
@@ -966,7 +959,7 @@ fn skip_value(r: Reader&) {
             word(r, "false");
         } else if c == 'n' {
             word(r, "null");
-        } else if c == '-' || (c >= '0' && c <= '9') {
+        } else if c == '-' || ascii::is_digit(c) {
             read_number(r);
         } else {
             fail(r, "expected a value");

@@ -1,0 +1,8 @@
+1024 checks against the plain definitions, 0 wrong
+0123456789
+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
+0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
+0123456789ABCDEFabcdef
+0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 10 11 12 13 14 15
+-1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+false false false false false false
