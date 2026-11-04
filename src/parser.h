@@ -1543,6 +1543,27 @@ struct Parser {
                         return d;
                     }
                     auto name = ExpectIdent("field access");
+                    if (lex.tok == T_LT) {
+                        // x.f<T>(...): a UFCS call with type arguments, by
+                        // the same rule as f<T>(...); else a comparison.
+                        auto nameend = PrevEnd();
+                        auto save = lex;
+                        auto mark = ast.Mark();
+                        auto rolemark = RoleMark();
+                        vector<TypeExpr *> tyargs;
+                        if (TryParseTyArgs(tyargs)) {
+                            if (lex.tok == T_LPAREN) {
+                                Role(R_LIST);
+                                lex.Next();
+                                auto d = Finish(New<Dot>(line, e, name, curns), nameend);
+                                e = ParseCallRest(d, std::move(tyargs), d->line);
+                                continue;
+                            }
+                            lex = save;
+                            ast.DropSince(mark);
+                            DropRoles(rolemark);
+                        }
+                    }
                     // `Ident.Ident {` is a variant literal; anything else a Dot
                     // (fields, UFCS, payload-less variant constants).
                     if (lex.tok == T_LCURLY && !no_struct_lit && Is<Ident>(e)) {

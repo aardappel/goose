@@ -105,6 +105,8 @@ fn f() {
     let a = g<i64>(x);
     let b = a < c;
     let t: Foo<Bar<i32>> = 0;
+    let u = x.f<i64>(y);
+    let v = x.y < c;
 }
 
 ---
@@ -136,7 +138,24 @@ fn f() {
               (identifier)
               (type_arguments
                 (primitive_type)))))
-        (int_literal)))))
+        (int_literal))
+      (variable_declaration
+        (identifier)
+        (call_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (type_arguments
+            (primitive_type))
+          (argument_list
+            (identifier))))
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (identifier))))))
 
 ========================================
 Function values

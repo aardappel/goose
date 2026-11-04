@@ -75,10 +75,12 @@ module.exports = grammar({
     // block whose value is `a`.
     [$._expression_name, $.function_value_parameter],
     [$._qualified_name, $.function_value_parameter],
-    // `Name.Variant { … }` against a field access, and `f<T>(x)` or
-    // `Name<T> { … }` against a comparison: what follows decides.
+    // `Name.Variant { … }` against a field access, and `f<T>(x)`,
+    // `x.f<T>(y)` or `Name<T> { … }` against a comparison: what follows
+    // decides.
     [$._primary_expression, $.struct_literal],
     [$._primary_expression, $._callee, $.struct_literal],
+    [$._postfix_expression, $._callee],
     // `if f(x) {` against a trailing block.
     [$.call_expression, $._trailing_call],
   ],
@@ -538,6 +540,7 @@ module.exports = grammar({
     _callee: $ => choice(
       field('function', $._postfix_expression),
       seq(field('function', $._expression_name), field('type_arguments', $.type_arguments)),
+      prec.dynamic(1, seq(field('function', $.field_expression), field('type_arguments', $.type_arguments))),
     ),
 
     argument_list: $ => seq('(', commaSep($._expression), ')'),

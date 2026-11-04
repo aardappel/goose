@@ -28,6 +28,9 @@ GOLDEN = [
      "fn f<T>(x:T)->bool{let p=Pair<i64,Foo<Bar<i64>>>{1,g<i64>(2)};x<y&&y>z}\n",
      "struct Pair<A, B> { a: A, b: B }\n"
      "fn f<T>(x: T) -> bool { let p = Pair<i64, Foo<Bar<i64>>> { 1, g<i64>(2) }; x < y && y > z }\n"),
+    ("UFCS type arguments and field comparisons",
+     "fn f() -> bool { let n = x.f<i64,Foo<Bar<i64>>>(1).g<u8>(); x.y<z||z>x.y }\n",
+     "fn f() -> bool { let n = x.f<i64, Foo<Bar<i64>>>(1).g<u8>(); x.y < z || z > x.y }\n"),
     ("types",
      "fn f(p: Node&<u32 in pool>, q: u8 [ : ], r: i32 [ > .. < ], s: Shape .. ?, t: u8[ ..16 ]) "
      "{ let x = y as ! u8; let z = w [1 ..] [.. ^1]; }\n",

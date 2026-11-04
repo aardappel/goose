@@ -2537,9 +2537,9 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
 ```
 
 * There are only free functions: no methods and no impl blocks. UFCS:
-  `x.f(a)` passes `x` as `f(x, a)` does. Resolution tries fields and
-  built-in members first, then functions, which it looks for in the
-  namespace of `x`'s type first (§11.1).
+  `x.f(a)` passes `x` as `f(x, a)` does, and `x.f<T>(a)` as `f<T>(x, a)`
+  does. Resolution tries fields and built-in members first, then functions,
+  which it looks for in the namespace of `x`'s type first (§11.1).
 * Parameters are `let` bindings by default: they are not reassigned, and
   their contents are as writable as their type says (§4.4). `var` makes the
   (by-value) parameter a reassignable local.
@@ -2916,8 +2916,8 @@ does (`g<i64>([])` for `fn g<T>(xs: T[])`). It binds the leading type
 parameters in order, and the rest are inferred. Syntactically, `f<` commits
 to a type argument list only when the `<…>` is immediately followed by `(`,
 by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
-variant literal (`Opt<i64>.Some { … }`); otherwise `<` is the comparison
-operator.
+variant literal (`Opt<i64>.Some { … }`), and `x.f<` only when it is followed
+by `(` (`x.f<i64>(y)`, UFCS); otherwise `<` is the comparison operator.
 
 **Floating computation context.** After ordinary argument inference and
 overload resolution, an `f32` destination can refine a call's inferred
@@ -5080,7 +5080,8 @@ blockexpr   := "{" stmt* expr? "}"
 
 binary      := (precedence climbing; tightest → loosest)
    postfixe := primary ( "(" args ")" trailingblock?
-             | "[" sliceargs "]" | "." ident | "as" "!"? type )*
+             | "[" sliceargs "]" | "." ident (tyargs "(" args ")" trailingblock?)?
+             | "as" "!"? type )*
    unary    := ("-" | "!" | "~" | "&") unary
    levels   := * / %  →  + -  →  << >>  →  &  →  ^  →  |
              →  < <= > >=  →  == != .== .!=  →  &&  →  ||
@@ -5104,7 +5105,8 @@ Known parse notes:
 * A statement that is a block-ended construct needs no `;` and ends at its
   `}` (§2).
 * `f<` commits to a type argument list only when followed by `(`, `{`, or
-  `.ident {` (§7.7); otherwise `<` is comparison.
+  `.ident {`, and `x.f<` only when followed by `(` (§7.7); otherwise `<` is
+  comparison.
 * `T&<u8>` tokenizes as `&` `<` in type context only.
 * `a..b` ranges exist only in `for` headers, slice brackets, and match arms.
 * Multiple return types in a function *type* (not a declaration header)

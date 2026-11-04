@@ -43,6 +43,17 @@ fn area<T>(s: Shape.Square) -> i64 { size<T>() * 10 }
 // A named function value called with an explicit list.
 fn apply<F>(n: i64) -> i64 { F<u16>() * n }
 
+// UFCS with an explicit list: x.f<T>(a) is f<T>(x, a). A field compared
+// with `<` stays a comparison.
+struct Holder { n: i64 }
+fn scaled<T>(h: Holder, by: i64) -> i64 { size<T>() * h.n * by }
+fn ufcs_type_args() {
+    let h = Holder { 3 };
+    print(h.scaled<u16>(5), " ", h.n.wrap<f64>(), " ", h.n.wrap<u8>().wrap<u16>());
+    let m = 4;
+    print(h.n < m, " ", h.n < m || m > h.n, " ", h.n < size<u8>(), " ", h.n < m == true);
+}
+
 fn main() {
     print(size<u8>(), " ", size<f64>(), " ", size<i32>());
     print(wrap<u8>(10), " ", wrap<f64>(10));
@@ -64,4 +75,5 @@ fn main() {
     sh = Shape.Square { s: 2 };
     print(area<u8>(sh), " ", area<f64>(sh));
     print(apply(3, size));
+    ufcs_type_args();
 }
