@@ -1631,8 +1631,9 @@ struct CodeGen {
         // A C header's module was made for the machine the compiler runs on
         // (`import c`, cimport.h): built for another, this C stops here
         // rather than passing values in the wrong shapes.
+        if (!ast.cimportasserts.empty()) externs += CCheckMacro();
         for (auto &a : ast.cimportasserts)
-            Append(externs, "_Static_assert(", a, ", ", CStr(cat("import c assumes ", a)), ");\n");
+            Append(externs, "GS_CHECK(", a, ", ", CStr(cat("import c assumes ", a)), ");\n");
         string includes;
         for (auto inc : headers) {
             // Forward slashes even for a Windows path: a backslash inside a
@@ -1644,7 +1645,8 @@ struct CodeGen {
         Append(head, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
                "#pragma pack(pop)\n");
         if (!cdecls.empty())
-            Append(head, "\n/* ---- extern structs in C's layout ---- */\n#include <stddef.h>\n", cdecls);
+            Append(head, "\n/* ---- extern structs in C's layout ---- */\n#include <stddef.h>\n", CCheckMacro(),
+                   cdecls);
         Append(head, "\n/* ---- data ---- */\n", data);
         Append(result, "\n/* ---- includes ---- */\n", includes,
                "\n/* ---- extern prototypes ---- */\n", externs,

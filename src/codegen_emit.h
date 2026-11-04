@@ -1125,7 +1125,7 @@ inline string CodeGen::ExportHeader() {
     header += tdecls;
     header += "#pragma pack(pop)\n\n";
     // Extern structs an export takes or returns by value, in C's layout.
-    if (!cdecls.empty()) header += cat("#include <stddef.h>\n", cdecls, "\n");
+    if (!cdecls.empty()) header += cat("#include <stddef.h>\n", CCheckMacro(), cdecls, "\n");
     header += "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
               "void goose_init(int argc, char **argv);\n"
               "void goose_exit(void);\n";

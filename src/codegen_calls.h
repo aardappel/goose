@@ -286,10 +286,10 @@ inline string CodeGen::CMirror(TypeExpr *t) {
         auto elem = [&](TypeExpr *e) { return CrossesAsMirror(e) ? CMirror(e) : CT(e, false); };
         if (ft->kind == TY_ARRAY) Append(d, "    ", elem(ft->arr->sub), " ", fname, "[", ArrSize(ft->arr), "];\n");
         else Append(d, "    ", elem(ft), " ", fname, ";\n");
-        Append(asserts, "_Static_assert(offsetof(", name, ", ", fname, ") == ", lo.offs[i], ", ",
+        Append(asserts, "GS_CHECK(offsetof(", name, ", ", fname, ") == ", lo.offs[i], ", ",
                CStr(cat("extern struct ", si->st->name, ": field ", f.name, " where C places it")), ");\n");
     }
-    Append(d, "} ", name, ";\n", asserts, "_Static_assert(sizeof(", name, ") == ", lo.size, ", ",
+    Append(d, "} ", name, ";\n", asserts, "GS_CHECK(sizeof(", name, ") == ", lo.size, ", ",
            CStr(cat("extern struct ", si->st->name, ": its size in C")), ");\n");
     cmirrors[si] = name;
     cdecls += d;

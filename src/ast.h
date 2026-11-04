@@ -2481,6 +2481,21 @@ struct Package {
     bool HasNative() const { return !csources.empty() || !cmake_target.empty(); }
 };
 
+// The compile-time check the C that `import c` and extern structs generate
+// asserts with (GS_CHECK): _Static_assert, or where a compiler's C mode has
+// none (MSVC without /std:c11) an array of negative size when it fails.
+inline const char *CCheckMacro() {
+    return "#ifndef GS_CHECK\n"
+           "#if defined(_MSC_VER) && !defined(__clang__)\n"
+           "#define GS_CHECK_JOIN2(a, b) a##b\n"
+           "#define GS_CHECK_JOIN(a, b) GS_CHECK_JOIN2(a, b)\n"
+           "#define GS_CHECK(c, m) typedef char GS_CHECK_JOIN(gs_check_, __LINE__)[(c) ? 1 : -1]\n"
+           "#else\n"
+           "#define GS_CHECK(c, m) _Static_assert(c, m)\n"
+           "#endif\n"
+           "#endif\n";
+}
+
 struct Ast {
     // Non-null only while specializing a const-for fragment. Ordinary clones
     // retain templates; expansion clones substitute lexically bound uses.
