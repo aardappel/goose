@@ -589,8 +589,8 @@ struct TypeCheck {
 
     // An error at code checked earlier, with the instantiation chain taken
     // there: how a check made once the whole program has been reports one.
-    // The text echoes the offending source line, with no caret, and then
-    // the chain.
+    // The text echoes the offending source line, with a caret under the
+    // node, and then the chain.
     [[noreturn]] void ErrorIn(DiagLoc where, const string &msg,
                               vector<Diagnostic::Related> chain) {
         for (auto &w : cur.pendingwarnings) if (!w.cast) PrintWarning(w);
@@ -600,7 +600,7 @@ struct TypeCheck {
         d.message = msg;
         d.related = std::move(chain);
         LibraryCallLocation(d);
-        d.text = ast.DiagnosticText(d, true);
+        d.text = ast.DiagnosticText(d);
         throw CompileError { d.text, { d } };
     }
 

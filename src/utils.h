@@ -79,10 +79,11 @@ struct Diagnostic {
 
 // The text the terminal shows for d: `file:line: error: message` (the message
 // alone where it has no file), the source line it is on where the file's
-// text is given, under that a caret at its column where asked, and each
-// related line indented after.
-inline string RenderDiagnostic(const Diagnostic &d, string_view filename, string_view source,
-                               bool caret) {
+// text is given, under that a caret at its column, extended with `~` to its
+// end where that is on the same line, and each related line indented after.
+// The caret's indent has a byte per source byte, tabs kept, which is how
+// the editor extension reads its column back.
+inline string RenderDiagnostic(const Diagnostic &d, string_view filename, string_view source) {
     string s;
     auto &w = d.where;
     if (!filename.empty()) Append(s, filename, ":", w.line, ": ");
@@ -93,10 +94,15 @@ inline string RenderDiagnostic(const Diagnostic &d, string_view filename, string
         auto end = p;
         while (end < e && *end != '\n' && *end != '\r') end++;
         Append(s, "\n", string_view(p, (size_t)(end - p)));
-        if (caret && w.col > 0 && w.col - 1 <= end - p) {
+        if (w.col > 0 && w.col - 1 <= end - p) {
             s += '\n';
             for (auto q = p; q < p + w.col - 1; q++) s += *q == '\t' ? '\t' : ' ';
             s += '^';
+            if (w.endline == w.line && w.endcol > w.col + 1) {
+                auto rend = p + std::min<ptrdiff_t>(w.endcol - 1, end - p);
+                for (auto q = p + w.col; q < rend; q++)
+                    if ((*q & 0xC0) != 0x80) s += '~';
+            }
         }
     }
     for (auto &r : d.related) Append(s, "\n  ", r.message);

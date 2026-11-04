@@ -411,9 +411,9 @@ location (`DiagLoc`) records the file and the diagnostic's start and end. For a
 node, `LocOf` starts at its earliest token on the anchor's line and ends at the
 node's end. The related lines show the instantiation chain
 (`TypeCheck::InstantiationChain`), with each entry located at the call it names.
-`RenderDiagnostic` produces the terminal output: `file:line: error: message`,
-the source line for an error, and the related lines. Lexer errors also get a
-caret under their column.
+`RenderDiagnostic` produces the terminal output: `file:line: error: message`
+(or `warning:`), the source line, a caret under the column with `~` to the
+end where that is on the same line, and the related lines.
 
 A `CompileError` carries both the text and the data (several diagnostics
 for a `checkfree` function's kept checks, `BCE::CheckfreeError`), and ends
@@ -713,8 +713,8 @@ distinguishes a scope from a later one at the same index. `blockpos` keeps
 the statement index of every open block, which the shrink rules' liveness
 scan (§3.10) reads.
 
-**Diagnostics.** `TypeCheck::Error` appends the offending source line and
-the instantiation chain: every real frame from innermost outward, with the
+**Diagnostics.** `TypeCheck::Error` appends the offending source line, a
+caret under the node, and the instantiation chain: every real frame from innermost outward, with the
 specialization's argument types (literal parameters marked) and the call
 site it was instantiated from (§7.7). The argument types show the binding
 of every type variable that a parameter type names. The rest of `bindings`

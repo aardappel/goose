@@ -167,7 +167,7 @@ static Diagnostic ImportDiagnostic(const string &file, const Import &imp, const 
         d.where.endcol = imp.end.col;
     }
     d.message = msg;
-    d.text = RenderDiagnostic(d, file, {}, false);
+    d.text = RenderDiagnostic(d, file, {});
     return d;
 }
 

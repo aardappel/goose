@@ -226,9 +226,17 @@ notes](implementation.md#7-the-runtime) explain how they are reserved.
 
 A run prints only what the program prints. A check that succeeds prints
 nothing, and a build prints only the `built` line. Errors and warnings go to
-stderr, each with the line of source it is about. `--stats` adds a few lines
-about the compile, on stdout, or on stderr for a run, whose stdout is the
-program's.
+stderr, each with the line of source it is about and, where the compiler
+knows the column, a `^~~~` under the code it is about:
+
+```
+x.goose:5: warning: redundant `as i64`: an i32 converts to i64 implicitly here
+    xs.push(((r as i64) << 32) | (c as i64));
+                                  ^~~~~~~~
+```
+
+`--stats` adds a few lines about the compile, on stdout, or on stderr for a
+run, whose stdout is the program's.
 
 Errors and warnings are in color on a terminal. `--color never`, or a
 non-empty `NO_COLOR`, turns color off. `--color always`, or a

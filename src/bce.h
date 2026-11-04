@@ -2676,7 +2676,7 @@ struct BCE {
             Diagnostic d;
             d.where = LocOf(f.line);
             d.message = f.why;
-            d.text = ast.DiagnosticText(d, true);
+            d.text = ast.DiagnosticText(d);
             if (!e.msg.empty()) e.msg += "\n";
             e.msg += d.text;
             e.diags.push_back(std::move(d));

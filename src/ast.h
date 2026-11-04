@@ -2497,20 +2497,18 @@ struct Ast {
     struct ImportSite { Line line; Line end; string path; };
     vector<ImportSite> imports;
 
-    // The text the terminal shows for d (RenderDiagnostic), the source line
-    // it is on included where `withsource`: an error echoes its line, a
-    // warning does not.
-    string DiagnosticText(const Diagnostic &d, bool withsource) const {
+    // The text the terminal shows for d (RenderDiagnostic), with the source
+    // line it is on and a caret under its range.
+    string DiagnosticText(const Diagnostic &d) const {
         auto known = d.where.fileidx >= 0 && d.where.fileidx < (int)sources.size();
         return RenderDiagnostic(d, known ? sources[d.where.fileidx].first : string(),
-                                known && withsource ? string_view(*sources[d.where.fileidx].second)
-                                                    : string_view(),
-                                false);
+                                known ? string_view(*sources[d.where.fileidx].second)
+                                      : string_view());
     }
 
     void Warn(Diagnostic d) {
         d.warning = true;
-        d.text = DiagnosticText(d, false);
+        d.text = DiagnosticText(d);
         Emit(d);
     }
 
@@ -2518,7 +2516,7 @@ struct Ast {
     // as text or through the sink, and kept in `errors`.
     void Report(Diagnostic d) {
         d.warning = false;
-        if (d.text.empty()) d.text = DiagnosticText(d, true);
+        if (d.text.empty()) d.text = DiagnosticText(d);
         errors.push_back(d);
         Emit(d);
     }

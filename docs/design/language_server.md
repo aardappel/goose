@@ -623,11 +623,12 @@ provided.
   with a namespace qualifier is renamed at its leaf. Builtins and
   keywords are not renamable, nor are synthesized names. This is in, for
   references and incoming calls too (`docs/implementation.md` §12).
-* **Whether the CLI shows columns for typecheck errors.** With columns
-  known, `goose check` could print `file:line:col:` heads and a caret
-  under the node as the lexer does. The test runner and the extension's
-  parser both accept the column already (§2), so this is a choice of
-  presentation for after phase 0, with the JSON form available either way.
+* **Columns in the CLI's heads.** Every error and warning with a column
+  prints its source line with a caret under its node (`^~~~` where the
+  node stays on that line), which the extension's parser reads its column
+  from. The heads stay `file:line:`; the test runner and that parser both
+  accept a `file:line:col:` head already (§2), so adding the column there
+  is a choice of presentation, with the JSON form available either way.
 * **Position encoding.** VS Code negotiates UTF-16; the server converts.
   Supporting `utf-8` for clients that offer it means returning a
   `positionEncoding` in the initialize result and skipping the conversion,
