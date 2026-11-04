@@ -66,7 +66,9 @@ file(CONFIGURE OUTPUT "${TCC_BUILD}/config.h" CONTENT "${tcc_config}" @ONLY)
 
 # --- the library and the driver ----------------------------------------------
 
-add_library(libtcc STATIC "${TCC_SRC}/libtcc.c")
+# tcc_cdecl.c is libtcc.c plus the reader of C declarations `import c` uses
+# (it includes libtcc.c, whose internals are static under ONE_SOURCE).
+add_library(libtcc STATIC "${TCC_SRC}/tcc_cdecl.c")
 target_include_directories(libtcc PRIVATE "${TCC_BUILD}")
 target_include_directories(libtcc SYSTEM PRIVATE "${TCC_SRC}")
 # Expose only the API header: TinyCC's VERSION file shadows the C++ <version>
@@ -74,6 +76,7 @@ target_include_directories(libtcc SYSTEM PRIVATE "${TCC_SRC}")
 # Keep this separate from the staged runtime headers, which also shadow the
 # host compiler's standard headers.
 configure_file("${TCC_SRC}/libtcc.h" "${TCC_BUILD}/api/libtcc.h" COPYONLY)
+configure_file("${TCC_SRC}/tcc_cdecl.h" "${TCC_BUILD}/api/tcc_cdecl.h" COPYONLY)
 target_include_directories(libtcc SYSTEM PUBLIC "${TCC_BUILD}/api")
 target_compile_definitions(libtcc PRIVATE ${tcc_defines} ONE_SOURCE=1)
 # Without the rename the archive would be liblibtcc; PIC because the compiled
