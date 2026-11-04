@@ -453,6 +453,20 @@ GS_API void gs_os_read_stdin(gs_rref out) {
     }
 }
 
+/* Up to max bytes of stdin; false when none were left. */
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max) {
+    uint8_t buf[65536];
+    int64_t got = 0;
+    while (got < max) {
+        size_t want = max - got < (int64_t)sizeof buf ? (size_t)(max - got) : sizeof buf;
+        size_t n = fread(buf, 1, want, stdin);
+        if (n == 0) break;
+        gs_bld_append(out, buf, (int64_t)n);
+        got += (int64_t)n;
+    }
+    return got > 0;
+}
+
 GS_API int64_t gs_os_arg_count(void) { return gs_argc; }
 
 /* The application's resource directory (resource_dir(), below) in native

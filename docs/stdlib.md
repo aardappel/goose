@@ -926,6 +926,7 @@ fn delete_dir(path: const u8[:]) -> bool                   // an empty one
 fn list_dir(path: const u8[:], out: u8[>..]&) -> bool      // appends each name and '\n', sorted
 fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped; false at end
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
+fn read_stdin(out: u8[>..]&, max: i64) -> bool       // up to max bytes; false at end
 fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_stdout()
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
@@ -969,7 +970,11 @@ file.
 `read_file` appends nothing when it fails. `read_stdin` appends the bytes
 unchanged, on Windows too, where the C library's text mode would turn each
 `\r\n` into a `\n` and stop at a Ctrl-Z. `read_line` strips a `\r` before a
-line's newline, along with the newline.
+line's newline, along with the newline. `read_stdin(out, max)` appends up
+to `max` bytes and waits until it has them or input ends, so a large pipe
+can be read in pieces. It returns false, having appended nothing, when no
+bytes were left or `max` is 0 or less. Interactive input in lines stays with
+`read_line`.
 
 `write_file_atomic` is for files that must never be seen half-written, such
 as saved games. It writes the data to a new file in the same directory as
