@@ -2372,6 +2372,17 @@ def main():
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",
                        code == 1 and "from 64 KB" in err, out + err))
+        # --no-bce warns that the program's checkfree functions go unverified,
+        # and not about the standard library's.
+        nobce = gendir / "verbs_nobce.goose"
+        tc.write_text(nobce, "import std;\nfn main() { print(min(1, 2)); }\n")
+        code, out, err = tc.run_capture([exe, "check", "--no-bce", nobce])
+        checks.append(("check --no-bce, std's checkfree", code == 0 and not out and not err, out + err))
+        tc.write_text(nobce, "import std;\ncheckfree fn f(x: i64) -> i64 { min(x, 2) }\n"
+                             "fn main() { print(f(1)); }\n")
+        code, out, err = tc.run_capture([exe, "check", "--no-bce", nobce])
+        checks.append(("check --no-bce, a checkfree fn", code == 0 and
+                       "checkfree is not verified under --no-bce" in err, out + err))
         # The help: `goose --help` on the commands, `goose <command> --help`
         # and `goose help <topic>` on each, which between them name every
         # option the driver reads, but for the hidden shader ones.

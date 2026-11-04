@@ -4974,7 +4974,8 @@ kept check on such a line is recorded once, with the reason it was kept
 variable, a term the domain cannot relate, the lower or the upper bound,
 and, for an index of another array, the length relation an `assert` would
 state. The driver reports them all as errors (`CheckfreeReport`). Under
-`--no-bce` nothing is judged, and the driver warns about that.
+`--no-bce` nothing is judged, and the driver warns about that where the
+program has a `checkfree` function outside the standard library.
 
 ### 5.12 Known gaps
 

@@ -7,22 +7,22 @@
 
 // ---- scalars and bits --------------------------------------------------
 
-fn min<T>(a: T, b: T) -> T { if b < a { return b; } return a; }
-fn max<T>(a: T, b: T) -> T { if a < b { return b; } return a; }
-fn clamp<T>(x: T, lo: T, hi: T) -> T {
+checkfree fn min<T>(a: T, b: T) -> T { if b < a { return b; } return a; }
+checkfree fn max<T>(a: T, b: T) -> T { if a < b { return b; } return a; }
+checkfree fn clamp<T>(x: T, lo: T, hi: T) -> T {
     if x < lo { return lo; }
     if hi < x { return hi; }
     return x;
 }
 
-fn abs<T>(x: T) -> T { if x < 0 { return -x; } return x; }
+checkfree fn abs<T>(x: T) -> T { if x < 0 { return -x; } return x; }
 // libm's, which clear the sign bit: abs(-0.0) is 0.0, as IEEE 754 has it.
 extern fn abs(x: f32) -> f32 = "fabsf";
 extern fn abs(x: f64) -> f64 = "fabs";
 
 // Truncating remainder pairs with `/`. The product stays between a and
 // zero; divisor -1 has remainder zero even when its quotient cannot fit.
-fn rem<T>(a: T, b: T) -> T {
+checkfree fn rem<T>(a: T, b: T) -> T {
     // A negative all-ones divisor is -1; this also accepts unsigned types.
     if b < 0 && ~b == 0 { return 0; }
     return a - (a / b) * b;
@@ -30,7 +30,7 @@ fn rem<T>(a: T, b: T) -> T {
 
 // Euclidean division pairs with `%`. Adjust the truncating quotient from
 // its remainder, without forming a - (a % b), which can underflow.
-fn div_euclid<T>(a: T, b: T) -> T {
+checkfree fn div_euclid<T>(a: T, b: T) -> T {
     let q = a / b;
     if rem(a, b) < 0 {
         if b > 0 { return q - 1; }
@@ -39,27 +39,27 @@ fn div_euclid<T>(a: T, b: T) -> T {
     return q;
 }
 
-fn sign<T>(x: T) -> T {
+checkfree fn sign<T>(x: T) -> T {
     if x < 0 { return -1; }
     if 0 < x { return 1; }
     return 0;
 }
-fn sign(x: f32) -> f32 {
+checkfree fn sign(x: f32) -> f32 {
     if x < 0.0 { return -1.0; }
     if 0.0 < x { return 1.0; }
     return 0.0;
 }
-fn sign(x: f64) -> f64 {
+checkfree fn sign(x: f64) -> f64 {
     if x < 0.0 { return -1.0; }
     if 0.0 < x { return 1.0; }
     return 0.0;
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
-fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
+checkfree fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+checkfree fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
 
 // The smallest power of two that is at least max(x, 1).
-fn next_pow2(x: i64) -> i64 {
+checkfree fn next_pow2(x: i64) -> i64 {
     var p = 1;
     while p < x { p = p * 2; }
     return p;
@@ -74,7 +74,7 @@ extern fn ctz(x: u64) -> i64 = "gs_ctz";
 // The values a and b refer to. `T&` of a reference type is that reference
 // (spec §3.8), so for two elements of an array of references this swaps
 // what they point to; swap_at swaps the elements themselves.
-fn swap<T>(a: T&, b: T&) {
+checkfree fn swap<T>(a: T&, b: T&) {
     let t = a;
     a = b;
     b = t;
@@ -299,7 +299,7 @@ fn count<T, F>(xs: T[:]) -> i64 {
     return n;
 }
 
-fn min<T>(xs: T[:]) -> T {
+checkfree fn min<T>(xs: T[:]) -> T {
     assert(xs.len > 0);
     var m = xs[0];
     for x in xs { if x < m { m = x; } }
@@ -311,7 +311,7 @@ fn min<T, F>(xs: T[:]) -> T {
     for x in xs { if F(x, m) { m = x; } }
     return m;
 }
-fn max<T>(xs: T[:]) -> T {
+checkfree fn max<T>(xs: T[:]) -> T {
     assert(xs.len > 0);
     var m = xs[0];
     for x in xs { if m < x { m = x; } }

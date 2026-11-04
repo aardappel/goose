@@ -1649,7 +1649,9 @@ int Main(int argc, char **argv) {
             if (!bce.checkfreefails.empty()) throw bce.CheckfreeError();
         } else {
             for (auto sf : ast.functions)
-                if (sf->checkfree && !sf->isnested) {
+                // Not for the standard library's checkfree helpers, or every
+                // program that imports std would get the warning.
+                if (sf->checkfree && !sf->isnested && !ast.StdlibFile(sf->line.fileidx)) {
                     ast.Warn(DiagLoc {}, "checkfree is not verified under --no-bce");
                     break;
                 }

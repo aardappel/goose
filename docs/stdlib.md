@@ -136,6 +136,9 @@ fn ctz(x: u64) -> i64               // 64 for 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
+These are all `checkfree` functions or `extern fn`s, so a `checkfree`
+function (spec §7.14) can call them.
+
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
 `/arch:AVX` or higher for that), and a loop under TinyCC.
@@ -222,6 +225,8 @@ they are the string functions too: `find(line, "://")`. `find` and `rfind`
 compare a whole subsequence only where its first element matches.
 (The function is named `position` rather than `index_of` because
 `index_of` is the builtin that turns an element reference into its index.)
+`min(xs)` and `max(xs)` are `checkfree`; the forms that take a comparator
+are not, since that would require every comparator to be `checkfree`.
 
 ```goose
 let big = xs.find() { it > 100 };
@@ -839,6 +844,8 @@ fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T>
 fn xy<T>(v: vec3<T>) -> vec2<T>                 // also xy(vec4), xyz(vec4)
 ```
 
+The functions are all `checkfree` (spec §7.14).
+
 Elementwise `+ - * /` are built into the language (`a + b`, `p - q`), and
 so is unary minus on a float or signed integer vector (`-v`). `*` and `/`
 also broadcast a scalar in either order: `v * 2.0`, `v / length(v)`,
@@ -929,6 +936,9 @@ Each gives NaN for a NaN argument, and `fract` and `wrap_angle` give NaN
 for an infinity. `NAN`'s sign is unspecified.
 `INF` and `NAN` take the type the context asks for, as `PI` does
 (`let inf32: f32 = INF;`).
+
+The libm functions are `extern fn`s and the ones above `checkfree`, so a
+`checkfree` function (spec §7.14) can call any of math.
 
 ## os
 

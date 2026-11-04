@@ -194,7 +194,7 @@ These options have the same meaning for `goose run`, `goose build`,
 | `--stack-reserve size` | The address space reserved for each data stack, from 64K up to 256T with a `K`, `M`, `G` or `T` suffix. The default is 2G. The address space is committed as it is used, so a large reservation costs nothing until it is used. |
 | `--stacks` | Report how many data stacks the program and each of its workers use, what that adds up to, and the cap it puts on `hardware_threads()`. |
 | `--bce-lines` | Report, for each source line, how many bounds checks the compiler removed and how many it kept. |
-| `--no-bce` | Keep every bounds check. `checkfree` functions are then not verified, and the compiler warns about that. |
+| `--no-bce` | Keep every bounds check. The program's `checkfree` functions are then not verified, and the compiler warns about that. |
 | `--specs` | Print every specialization of each function, after optimization, as source. |
 | `--stats` | Print a few lines about what the compile did: the declarations parsed, the specializations and optimizations, the bounds checks removed, and the files written. |
 | `--color auto\|always\|never` | Whether errors and warnings are in color ([§6](#6-what-goose-prints)). |
