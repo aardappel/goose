@@ -472,7 +472,6 @@ struct Writer {
 
     string Function(const Decl &d) {
         auto &f = *d.ty;
-        if (f.variadic) { Skip(d.name, "variadic"); return ""; }
         if (f.oldstyle && f.params.empty()) { Skip(d.name, "declared without a prototype"); return ""; }
         string why, params;
         set<string> pnames;
@@ -486,6 +485,8 @@ struct Writer {
             Append(params, k ? ", " : "", pn, ": ", pt);
             k++;
         }
+        // A variadic one takes further arguments of the types each call gives.
+        if (f.variadic) params += k ? ", ..." : "...";
         auto rt = ReturnType(*f.target, why);
         if (rt.empty()) { Skip(d.name, cat("result, ", why)); return ""; }
         return cat("extern fn ", d.name, "(", params, ")", rt == "-" ? "" : cat(" -> ", rt), ";\n");

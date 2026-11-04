@@ -3287,6 +3287,15 @@ declaration gives, unchanged.
 An `extern fn`'s trailing parameters may have defaults (§7.1). Each call
 passes them, so the C function always receives every argument.
 
+An `extern fn` may end its parameters with `...`: a variadic C function,
+which each call passes further arguments of their own types, as an
+untyped parameter takes them (§7.1). Each must be an integer, a float, a
+`bool`, a plain or optional reference (a pointer), or bytes (a `u8`
+slice, or array), which cross as a C string as for `cstr`; an integer
+literal that fits crosses as C's `int`. C promotes them as its prototype's
+`...` says. A variadic extern is bound by the link, not from a shared
+library.
+
 These values can cross the boundary (with layouts per C.2):
 
 * the integer and float scalars and `bool`;
@@ -3413,9 +3422,9 @@ SDL2 (libSDL2.so) has no symbol SDL_Foo
 
 A library is never closed. A package's `main_thread_only` restriction
 (docs/packages.md) applies to the members of its blocks as it does to its
-other externs. A variadic C function cannot be bound: the declaration has
-no way to say so, and calling one through a fixed-arity pointer is
-undefined. The generated C is the same on every platform, since the
+other externs. A variadic C function cannot be bound from a library:
+calling one through a fixed-arity pointer is undefined, so it is declared
+with `...` outside a block and bound by the link. The generated C is the same on every platform, since the
 runtime chooses the spelling, and a program whose only C is such libraries
 runs under the in-process backend with no C toolchain installed.
 Conventions for declaring a real library's functions under these shapes

@@ -108,9 +108,42 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     // CollectSpecs makes every caller up the chain do the same.
     auto grows = sp->sf->readsalltops;
     vector<string> cstrs;   // The C strings copied for this call, freed after it.
+    // A variadic C function's further arguments (§7.10): C promotes them as
+    // its prototype's `...` says; bytes go as a C string, and an integer
+    // literal as an int, as C's own would.
+    auto fixed = sp->sf->vabase ? sp->sf->vabase->params.size() : an.size();
     for (size_t i = 0; i < an.size(); i++) {
         auto pt = sp->argtypes[i];
         if (i) argstr += ", ";
+        if (i >= fixed) {
+            auto vt = pt->kind == TY_REF && (pt->ref->sub->kind == TY_SLICE ||
+                                             pt->ref->sub->kind == TY_ARRAY) ? pt->ref->sub : pt;
+            if (auto il = Is<IntLit>(an[i]); il && !il->uns && il->val >= INT32_MIN && il->val <= INT32_MAX) {
+                argstr += cat("(int)", il->val);
+                continue;
+            }
+            if (vt->kind == TY_SLICE || vt->kind == TY_ARRAY) {
+                usescstr = true;
+                auto elem = vt->kind == TY_SLICE ? vt->sub : vt->arr->sub;
+                auto st = ast.SliceOf(elem, vt->line);
+                string x;
+                if (vt->kind == TY_ARRAY) {
+                    auto lv = GenLoc(an[i]);
+                    if (lv.t->kind == TY_REF) DerefLoc(lv);
+                    x = LoadLoc(lv, st, an[i]->line);
+                } else {
+                    x = GenXD(an[i], st);
+                }
+                auto ct = CT(st);
+                auto sl = T(), buf = T(), p = T();
+                L(ct, " ", sl, " = ", x, ";");
+                L("char ", buf, "[GS_CSTR_BUF];");
+                L("const char *", p, " = gs_cstr_in(", sl, ".data, ", sl, ".len, ", buf, ");");
+                cstrs.push_back(cat("gs_cstr_out(", p, ", ", buf, ");"));
+                argstr += p;
+                continue;
+            }
+        }
         if (pt->cstr) {
             // A C string (`cstr`): null is NULL; anything else is copied
             // with a NUL after it, on the C stack when it is short.
@@ -279,6 +312,13 @@ inline string CodeGen::CFnPtrType(TypeExpr *sig, const string &name) {
 // to reach it, which leaves the call out of clang's function-type check
 // (GS_DL_CALL).
 inline string CodeGen::ExternProto(FnSpec *sp) {
+    // A variadic C function has one prototype, its own parameters then
+    // `...`, whatever its calls pass.
+    size_t nparams = sp->argtypes.size();
+    if (auto base = sp->sf->vabase) {
+        if (!vaprotos.insert(base).second) return "";
+        nparams = base->params.size();
+    }
     auto dynamic = !sp->sf->dylib.empty();
     auto ret = sp->rets.empty() ? string("void")
                : CrossesAsMirror(sp->rets[0]) ? CMirror(sp->rets[0]) : CT(sp->rets[0]);
@@ -287,7 +327,7 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
     if (dynamic) Append(s, " (*", DlSlot(sp), ")(");
     else Append(s, " ", sp->sf->cname, "(");
     string params, args;
-    for (size_t i = 0; i < sp->argtypes.size(); i++) {
+    for (size_t i = 0; i < nparams; i++) {
         if (i) {
             s += ", ";
             params += ", ";
@@ -303,7 +343,8 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
         Append(params, ct, " a", i);
         Append(args, "a", i);
     }
-    if (sp->argtypes.empty()) s += "void", params = "void";
+    if (sp->sf->vabase) s += nparams ? ", ..." : "...";
+    else if (sp->argtypes.empty()) s += "void", params = "void";
     s += ");\n";
     if (dynamic)
         Append(s, "static GS_DL_CALL ", ret, " ", DlCall(sp), "(", params, ") { ",

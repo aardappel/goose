@@ -4058,8 +4058,14 @@ prototype in terms of Goose's shapes:
   print(each(xs, xs.len as u64, cfn(visit), 5));
   ```
 
-* **Still an adapter's job**: variadic functions, which cannot be bound at
-  all, need a few lines of C in a native part.
+* **Variadic functions**: `...` after an extern fn's parameters takes
+  further arguments of the types each call gives them, which C promotes as
+  it does its own: integers (a literal as C's `int`), floats, `bool`,
+  references (as pointers), and bytes, which go as a C string, copied with
+  a NUL after them. `extern fn printf(fmt: cstr, ...) -> i32;` then
+  `printf("%s has %d\n", name, n as i32)`. A struct by value is an error:
+  C reads a further argument by a scalar or pointer type. A variadic
+  function is bound by the link, not from a shared library.
 
 Only a member a call reaches is bound, and a library none of whose
 members is called is never opened, so a block may declare an interface
@@ -4111,11 +4117,13 @@ fn main() {
 * Enum constants and object-like macros that are constants (integer,
   floating, string, or a cast to a pointer such as `SQLITE_TRANSIENT`) are
   `let`s with the value C gives them.
-* Variadic functions, variables, and functions passing a union, a bitfield
-  or `long double` by value are left out; the module says
+* A variadic function is declared with `...`.
+* Variables, and functions passing a union, a bitfield or `long double` by
+  value, are left out; the module says
   which, and why, at its end. Using one, or a function-like macro, is an
   error that says why it is missing:
-  `sqlite3_mprintf: not imported from sqlite3.h (variadic)`.
+  `sqlite3_vmprintf: not imported from sqlite3.h (parameter 2, the
+  implementation's __builtin_va_list)`.
 
 `goose --c-import x.h` prints the module. Sizes and layouts are those of
 the machine the compiler runs on; the generated C asserts the ones the

@@ -828,6 +828,15 @@ struct Parser {
             if (lex.tok == T_LPAREN) Role(R_LIST);
             Expect(T_LPAREN, "function declaration");
             while (lex.tok != T_RPAREN) {
+                // `...` (lexed `..` then `.`): a C function's further
+                // arguments, of the types each call gives them (§7.10).
+                if (sf->isextern && lex.tok == T_DOTDOT && lex.PeekTok() == T_DOT) {
+                    lex.Next();
+                    lex.Next();
+                    sf->variadic = true;
+                    if (lex.tok != T_RPAREN) Error("... ends an extern fn's parameter list");
+                    break;
+                }
                 Param p;
                 p.isvar = IsNext(T_VAR);
                 p.line = CurLine();

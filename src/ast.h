@@ -1508,6 +1508,11 @@ struct SFunction {
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
     bool isexport = false;      // A Goose function exposed through a C ABI wrapper.
+    // A variadic extern (`...` after its parameters, §7.10), and the
+    // instance of one a call with N more arguments makes: its parameters,
+    // then N untyped ones, which each call's arguments give their types.
+    bool variadic = false;
+    SFunction *vabase = nullptr;
     string cname;               // Its C symbol (the Goose name unless spelled out).
     // The shared library an extern block binds it from by that symbol as
     // the program starts (§7.10); empty for an extern the link resolves.
@@ -2526,6 +2531,8 @@ struct Ast {
     // The export fns whose address `cfn` hands C, which C may call back
     // during any extern call (codegen keeps the data stacks for them).
     set<SFunction *> cfnexports;
+    // The instances of variadic externs, by base and number of extra arguments.
+    map<pair<SFunction *, size_t>, SFunction *> vainstances;
     map<int, set<string>> cimportcalled;
 
     // The message for an unknown name: `prefix name`, or why an `import c`
@@ -2648,6 +2655,7 @@ struct Ast {
         for (auto t : alltypes) delete t;
         for (auto d : typedetails) delete d;
         for (auto f : functions) delete f;
+        for (auto &[k, f] : vainstances) delete f;
         for (auto s : structs) delete s;
         for (auto s : unknowntypes) delete s;
         for (auto e : enums) delete e;

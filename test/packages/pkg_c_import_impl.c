@@ -1,5 +1,7 @@
 /* pkg_c_import.h's functions. */
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "pkg_c_import.h"
@@ -77,6 +79,18 @@ ci_fd ci_fd_swap(ci_fd x) {
     return r;
 }
 
+int ci_printf(const char *fmt, ...) {
+    char out[256];
+    va_list ap;
+    calls++;
+    va_start(ap, fmt);
+    int n = vsnprintf(out, sizeof out, fmt, ap);
+    va_end(ap);
+    fputs(out, stdout);
+    fflush(stdout);
+    return n;
+}
+
 int ci_sum_bytes(const void *p, size_t n) {
     const unsigned char *b = p;
     int s = 0;
@@ -86,4 +100,3 @@ int ci_sum_bytes(const void *p, size_t n) {
 }
 int ci_maybe(int *out) { calls++; if (out) *out = 99; return out != 0; }
 int ci_call_count(void) { return calls; }
-int ci_printf(const char *fmt, ...) { (void)fmt; return 0; }

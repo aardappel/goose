@@ -686,6 +686,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
             sf->params[i].defaultval->Dump(s, ind);
         }
     }
+    if (sf->variadic) s += sf->params.empty() ? "..." : ", ...";
     s += ")";
     if (sf->has_rets) {
         s += " -> ";

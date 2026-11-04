@@ -96,6 +96,7 @@ struct CodeGen {
     string tdecls;      // Packed typedefs.
     string cdecls;      // C-layout mirrors of extern structs (CMirror), after the packed ones.
     map<StructInst *, string> cmirrors;
+    set<SFunction *> vaprotos;   // The variadic externs whose prototype is written.
     string pdata;       // Packed static data (string literals).
     string data;        // Queues, long-distance return channels, globals.
     // The members of gs_globals_t, the program instance's globals (§11.1):

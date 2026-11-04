@@ -71,6 +71,8 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
         DefaultScopeName(id->name, c, false);
         cands = ast.LookupFunctions(id->name, id->ns);
     }
+    // A variadic extern takes as many more arguments as a call gives it.
+    if (cands.size() == 1 && cands[0]->variadic) cands = { VariadicInstance(cands[0], c->args.size()) };
     // The builtins are global: `::f` reaches one past a namespaced f, and
     // `ns::f` never names one.
     auto bd = LookupBuiltin(GlobalLeaf(id->name));
@@ -82,6 +84,7 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
         auto nomatch = false;
         auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre,
                              entryreach, bd ? &nomatch : nullptr, expected);
+        if (!nomatch && c->spec && c->spec->sf->vabase) CheckVarargs(c);
         if (!nomatch) return v;
         // Without a cast, an argument might have matched a function (JudgeCastAt).
         auto fallback = builtinfallback;
@@ -2758,6 +2761,59 @@ inline bool IsCKeyword(string_view n) {
 
 // An extern declaration (§7.10) has typed parameters of C-crossing
 // shapes, at most one fixed-size return, and no body to check.
+// The variadic extern `base` as a call of `nargs` arguments has it (§7.10):
+// its parameters, then untyped ones, which take each call's arguments'
+// types as an untyped parameter does (§7.1). One per count, shared by the
+// calls; each set of types is a specialization of it.
+inline SFunction *TypeCheck::VariadicInstance(SFunction *base, size_t nargs) {
+    if (nargs < base->params.size()) return base;
+    auto extra = nargs - base->params.size();
+    auto key = make_pair(base, extra);
+    if (auto it = ast.vainstances.find(key); it != ast.vainstances.end()) return it->second;
+    auto sf = new SFunction(*base);
+    sf->variadic = false;
+    sf->vabase = base;
+    sf->specs.clear();
+    for (size_t i = 0; i < extra; i++) {
+        Param p;
+        p.name = ast.Intern(cat("vararg_", i + 1));
+        p.line = base->line;
+        sf->params.push_back(p);
+    }
+    ast.vainstances[key] = sf;
+    return sf;
+}
+
+// What a variadic C function's further argument may be (§7.10): a value C
+// promotes and reads by its own type, a pointer, or bytes passed as a C
+// string; "" where it is one, else why not.
+inline string VarargWhy(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_INT: return t->intstorage == IS_VARINT ? "a varint has no C form" : "";
+        case TY_FLT: case TY_BOOL: return "";
+        case TY_REF: return t->ref->lenstorage >= 0 ? "a relative reference has no C form" : "";
+        case TY_SLICE: return t->sub->kind == TY_INT && t->sub->intstorage == IS_U8 ? ""
+                              : "only bytes cross, as a C string";
+        case TY_ARRAY: return t->arr->sub->kind == TY_INT && t->arr->sub->intstorage == IS_U8 ? ""
+                              : "only bytes cross, as a C string";
+        default: return "C reads a further argument by a scalar or pointer type";
+    }
+}
+
+// A variadic C function's further arguments, at the call (VarargWhy).
+inline void TypeCheck::CheckVarargs(Call *c) {
+    auto sp = c->spec;
+    for (auto i = sp->sf->vabase->params.size(); i < sp->argtypes.size(); i++) {
+        auto pt = sp->argtypes[i];
+        if (pt->kind == TY_REF && (pt->ref->sub->kind == TY_SLICE || pt->ref->sub->kind == TY_ARRAY))
+            pt = pt->ref->sub;
+        auto why = VarargWhy(pt);
+        if (!why.empty())
+            Error(c, cat("argument ", (int64_t)i + 1, " of ", sp->sf->name, ", of type ",
+                         TypeStr(pt), ", cannot be passed to its ...: ", why));
+    }
+}
+
 inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
     auto sf = spec->sf;
     if (!sf->generics.empty())
@@ -2775,8 +2831,24 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
     else if (IsCKeyword(sf->cname))
         Error(sf->line, cat("extern fn ", sf->name, ": C symbol ", sf->cname,
                             " is a C keyword"));
+    auto fixed = sf->vabase ? sf->vabase->params.size() : sf->params.size();
+    if (sf->variadic && !sf->dylib.empty())
+        Error(sf->line, cat("extern fn ", sf->name, ": a variadic function is bound by the link, "
+                            "not from a shared library"));
     for (size_t i = 0; i < sf->params.size(); i++) {
         auto &p = sf->params[i];
+        if (i >= fixed) {
+            // A further argument of a variadic C function, which the call
+            // checks (CheckVarargs).
+            auto vd = ast.NewVarDef();
+            vd->name = p.name;
+            vd->type = spec->argtypes[i];
+            vd->line = sf->line;
+            vd->isparam = true;
+            vd->ownerspec = spec;
+            spec->params.push_back(vd);
+            continue;
+        }
         if (!p.type) Error(sf->line, cat("extern fn ", sf->name, ": parameter ", p.name,
                                          " needs a type"));
         auto pt = spec->argtypes[i];

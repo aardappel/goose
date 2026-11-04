@@ -51,7 +51,7 @@ typedef int (*ci_visit)(void *ud, int value);  /* a callback: cfn(f) of an expor
 int ci_each(const int *xs, size_t n, ci_visit f, void *ud);
 int ci_call_count(void);
 
-int ci_printf(const char *fmt, ...);           /* variadic: left out */
+int ci_printf(const char *fmt, ...);           /* variadic: further arguments of the call's types */
 int ci_absent(int x);                         /* never built: a JIT run that does not call it links */
 extern int ci_global;                          /* a variable: left out */
 

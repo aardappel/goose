@@ -71,5 +71,11 @@ fn main() {
     let doppi = ci_each(xs, 3, cfn(visita), 5);
     tenuto.append("dopo");
     print(doppi, " ", visti, " ", tenuto, " ", ci_each(xs, 3, null, null));
+    // A variadic function: integers (a literal as C's int), floats, a
+    // string as a C string, a pointer.
+    let nome: u8[>..] = "oca";
+    let w: i64 = 1 << 40;
+    let f: f32 = 0.25;
+    ci_printf("%d %lld %.2f %.1f %s %s %d\n", 42, w, 1.5, f, nome, "lit", ci_is_even(3));
     print(ci_call_count());
 }
