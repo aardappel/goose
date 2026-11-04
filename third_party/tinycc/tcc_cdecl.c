@@ -133,7 +133,14 @@ static void gcd_quiet(void *opaque, const char *msg) { (void)opaque; (void)msg; 
    its own: integer, floating or string constant, or 0 if it is none of
    these (a type, a statement, an expression that needs a variable...). An
    error inside unwinds to here and only drops this macro. */
+static int gcd_eval_text(TCCState *s1, const char *text, const char *name, gcd_cb *cb);
 static int gcd_eval_macro(TCCState *s1, const char *name, gcd_cb *cb)
+{
+    return gcd_eval_text(s1, name, name, cb);
+}
+
+/* The value of `text` as C, reported under `name` as gcd_eval_macro's. */
+static int gcd_eval_text(TCCState *s1, const char *text, const char *name, gcd_cb *cb)
 {
     jmp_buf saved;
     TCCErrorFunc *ef = s1->error_func;
@@ -142,13 +149,13 @@ static int gcd_eval_macro(TCCState *s1, const char *name, gcd_cb *cb)
     BufferedFile *f0 = file;
     SValue *v0 = vtop;
     int flags0 = parse_flags, nocode0 = nocode_wanted;
-    int len = (int)strlen(name);
+    int len = (int)strlen(text);
 
     memcpy(saved, s1->error_jmp_buf, sizeof saved);
     s1->error_func = gcd_quiet;
     if (setjmp(s1->error_jmp_buf) == 0) {
         tcc_open_bf(s1, "<macro>", len);
-        memcpy(file->buffer, name, len);
+        memcpy(file->buffer, text, len);
         parse_flags = PARSE_FLAG_PREPROCESS | PARSE_FLAG_TOK_NUM | PARSE_FLAG_TOK_STR;
         next();
         if (tok == TOK_STR) {
@@ -199,11 +206,78 @@ static int gcd_eval_macro(TCCState *s1, const char *name, gcd_cb *cb)
     return ok;
 }
 
+/* --- function-like macros ---------------------------------------------- */
+
+static TCCState *gcd_state;   /* the parse a callback is inside, for gcd_eval */
+static gcd_cb *gcd_cur;
+
+int gcd_eval(const char *text, const char *name)
+{
+    return gcd_state ? gcd_eval_text(gcd_state, text, name, gcd_cur) : 0;
+}
+
+int gcd_macro_nparams(const void *sym)
+{
+    const Sym *s = sym, *a;
+    int n = 0;
+    for (a = s->next; a; a = a->next) {
+        if (a->type.t)
+            return -1;   /* `...` or `args...`: variadic */
+        n++;
+    }
+    return n;
+}
+
+int gcd_macro_param(const void *sym, int i, char *buf, int size)
+{
+    const Sym *a = ((const Sym *)sym)->next;
+    const char *s;
+    while (a && i--)
+        a = a->next;
+    if (!a)
+        return 0;
+    s = get_tok_str(a->v & ~SYM_FIELD, NULL);
+    if ((int)strlen(s) >= size)
+        return 0;
+    strcpy(buf, s);
+    return 1;
+}
+
+int gcd_macro_body(const void *sym, char *buf, int size)
+{
+    const int *str = ((const Sym *)sym)->d;
+    int t, n = 0;
+    CValue cv;
+    if (size > 0)
+        buf[0] = 0;
+    while (str) {
+        const char *s;
+        int len;
+        TOK_GET(&t, &str, &cv);
+        if (t == 0 || t == TOK_EOF)
+            break;
+        if (t == ' ')
+            continue;
+        s = t == TOK_PPJOIN ? "##" : get_tok_str(t, &cv);
+        len = (int)strlen(s);
+        if (n + len + 2 > size)
+            return 0;
+        if (n)
+            buf[n++] = ' ';
+        memcpy(buf + n, s, len);
+        n += len;
+        buf[n] = 0;
+    }
+    return 1;
+}
+
 /* --- the walk --------------------------------------------------------- */
 
 static void gcd_walk(TCCState *s1, int first, int names_only, gcd_cb *cb)
 {
     int i, n = tok_ident - TOK_IDENT;
+    gcd_state = s1;
+    gcd_cur = cb;
     for (i = first - TOK_IDENT; i < n; i++) {
         TokenSym *ts = table_ident[i];
         Sym *s;
@@ -238,6 +312,8 @@ static void gcd_walk(TCCState *s1, int first, int names_only, gcd_cb *cb)
                 cb->macro(cb->ctx, name, GCD_MACRO_NONE, 0, 0, 0, 0.0, NULL, 0);
         }
     }
+    gcd_state = NULL;
+    gcd_cur = NULL;
 }
 
 static void gcd_error(void *opaque, const char *msg)

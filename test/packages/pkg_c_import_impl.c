@@ -91,6 +91,22 @@ int ci_printf(const char *fmt, ...) {
     return n;
 }
 
+struct ci_box_s { int v; };
+
+ci_box ci_box_new(int v) {
+    ci_box b = malloc(sizeof *b);
+    calls++;
+    b->v = v;
+    return b;
+}
+
+int ci_box_take(ci_box b) {
+    int v = b->v;
+    calls++;
+    free(b);
+    return v;
+}
+
 int ci_sum_bytes(const void *p, size_t n) {
     const unsigned char *b = p;
     int s = 0;

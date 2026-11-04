@@ -4098,6 +4098,8 @@ fn main() {
 * A pointer to a struct the header never completes, or one a function
   hands out, is a **handle**: `struct sqlite3 { p: u64 = 0 }`, a typed
   token, 0 for null. `T **` to it is `sqlite3?`, where C writes the pointer.
+  A typedef naming the pointer names the handle: `XML_Parser`, not
+  `XML_ParserStruct`.
 * `const char *` is a `cstr` parameter: any `const u8[:]`, which is copied
   with a NUL after it for the call, or `null`.
 * A pointer to a scalar or to a struct the caller owns is an optional
@@ -4117,6 +4119,12 @@ fn main() {
 * Enum constants and object-like macros that are constants (integer,
   floating, string, or a cast to a pointer such as `SQLITE_TRANSIENT`) are
   `let`s with the value C gives them.
+* A function-like macro whose body calls a bound function with its
+  parameters and constants is a Goose function of untyped parameters,
+  whose types the call's arguments give: zlib's
+  `deflateInit(strm, level)` calls
+  `deflateInit_(strm, level, "1.3.2", 112)`, the constants as C computes
+  them (`ZLIB_VERSION`, `sizeof(z_stream)`).
 * A variadic function is declared with `...`.
 * Variables, and functions passing a union, a bitfield or `long double` by
   value, are left out; the module says

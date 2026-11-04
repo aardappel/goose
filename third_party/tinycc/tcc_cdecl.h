@@ -53,6 +53,18 @@ int gcd_parse(const char *libpath, const char *const *sysinc, int nsys,
               const char *const *inc, int ninc, const char *const *defines, int ndef,
               const char *source, int names_only, gcd_cb *cb);
 
+/* A function-like macro (GCD_MACRO_FUNCTION's sym), inside a callback: its
+   number of parameters (-1 if variadic), the i-th one's name and its body's
+   tokens separated by spaces, written into buf; 0 where buf is too small. */
+int gcd_macro_nparams(const void *sym);
+int gcd_macro_param(const void *sym, int i, char *buf, int size);
+int gcd_macro_body(const void *sym, char *buf, int size);
+
+/* Inside a callback: the value of `text` as a C constant in the header's
+   scope, reported through the callback's macro under `name`, as an
+   object-like macro's is; 0 if it is none. */
+int gcd_eval(const char *text, const char *name);
+
 /* Accessors: valid only inside a callback. A sym is a declared name, a
    parameter or a field; a type belongs to a sym or to another type. */
 const void *gcd_sym_type(const void *sym);

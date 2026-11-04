@@ -20,13 +20,15 @@ fn main() {
 
     // A handle: the struct C never completes, typed and null at first.
     var c = ci_counter_new("conta");
-    ci_counter_add(c, 2);
+    ci_counter_add_two(c);
     print(ffi::cstr(ci_counter_name(c)), " ", ci_counter_add(c, 3));
     ci_counter_free(c);
     var d = ci_counter {};
     print(d.p == 0, " ", ci_counter_open("", d), " ", d.p == 0);
     print(ci_counter_open("altro", d), " ", d.p != 0, " ", ffi::cstr(ci_counter_name(d)));
     ci_counter_free(d);
+    let box: ci_box = ci_box_new(17);
+    print(ci_box_take(box));
 
     // C strings: any slice, copied with its NUL, short or long; or null.
     let parola: u8[>..] = "anatra";

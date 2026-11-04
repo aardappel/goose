@@ -27,6 +27,11 @@ int ci_counter_add(ci_counter *c, int n);
 const char *ci_counter_name(const ci_counter *c);
 void ci_counter_free(ci_counter *c);
 int ci_counter_open(const char *name, ci_counter **out);
+#define ci_counter_add_two(c) ci_counter_add((c), CI_ANSWER - 40)   /* a function of Goose's */
+
+typedef struct ci_box_s *ci_box;               /* a handle named by its pointer typedef */
+ci_box ci_box_new(int v);
+int ci_box_take(ci_box b);
 
 size_t ci_strlen(const char *s);               /* NULL: 0 */
 long ci_long_twice(long x);

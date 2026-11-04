@@ -5,13 +5,17 @@
 //   * each function as an `extern fn` bound to its C symbol, in the shapes of
 //     spec §7.10 and docs/reference.md §24;
 //   * a pointer to a struct the header never completes (`sqlite3 *`) as a
-//     handle, `struct sqlite3 { p: u64 }`: a typed token Goose passes along;
-//   * each complete struct a function needs, with `pad` where C pads;
-//   * enum constants and object-like macros with a constant value, as `let`.
+//     handle, `extern struct sqlite3 { p: u64 }`: a typed token Goose passes
+//     along, named by a typedef of the pointer where there is one;
+//   * each complete struct a function needs, as an extern struct with `pad`
+//     where C pads;
+//   * enum constants and object-like macros with a constant value, as `let`;
+//   * function-like macros calling a function with their parameters and
+//     constants, as Goose functions of untyped parameters.
 //
-// What has no Goose shape (variadic functions, unions and bitfields by value,
-// long double, ...) is left out, and the module ends with a comment saying
-// what and why. Sizes, signs and layouts are TinyCC's for the machine the
+// What has no Goose shape (variables, unions and bitfields by value, long
+// double, ...) is left out, and the module ends with a comment saying what
+// and why; using one is an error saying so (Ast::cimportskipped). Sizes, signs and layouts are TinyCC's for the machine the
 // compiler runs on; what the module assumes about the target is returned as
 // C assertions, which the generated C checks when it is compiled.
 
@@ -59,6 +63,7 @@ struct Field {
 struct Tag {
     string name;                 // The tag, or the typedef naming an anonymous one.
     string alias;                // A typedef naming it, if any.
+    string ptralias;             // A typedef naming a pointer to it (`XML_Parser`), if any.
     bool isunion = false, complete = false;
     int size = -1, align = 0;
     vector<Field> fields;
@@ -69,6 +74,20 @@ struct Decl {
     string name;
     TyP ty;
     long long value = 0;         // An enum constant's.
+};
+
+// A function-like macro that calls a function with its parameters and
+// constants (`deflateInit(strm, level)` is `deflateInit_((strm), (level),
+// ZLIB_VERSION, (int)sizeof(z_stream))`): each argument is a parameter's
+// index, or a constant's value (param -1).
+struct MacroArg {
+    int param = -1;
+    struct Macro *value = nullptr;
+};
+struct FMacro {
+    string name, callee;
+    vector<string> params;
+    vector<MacroArg> args;
 };
 
 struct Macro {
@@ -90,6 +109,9 @@ struct Reader {
     vector<string> deps;
     set<string> names;           // Every name declared (also macros).
     vector<string> fmacros;      // Function-like macros.
+    vector<FMacro> wrappers;     // Those that call a function (FMacro).
+    vector<unique_ptr<Macro>> argvalues;
+    Macro *evaluated = nullptr;  // What gcd_eval reported last (OnMacro).
     string errors;
 
     int TagOf(const void *tag, bool isunion) {
@@ -159,10 +181,99 @@ struct Reader {
     }
 };
 
+// The tokens of a macro body as gcd_macro_body writes them, separated by
+// spaces, a string or character literal kept whole.
+inline vector<string> MacroTokens(const string &body) {
+    vector<string> toks;
+    string cur;
+    char quote = 0;
+    for (size_t i = 0; i < body.size(); i++) {
+        auto c = body[i];
+        if (quote) {
+            cur += c;
+            if (c == '\\' && i + 1 < body.size()) cur += body[++i];
+            else if (c == quote) quote = 0;
+        } else if (c == ' ') {
+            if (!cur.empty()) toks.push_back(cur), cur.clear();
+        } else {
+            if (c == '"' || c == '\'') quote = c;
+            cur += c;
+        }
+    }
+    if (!cur.empty()) toks.push_back(cur);
+    return toks;
+}
+
+// A function-like macro whose body is one call of a function, each
+// argument a parameter or a constant (FMacro), into r.wrappers.
+inline void ReadWrapper(Reader &r, const char *name, const void *sym) {
+    auto np = gcd_macro_nparams(sym);
+    if (np < 0) return;
+    FMacro m;
+    m.name = name;
+    char buf[4096];
+    for (auto i = 0; i < np; i++) {
+        if (!gcd_macro_param(sym, i, buf, sizeof buf)) return;
+        m.params.push_back(buf);
+    }
+    if (!gcd_macro_body(sym, buf, sizeof buf)) return;
+    auto t = MacroTokens(buf);
+    // Parentheses around the whole of a range of tokens.
+    auto enclosed = [&](size_t a, size_t b) {
+        if (b - a < 2 || t[a] != "(" || t[b - 1] != ")") return false;
+        auto depth = 0;
+        for (auto k = a; k < b; k++) {
+            if (t[k] == "(") depth++;
+            else if (t[k] == ")" && --depth == 0 && k + 1 < b) return false;
+        }
+        return true;
+    };
+    size_t a = 0, b = t.size();
+    while (enclosed(a, b)) a++, b--;
+    auto ident = [](const string &s) { return !s.empty() && (isalpha((unsigned char)s[0]) || s[0] == '_'); };
+    if (b - a < 3 || !ident(t[a]) || t[a + 1] != "(" || !enclosed(a + 1, b)) return;
+    m.callee = t[a];
+    auto isparam = [&](const string &s) {
+        for (size_t k = 0; k < m.params.size(); k++) if (m.params[k] == s) return (int)k;
+        return -1;
+    };
+    // The arguments, at the commas outside parentheses.
+    vector<pair<size_t, size_t>> args;
+    auto depth = 0;
+    size_t start = a + 2;
+    for (auto k = a + 2; k < b - 1; k++) {
+        if (t[k] == "(") depth++;
+        else if (t[k] == ")") depth--;
+        else if (t[k] == "," && depth == 0) args.emplace_back(start, k), start = k + 1;
+    }
+    if (start < b - 1) args.emplace_back(start, b - 1);
+    for (auto [x, y] : args) {
+        while (enclosed(x, y)) x++, y--;
+        MacroArg arg;
+        if (y - x == 1 && isparam(t[x]) >= 0) {
+            arg.param = isparam(t[x]);
+        } else {
+            string text;
+            for (auto k = x; k < y; k++) {
+                if (isparam(t[k]) >= 0) return;   // A parameter inside an expression.
+                Append(text, k > x ? " " : "", t[k]);
+            }
+            r.evaluated = nullptr;
+            if (!gcd_eval(text.c_str(), "\001arg") || !r.evaluated) return;
+            arg.value = r.evaluated;
+        }
+        m.args.push_back(arg);
+    }
+    r.wrappers.push_back(std::move(m));
+}
+
 extern "C" inline void OnDecl(void *ctx, int kind, const char *name, const void *sym) {
     auto &r = *(Reader *)ctx;
     r.names.insert(name);
-    if (kind == GCD_MACRO_FUNCTION) r.fmacros.push_back(name);
+    if (kind == GCD_MACRO_FUNCTION) {
+        r.fmacros.push_back(name);
+        ReadWrapper(r, name, sym);
+    }
     if (kind == GCD_MACRO || kind == GCD_MACRO_FUNCTION) return;
     if (kind == GCD_TAG) {
         auto t = sym;
@@ -182,12 +293,29 @@ extern "C" inline void OnDecl(void *ctx, int kind, const char *name, const void 
         auto &tag = r.tags[d.ty->tag];
         if (tag.alias.empty()) tag.alias = name;
     }
+    if (kind == GCD_TYPEDEF && d.ty->kind == GCD_PTR && d.ty->target->kind == GCD_STRUCT) {
+        auto &tag = r.tags[d.ty->target->tag];
+        if (tag.ptralias.empty()) tag.ptralias = name;
+    }
     r.decls.push_back(std::move(d));
 }
 
 extern "C" inline void OnMacro(void *ctx, const char *name, int kind, long long i, int uns, int size,
                                double d, const char *s, int n) {
     auto &r = *(Reader *)ctx;
+    // A macro argument gcd_eval evaluated (ReadWrapper), not a macro.
+    if (name[0] == '\001') {
+        auto m = make_unique<Macro>();
+        m->kind = kind;
+        m->i = i;
+        m->uns = uns != 0;
+        m->size = size;
+        m->d = d;
+        if (s) m->s.assign(s, (size_t)n);
+        r.evaluated = m.get();
+        r.argvalues.push_back(std::move(m));
+        return;
+    }
     r.names.insert(name);
     Macro m;
     m.name = name;
@@ -282,13 +410,20 @@ struct Writer {
     // pointer to it (`HPDF_Doc`). Structs the caller fills and passes
     // (`z_stream`) are Goose values instead, passed by reference.
     bool Opaque(const Ty &t) {
-        return t.kind == GCD_STRUCT && !TagName(t.tag).empty() && !Reserved(TagName(t.tag)) &&
+        return t.kind == GCD_STRUCT && !HandleName(t.tag).empty() && !Reserved(HandleName(t.tag)) &&
                (!r.tags[t.tag].complete || returned.count(t.tag));
+    }
+
+    // A handle goes by the typedef naming a pointer to its struct, where
+    // one does (`XML_Parser`, `HPDF_Doc`), else as the struct.
+    string HandleName(int t) {
+        auto &p = r.tags[t].ptralias;
+        return !p.empty() && !Reserved(p) && !system.count(p) ? p : TagName(t);
     }
 
     string Handle(int tag) {
         handles.insert(tag);
-        return TagName(tag);
+        return HandleName(tag);
     }
 
     // The Goose struct for a complete C struct: 1 with its fields, 2 as bytes
@@ -470,15 +605,23 @@ struct Writer {
         return o + "\"";
     }
 
+    // The Goose parameter and result types of the functions bound, for the
+    // macros calling them (Wrappers).
+    map<string, vector<string>> fnparams;
+    map<string, string> fnresult;
+    set<string> fnvariadic;
+
     string Function(const Decl &d) {
         auto &f = *d.ty;
         if (f.oldstyle && f.params.empty()) { Skip(d.name, "declared without a prototype"); return ""; }
         string why, params;
         set<string> pnames;
+        vector<string> ptypes;
         auto k = 0;
         for (auto &p : f.params) {
             auto pt = ParamType(*p.ty, why);
             if (pt.empty()) { Skip(d.name, cat("parameter ", k + 1, ", ", why)); return ""; }
+            ptypes.push_back(pt);
             auto pn = p.name;
             if (pn.empty() || IsGooseKeyword(pn) || pnames.count(pn)) pn = cat(pn.empty() ? "p" : pn, "_", k + 1);
             pnames.insert(pn);
@@ -489,7 +632,82 @@ struct Writer {
         if (f.variadic) params += k ? ", ..." : "...";
         auto rt = ReturnType(*f.target, why);
         if (rt.empty()) { Skip(d.name, cat("result, ", why)); return ""; }
+        fnparams[d.name] = ptypes;
+        fnresult[d.name] = rt;
+        if (f.variadic) fnvariadic.insert(d.name);
         return cat("extern fn ", d.name, "(", params, ")", rt == "-" ? "" : cat(" -> ", rt), ";\n");
+    }
+
+    // A constant macro argument as Goose, at a parameter of type pt; "" if
+    // it has no Goose spelling there.
+    string ArgLiteral(const Macro &m, const string &pt) {
+        auto isint = pt.size() >= 2 && (pt[0] == 'i' || pt[0] == 'u') && isdigit((unsigned char)pt[1]);
+        auto isfloat = pt == "f32" || pt == "f64";
+        auto pointer = pt == "cstr" || pt == "cptr" || pt == "const cptr" || pt.back() == '?' ||
+                       pt.rfind("fn(", 0) == 0;
+        switch (m.kind) {
+            case GCD_MACRO_STRING: return pt == "cstr" ? Literal(m.s) : "";
+            case GCD_MACRO_POINTER:
+                if (pointer && m.i == 0) return "null";
+                return pt == "u64" ? to_string((unsigned long long)m.i) : "";
+            case GCD_MACRO_INT: {
+                auto v = m.uns ? to_string(m.size > 4 ? (unsigned long long)m.i : (unsigned long long)(uint32_t)m.i)
+                               : to_string(m.size > 4 ? m.i : (long long)(int32_t)m.i);
+                if (isint) return v;
+                if (isfloat) return v + ".0";
+                if (pt == "bool") return m.i ? "true" : "false";
+                if (pointer && m.i == 0) return "null";
+                return "";
+            }
+            case GCD_MACRO_FLOAT: {
+                if (!isfloat || !std::isfinite(m.d)) return "";
+                char buf[64];
+                snprintf(buf, sizeof buf, "%.17g", m.d);
+                string v = buf;
+                if (v.find_first_of(".e") == string::npos) v += ".0";
+                return v;
+            }
+        }
+        return "";
+    }
+
+    // The function-like macros that call a bound function with their
+    // parameters and constants, as Goose functions of untyped parameters,
+    // which the call's arguments give their types (as Zig's translate-c
+    // makes such macros inline functions).
+    string Wrappers() {
+        string o;
+        for (auto &m : r.wrappers) {
+            if (!Visible(m.name) || globals.count(m.name)) continue;
+            auto it = fnparams.find(m.callee);
+            if (it == fnparams.end() || fnvariadic.count(m.callee) || it->second.size() != m.args.size())
+                continue;
+            string params, args;
+            auto ok = true;
+            for (size_t k = 0; k < m.params.size(); k++) {
+                auto pn = m.params[k];
+                if (IsGooseKeyword(pn)) pn += "_";
+                Append(params, k ? ", " : "", pn);
+            }
+            for (size_t k = 0; ok && k < m.args.size(); k++) {
+                auto &a = m.args[k];
+                string s;
+                if (a.param >= 0) {
+                    s = m.params[a.param];
+                    if (IsGooseKeyword(s)) s += "_";
+                } else {
+                    s = ArgLiteral(*a.value, it->second[k]);
+                    ok = !s.empty();
+                }
+                Append(args, k ? ", " : "", s);
+            }
+            if (!ok) continue;
+            auto rt = fnresult[m.callee];
+            globals.insert(m.name);
+            if (rt == "-") Append(o, "fn ", m.name, "(", params, ") { ", m.callee, "(", args, "); }\n");
+            else Append(o, "fn ", m.name, "(", params, ") -> ", rt, " { ", m.callee, "(", args, ") }\n");
+        }
+        return o;
     }
 
     string Constants() {
@@ -630,9 +848,10 @@ inline CImported CImport(const string &header, const string &dir, const vector<s
         }
     }
     auto consts = w.Constants();
+    auto wrappers = w.Wrappers();
     string types;
     for (auto t : w.handles) {
-        auto name = w.TagName(t);
+        auto name = w.HandleName(t);
         if (w.globals.count(name)) continue;
         Append(types, "extern struct ", name, " { p: u64 = 0 }\n");
     }
@@ -640,7 +859,8 @@ inline CImported CImport(const string &header, const string &dir, const vector<s
         if (!w.handles.count(t)) Append(types, w.structtext[t], "\n");
     res.text = cat("// import c \"", header, "\": the Goose declarations of a C header, made by the\n",
                    "// compiler from what TinyCC reads in it (goose --c-import shows them).\n\n",
-                   types.empty() ? "" : cat(types, "\n"), consts.empty() ? "" : cat(consts, "\n"), fns);
+                   types.empty() ? "" : cat(types, "\n"), consts.empty() ? "" : cat(consts, "\n"), fns,
+                   wrappers.empty() ? "" : cat("\n// Function-like macros that call a function above:\n", wrappers));
     // Function-like macros, and object-like ones with no constant value, are
     // not imported either; they are not listed in the module (a header has
     // many, mostly internal), but using one says why it is missing.
