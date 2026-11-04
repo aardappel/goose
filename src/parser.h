@@ -13,6 +13,7 @@ struct Import {
     string path;                     // Slash-separated, no extension.
     bool relative = false;           // Leading dot form.
     string source;                   // The `from` string, "" for none.
+    string cheader;                  // `import c "x.h";`: the C header, "" for none.
     Line line;                       // Of `import`.
     Line end;                        // One past its `;`.
 };
@@ -430,6 +431,16 @@ struct Parser {
                 lex.Next();
                 imp.relative = IsNext(T_DOT);
                 imp.path = ExpectIdent("import");
+                // `import c "x.h";`: the declarations of a C header (cimport.h).
+                if (!imp.relative && imp.path == "c" && lex.tok == T_STRLIT) {
+                    imp.cheader = lex.sval;
+                    if (imp.cheader.empty()) Error("import c names a header: import c \"x.h\";");
+                    lex.Next();
+                    Expect(T_SEMI, "import");
+                    imp.end = PrevEnd();
+                    imports.push_back(imp);
+                    return;
+                }
                 while (IsNext(T_DOT)) Append(imp.path, "/", ExpectIdent("import"));
                 // `from` is an identifier here, as in `return x from f`.
                 if (lex.tok == T_IDENT && lex.attr == "from") {
@@ -817,7 +828,18 @@ struct Parser {
                 p.name = ExpectIdent("parameter list");
                 for (auto &prev : sf->params)
                     if (prev.name == p.name) Error(cat("duplicate parameter name: ", p.name));
-                if (IsNext(T_COLON)) p.type = ParseType();
+                if (IsNext(T_COLON)) {
+                    // `cstr`, a C string parameter, is a word of extern fns only.
+                    if (sf->isextern && lex.tok == T_IDENT && lex.attr == "cstr") {
+                        auto sl = ast.SliceOf(ast.inttypes[IS_U8], CurLine());
+                        sl->cq = true;
+                        sl->cstr = true;
+                        p.type = sl;
+                        lex.Next();
+                    } else {
+                        p.type = ParseType();
+                    }
+                }
                 if (IsNext(T_ASSIGN)) {
                     // A default is a value of the parameter's type (§7.1), which
                     // an untyped parameter has only from an argument.

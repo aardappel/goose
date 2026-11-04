@@ -107,9 +107,28 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     // them through its arguments, so all cached ones are written back too;
     // CollectSpecs makes every caller up the chain do the same.
     auto grows = sp->sf->readsalltops;
+    vector<string> cstrs;   // The C strings copied for this call, freed after it.
     for (size_t i = 0; i < an.size(); i++) {
         auto pt = sp->argtypes[i];
         if (i) argstr += ", ";
+        if (pt->cstr) {
+            // A C string (`cstr`): null is NULL; anything else is copied
+            // with a NUL after it, on the C stack when it is short.
+            if (Is<NullLit>(an[i])) {
+                argstr += "NULL";
+                continue;
+            }
+            usescstr = true;
+            auto sl = T(), buf = T(), p = T();
+            auto x = GenXD(an[i], pt);
+            auto ct = CT(pt);
+            L(ct, " ", sl, " = ", x, ";");
+            L("char ", buf, "[GS_CSTR_BUF];");
+            L("const char *", p, " = gs_cstr_in(", sl, ".data, ", sl, ".len, ", buf, ");");
+            cstrs.push_back(cat("gs_cstr_out(", p, ", ", buf, ");"));
+            argstr += p;
+            continue;
+        }
         auto x = pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
         argstr += Snapshot(pt, x);
         if (HoldsFatRef(pt)) grows = true;
@@ -124,6 +143,7 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
         L(CT(sp->rets[0]), " ", r0, " = ", callee, "(", argstr, ");");
         rets.push_back(r0);
     }
+    for (auto &f : cstrs) L(f);
     if (grows) MarkReload();
     return rets;
 }
@@ -147,8 +167,10 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
             params += ", ";
             args += ", ";
         }
-        s += CT(sp->argtypes[i]);
-        Append(params, CT(sp->argtypes[i]), " a", i);
+        // A C string parameter (`cstr`) is the C library's own type.
+        auto ct = sp->argtypes[i]->cstr ? string("const char *") : CT(sp->argtypes[i]);
+        s += ct;
+        Append(params, ct, " a", i);
         Append(args, "a", i);
     }
     if (sp->argtypes.empty()) s += "void", params = "void";

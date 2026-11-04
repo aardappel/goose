@@ -311,6 +311,10 @@ struct TypeExpr {
     // sizes name what they name where the alias is declared, at top level,
     // whatever scope the use is in (TypeCheck::ConstNamesIn).
     bool aliasuse = false;
+    // A `cstr` parameter of an extern fn (§7.10): a `const u8[:]` that
+    // crosses as a NUL-terminated `const char *`, copied at the call, and
+    // also takes `null`, which crosses as NULL.
+    bool cstr = false;
     // On a TY_INT: an index or bound type (TypeIndex). Outside the union,
     // since intstorage is the member a TY_INT uses.
     TypeIndex *ix = nullptr;
@@ -2489,6 +2493,9 @@ struct Ast {
     // a go to definition on the import line opens.
     struct ImportSite { Line line; Line end; string path; };
     vector<ImportSite> imports;
+    // What the modules of `import c` assume of the target (cimport.h), as C
+    // conditions the generated C asserts: `sizeof(long) == 8`.
+    vector<string> cimportasserts;
 
     // The text the terminal shows for d (RenderDiagnostic), the source line
     // it is on included where `withsource`: an error echoes its line, a

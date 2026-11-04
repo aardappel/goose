@@ -110,6 +110,7 @@ struct CodeGen {
     // emitted: the prototypes follow it, and a set of pointers would put
     // them in heap-address order, which differs from run to run.
     vector<FnSpec *> usedexterns;
+    bool usescstr = false;   // A call passes a `cstr` (EmitExternCall).
     // A used extern bound from a shared library (§7.10, the block form) is
     // called through a pointer the runtime fills at start: named by the
     // spec's place among the used externs and its symbol, which is stable
@@ -1604,6 +1605,25 @@ struct CodeGen {
             }
             externs += "};\n";
         }
+        // A C header's module was made for the machine the compiler runs on
+        // (`import c`, cimport.h): built for another, this C stops here
+        // rather than passing values in the wrong shapes.
+        // The copies a `cstr` argument crosses as (§7.10): on the caller's
+        // C stack when short, else allocated, and freed after the call.
+        if (usescstr)
+            externs = cat("#define GS_CSTR_BUF 256\n"
+                          "static const char *gs_cstr_in(const uint8_t *p, int64_t n, char *buf) {\n"
+                          "    char *s = n < GS_CSTR_BUF ? buf : (char *)malloc((size_t)n + 1);\n"
+                          "    if (!s) gs_panic(\"out of memory copying a C string\");\n"
+                          "    if (n) memcpy(s, p, (size_t)n);\n"
+                          "    s[n] = 0;\n"
+                          "    return s;\n"
+                          "}\n"
+                          "static void gs_cstr_out(const char *s, char *buf) {\n"
+                          "    if (s != buf) free((void *)s);\n"
+                          "}\n", externs);
+        for (auto &a : ast.cimportasserts)
+            Append(externs, "_Static_assert(", a, ", ", CStr(cat("import c assumes ", a)), ");\n");
         string includes;
         for (auto inc : headers) {
             // Forward slashes even for a Windows path: a backslash inside a

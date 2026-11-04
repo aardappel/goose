@@ -55,6 +55,7 @@
 #include "lsp_workspace.h"
 #include "lsp_features.h"
 #include "lsp.h"
+#include "cimport.h"
 
 namespace goose {
 
@@ -255,11 +256,15 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
     // The packages whose declaration, or blessed load, failed: what imports
     // them again was reported at that import.
     set<string> failedpkgs;
+    // The modules `import c "x.h";` made, by the key standing for their path.
+    map<string, string> cmodules;
     while (!queue.empty()) {
         auto [path, pkg] = queue.back();
         queue.pop_back();
         auto contents = make_unique<string>();
-        if (auto text = sources ? sources(path) : nullptr) {
+        if (auto cm = cmodules.find(path); cm != cmodules.end()) {
+            *contents = cm->second;
+        } else if (auto text = sources ? sources(path) : nullptr) {
             *contents = *text;
             StripBom(*contents);
         } else if (!LoadSource(path, *contents)) {
@@ -283,7 +288,21 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
             try {
                 auto imppkg = pkg;
                 string imppath;
-                if (!imp.source.empty()) {
+                if (!imp.cheader.empty()) {
+                    // A C header: its module is made here, from the header
+                    // found beside this file or in the package's c_include,
+                    // and is a file of this package under a key of its own.
+                    auto &p = ast.packages[pkg];
+                    auto dir = DirOf(path);
+                    auto m = CImport(imp.cheader, AbsolutePath(dir.empty() ? "." : dir), p.cincludes,
+                                     p.cdefines, JitLibPath(exedir));
+                    imppath = cat(m.files.empty() ? imp.cheader : m.files[0], ".goose");
+                    cmodules[imppath] = m.text;
+                    for (auto &a : m.asserts)
+                        if (std::find(ast.cimportasserts.begin(), ast.cimportasserts.end(), a) ==
+                            ast.cimportasserts.end())
+                            ast.cimportasserts.push_back(a);
+                } else if (!imp.source.empty()) {
                     if (failedpkgs.count(imp.path)) continue;
                     pkgname = imp.path;
                     PackageSource src;
@@ -902,6 +921,8 @@ Options:
   --unsafe-no-rf-check  Leave out the checks after calls that a `return ...
                         from` can pass through: unsound, for pricing them only.
   --gen-runtime-header  Regenerate src/runtime_inline.h from src/runtime/.
+  --c-import x.h dir... Print the module `import c "x.h";` makes, x.h found
+                        beside itself or in the directories given.
 
 goose format --verify file.goose|dir... formats each file in memory and
 writes nothing: it checks the result as a format does, and that formatting
@@ -1399,6 +1420,23 @@ int Main(int argc, char **argv) {
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
         else if (arg == "--multi-test") multitest = true;
+        else if (arg == "--c-import" && i + 1 < argc) {
+            // `goose --c-import x.h [dir...]`: the module `import c "x.h";`
+            // makes, x.h found in its own directory or the ones given.
+            string header = argv[++i];
+            vector<string> dirs;
+            while (i + 1 < argc) dirs.push_back(AbsolutePath(argv[++i]));
+            try {
+                auto dir = DirOf(header);
+                auto m = CImport(header.substr(dir.size()), dir.empty() ? "." : AbsolutePath(dir), dirs, {},
+                                 JitLibPath(DirOf(exe)));
+                fputs(m.text.c_str(), stdout);
+            } catch (CompileError &e) {
+                PrintDiagnosticText(e.msg);
+                return 1;
+            }
+            return 0;
+        }
         else if (arg == "--gen-runtime-header") {
             try {
                 GenRuntimeHeader(exe.c_str());

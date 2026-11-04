@@ -1085,6 +1085,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     // The null literal fits any optional (plain or relative).
     if (v.isnull) {
         if (dt->kind == TY_REF && dt->ref->optional) { v.type = dt; return true; }
+        if (dt->cstr) { v.type = dt; return true; }   // NULL to C (§7.10)
         fitfail = cat("null is only a value of optional types, not ", TypeStr(dt));
         return false;
     }

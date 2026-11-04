@@ -912,6 +912,10 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     };
     if (av.isnull) {
         auto ct = own();
+        if (ct && ct->cstr) {   // null at a C string parameter: NULL
+            tier = std::max(tier, 2);
+            return ct;
+        }
         if (!ct || HasGenerics(ct) || !IsOptional(ct)) return nullptr;
         tier = std::max(tier, 2);
         return ct;
@@ -2581,8 +2585,9 @@ inline bool TypeCheck::ExternValueOk(TypeExpr *t, string &why) {
 
 inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why) {
     if (t->kind == TY_REF) {
-        if (t->ref->optional || t->ref->lenstorage >= 0) {
-            why = "only plain references cross";
+        // An optional reference crosses as a pointer that may be NULL.
+        if (t->ref->lenstorage >= 0) {
+            why = "only plain and optional references cross";
             return false;
         }
         auto s = t->ref->sub;
@@ -2728,9 +2733,9 @@ inline void TypeCheck::CheckExport(SFunction *sf) {
         auto t = spec->argtypes[i];
         ValidateType(t, sf->line, VT_PARAM);
         string why;
-        if (!ExternParamOk(t, why))
+        if (!ExternParamOk(t, why) || (t->kind == TY_REF && t->ref->optional))
             fail(cat("parameter ", sf->params[i].name, " of type ", TypeStr(t),
-                     " cannot cross to C: ", why));
+                     " cannot cross to C: ", why.empty() ? "an export takes no optional" : why));
         if (CarriesPool(t))
             fail(cat("parameter ", sf->params[i].name,
                      " uses a reusable pool and has no public C representation"));

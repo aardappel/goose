@@ -673,7 +673,8 @@ inline void FnDecl::Dump(string &s, int ind) const {
         if (i) s += ", ";
         if (sf->params[i].isvar) s += "var ";
         s += sf->params[i].name;
-        if (sf->params[i].type) { s += ": "; sf->params[i].type->Dump(s); }
+        if (sf->params[i].type && sf->params[i].type->cstr) s += ": cstr";
+        else if (sf->params[i].type) { s += ": "; sf->params[i].type->Dump(s); }
         if (sf->params[i].defaultval) {
             s += " = ";
             sf->params[i].defaultval->Dump(s, ind);
