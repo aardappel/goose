@@ -255,9 +255,20 @@ inline void CodeGen::EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t f
 // undefined.
 inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
     switch (t->kind) {
-        case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
             if (t->kind == TY_ENUM && t->enu->varmode) return false;
-            return AnyField(t, [&](TypeExpr *ft) { return HasUninitSlots(ft); });
+            if (AnyField(t, [&](TypeExpr *ft) { return HasUninitSlots(ft); })) return true;
+            // A fixed-mode enum's slot is as wide as its largest variant, so a
+            // smaller one leaves a tail nothing wrote: the same unwritten
+            // bytes a limited array's unused slots are.
+            if (t->kind == TY_ENUM) {
+                auto ei = EIOf(t);
+                auto room = FixedSize(t) - TagSize(ei->en);
+                for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
+                    if (FixedSize(VariantType(t, (int)vi)) < room) return true;
+            }
+            return false;
+        }
         case TY_ARRAY:
             if (t->arr->akind == A_LIMITED) return true;
             return t->arr->akind == A_FIXED &&

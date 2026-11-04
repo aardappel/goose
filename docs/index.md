@@ -109,6 +109,11 @@ and the reference describe what was built; these say why.
   `goose dap` adapter in front of `lldb-dap`, compared with visualizers in
   the native debuggers and with a debugger built into the compiler; a
   proposal.
+* [Ownership without destructors](design/ownership.md): an `own`
+  qualifier that is an obligation the checker discharges, never a release
+  the compiler writes; what that costs against the existing non-copyable
+  class, how pools and coroutine frames would use it, and what it leaves
+  untouched; a research note.
 
 ## Getting the compiler
 

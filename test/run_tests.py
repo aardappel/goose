@@ -2020,11 +2020,11 @@ def main():
         # Algebraic properties of the compiler's root domain are easier to
         # exhaust over small abstract states than to express in Goose, and
         # its containers to compare with the standard ones directly.
-        def compiler_unit(name):
+        def compiler_unit(name, sources=(), flags=()):
             out_exe = gendir / f"{name}{tc.EXE_SUFFIX}"
-            ok, log = cc.compile(HERE / f"{name}.cpp", out_exe, cpp=True,
+            ok, log = cc.compile([HERE / f"{name}.cpp", *sources], out_exe, cpp=True,
                                  opt=2 if args.profile == "baseline" else 1,
-                                 extra=extra, log=gendir / f"{name}.cc.log")
+                                 extra=[*extra, *flags], log=gendir / f"{name}.cc.log")
             if not ok:
                 r.fail(f"compiler-cc {name}", log)
             else:
@@ -2035,6 +2035,10 @@ def main():
                     r.ok(f"compiler {name}")
         for name in ("compiler_roots", "compiler_containers"):
             r.show_task(compiler_unit, name)
+        r.show_task(compiler_unit, "compiler_process",
+                    [HERE.parent / "src" / name for name in ("process.cpp", "progress.cpp")],
+                    [("/I" if cc.style == "msvc" else "-I") +
+                     str(HERE.parent / "third_party" / "subprocess")])
 
         # Direct runtime lifecycle checks use small region limits and allocator
         # instrumentation that cannot be expressed by a Goose program. Keep
@@ -2438,9 +2442,13 @@ def main():
         nowhere = gendir / "nowhere"
         nowhere.mkdir(exist_ok=True)
         env = {k: v for k, v in os.environ.items()
-               if k.upper() not in ("GOOSE_CC", "PATH", "PROGRAMFILES(X86)")}
-        # Nothing on PATH, and no Visual Studio where vswhere would be.
+               if k.upper() not in ("GOOSE_CC", "PATH", "PROGRAMFILES", "PROGRAMW6432",
+                                     "PROGRAMFILES(X86)")}
+        # Nothing on PATH, no Visual Studio where vswhere would be, and no
+        # LLVM where its installer puts it. Windows gives a 64-bit process
+        # ProgramFiles from ProgramW6432, so that one is hidden too.
         env.update({"PATH": str(nowhere), "GOOSE_HOME": str(nowhere / "home"),
+                    "PROGRAMFILES": str(nowhere), "PROGRAMW6432": str(nowhere),
                     "PROGRAMFILES(X86)": str(nowhere)})
         nocc = subprocess.run([str(exe), "toolchain"], capture_output=True, text=True,
                               errors="replace", env=env)

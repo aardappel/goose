@@ -62,8 +62,8 @@ static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
-/* binary's float reads (stdlib/binary.goose): a value from its bits, which
-   memcpy keeps exactly, NaN payloads included. */
+/* binary's float reads and writes (stdlib/binary.goose): a value from its
+   bits and back, which memcpy keeps exactly, NaN payloads included. */
 static float gs_f32_from_bits(uint32_t bits) {
     float x;
     memcpy(&x, &bits, sizeof x);
@@ -73,6 +73,16 @@ static double gs_f64_from_bits(uint64_t bits) {
     double x;
     memcpy(&x, &bits, sizeof x);
     return x;
+}
+static uint32_t gs_f32_to_bits(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+static uint64_t gs_f64_to_bits(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
 }
 
 /* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
@@ -138,6 +148,14 @@ GS_LIBM double gs_log(double x) GS_LIBM1(log)
 GS_LIBM double gs_log2(double x) GS_LIBM1(log2)
 GS_LIBM double gs_log10(double x) GS_LIBM1(log10)
 GS_LIBM double gs_pow(double x, double y) GS_LIBM2(pow)
+GS_LIBM double gs_hypot(double x, double y) GS_LIBM2(hypot)
+GS_LIBM double gs_cbrt(double x) GS_LIBM1(cbrt)
+GS_LIBM double gs_exp2(double x) GS_LIBM1(exp2)
+GS_LIBM double gs_expm1(double x) GS_LIBM1(expm1)
+GS_LIBM double gs_log1p(double x) GS_LIBM1(log1p)
+GS_LIBM double gs_sinh(double x) GS_LIBM1(sinh)
+GS_LIBM double gs_cosh(double x) GS_LIBM1(cosh)
+GS_LIBM double gs_tanh(double x) GS_LIBM1(tanh)
 GS_LIBM float gs_sinf(float x) GS_LIBM1(sinf)
 GS_LIBM float gs_cosf(float x) GS_LIBM1(cosf)
 GS_LIBM float gs_tanf(float x) GS_LIBM1(tanf)
@@ -150,6 +168,14 @@ GS_LIBM float gs_logf(float x) GS_LIBM1(logf)
 GS_LIBM float gs_log2f(float x) GS_LIBM1(log2f)
 GS_LIBM float gs_log10f(float x) GS_LIBM1(log10f)
 GS_LIBM float gs_powf(float x, float y) GS_LIBM2(powf)
+GS_LIBM float gs_hypotf(float x, float y) GS_LIBM2(hypotf)
+GS_LIBM float gs_cbrtf(float x) GS_LIBM1(cbrtf)
+GS_LIBM float gs_exp2f(float x) GS_LIBM1(exp2f)
+GS_LIBM float gs_expm1f(float x) GS_LIBM1(expm1f)
+GS_LIBM float gs_log1pf(float x) GS_LIBM1(log1pf)
+GS_LIBM float gs_sinhf(float x) GS_LIBM1(sinhf)
+GS_LIBM float gs_coshf(float x) GS_LIBM1(coshf)
+GS_LIBM float gs_tanhf(float x) GS_LIBM1(tanhf)
 
 /* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
    set is a pointer to std's ByteSet. */
@@ -227,6 +253,7 @@ GS_API void gs_os_write_stderr(sl_u8 s);
 GS_API void gs_os_flush_stdout(void);
 GS_API uint8_t gs_os_read_line(gs_rref out);
 GS_API void gs_os_read_stdin(gs_rref out);
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max);
 GS_API int64_t gs_os_arg_count(void);
 GS_API void gs_os_arg(int64_t i, gs_rref out);
 GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);

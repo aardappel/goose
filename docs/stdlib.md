@@ -364,6 +364,7 @@ fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8)   // base 2..
 fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>..] or u8[..k]
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, the exact value rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64
+fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool       // optional '+', whole string; false on '-' or outside u64
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
@@ -374,6 +375,8 @@ fn split(s: u8[:], sep: u8) -> const u8[:][>..]            // read-only slices i
 fn split(s: u8[:], sep: u8[:]) -> const u8[:][>..]         // matched from the left; an empty sep: [s]
 fn each_split<F>(s: u8[:], sep: u8)                        // F(part); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
+fn split_once(s: u8[:], sep: u8) -> const u8[:], const u8[:], bool    // before, after the first sep
+fn split_once(s: u8[:], sep: u8[:]) -> const u8[:], const u8[:], bool // not found: s, "", false
 fn words(s: u8[:]) -> const u8[:][>..]                     // split at runs of ASCII whitespace; no empty words
 fn each_word<F>(s: u8[:])                                  // F(word)
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
@@ -394,6 +397,11 @@ the decimal, as C's `strtod` does, so a float's text from `print` or
 `format` reads back as the same value. Strings are `u8` arrays: input is a
 `u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
 `u8[..k]`.
+
+`split_once` cuts s at the first sep, as Go's `strings.Cut` does: the part
+before and the part after, read-only slices into s, and `true`. When sep is
+not in s it gives s whole, an empty slice and `false`, so the first part is
+the whole field either way. An empty sep is never found, as in `split`.
 
 The character classes are ASCII only, as C's `<ctype.h>` is in the C
 locale and Rust's `u8::is_ascii_digit` and its kin are: no byte from 0x80
@@ -425,6 +433,7 @@ format(line, "x=");
 format_int(line, x, 16, 8, '0');
 each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
+let key, value, has_value = split_once(arg, '=');   // "-o=out": "-o", "out", true
 let cmd = words(input);                   // "take  the sword": ["take", "the", "sword"]
 if cmd.len > 1 && cmd[0] == "take" { take(cmd[cmd.len - 1]); }
 ```
@@ -842,12 +851,15 @@ scalar converts to the component type, so an `f64` variable scaling a
 
 `math` provides libm at both widths (`sin(x)` picks `sin` or `sinf` by the
 argument's type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10
-pow floor ceil round trunc`. These return floats as C does (`as i64`
-converts).
+pow hypot cbrt exp2 expm1 log1p sinh cosh tanh floor ceil round trunc
+copysign`. These return floats as C does (`as i64` converts). `expm1(x)`
+and `log1p(x)` are `exp(x) - 1` and `log(1 + x)` without the loss of a
+small `x`'s digits; `copysign(x, y)` is `x`'s magnitude with `y`'s sign
+bit, which tells `-0.0` from `0.0`.
 `sqrt` is implemented in the runtime (`gs_sqrt`, `gs_sqrtf`). It gives the
 same correctly rounded root as C, and NaN below zero, but without C's
 errno, so it is the bare square root instruction where the C compiler
-allows. The other functions for which C sets errno (`sin` to `pow`) are
+allows. The other functions for which C sets errno (`sin` to `tanh`) are
 libm's own functions under runtime names (`gs_exp`, `gs_expf`, ...), which
 gcc and clang are told depend only on their arguments. Since Goose has no
 errno, a call does not make the C compiler reload values that a loop
@@ -888,10 +900,35 @@ The module also has:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;
+let E = 2.718281828459045;    let INF = 1.0 / 0.0;   let NAN = 0.0 / 0.0;
 fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
 fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
 fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
+fn fract(x: f64) -> f64                                        // x - floor(x); and f32
+fn inverse_lerp(a: f64, b: f64, v: f64) -> f64                 // (v - a) / (b - a); and f32
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64           // and f32
+fn wrap_angle(x: f64) -> f64                                   // into [-PI, PI); and f32
 ```
+
+`fract`, `smoothstep` and `inverse_lerp` follow GLSL and std's `lerp`:
+
+- `fract(x)` is `x - floor(x)`, so it is never negative: `fract(-0.25)` is
+  `0.75`. A tiny negative `x` rounds to `1.0`, as in GLSL.
+- `inverse_lerp(a, b, v)` undoes `lerp(a, b, t)`: 0 at `a`, 1 at `b`, and
+  not clamped, so `v` past `b` gives more than 1. It is NaN or an infinity
+  when `a == b`.
+- `smoothstep(edge0, edge1, x)` is 0 up to `edge0`, 1 from `edge1`, and
+  `3t² - 2t³` of the clamped `t = inverse_lerp(edge0, edge1, x)` between.
+  Edges in reverse run it backwards. Equal edges, which GLSL leaves
+  undefined, give 0 below the edge, 1 above it and NaN at it.
+- `wrap_angle(x)` adds or takes whole turns to bring radians into
+  `[-PI, PI)`, as a floored remainder would: `PI` wraps to `-PI`, and `-0.0`
+  stays `-0.0`. The f32 form's bounds are `PI` rounded to f32.
+
+Each gives NaN for a NaN argument, and `fract` and `wrap_angle` give NaN
+for an infinity. `NAN`'s sign is unspecified.
+`INF` and `NAN` take the type the context asks for, as `PI` does
+(`let inf32: f32 = INF;`).
 
 ## os
 
@@ -911,6 +948,7 @@ fn delete_dir(path: const u8[:]) -> bool                   // an empty one
 fn list_dir(path: const u8[:], out: u8[>..]&) -> bool      // appends each name and '\n', sorted
 fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped; false at end
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
+fn read_stdin(out: u8[>..]&, max: i64) -> bool       // up to max bytes; false at end
 fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_stdout()
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
@@ -954,7 +992,11 @@ file.
 `read_file` appends nothing when it fails. `read_stdin` appends the bytes
 unchanged, on Windows too, where the C library's text mode would turn each
 `\r\n` into a `\n` and stop at a Ctrl-Z. `read_line` strips a `\r` before a
-line's newline, along with the newline.
+line's newline, along with the newline. `read_stdin(out, max)` appends up
+to `max` bytes and waits until it has them or input ends, so a large pipe
+can be read in pieces. It returns false, having appended nothing, when no
+bytes were left or `max` is 0 or less. Interactive input in lines stays with
+`read_line`.
 
 `write_file_atomic` is for files that must never be seen half-written, such
 as saved games. It writes the data to a new file in the same directory as
@@ -1049,9 +1091,9 @@ if SDL_Init(0x20) < 0 { abort(str("SDL: ", ffi::cstr(SDL_GetError()))); }
 
 ## binary
 
-Checked reads of external formats, little- and big-endian, written in Goose
-(floats take their bits through one small runtime helper).
-`import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
+Checked reads and appending writes of external formats, little- and
+big-endian, written in Goose (floats take their bits through small runtime
+helpers). `import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
 returned byte slices and fixed-width names borrow that input without copying
 or allocating. Their lifetimes and read-only access are checked normally.
 This API does not interpret Goose serialization images (`from_bytes`).
@@ -1128,6 +1170,35 @@ Use offset reads for random access and cursors for sequential records.
 Applications still validate signatures, counts, indices and format-specific
 limits after checking the read. The WAD loader in
 [`31_mini_doom.goose`](../samples/31_mini_doom.goose) shows both styles.
+
+### Writes
+
+```goose
+fn write_u8(out: u8[>..]&, v: u8)
+fn write_i8(out: u8[>..]&, v: i8)
+fn write_u16le(out: u8[>..]&, v: u16)    // and write_u16be
+fn write_i16le(out: u8[>..]&, v: i16)    // and write_i16be
+fn write_u32le(out: u8[>..]&, v: u32)    // and write_u32be
+fn write_i32le(out: u8[>..]&, v: i32)    // and write_i32be
+fn write_u64le(out: u8[>..]&, v: u64)    // and write_u64be
+fn write_i64le(out: u8[>..]&, v: i64)    // and write_i64be
+fn write_f32le(out: u8[>..]&, v: f32)    // and write_f32be
+fn write_f64le(out: u8[>..]&, v: f64)    // and write_f64be
+```
+
+Each write appends the value's bytes to `out`, in the order the read of the
+same name takes them, so a write followed by that read gives the value back.
+A float write keeps the value's bits exactly, NaN payloads included. The
+writes cannot fail; `out` grows as an append does.
+
+```goose
+var out: u8[>..] = [];
+binary::write_u32be(out, 0x89504E47);    // a signature, most significant byte first
+binary::write_u16le(out, 3);
+binary::write_f32le(out, 1.5);
+let version, version_ok = binary::read_u16le(out, 4);
+assert(version_ok && version == 3);
+```
 
 ## base64
 

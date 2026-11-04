@@ -1209,6 +1209,18 @@ fn format_flt_mul(limbs: u64[>..]&, f: u64) {
     }
 }
 
+// The value of digit c in base, with letters of either case from 10; -1 if
+// c is not a digit below base.
+fn parse_digit(c: u8, base: i64) -> i64 {
+    let x = c as i64;
+    var d = -1;
+    if x >= '0' && x <= '9' { d = x - '0'; }
+    else if x >= 'a' && x <= 'z' { d = x - 'a' + 10; }
+    else if x >= 'A' && x <= 'Z' { d = x - 'A' + 10; }
+    if d >= base { return -1; }
+    return d;
+}
+
 // An optionally signed whole-string integer; false on anything else, including a value outside i64.
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
     var i = 0;
@@ -1225,12 +1237,8 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
     let min = -9223372036854775807 - 1;
     var v = 0;
     while i < s.len {
-        let c = s[i] as i64;
-        var d = -1;
-        if c >= '0' && c <= '9' { d = c - '0'; }
-        else if c >= 'a' && c <= 'z' { d = c - 'a' + 10; }
-        else if c >= 'A' && c <= 'Z' { d = c - 'A' + 10; }
-        if d < 0 || d >= base { return 0, false; }
+        let d = parse_digit(s[i], base);
+        if d < 0 { return 0, false; }
         if v < (min + d) / base { return 0, false; }
         v = v * base - d;
         i += 1;
@@ -1238,6 +1246,28 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
     if !neg {
         if v == min { return 0, false; }
         v = -v;
+    }
+    return v, true;
+}
+
+// A whole-string integer with an optional '+'; false on anything else,
+// including '-' and a value outside u64.
+fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool {
+    var i = 0;
+    if s.len > 0 && s[0] == '+' { i = 1; }
+    if i >= s.len { return 0, false; }
+    // `base` converts only once a digit is below it, so a base below 1
+    // fails as parse_int's does rather than converting out of range.
+    let max: u64 = 18446744073709551615;
+    var v: u64 = 0;
+    while i < s.len {
+        let d = parse_digit(s[i], base);
+        if d < 0 { return 0, false; }
+        let b = base as u64;
+        let du = d as u64;
+        if v > (max - du) / b { return 0, false; }
+        v = v * b + du;
+        i += 1;
     }
     return v, true;
 }
@@ -1438,6 +1468,20 @@ fn each_split<F>(s: u8[:], sep: u8[:]) {
         }
     }
     F(s[start..]);
+}
+
+// The parts before and after the first sep, as slices into s, and true; or
+// s whole, an empty slice and false when sep is not in s. An empty sep is
+// never found, as split has it: s, "", false.
+fn split_once(s: u8[:], sep: u8) -> const u8[:], const u8[:], bool {
+    let i = position(s, sep);
+    if i < 0 { return s, s[s.len..], false; }
+    return s[..i], s[i + 1..], true;
+}
+fn split_once(s: u8[:], sep: u8[:]) -> const u8[:], const u8[:], bool {
+    let i = if sep.len == 0 { -1 } else { find(s, sep) };
+    if i < 0 { return s, s[s.len..], false; }
+    return s[..i], s[i + sep.len..], true;
 }
 
 // The words of s, as slices into it: the runs of bytes between ASCII

@@ -16,7 +16,8 @@ struct ProcessResult {
 
 // Runs argv (argv[0] the program: a path, or a name looked up on PATH) in
 // `cwd`, or in this process's working directory when that is empty, with
-// this process's environment, and collects what it prints. With `echo` the
+// this process's environment, and collects what it prints. Its stdin is
+// closed immediately: no input is sent. With `echo` the
 // output is also written to stderr as it arrives, for -v; either way the
 // live line (progress.h) sees it.
 ProcessResult RunProcess(const vector<string> &argv, const string &cwd = "", bool echo = false);

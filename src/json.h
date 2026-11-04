@@ -83,6 +83,7 @@ inline const vector<Json> &Json::Arr(const string &key) const {
 struct JsonReader {
     const char *p;
     const char *start;
+    int depth = 0;
 
     [[noreturn]] void Fail(const char *what) {
         throw CompileError { cat("malformed JSON at byte ", (int)(p - start), ": ", what) };
@@ -144,11 +145,23 @@ struct JsonReader {
             }
         }
     }
+    // One frame of an editor message or a CMake reply nests a handful deep;
+    // a client that sends thousands would otherwise recurse the parser off
+    // the native stack.
+    static constexpr int MAX_DEPTH = 1000;
+    struct Depth {
+        JsonReader &r;
+        ~Depth() { r.depth--; }
+    };
+
     Json Value() {
         Space();
         Json v;
         switch (*p) {
-            case '{':
+            case '{': {
+                if (depth >= MAX_DEPTH) Fail("nesting too deep");
+                Depth deeper { *this };
+                depth++;
                 v.kind = Json::OBJECT;
                 p++;
                 Space();
@@ -162,7 +175,11 @@ struct JsonReader {
                     Expect('}');
                     return v;
                 }
-            case '[':
+            }
+            case '[': {
+                if (depth >= MAX_DEPTH) Fail("nesting too deep");
+                Depth deeper { *this };
+                depth++;
                 v.kind = Json::ARRAY;
                 p++;
                 Space();
@@ -174,6 +191,7 @@ struct JsonReader {
                     Expect(']');
                     return v;
                 }
+            }
             case '"':
                 v.kind = Json::STRING;
                 v.str = String();

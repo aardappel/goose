@@ -3910,8 +3910,9 @@ false 0
 
 What comes back is an ordinary array: it can be indexed and grown, and
 references into it are ordinary references. `from_bytes` also builds
-`T[>..<]` and the `T[]` family, and checks an array of index types against
-its array. Links into a *field* of an element, and `in pool` links, are
+`T[>..<]` and the `T[]` family, except a `T[>..<]` whose elements hold
+relative references: a shrink of the result would free what its own links
+still name. It checks an array of index types against its array. Links into a *field* of an element, and `in pool` links, are
 not serializable. A `bytes_of` view is never writable, since bytes written
 through it would be links the checker never proved. The byte contract is in
 `docs/design/serialization.md`. Spec §3.9, §9.4, §12.

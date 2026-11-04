@@ -20,7 +20,7 @@ ints true 4 4
 framed 53 GSX1 true 4
 limited 49
 view 48 true 4 48 1
-kinds true 4 true 4 true 4 44
+kinds true 6 true 4 true 4 44
 prefix false
 sexp true 4 25 true
 over false

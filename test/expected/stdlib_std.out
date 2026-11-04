@@ -71,6 +71,8 @@ HELLO WORLD
 -123 true
 0 false
 255 true
+18446744073709551615 true
+0 false
 -150.0 true
 false
 true true
@@ -82,6 +84,16 @@ hi|x|y|
 5 xyz 00
 2 0 a
 1 a b
+k|v=w|true
+a|b::c|true
+abc|0|false
+abc|0|false
+0|x|true
+ab|0|true
+00false 00false
+ab|0|false
+ab|0|false
+name|goose|true
 3 take|the|sword
 true 0 0
 25

@@ -224,13 +224,12 @@ rustc time for the Rust ones; memory is the peak working set at the largest size
 | implementation | small (N=500000) | medium (N=4000000) | large (N=16000000) | large MB |
 |---|---:|---:|---:|---:|
 | goose variable enum | 27.8 / 29.5 | 114.6 / 124.2 | 394.2 / 441.0 | 149.0 |
-| goose fixed enum | 30.9 / 31.1 | 130.2 / 130.2 | 464.5 / 466.8 | 328.2 |
 | cpp virtual + unique_ptr | 66.5 / 66.2 | 501.1 / 435.5 | 1,641.5 / 1,678.2 | 712.9 |
 | cpp variant + string | 54.2 / 47.7 | 312.6 / 268.0 | 1,090.5 / 1,006.4 | 1,103.2 |
 | cpp variant + buffer | 32.7 / 37.1 | 162.6 / 173.3 | 588.6 / 625.5 | 556.9 |
 | rust enum + String | 42.9 | 232.9 | 891.8 | 593.4 |
 
-The variable enum stores each record at the size of its own variant, including inline text. The fixed-enum Goose row controls for that representation choice. C++ variant and Rust enum reserve space for the largest payload in every element; their owned strings may also allocate separately.
+The variable enum stores each record at the size of its own variant, including inline text. C++ variant and Rust enum reserve space for the largest payload in every element; their owned strings may also allocate separately.
 
 ## tree
 
@@ -514,7 +513,6 @@ same time.
 | push | goose array, typed references | 15.8 / 44.2 | 50.6 / 202.1 | 162.1 / 709.4 | 4.38x | 503.8 / 507.1 |
 | strlist | goose inline strings, owned | 19.7 / 53.9 | 76.7 / 223.9 | 262.7 / 779.4 | 2.97x | 221.4 / 226.7 |
 | records | goose variable enum | 27.8 / 68.2 | 114.6 / 271.7 | 394.2 / 992.0 | 2.52x | 149.0 / 152.6 |
-| records | goose fixed enum | 30.9 / 69.5 | 130.2 / 338.2 | 464.5 / 1,222.2 | 2.63x | 328.2 / 331.8 |
 | tree | goose pool + typed relative refs | 15.9 / 37.7 | 43.9 / 111.5 | 618.0 / 1,412.6 | 2.29x | 391.8 / 395.3 |
 | interp | goose case functions + relative refs | 14.4 / 33.3 | 18.6 / 43.1 | 62.0 / 149.4 | 2.41x | 27.9 / 31.6 |
 | graph | goose one-pass, typed relative refs | 42.7 / 83.9 | 431.4 / 1,040.5 | 3,911.7 / 7,662.7 | 1.96x | 160.5 / 166.0 |
@@ -532,7 +530,7 @@ same time.
 | respond | goose streaming | 42.2 / 108.1 | 125.0 / 326.2 | 454.2 / 1,202.7 | 2.65x | 7.8 / 18.4 |
 | blur | goose flat indexing | 32.4 / 189.6 | 76.3 / 649.8 | 952.1 / 9,917.6 | 10.42x | 135.8 / 139.2 |
 | blur | goose row slices | 19.6 / 181.5 | 31.4 / 626.2 | 297.9 / 9,512.0 | 31.93x | 135.8 / 139.4 |
-| **geometric mean** | | | | | **3.44x** | |
+| **geometric mean** | | | | | **3.48x** | |
 
 Floor for a JIT row (an empty program compiled and run, best of 5): 30.5 ms / 15.6 MB. That time is almost all
 compilation, and it is included in every JIT cell above.
@@ -704,8 +702,7 @@ three words where `std::string` is four, and the enum tag is stored in the
 pointer's niche rather than needing its own word. But it is still a *fixed*
 enum, so every one of the 16M elements is sized for `Say` whether it is a
 `Say` or not, and the text needs a second allocation as well. This is a
-property of Rust's enum layout. `records_fixed.goose` provides a control
-with a fixed-size representation.
+property of Rust's enum layout.
 
 Three Goose layouts differ substantially from the corresponding C++ and Rust
 implementations:

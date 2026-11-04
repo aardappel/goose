@@ -1259,7 +1259,10 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
   cost nothing; opaque is tidier.
 * `defer` across a yield (R5): it could be kept in the frame as a flag and
   run at the block's exit in whichever resume reaches it, at one byte and
-  one branch per `defer`. Wait for a use.
+  one branch per `defer`. Wait for a use. [ownership.md §5](ownership.md#5-coroutines)
+  works out what an `own` qualifier would add here, a frame that can be
+  neither dropped nor copied and a `cancel` that runs the pending defers;
+  that is a separate decision, and this design stands without it.
 * Large hoisted locals: copy-in/copy-out of a `u8[1024]` local per resume
   is 2 KB of traffic. The 6.4 relaxation (in-place slots) or a size
   threshold would address it; the workaround today is to own the buffer
