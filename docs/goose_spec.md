@@ -3355,7 +3355,8 @@ as the extern fns, `let`s and structs of a module of the importing file's
 package (docs/reference.md §24 gives the rules). The header is found in the
 importing file's directory or in its package's `c_include` directories. The
 module describes the compiling machine's C; the generated C asserts the
-sizes it relies on.
+sizes it relies on, and a package's native part checks the layouts the
+module took against the header, compiled by the program's own compiler.
 
 **Binding from a shared library.** An `extern` block names a shared
 library and declares functions that are bound from it by name when the

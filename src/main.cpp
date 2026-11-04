@@ -299,6 +299,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                     imppath = cat(m.files.empty() ? imp.cheader : m.files[0], ".goose");
                     cmodules[imppath] = m.text;
                     ast.cimportfiles.insert(imppath);
+                    if (!m.check.empty()) ast.cimportchecks[pkg] += m.check;
                     for (auto &[name, why] : m.skipped)
                         ast.cimportskipped.emplace(name, cat("not imported from ", imp.cheader, " (", why, ")"));
                     for (auto &a : m.asserts)
@@ -926,6 +927,8 @@ Options:
   --gen-runtime-header  Regenerate src/runtime_inline.h from src/runtime/.
   --c-import x.h dir... Print the module `import c "x.h";` makes, x.h found
                         beside itself or in the directories given.
+  --c-import-check x.h dir...  Print the C a build compiles to check that
+                        module's layouts against x.h.
 
 goose format --verify file.goose|dir... formats each file in memory and
 writes nothing: it checks the result as a format does, and that formatting
@@ -1423,9 +1426,11 @@ int Main(int argc, char **argv) {
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
         else if (arg == "--multi-test") multitest = true;
-        else if (arg == "--c-import" && i + 1 < argc) {
+        else if ((arg == "--c-import" || arg == "--c-import-check") && i + 1 < argc) {
             // `goose --c-import x.h [dir...]`: the module `import c "x.h";`
-            // makes, x.h found in its own directory or the ones given.
+            // makes, x.h found in its own directory or the ones given; with
+            // --c-import-check, the C a build checks it against the header with.
+            auto check = arg == "--c-import-check";
             string header = argv[++i];
             vector<string> dirs;
             while (i + 1 < argc) dirs.push_back(AbsolutePath(argv[++i]));
@@ -1433,7 +1438,7 @@ int Main(int argc, char **argv) {
                 auto dir = DirOf(header);
                 auto m = CImport(header.substr(dir.size()), dir.empty() ? "." : AbsolutePath(dir), dirs, {},
                                  JitLibPath(DirOf(exe)));
-                fputs(m.text.c_str(), stdout);
+                fputs((check ? m.check : m.text).c_str(), stdout);
             } catch (CompileError &e) {
                 PrintDiagnosticText(e.msg);
                 return 1;

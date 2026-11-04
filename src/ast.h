@@ -2533,6 +2533,9 @@ struct Ast {
     set<SFunction *> cfnexports;
     // The instances of variadic externs, by base and number of extra arguments.
     map<pair<SFunction *, size_t>, SFunction *> vainstances;
+    // Per package, the C checking its `import c` modules against their
+    // headers (CImported::check), compiled with its native part.
+    map<int, string> cimportchecks;
     map<int, set<string>> cimportcalled;
 
     // The message for an unknown name: `prefix name`, or why an `import c`

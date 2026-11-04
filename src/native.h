@@ -512,8 +512,11 @@ inline bool BuildNativePart(const Ast &ast, int pkg, const string &rootfile,
     for (auto &n : externs) Append(externtext, n, "\n");
     // The stamp: what the build was made from, then whether it holds the
     // JIT library besides everything an AOT build has.
+    string checktext;
+    if (auto it = ast.cimportchecks.find(pkg); it != ast.cimportchecks.end()) checktext = it->second;
     auto made = cat(b.tc.id, "\n", FilesHash(inputs), "\n", Hex8(sidecartext), "\n",
-                    Hex8(externtext), "\n", Hex8(GooseHeader()), "\n");
+                    Hex8(externtext), "\n", Hex8(GooseHeader()), "\n",
+                    checktext.empty() ? "" : cat(Hex8(checktext), "\n"));
     auto aotstamp = cat(made, "aot\n"), jitstamp = cat(made, "jit\n");
     auto stampfile = cat(dir, "/stamp");
     // Whether the build there serves this one. A CMake package from a path
@@ -561,6 +564,18 @@ inline bool BuildNativePart(const Ast &ast, int pkg, const string &rootfile,
     #ifndef _WIN32
         if (!msvc) flags.push_back("-fPIC");
     #endif
+    // What the package's `import c` modules assumed of their headers,
+    // compiled by this toolchain against the headers themselves (cimport.h):
+    // compiling is the check, and it makes no object to link.
+    if (!checktext.empty() && !objectsbuilt) {
+        auto src = cat(dir, "/gs_cimport_check.c");
+        if (!b.opts.dryrun && !WriteFileMakingDirs(src, checktext))
+            throw CompileError { cat("cannot write ", src) };
+        if (!b.CompileObject(src, cat(dir, "/gs_cimport_check", msvc ? ".obj" : ".o"),
+                             cat("checking the package ", p.name, "'s import c against its headers"),
+                             cat(dir, "/gs_cimport_check.cc.log"), flags))
+            return false;
+    }
     vector<string> objects;
     for (auto &src : p.csources) {
         // Named for the source's path too: two files in different

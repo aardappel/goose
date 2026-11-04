@@ -4133,10 +4133,18 @@ fn main() {
   `sqlite3_vmprintf: not imported from sqlite3.h (parameter 2, the
   implementation's __builtin_va_list)`.
 
-`goose --c-import x.h` prints the module. Sizes and layouts are those of
-the machine the compiler runs on; the generated C asserts the ones the
-module relies on (`sizeof(long)`), so a build for a machine where they
-differ stops instead of passing wrong values.
+`goose --c-import x.h` prints the module. Sizes and layouts are those
+TinyCC gives on the machine the compiler runs on, and two checks keep a
+build from using them where they are wrong:
+
+* the generated C asserts what the module relies on of the target
+  (`sizeof(long)`, `sizeof(void *)`);
+* when the package has C sources, its native part also compiles a file
+  that includes the header itself and asserts the size and offsets of
+  every struct the module declares and the size of every typedef it names,
+  with the compiler the program is built with: a build for another machine
+  or ABI stops there instead of passing values in the wrong shape.
+  `goose --c-import-check x.h` prints that file.
 
 ### `export fn`
 
