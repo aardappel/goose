@@ -8,6 +8,18 @@ typedef struct { V3 v; float w; } V4;
 typedef struct { uint32_t id; } Handle;
 #pragma pack(pop)
 
+/* Eightbytes of different classes, which x86-64 System V passes and returns
+   in one integer and one SSE register each: TinyCC merged them into one. */
+typedef struct { int64_t n; double d; } Mix;   /* INTEGER, SSE */
+typedef struct { double d; int64_t n; } Xim;   /* SSE, INTEGER */
+
+int32_t abi_mix(int32_t a, Mix m, double b, Xim x) {
+    return a == 1 && m.n == 2 && m.d == 3.5 && b == 4.5 && x.d == 5.5 && x.n == 6;
+}
+
+Mix abi_mix_make(int64_t n, double d) { Mix m = { n, d }; return m; }
+Xim abi_xim_make(double d, int64_t n) { Xim x = { d, n }; return x; }
+
 static int is3(V3 v, float x, float y, float z) {
     return v.x == x && v.y == y && v.z == z;
 }
