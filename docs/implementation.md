@@ -697,20 +697,31 @@ The optimizer's `Reach` and BCE's `BuildCallGraph` walk the same call graph
 recursively, with smaller frames and without this check.
 
 **Nesting.** Expressions, blocks and types nest as deep as the source writes
-them, and the parser, the checker (once for every node it enters, `Descend`,
-and in `ConstIntValue`) and a clone recurse as deep. Each compares the stack
-pointer with the same `stackfloor` where it recurses, and stops there with
-"nested too deep for the compiler's stack", or in the checker with the call
-path's error, where the call path took more of the stack than the body's own
-nesting (`StackError`). The parser raises `Parser::TooDeep`, not a
-`CompileError`, which the recovery of the statement it is in would catch, to
-go on at the same depth (§2, Recovery). How deep a program can nest depends
-on the build, as its call path does: a clang -O3 build checks a sum of
-35,000 terms, 15,000 `else if` arms or 7,300 guards, and a Debug or ASan
-build less. A fixed bound would stop every build at the same place, but it
-would have to sit above that to reject nothing a release build compiles, and
-every pass would then need room for it in every build, with Debug and ASan
-frames several times as large.
+them, and the passes that follow them recurse as deep. These compare the
+stack pointer with the same `stackfloor` where they recurse: the parser, the
+checker (once for every node it enters, `Descend`, and in `SubstRaw` and
+`ConstIntValue`), a clone, the expansion binder, the resolution of type
+names, the code generator (`GenX`, `GenAny`, `GenStmt2`), the dump and the
+server's walks of a parse. One whose result matters stops with "nested too
+deep for the compiler's stack", or in the checker with the call path's
+error, where the call path took more of the stack than the body's own
+nesting (`StackError`). One that only reads stops short, since a diagnostic
+may run it from past the floor: a dump writes `...` for the rest (`dumpcut`,
+which the formatter's check of its result turns into the error), and the
+server's index and features leave the rest out. Each pass checks for itself,
+rather than counting on one before it: a long `a + b + ...`, `x.f().g()...`
+or `T[:][:]...` parses in a loop, with no recursion to check, and a later
+pass may take more stack a level than the parser or the checker (the
+expansion binder takes 224 bytes at -O3 and 3.6 KB in an ASan Debug build).
+The parser raises `Parser::TooDeep`, not a `CompileError`, which the
+recovery of the statement it is in would catch, to go on at the same depth
+(§2, Recovery). How deep a program can nest depends on the build, as its
+call path does: a clang -O3 build checks a sum of 35,000 terms, 15,000 `else
+if` arms or 7,300 guards, and a Debug or ASan build less. A fixed bound
+would stop every build at the same place, but it would have to sit above
+that to reject nothing a release build compiles, and the passes would then
+need room for it in every build, with Debug and ASan frames up to 16 times
+as large.
 
 **Frames, scopes and variables.** `frames` is the compile-time call path;
 `scopes` is one flat vector for the whole path (a frame records where its

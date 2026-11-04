@@ -327,7 +327,10 @@ struct Analysis {
         // its end: a visit gives where its node's tokens start, -1 for
         // none known.
         function<int64_t(Node *, bool)> visit = [&](Node *n, bool callee) -> int64_t {
-            if (!n) return -1;
+            // As deep as the source nests, whatever the check made of it: a
+            // part nested deeper than the stack holds is left out of the
+            // index, and the passes `goose check` runs report it.
+            if (!n || StackLow()) return -1;
             auto fileidx = n->line.fileidx;
             if (auto id = Is<Ident>(n)) {
                 Occurrence o;
@@ -470,7 +473,7 @@ struct Analysis {
         auto bind = [&](const VarDef *vd, Place p) { if (vd && p.Known()) defplaces[vd] = p; };
         auto exemplar = false;
         function<void(Node *)> mark = [&](Node *n) {
-            if (!n) return;
+            if (!n || StackLow()) return;  // As the index does (IndexSource).
             if (n->origin) {
                 clones[n->origin].push_back(n);
                 if (exemplar) exemplarclones.insert(n);

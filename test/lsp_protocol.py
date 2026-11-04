@@ -584,6 +584,19 @@ def check_lsp_protocol(exe, base):
         fail("a function nested too deep", diags)
     close_doc(deep_fn)
 
+    # A document nested deeper than the compiler's stack holds gets that
+    # error, and an outline as far as it fits, from a server that goes on.
+    deep = base / "deep_nesting.goose"
+    deep_text = "fn f() -> i64 {\n1\n" + "+ 1\n" * 1_000_000 + "}\n"
+    deep.write_text(deep_text, encoding="utf-8")
+    diags = open_fixture(deep, deep_text)
+    if not any("nested too deep for the compiler's stack" in d.get("message", "") for d in diags):
+        fail("a document nested too deep", diags)
+    symbols = client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri_of(deep)}})
+    if not any(s.get("name") == "f" for s in symbols or []):
+        fail("the outline of a document nested too deep", symbols)
+    close_doc(deep)
+
     client.request("shutdown", None)
     client.send("exit", request=False)
     code = client.p.wait(timeout=30)

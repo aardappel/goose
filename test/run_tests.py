@@ -219,8 +219,16 @@ def call_chain(depth, nest=0):
 def deep_nesting(kind, depth):
     """A program whose f nests `depth` levels of one kind, a level a line:
     parentheses, which make no node; a sum, which parses in a loop; `else if`
-    arms; or guards, each of which nests the rest of its block. f(1) is 1, or
-    depth + 1 for the sum."""
+    arms; guards, each of which nests the rest of its block; or slices of
+    slices, a type which parses in a loop too, for a parameter or an alias.
+    f(1) is 1, or depth + 1 for the sum. A `size` is a sum as an array's
+    size, a constant the checker folds."""
+    if kind == "types":
+        return "fn f(x: i64" + "\n[:]" * depth + "?) -> i64 { 1 }\nfn main() { print(f(null)); }\n"
+    if kind == "alias":
+        return "type T = i64" + "\n[:]" * depth + ";\nfn main() { print(1); }\n"
+    if kind == "size":
+        return "fn main() {\nvar a: i64[1" + "\n+ 0" * depth + "] = [7; 1];\nprint(a[0]);\n}\n"
     if kind == "parens":
         body = "(\n" * depth + "x\n" + ")\n" * depth
     elif kind == "sum":
@@ -1548,10 +1556,10 @@ def main():
     for (kind, path), depth in zip(nesting_files.items(), (1500, 1500, 1000)):
         tc.write_text(path, deep_nesting(kind, depth))
     too_deep_nesting = {kind: deepdir / f"nesting_{kind}_too_deep.goose"
-                        for kind in ("parens",)}
+                        for kind in ("parens", "sum", "types", "alias", "size")}
     for kind, path in too_deep_nesting.items():
         tc.write_text(path, "// error: nested too deep for the compiler's stack\n" +
-                      deep_nesting(kind, 1_000_000))
+                      deep_nesting(kind, 100_000 if kind == "size" else 1_000_000))
 
     # The typechecker checks a function inside the call that first reaches it,
     # so its native stack grows with the compile-time call path, which a
@@ -1628,12 +1636,15 @@ def main():
         else:
             r.ok(f"cgen+run -O{ol} {f.name}")
 
-    # Code nests as deep as a program writes it too, and the parser and the
-    # checker recurse as deep, each stopping at the stack's floor with an
-    # error. Where depends on the build, as for a call path, but lies far
-    # past what a generator writes: a sum of 1500 terms, 1500 `else if` arms
-    # and 1000 guards check and generate C. A million parentheses are an
-    # error, not a crash.
+    # Code nests as deep as a program writes it too, and the parser, the
+    # checker and the passes over a parse recurse as deep, each stopping at
+    # the stack's floor with an error. Where depends on the build, as for a
+    # call path, but lies far past what a generator writes: a sum of 1500
+    # terms, 1500 `else if` arms and 1000 guards check and generate C. A
+    # million parentheses (no node), a sum of a million terms (parsed in a
+    # loop), a million slices of slices, as a parameter or an alias, and an
+    # array size of 100,000 terms (which a release build's expansion binder
+    # lets through and the checker folds) are errors, not crashes.
     def nesting_checks(kind):
         f = nesting_files[kind]
         code, out, err = r.goose("-O0", "--check", f)

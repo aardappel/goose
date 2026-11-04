@@ -687,7 +687,9 @@ inline bool ParseForCheck(const string &filename, const string &text, string &du
         why = ast.errors[0].text;
         return false;
     }
+    dumpcut = false;
     ast.Dump(dump);
+    if (dumpcut) throw CompileError { "nested too deep for the compiler's stack" };
     string raw;
     DumpDocs(ast, raw);
     // A comment line's trailing whitespace, which the formatter removes.
@@ -786,7 +788,17 @@ inline FormatResult Format(string_view input, const string &filename, bool verif
         r.internal = e.msg;
         return r;
     }
-    r.internal = format::CheckSame(text, r.text, filename);
+    try {
+        r.internal = format::CheckSame(text, r.text, filename);
+    } catch (CompileError &e) {
+        // The check dumps both trees, which nest past the stack where the
+        // parse made them in a loop (dumpcut).
+        Diagnostic d;
+        d.message = e.msg;
+        d.text = cat(filename, ": error: ", e.msg);
+        r.diags.push_back(d);
+        return r;
+    }
     if (!r.internal.empty()) return r;
     if (verify_idempotent) {
         auto again = Format(r.text, filename);

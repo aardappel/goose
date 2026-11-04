@@ -1073,6 +1073,9 @@ struct TypeCheck {
     }
 
     TypeExpr *SubstRaw(TypeExpr *t) {
+        // As deep as the type nests, which a long `T[:][:]...` makes in a
+        // loop.
+        if (StackLow()) StackError(t->line);
         switch (t->kind) {
             case TY_GENERIC: {
                 // An exemplar's binding is the type it stands for wherever it
