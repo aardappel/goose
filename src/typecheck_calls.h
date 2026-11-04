@@ -2919,12 +2919,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     spec->inprogress = true;
     // A body is checked inside the call that first reaches it, so the native
     // stack holds one of these per call on the compile-time call path.
-    if (StackLow()) {
-        auto depth = 0;
-        for (auto &f : frames) depth += f.sf && !f.isfunval;
-        Error(callline, cat("compile-time call path too deep for the compiler's stack (",
-                            depth, " nested calls)"));
-    }
+    if (StackLow()) StackError(callline);
     auto sf = spec->sf;
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->record.eventstart = storeevents.size();

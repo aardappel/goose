@@ -573,6 +573,17 @@ def check_lsp_protocol(exe, base):
     if fmt() is not None:
         fail("formatting a document that is not open", fmt())
 
+    # A function nested deeper than the compiler's stack holds gets that
+    # error, once: it stands, broken, so its caller raises nothing more.
+    deep_fn = base / "deep_parens.goose"
+    deep_fn_text = ("fn f() -> i64 {\n" + "(\n" * 1_000_000 + "1\n" + ")\n" * 1_000_000 +
+                    "}\nfn main() { print(f()); }\n")
+    deep_fn.write_text(deep_fn_text, encoding="utf-8")
+    diags = open_fixture(deep_fn, deep_fn_text)
+    if len(diags) != 1 or "nested too deep for the compiler's stack" not in diags[0].get("message", ""):
+        fail("a function nested too deep", diags)
+    close_doc(deep_fn)
+
     client.request("shutdown", None)
     client.send("exit", request=False)
     code = client.p.wait(timeout=30)

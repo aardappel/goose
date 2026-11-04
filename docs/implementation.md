@@ -349,7 +349,13 @@ function per construct. Points that matter to later passes:
   tentative parse catches the errors within its own extent and
   backtracks, and the parse that then fails for real does so outside it.
   Once recovery from an error has skipped to the end of the file, the
-  blocks still open there report nothing more (`eoferror`).
+  blocks still open there report nothing more (`eoferror`). Nor does it
+  apply to a nesting deeper than the compiler's stack holds (Nesting, §3),
+  which the statement's recovery would resume at the same depth: the parser
+  raises `Parser::TooDeep`, which no recovery of a statement catches. A
+  top-level function's body is lost from the statement it was raised in,
+  and the function stands, broken (`ParseFnBody`); any other declaration
+  is dropped (`ParseTopDecl`), past the braces still open in it.
 * `ParseProgram` takes each file's text from the source provider it is
   given, if the provider has that file (`SourceProvider`, `utils.h`: the
   dump that `--roundtrip` parses again, or an editor's unsaved buffers),
@@ -689,6 +695,22 @@ depth error. Each activation also retains its cloned body, variables and
 records, so increasing the stack size alone would have limited benefit.
 The optimizer's `Reach` and BCE's `BuildCallGraph` walk the same call graph
 recursively, with smaller frames and without this check.
+
+**Nesting.** Expressions, blocks and types nest as deep as the source writes
+them, and the parser, the checker (once for every node it enters, `Descend`,
+and in `ConstIntValue`) and a clone recurse as deep. Each compares the stack
+pointer with the same `stackfloor` where it recurses, and stops there with
+"nested too deep for the compiler's stack", or in the checker with the call
+path's error, where the call path took more of the stack than the body's own
+nesting (`StackError`). The parser raises `Parser::TooDeep`, not a
+`CompileError`, which the recovery of the statement it is in would catch, to
+go on at the same depth (§2, Recovery). How deep a program can nest depends
+on the build, as its call path does: a clang -O3 build checks a sum of
+35,000 terms, 15,000 `else if` arms or 7,300 guards, and a Debug or ASan
+build less. A fixed bound would stop every build at the same place, but it
+would have to sit above that to reject nothing a release build compiles, and
+every pass would then need room for it in every build, with Debug and ASan
+frames several times as large.
 
 **Frames, scopes and variables.** `frames` is the compile-time call path;
 `scopes` is one flat vector for the whole path (a frame records where its

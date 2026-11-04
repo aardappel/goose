@@ -345,7 +345,13 @@ broken function is checked against its signature, and the roots of its
 result are taken as the most permissive, so one error does not cascade.
 The tentative parses are unaffected: they catch the error within their own
 extent, and the real parse then fails again outside it, where recovery
-catches it. One more kind of recovery matters for completion: a `.` with
+catches it. A statement nested deeper than the compiler's stack holds
+raises `Parser::TooDeep` instead (implementation.md, Nesting), which no
+recovery of a statement or a tentative parse catches, since it would go
+on at the same depth: it is reported once, and a function stands, broken,
+as for the error of a statement in it, where any other declaration is
+dropped.
+One more kind of recovery matters for completion: a `.` with
 no name after it parses as a `Dot` with an empty name, marked incomplete.
 The checker checks it for the type of its object and then silently stops
 checking the body there (§6).

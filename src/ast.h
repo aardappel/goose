@@ -2501,6 +2501,23 @@ struct Ast {
                                 false);
     }
 
+    // Set while the checker runs, which raises a clone's stack error itself
+    // (TypeCheck::StackError): it can tell a deep call path from deep code.
+    function<void(Line)> stackerror;
+
+    // The error a pass raises where it is about to run the native stack out
+    // (StackLow): what it walks nests, at `l`, deeper than the compiler's
+    // stack holds. A Line rather than a node, whose place LocOf would look
+    // for in all of its subtree.
+    [[noreturn]] void StackError(Line l) const {
+        if (stackerror) stackerror(l);
+        Diagnostic d;
+        d.where = LocOf(l);
+        d.message = "nested too deep for the compiler's stack";
+        d.text = DiagnosticText(d, true);
+        throw CompileError { d.text, { d } };
+    }
+
     void Warn(Diagnostic d) {
         d.warning = true;
         d.text = DiagnosticText(d, false);

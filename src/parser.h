@@ -92,6 +92,19 @@ struct Parser {
     // the blocks still open there end silently, rather than each report
     // the end once more.
     bool eoferror = false;
+    // A parse about to run the native stack out (StackLow, utils.h) raises
+    // TooDeep rather than a CompileError, which the recovery of a statement
+    // or of a tentative parse would catch, to go on at the same depth and
+    // meet it again. A function's body is lost from the statement it is in
+    // (ParseFnBody); any other declaration is dropped (ParseTopDecl). Every
+    // recursion of the parse goes through Sub or ParseType, which check.
+    struct TooDeep { CompileError e; };
+    void CheckDepth() {
+        if (!StackLow()) return;
+        auto d = lex.Diagnose("nested too deep for the compiler's stack", lex.tokline,
+                              lex.toklinestart);
+        throw TooDeep { { d.text, { d } } };
+    }
 
     Parser(Ast &_ast, string_view filename, const char *source, int _fileidx)
         : ast(_ast), lex(filename, source, _fileidx), fileidx(_fileidx) {}
@@ -394,18 +407,25 @@ struct Parser {
         ast.CheckCancel();
         auto mark = ast.Mark();
         auto startp = lex.attr.data();
+        auto depth = lex.DepthBefore();
         pendingdot = nullptr;
         try {
             ParseTopDeclInner();
+            return;
         } catch (CompileError &e) {
             if (tentative) throw;
             // An incomplete `.` was reported already; the error that
             // followed it is a consequence.
             if (!pendingdot) Report(e);
-            pendingdot = nullptr;
-            ast.DropSince(mark);
-            Resync(true, startp);
+        } catch (TooDeep &e) {
+            Report(e.e);
+            // Raised deep inside the declaration: past the braces open there
+            // first, which Resync would take for ones it opened itself.
+            while (lex.tok != T_EOF && lex.DepthBefore() > depth) NextSkipping();
         }
+        pendingdot = nullptr;
+        ast.DropSince(mark);
+        Resync(true, startp);
     }
 
     void ParseTopDeclInner() {
@@ -891,7 +911,7 @@ struct Parser {
                 FnScope(Parser &_p, SFunction *sf) : p(_p), saved(_p.curfn) { p.curfn = sf; }
                 ~FnScope() { p.curfn = saved; }
             } fs(*this, sf);
-            sf->body = ParseBlockExpr("function body");
+            sf->body = nested ? ParseBlockExpr("function body") : ParseFnBody(sf);
         }
         sf->end = PrevEnd();
         BindGenericNames(firsttype, sf->generics);
@@ -960,6 +980,7 @@ struct Parser {
     // Types.
 
     TypeExpr *ParseType() {
+        CheckDepth();
         // `const` qualifies the first reference or slice built on the base
         // type (§9.5): `const u8[:]` is a slice of read-only bytes, `const
         // Foo&` a reference to a read-only Foo, `const (u8[:])&` a reference
@@ -1202,7 +1223,10 @@ struct Parser {
     };
     // An operand, argument or bracketed position: off the spine, struct
     // literals allowed unless the position says otherwise.
-    Context Sub(bool nostructlit = false) { return Context(*this, nostructlit, false); }
+    Context Sub(bool nostructlit = false) {
+        CheckDepth();
+        return Context(*this, nostructlit, false);
+    }
 
     Node *ParseExpr() {
         auto line = CurLine();
@@ -1921,6 +1945,31 @@ struct Parser {
         Expect(T_LCURLY, context);
         auto b = New<Block>(line);
         ParseBlockBody(b);
+        return Finish(b);
+    }
+
+    // A top-level function's body. The statement a nesting deeper than the
+    // stack holds is raised in (TooDeep) is lost with the rest of the body,
+    // and the function stands, broken, as for a statement's error
+    // (ParseBlockBody): its calls are checked against its signature. A
+    // nested function's body leaves it to the function it is in.
+    Block *ParseFnBody(SFunction *sf) {
+        auto line = CurLine();
+        Expect(T_LCURLY, "function body");
+        auto b = New<Block>(line);
+        auto depth = lex.DepthBefore();
+        auto nfunctions = ast.functions.size();
+        try {
+            ParseBlockBody(b);
+        } catch (TooDeep &e) {
+            Report(e.e);
+            for (auto i = nfunctions; i < ast.functions.size(); i++) delete ast.functions[i];
+            ast.functions.resize(nfunctions);
+            if (b->brokenat < 0) b->brokenat = (int)b->stmts.size();
+            sf->broken = true;
+            // Past the braces open where it was raised, the body's own.
+            while (lex.tok != T_EOF && lex.DepthBefore() >= depth) NextSkipping();
+        }
         return Finish(b);
     }
 

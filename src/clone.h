@@ -37,6 +37,10 @@ struct ExpansionClone {
 // constructors below, so cloning an already-checked tree yields a clean one.
 
 inline Node *Node::Clone(Ast &ast) const {
+    // A clone recurses as deep as the tree it copies, which the checker
+    // copies from wherever it is on the compile-time call path (a body for
+    // its specialization).
+    if (StackLow()) ast.StackError(line);
     auto ctx = ast.expansionclone;
     if (ctx) {
         if (++*ctx->size > ExpansionClone::MAXNODES)

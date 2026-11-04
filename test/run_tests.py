@@ -216,6 +216,22 @@ def call_chain(depth, nest=0):
     return "".join(fns)
 
 
+def deep_nesting(kind, depth):
+    """A program whose f nests `depth` levels of one kind, a level a line:
+    parentheses, which make no node; a sum, which parses in a loop; `else if`
+    arms; or guards, each of which nests the rest of its block. f(1) is 1, or
+    depth + 1 for the sum."""
+    if kind == "parens":
+        body = "(\n" * depth + "x\n" + ")\n" * depth
+    elif kind == "sum":
+        body = "x\n" + "+ 1\n" * depth
+    elif kind == "else-if":
+        body = "".join(f"if x == {i} {{ {i} }} else\n" for i in range(depth)) + "{ x }\n"
+    else:
+        body = "".join(f"guard x != {i + 2} else {{ return {i}; }}\n" for i in range(depth)) + "x\n"
+    return "fn f(x: i64) -> i64 {\n" + body + "}\nfn main() { print(f(1)); }\n"
+
+
 def guard_runs(guards, links):
     """A program of `guards` guards in a row, in a function's body and in a
     loop's, and of a chain of `links` single-use functions, each calling the
@@ -1528,6 +1544,14 @@ def main():
                   call_chain(6000, nest=32))
     guard_runs_file = deepdir / "guard_runs.goose"
     tc.write_text(guard_runs_file, guard_runs(300, 200))
+    nesting_files = {kind: deepdir / f"nesting_{kind}.goose" for kind in ("sum", "else-if", "guards")}
+    for (kind, path), depth in zip(nesting_files.items(), (1500, 1500, 1000)):
+        tc.write_text(path, deep_nesting(kind, depth))
+    too_deep_nesting = {kind: deepdir / f"nesting_{kind}_too_deep.goose"
+                        for kind in ("parens",)}
+    for kind, path in too_deep_nesting.items():
+        tc.write_text(path, "// error: nested too deep for the compiler's stack\n" +
+                      deep_nesting(kind, 1_000_000))
 
     # The typechecker checks a function inside the call that first reaches it,
     # so its native stack grows with the compile-time call path, which a
@@ -1604,8 +1628,34 @@ def main():
         else:
             r.ok(f"cgen+run -O{ol} {f.name}")
 
+    # Code nests as deep as a program writes it too, and the parser and the
+    # checker recurse as deep, each stopping at the stack's floor with an
+    # error. Where depends on the build, as for a call path, but lies far
+    # past what a generator writes: a sum of 1500 terms, 1500 `else if` arms
+    # and 1000 guards check and generate C. A million parentheses are an
+    # error, not a crash.
+    def nesting_checks(kind):
+        f = nesting_files[kind]
+        code, out, err = r.goose("-O0", "--check", f)
+        if code != 0:
+            r.fail(f"typecheck {f.name}", out + err)
+            return
+        code, out, err = r.goose("-O2", "-o", deepdir / f"nesting_{kind}-O2.c", f)
+        if code != 0:
+            r.fail(f"cgen -O2 {f.name}", out + err)
+        else:
+            r.ok(f"typecheck and cgen -O2 {f.name}")
+
+    def nesting_too_deep(kind):
+        f = too_deep_nesting[kind]
+        code, out, err = r.goose("-O0", "--check", f)
+        if r.check_error(f, "expected-tc-error", code, out, err):
+            r.ok(f"tc-error {f.name}")
+
     deep = [r.task(call_chain_checks), r.task(call_chain_too_deep)]
     deep += [r.task(guard_runs_level, ol) for ol in (r.levels if cc else ())]
+    deep += [r.task(nesting_checks, kind) for kind in nesting_files]
+    deep += [r.task(nesting_too_deep, kind) for kind in too_deep_nesting]
 
     # The fixtures' parse, roundtrip and typecheck runs, in batches by their
     # flags, start before the rest of each fixture, which waits for them.
@@ -2837,7 +2887,7 @@ def main():
     for f in recovery:
         r.show_later(recovery_error, f)
 
-    r.section("long call chains and guard runs")
+    r.section("long call chains, guard runs and deep nesting")
     for future in deep:
         r.show(future)
 
