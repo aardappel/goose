@@ -1474,14 +1474,27 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             Line where;
             size_t hit = 0;
             TypeExpr *via = nullptr;
+            VarDef *incoming = nullptr;
             // What a part a kill emptied held before it is gone, and so are
             // the views a path the holder keeps may have been followed to.
             auto from = LiveEventBase(v);
             size_t since;
             if (!pathslive && KilledFor(v, v, LoadType(t), arrtype, since))
                 from = std::max(from, since);
-            if (!HolderMayPointInto(v, vd, arrtype, from, &where, &hit, &via) || !UsedAfter(v))
+            if (!HolderMayPointInto(v, vd, arrtype, from, &where, &hit, &via, &incoming) ||
+                !UsedAfter(v))
                 return;
+            // The views that say so were passed by the call, not stored by
+            // the body, and only the parameter's class bounds them
+            // (StoreEvent::incoming).
+            if (incoming && !CarriedEvent(hit)) {
+                auto whose = incoming == v
+                                 ? cat(v->name, "'s views are")
+                                 : cat("it may hold ", incoming->name, "'s views, which are");
+                Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
+                             whose,
+                             " not of one array exactly, so they may point into it (§5.1)"));
+            }
             auto stored = !via ? "a reference into it"
                           : via->kind == TY_SLICE
                               ? "a reference to a slice that may point into it"
@@ -2255,14 +2268,14 @@ inline bool TypeCheck::GlobalReach::Covered(VarDef *src, VarDef *root, bool exac
 // to the whole array is followed into it (pathslive).
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
                                           size_t from, Line *where, size_t *hit,
-                                          TypeExpr **via) {
+                                          TypeExpr **via, VarDef **incoming) {
     set<VarDef *> seen;
-    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit, via);
+    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit, via, incoming);
 }
 
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
                                           size_t from, Line *where, set<VarDef *> &seen,
-                                          size_t *hitat, TypeExpr **via) {
+                                          size_t *hitat, TypeExpr **via, VarDef **incoming) {
     if (!seen.insert(holder).second) return false;
     if (holder->type && ClassOf(holder->type) == SC_ROOT) {
         for (auto c : holder->components) {
@@ -2271,7 +2284,8 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
             size_t since;
             if (!pathslive && KilledFor(c, c, LoadType(c->type), arrtype, since))
                 start = std::max(start, since);
-            if (HolderMayPointInto(c, arr, arrtype, start, where, seen, hitat, via)) return true;
+            if (HolderMayPointInto(c, arr, arrtype, start, where, seen, hitat, via, incoming))
+                return true;
         }
     }
     // Whatever a store put there, or a view derived from it later, lies in a
@@ -2285,6 +2299,7 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
         if (!e.src || through) *where = e.at;
         if (hitat) *hitat = i;
         if (via && through) *via = through;
+        if (incoming && e.incoming && !through) *incoming = holder;
         return true;
     };
     for (auto i = from; i < storeevents.size(); i++) {
@@ -2303,21 +2318,23 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
             // Out of the storage of a parameter's class alone: what the
             // activation stored there, from its first event on, the stores
             // its callers made there being theirs to judge (NoteLiveViews).
-            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via);
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via,
+                                     incoming);
         } else if (e.src && !e.src->type) {
             // Read out of a parameter's class: storage of the caller's,
             // whose stores this function cannot see, so the class bounds
             // what was read, as an inexact root would.
-            hit = Depth(arr) <= Depth(e.src) && (!e.pointee || contains(e.pointee));
+            hit = WithinDepth(arr, e.src) && (!e.pointee || contains(e.pointee));
             if (hit) *where = e.at;
         } else if (e.src) {
             // A copy of another container's contents: whatever that one
             // holds, from its own first event on.
-            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via);
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via,
+                                     incoming);
         } else if (e.exact) {
             hit = e.root == arr;
         } else if (e.root) {
-            hit = Depth(arr) <= Depth(e.root) && (!e.pointee || contains(e.pointee));
+            hit = WithinDepth(arr, e.root) && (!e.pointee || contains(e.pointee));
         }
         if (hit) return found(i, nullptr);
     }
@@ -2393,12 +2410,12 @@ inline TypeExpr *TypeCheck::StoredSlotMayPointInto(VarDef *holder, TypeExpr *poi
     if (exact && r->type && !IsRefOrSlice(r->type))
         return HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr) ? via : nullptr;
     if (exact && IsClassRoot(r)) {
-        if (slicevia && Depth(arr) <= Depth(r)) return slicevia;
+        if (slicevia && WithinDepth(arr, r)) return slicevia;
         if (contentsvia && HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr))
             return contentsvia;
         return nullptr;
     }
-    return Depth(arr) <= Depth(r) ? via : nullptr;
+    return WithinDepth(arr, r) ? via : nullptr;
 }
 
 // The pointee types of the plain references and slices a value of type t

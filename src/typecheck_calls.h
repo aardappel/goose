@@ -3095,7 +3095,10 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             // bounded by the class root, as an event of its own.
             Roots held;
             held.Set(cr, ra.heldexact, nullptr, ra.slotread);
+            auto first = storeevents.size();
             RecordStore(vd, held, ra.byteview, nullptr);
+            if (!ra.heldexact)
+                for (auto k = first; k < storeevents.size(); k++) storeevents[k].incoming = true;
         }
         spec->params.push_back(vd);
     }

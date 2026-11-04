@@ -1422,7 +1422,12 @@ A temporary of the calling statement outlives the call, so its class takes
 the body's own outermost depth instead (`ClassDepth`): the body may keep it
 in its locals, but not in anything of the caller's. Classes are numbered by
 these body depths, so a temporary ranks after every variable here too,
-whatever depth it shares with one at the call site.
+whatever depth it shares with one at the call site. What the class stands
+for is still the caller's, though: where an inexact root bounds what may
+point into an array a body shrinks, a parameter's class bounds none of the
+body's own variables, at its outermost depth or deeper (`WithinDepth`). So
+`fn f(p: P)` called as `f(P { s: [1, 2] })` may clear an array it declares
+at the top of its body while `p` is still used.
 
 Only the call sites know whether two *different* classes are different
 arrays. Codegen's stack-top caching (section 6.10) and the growth checks

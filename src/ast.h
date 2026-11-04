@@ -2103,6 +2103,10 @@ struct StoreEvent {
     // rooted at the class still names it as the container it was read out
     // of (RootAlt::from).
     bool classread = false;
+    // The contents a by-value holder parameter was passed, where they are not
+    // one array exactly (RootArg::heldexact): its class only bounds them, and
+    // no store in the body put them there.
+    bool incoming = false;
 };
 
 // A shrink, and a reference, slice or holder still used after it that only

@@ -2568,14 +2568,16 @@ struct TypeCheck {
                      VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false,
                      bool slot = false, bool sliceref = false);
     // Whether a holder may hold a reference into arr: `hit` takes the index
-    // of the event that says so, and `via` the type of the slot a reference
+    // of the event that says so, `via` the type of the slot a reference
     // stored there refers to where it leads into arr only through what that
-    // slot holds.
+    // slot holds, and `incoming` the by-value holder parameter whose passed
+    // contents, not one array exactly, say so (StoreEvent::incoming).
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where, size_t *hit = nullptr, TypeExpr **via = nullptr);
+                            Line *where, size_t *hit = nullptr, TypeExpr **via = nullptr,
+                            VarDef **incoming = nullptr);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
                             Line *where, set<VarDef *> &seen, size_t *hit,
-                            TypeExpr **via = nullptr);
+                            TypeExpr **via = nullptr, VarDef **incoming = nullptr);
     TypeExpr *StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, bool sliceref, VarDef *r,
                                      bool exact, VarDef *arr, TypeExpr *arrtype, Line *where,
                                      set<VarDef *> &seen);
@@ -2691,6 +2693,16 @@ struct TypeCheck {
     // specialization records (FnRecord::liveshrinks).
     bool IsClassRoot(VarDef *v) {
         return v && !v->type && !v->isglobal && !IsTemp(v);
+    }
+    // Whether arr may be storage at r's depth or outside it, which an inexact
+    // root r bounds. A parameter's class stands for the callers' storage,
+    // which none of this activation's own variables is, though a
+    // temporary's class is as deep as the activation's outermost scope
+    // (ClassDepth).
+    bool WithinDepth(VarDef *arr, VarDef *r) {
+        if (IsClassRoot(r) && arr->ownerspec && arr->ownerspec == frames.back().spec)
+            return false;
+        return Depth(arr) <= Depth(r);
     }
     // Whether local v is one the body being checked names in a frame on the
     // compile-time path: its own, or one it is lexically nested in, as a
