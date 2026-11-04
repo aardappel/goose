@@ -209,6 +209,16 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
         return (int)ast.packages.size() - 1;
     };
     map<string, DeclaredPackage> declared;
+    // A package is its directory: every .goose file under its root is its
+    // own, and its native part is built in a directory named by that root.
+    // Two packages cannot share one; the program can share its root with one.
+    auto checkroot = [&](const string &name, const string &root) {
+        for (size_t i = 1; i < ast.packages.size(); i++)
+            if (!ast.packages[i].stdlib && ast.packages[i].root == root)
+                throw CompileError { cat("the packages ", ast.packages[i].name, " and ", name,
+                                         " have the same root, ", root,
+                                         ": each package needs a directory of its own") };
+    };
     // Loads a blessed package (§4.5) once, under its package name among the
     // declared ones: from where the compiler's build put it, or a release
     // beside the compiler, when it is compiled in, else from its source as a
@@ -243,6 +253,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
             src = ParsePackageSource(cat(be.source, "@", be.ref), "");
             root = PackageRoot(src, be.package);
         }
+        checkroot(be.package, root);
         ast.packages.push_back(Package { be.package, root, false });
         auto &p = ast.packages.back();
         if (!src.ispath) p.cachekey = GitCacheKey(src);
@@ -306,6 +317,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                         string root;
                         try {
                             root = PackageRoot(src, imp.path);
+                            checkroot(imp.path, root);
                         } catch (CompileError &e) {
                             ImportError(filename, imp, e.msg);
                         }

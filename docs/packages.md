@@ -233,6 +233,11 @@ and files in the directories that the sidecar excludes:
 exclude = ["tools", "third_party/demo"];
 ```
 
+Since a package is its directory, two packages cannot share a root: a
+program that declares two packages from one directory, or from one
+repository at the same ref, is an error. Each needs a directory or
+repository of its own.
+
 Most values an `extern fn` passes have layouts that C can declare for
 itself, such as a slice as `{ data, len }` (spec §7.10). A builder
 (`T[>..]&`, such as `u8[>..]&`) is the exception: C appends to it through
