@@ -144,9 +144,9 @@ fn swap<T>(a: T&, b: T&)            // swap(x, y)
 
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
-`/arch:AVX` or higher for that), and a loop under TinyCC. The rest are
-Goose; C compilers turn `rotl`, `rotr` and `byte_swap` into one instruction
-each.
+`/arch:AVX` or higher for that), and a loop under TinyCC. `rotl`, `rotr`
+and `byte_swap` are the runtime's as well, and one instruction each under
+GCC, clang and MSVC; the rest are Goose.
 
 `rotl` and `rotr` take a count of any integer type modulo the width, so
 every count is defined and a negative one rotates the other way:
@@ -160,7 +160,7 @@ logarithm, as a search returns -1 where there is no position, so
 `gcd` and `lcm` take any integer type and work on the magnitudes:
 `gcd(-12, 18) == 6` and `lcm(-4, 6) == 12`. Where the result does not fit
 in the type, as `gcd(i64.min, 0)` (2^63) or `lcm` of the `u8`s 16 and 17,
-they abort in every build, unsigned types included; a wrapped value is no
+they fail an `assert`, unsigned types included; a wrapped value is no
 divisor or multiple. `isqrt` is exact at every `u64`, without going
 through a float.
 

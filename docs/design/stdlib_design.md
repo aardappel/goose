@@ -317,7 +317,7 @@ fn byte_swap(x: u32) -> u32     // and u16, u64
 fn is_pow2<T>(x: T) -> bool
 fn ilog2<T>(x: T) -> i64        // -1 for x <= 0
 fn isqrt<T>(x: T) -> T          // aborts for x < 0
-fn gcd<T>(a: T, b: T) -> T      // and lcm; abort where the result does not fit
+fn gcd<T>(a: T, b: T) -> T      // and lcm; assert the result fits
 fn swap<T>(a: T&, b: T&)
 ```
 
@@ -334,16 +334,18 @@ uses `/` for its initial quotient, preserving its overflow checks.
 `abs` and `sign` have explicit float overloads. `popcount`/`clz`/`ctz` use
 the runtime's `extern` intrinsics (§8.4).
 
-The other bit helpers are Goose. Rotations and byte swaps are the shift
-idioms C compilers already turn into one instruction, and the language's
-masked shift counts make the rotate correct for every count with no
-branch. The count is generic so that a `u32` count, as hashes keep them,
+Rotations and byte swaps are runtime functions too, so that speed does not
+rest on the C compiler recognizing a shift idiom: they use MSVC's
+intrinsics and GCC's and clang's byte-swap builtins, and the rotate idiom
+GCC and clang both turn into `rol`/`ror`. The count is generic so that a `u32` count, as hashes keep them,
 picks the `u32` overload exactly; an `i64` one would make every
-non-`i64` count a conversion that ties the two overloads. `ilog2` follows the -1-for-none convention of positions rather
-than aborting. `gcd` and `lcm` reduce their operands to `u64` magnitudes,
-so `MIN` needs no case of its own, and check that the result fits back
-into `T`: a wrapped divisor or multiple is meaningless, so unlike `*` they
-abort on overflow in every build and at unsigned types too.
+non-`i64` count a conversion that ties the two overloads; it is masked to
+the width before it goes to the runtime. The other bit helpers are Goose.
+`ilog2` follows the -1-for-none convention of positions rather than
+aborting. `gcd` and `lcm` reduce their operands to `u64` magnitudes, so
+`MIN` needs no case of its own, and `assert` that the result fits back into
+`T`: a wrapped divisor or multiple is meaningless, so unlike `*` they check
+for overflow at unsigned types too.
 
 ### 4.2 Hashing
 

@@ -71,22 +71,25 @@ extern fn clz(x: u64) -> i64 = "gs_clz";
 extern fn ctz(x: u64) -> i64 = "gs_ctz";
 
 // x's bits rotated by n, an integer of any type taken modulo the width: a
-// negative n turns the other way. Shift counts are masked (spec §6.2), so
-// the shift by the width that n == 0 asks for is a shift by zero. C
-// compilers make each one rotate instruction.
-fn rotl<N>(x: u32, n: N) -> u32 { (x << (n & 31)) | (x >> (32 - (n & 31))) }
-fn rotl<N>(x: u64, n: N) -> u64 { (x << (n & 63)) | (x >> (64 - (n & 63))) }
-fn rotr<N>(x: u32, n: N) -> u32 { (x >> (n & 31)) | (x << (32 - (n & 31))) }
-fn rotr<N>(x: u64, n: N) -> u64 { (x >> (n & 63)) | (x << (64 - (n & 63))) }
+// negative n turns the other way. Masking n first makes its conversion to
+// i64 exact at every count type. These and byte_swap are the runtime's, so
+// that each is one instruction where the C compiler has one.
+extern fn bits_detail::rotl32(x: u32, n: i64) -> u32 = "gs_rotl32";
+extern fn bits_detail::rotl64(x: u64, n: i64) -> u64 = "gs_rotl64";
+extern fn bits_detail::rotr32(x: u32, n: i64) -> u32 = "gs_rotr32";
+extern fn bits_detail::rotr64(x: u64, n: i64) -> u64 = "gs_rotr64";
+fn rotl<N>(x: u32, n: N) -> u32 { bits_detail::rotl32(x, (n & 31) as i64) }
+fn rotl<N>(x: u64, n: N) -> u64 { bits_detail::rotl64(x, (n & 63) as i64) }
+fn rotr<N>(x: u32, n: N) -> u32 { bits_detail::rotr32(x, (n & 31) as i64) }
+fn rotr<N>(x: u64, n: N) -> u64 { bits_detail::rotr64(x, (n & 63) as i64) }
 
-// x with its bytes in the opposite order, which C compilers make one bswap.
-fn byte_swap(x: u16) -> u16 { (x << 8) | (x >> 8) }
-fn byte_swap(x: u32) -> u32 {
-    (x << 24) | ((x & 0xFF00) << 8) | ((x >> 8) & 0xFF00) | (x >> 24)
-}
-fn byte_swap(x: u64) -> u64 {
-    (byte_swap(x as! u32) as u64 << 32) | byte_swap((x >> 32) as! u32)
-}
+// x with its bytes in the opposite order.
+extern fn bits_detail::byte_swap16(x: u16) -> u16 = "gs_byte_swap16";
+extern fn bits_detail::byte_swap32(x: u32) -> u32 = "gs_byte_swap32";
+extern fn bits_detail::byte_swap64(x: u64) -> u64 = "gs_byte_swap64";
+fn byte_swap(x: u16) -> u16 { bits_detail::byte_swap16(x) }
+fn byte_swap(x: u32) -> u32 { bits_detail::byte_swap32(x) }
+fn byte_swap(x: u64) -> u64 { bits_detail::byte_swap64(x) }
 
 // Integers of any type. ilog2 is floor(log2(x)), -1 where there is none
 // (x <= 0); isqrt is floor(sqrt(x)) and aborts on a negative x.
@@ -110,29 +113,25 @@ fn isqrt<T>(x: T) -> T {
 
 // The greatest common divisor and least common multiple, never negative:
 // gcd(0, 0) == 0 and lcm(x, 0) == 0. They work on the magnitudes as u64,
-// so MIN is no special case, and abort where the result does not fit in T
-// (gcd(MIN, 0), an lcm past MAX) in every build, as no wrapped value is
-// either one.
-fn gcd<T>(a: T, b: T) -> T {
-    let g = gcd_u64(gcd_magnitude(a), gcd_magnitude(b));
-    return gcd_fit<T>(g, "gcd: the result does not fit its type");
-}
+// so MIN is no special case, and assert that the result fits in T
+// (gcd(MIN, 0) and an lcm past MAX do not), as no wrapped value is either
+// one.
+fn gcd<T>(a: T, b: T) -> T { gcd_fit<T>(gcd_u64(gcd_magnitude(a), gcd_magnitude(b))) }
 fn lcm<T>(a: T, b: T) -> T {
     let x = gcd_magnitude(a);
     let y = gcd_magnitude(b);
     if x == 0 || y == 0 { return 0; }
     let q = x / gcd_u64(x, y);
-    let message = "lcm: the result does not fit its type";
-    if q > 0xFFFFFFFFFFFFFFFF / y { abort(message); }
-    return gcd_fit<T>(q * y, message);
+    assert(q <= 0xFFFFFFFFFFFFFFFF / y);
+    return gcd_fit<T>(q * y);
 }
 fn gcd_magnitude<T>(x: T) -> u64 {
     if x < 0 { return 0 - (x as! u64); }
     return x as! u64;
 }
-fn gcd_fit<T>(r: u64, message: u8[:]) -> T {
+fn gcd_fit<T>(r: u64) -> T {
     let t = r as! T;
-    if t < 0 || t as! u64 != r { abort(message); }
+    assert(t >= 0 && t as! u64 == r);
     return t;
 }
 // Stein's binary algorithm: shifts and subtractions in place of division.

@@ -1,2 +1,2 @@
-lcm: the result does not fit its type
+assert failed
 stdlib_bits_lcm_overflow.goose:9)

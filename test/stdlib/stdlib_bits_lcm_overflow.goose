@@ -1,4 +1,4 @@
-// runtime-debug: an lcm past its type's maximum aborts in every build, an
+// runtime-debug: an lcm past its type's maximum fails an assert, an
 // unsigned one included, rather than wrap.
 import std;
 fn main() {

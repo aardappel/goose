@@ -1,5 +1,5 @@
-// runtime-debug: gcd(i64.min, 0) is 2^63, which no i64 holds; it aborts in
-// every build rather than wrap to a negative divisor.
+// runtime-debug: gcd(i64.min, 0) is 2^63, which no i64 holds; it fails an
+// assert rather than wrap to a negative divisor.
 import std;
 fn main() {
     let mn = -9223372036854775807 - 1;
