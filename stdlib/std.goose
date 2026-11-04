@@ -16,8 +16,9 @@ fn clamp<T>(x: T, lo: T, hi: T) -> T {
 }
 
 fn abs<T>(x: T) -> T { if x < 0 { return -x; } return x; }
-fn abs(x: f32) -> f32 { if x < 0.0 { return -x; } return x; }
-fn abs(x: f64) -> f64 { if x < 0.0 { return -x; } return x; }
+// libm's, which clear the sign bit: abs(-0.0) is 0.0, as IEEE 754 has it.
+extern fn abs(x: f32) -> f32 = "fabsf";
+extern fn abs(x: f64) -> f64 = "fabs";
 
 // Truncating remainder pairs with `/`. The product stays between a and
 // zero; divisor -1 has remainder zero even when its quotient cannot fit.

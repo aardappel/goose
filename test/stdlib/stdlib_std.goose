@@ -6,6 +6,9 @@ import std;
 fn scalars() {
     print(min(3, 7), " ", max(3, 7), " ", clamp(15, 0, 10), " ", clamp(-2, 0, 10));   // 3 7 10 0
     print(abs(-4), " ", abs(-2.5), " ", abs(1.5));                                     // 4 2.5 1.5
+    let nz: f64 = -0.0;
+    let nzf: f32 = -0.0;
+    print(abs(nz), " ", abs(nzf), " ", 1.0 / abs(nz), " ", 1.0 / abs(nzf));              // 0.0 0.0 inf inf
     print(sign(-9), " ", sign(0), " ", sign(4), " ", sign(-0.5), " ", sign(2.0));        // -1 0 1 -1.0 1.0
     print(lerp(0.0, 10.0, 0.25));                                                      // 2.5
     print(next_pow2(0), " ", next_pow2(1), " ", next_pow2(5), " ", next_pow2(64));     // 1 1 8 64
