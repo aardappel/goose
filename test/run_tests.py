@@ -2696,6 +2696,19 @@ def main():
     if cc:
         r.show_task(huge_pages)
 
+    def libm_calls():
+        from libm_calls import check_libm_calls
+        try:
+            skipped = check_libm_calls(exe, [cc, clang], gendir)
+            if skipped:
+                r.say(f"skip libm calls ({skipped})")
+            else:
+                r.ok("libm calls: math's functions known to gcc and clang as libm's")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("libm calls", str(e))
+    if cc or clang:
+        r.show_task(libm_calls)
+
     def commit_limit():
         from commit_limit import check_commit_limit
         try:

@@ -3979,16 +3979,32 @@ static float gs_mul_addf(float x, float y, float z) {
 R"GSRT(/* math's other libm functions (stdlib/math.goose). C has them set errno on a
    domain or range error, so a C compiler takes each call for a write to
    memory: a loop around one loads again after it whatever it had hoisted
-   out or kept in registers. Goose has no errno, so where the compiler has
-   asm labels and the const attribute each is libm's own function declared
-   under a name of its own as depending on its arguments alone; elsewhere
-   the name forwards to libm. */
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+   out or kept in registers. Goose has no errno, so gcc and clang are told
+   that each depends on its arguments alone. Under clang each is libm's own
+   function declared under a name of its own with an asm label, which clang
+   still knows as that libm function. gcc knows a function only by the name
+   it is declared under, so there each name forwards to libm's, redeclared
+   const: gcc then still combines sin and cos of one value into sincos,
+   turns pow(x, 2.0) into x * x and folds constant arguments. Elsewhere the
+   name forwards to libm. */
+#if defined(__clang__) && !defined(__TINYC__)
 #define GS_LIBM_SYM2(p, f) #p #f
 #define GS_LIBM_SYM(p, f) GS_LIBM_SYM2(p, f)
 #define GS_LIBM
 #define GS_LIBM1(f) __asm__(GS_LIBM_SYM(__USER_LABEL_PREFIX__, f)) __attribute__((const));
 #define GS_LIBM2(f) GS_LIBM1(f)
+#elif defined(__GNUC__) && !defined(__TINYC__)
+__attribute__((const)) double sin(double), cos(double), tan(double), asin(double), acos(double),
+    atan(double), atan2(double, double), exp(double), log(double), log2(double), log10(double),
+    pow(double, double), hypot(double, double), cbrt(double), exp2(double), expm1(double),
+    log1p(double), sinh(double), cosh(double), tanh(double);
+__attribute__((const)) float sinf(float), cosf(float), tanf(float), asinf(float), acosf(float),
+    atanf(float), atan2f(float, float), expf(float), logf(float), log2f(float), log10f(float),
+    powf(float, float), hypotf(float, float), cbrtf(float), exp2f(float), expm1f(float),
+    log1pf(float), sinhf(float), coshf(float), tanhf(float);
+#define GS_LIBM static inline
+#define GS_LIBM1(f) { return f(x); }
+#define GS_LIBM2(f) { return f(x, y); }
 #else
 #define GS_LIBM static
 #define GS_LIBM1(f) { return f(x); }

@@ -870,7 +870,9 @@ allows. The other functions for which C sets errno (`sin` to `tanh`) are
 libm's own functions under runtime names (`gs_exp`, `gs_expf`, ...), which
 gcc and clang are told depend only on their arguments. Since Goose has no
 errno, a call does not make the C compiler reload values that a loop
-around the call holds in registers. An integer argument converts to both
+around the call holds in registers. Both compilers still know them as
+libm's, so they fold constant arguments and combine `sin` and `cos` of one
+value into one `sincos` call where the C library has it. An integer argument converts to both
 widths equally well, so the call has to name one (`sqrt(n as f64)`);
 `sqrt(n * 0.5)` calls the `f64` version, as `sqrt(0.5)` does.
 
