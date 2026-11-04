@@ -104,7 +104,9 @@ run starts the program back on the main thread, because macOS only lets a
 window be created on the main thread. On Windows and macOS the link also
 reserves 64 MB for the main thread's stack (`CMakeLists.txt`). On Linux the
 main thread has the stack limit the process started with (`ulimit -s`),
-which nothing in the executable sets.
+which nothing in the executable sets. `goose lsp` and `goose format` run on
+the compile thread too: they parse, and walk what they parse, as deep as a
+compile does.
 
 **Verbs** (`Main` in `main.cpp`):
 
