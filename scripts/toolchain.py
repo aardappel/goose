@@ -285,7 +285,7 @@ class CC:
         if self.style == "msvc":
             # clang-cl counts libraries and objects as inputs, and refuses an
             # object file name for more than one; a directory it takes.
-            obj = f"{out.parent}{os.sep}" if libs or runtime else out.with_suffix(".obj")
+            obj = f"{out.parent}{os.sep}" if len(sources) > 1 or libs or runtime else out.with_suffix(".obj")
             argv += [f"/Fe:{out}", f"/Fo:{obj}"]
         else:
             argv += ["-o", str(out)]
