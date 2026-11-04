@@ -197,15 +197,7 @@ inline const Field *FieldOfDot(const Dot *d) {
 // starting there, in the first specialization that resolved it.
 inline const Call *ResolvedCall(const Located &loc, const Occurrence &occ) {
     auto span = loc.fi->CallAt(occ.start);
-    if (!span) return nullptr;
-    if (span->call->callee != occ.node) {
-        if (span->call->callee != occ.node->Origin()) return nullptr;
-        auto clones = loc.an->clones.find(span->call);
-        if (clones != loc.an->clones.end())
-            for (auto node : clones->second)
-                if (auto call = Is<Call>(node); call && call->callee == occ.node) return call;
-        return nullptr;
-    }
+    if (!span || span->call->callee != occ.node) return nullptr;
     auto c = loc.an->Find(span->call, [](const Node *n) {
         auto x = Is<Call>(n);
         return x && (x->spec || x->builtin >= 0 || !x->dispatch.empty() || x->fvbody);
@@ -274,7 +266,7 @@ inline const Field *FieldOfInit(const Analysis &an, const Occurrence &occ) {
 // one.
 inline const SVariant *PatternVariantOf(const Analysis &an, const Occurrence &occ) {
     if (occ.kind != Occurrence::IDENT) return nullptr;
-    auto it = an.patternvariants.find(occ.node->Origin());
+    auto it = an.patternvariants.find(occ.node);
     return it == an.patternvariants.end() ? nullptr : it->second;
 }
 
@@ -1263,105 +1255,6 @@ inline string_view WordAt(const TextIndex &t, size_t offset) {
     return text.substr(s, e - s);
 }
 
-using RenameEdits = map<string, pair<const FileIndex *, set<pair<size_t, size_t>>>>;
-
-// Recheck all names: capture can affect names outside the edit set.
-inline bool RenamePreservesBindings(Workspace &ws, const Located &declaration,
-                                     const RenameEdits &edits, string_view name) {
-    auto &declFile = *declaration.fi;
-    const NodeSpan *scope = nullptr;
-    if (auto decl = declFile.At(declaration.offset); decl && decl->kind == Occurrence::LOCAL)
-        for (auto span : declFile.SpansAt(declaration.offset))
-            if (Is<Block>(span->node)) scope = span;
-    auto valid = [](const Analysis *an) {
-        return an && an->parsed && an->built && an->ast->errors.empty() &&
-            none_of(an->diags.begin(), an->diags.end(), [](auto &d) { return !d.warning; });
-    };
-    map<string, string> texts;
-    auto shifted = [&](const string &uri, size_t offset) {
-        auto result = offset;
-        if (auto it = edits.find(uri); it != edits.end())
-            for (auto [start, end] : it->second.second) {
-                if (start >= offset) break;
-                result = result - min(offset - start, end - start) + name.size();
-            }
-        return result;
-    };
-    for (auto &[uri, edit] : edits) {
-        auto text = string(edit.first->text.text);
-        for (auto it = edit.second.rbegin(); it != edit.second.rend(); ++it)
-            text.replace(it->first, it->second - it->first, name);
-        texts[PathKey(PathOfUri(uri))] = std::move(text);
-    }
-    for (auto &root : ws.roots) {
-        if (!valid(root->analysis.get())) return false;
-        auto &before = *root->analysis;
-        for (auto &file : before.files) {
-            auto path = PathOfUri(file.uri);
-            auto current = ws.TextOf(path);
-            string disk;
-            if ((current && *current != file.text.text) ||
-                (!current && (!LoadFile(path, disk) || disk != file.text.text))) return false;
-        }
-        bool affected = false;
-        for (auto &[key, text] : texts) if (before.FileOf(key) >= 0) affected = true;
-        if (!affected) continue;
-        SourceProvider sources = [&](const string &path) -> const string * {
-            auto it = texts.find(PathKey(path));
-            return it == texts.end() ? ws.TextOf(path) : &it->second;
-        };
-        auto candidate = ws.AnalyzeSources(root->path, sources);
-        if (!valid(candidate.get()) || before.files.size() != candidate->files.size()) return false;
-        auto &after = *candidate;
-        for (auto &file : before.files) {
-            auto idx = after.FileOf(PathKey(PathOfUri(file.uri)));
-            if (idx < 0) return false;
-            auto &updated = after.files[(size_t)idx];
-            auto expected = texts.find(PathKey(PathOfUri(file.uri)));
-            if (expected == texts.end() && file.text.text != updated.text.text) return false;
-            if (file.occs.size() != updated.occs.size()) return false;
-            Located oldloc { &before, &file, 0 }, newloc { &after, &updated, 0 };
-            auto sameBinding = [&](const Place &oldplace, const Place &newplace) {
-                if (oldplace.Known() != newplace.Known()) return false;
-                if (!oldplace.Known()) return true;
-                auto &decl = before.files[(size_t)oldplace.fileidx];
-                auto &newdecl = after.files[(size_t)newplace.fileidx];
-                return decl.uri == newdecl.uri && shifted(decl.uri, oldplace.start) == newplace.start;
-            };
-            for (auto &occ : file.occs) {
-                auto next = updated.At(shifted(file.uri, occ.start));
-                if (!next || next->kind != occ.kind) return false;
-                auto olddef = DefinitionOf(oldloc, occ), newdef = DefinitionOf(newloc, *next);
-                if (occ.kind == Occurrence::IDENT || occ.kind == Occurrence::DOT) {
-                    auto oldclones = before.clones.find(occ.node);
-                    auto newclones = after.clones.find(next->node);
-                    auto oldcount = oldclones == before.clones.end() ? 0 : oldclones->second.size();
-                    auto newcount = newclones == after.clones.end() ? 0 : newclones->second.size();
-                    if (oldcount != newcount) return false;
-                    for (size_t i = 0; i < oldcount; ++i) {
-                        auto oldnode = oldclones->second[i], newnode = newclones->second[i];
-                        bool oldname = occ.kind == Occurrence::IDENT ? Is<Ident>(oldnode) != nullptr : Is<Dot>(oldnode) != nullptr;
-                        bool newname = occ.kind == Occurrence::IDENT ? Is<Ident>(newnode) != nullptr : Is<Dot>(newnode) != nullptr;
-                        if (oldname != newname) return false;
-                        if (!oldname) continue;
-                        auto oldcopy = occ, newcopy = *next;
-                        oldcopy.node = oldnode; newcopy.node = newnode;
-                        if (!sameBinding(DefinitionOf(oldloc, oldcopy), DefinitionOf(newloc, newcopy))) return false;
-                    }
-                }
-                if (!sameBinding(olddef, newdef)) return false;
-                if (!olddef.Known()) {
-                    bool visible = !scope || (file.uri == declFile.uri &&
-                        scope->start <= occ.start && occ.start < scope->end);
-                    if (LeafOf(occ.name) != LeafOf(next->name) ||
-                        (LeafOf(occ.name) == name && visible)) return false;
-                }
-            }
-        }
-    }
-    return true;
-}
-
 // The edits renaming what is at the position, as a WorkspaceEdit: the leaf
 // of each spelling (`ns::name` keeps its qualifier) and the declaration's
 // name. False with the reason where the name cannot be renamed: a keyword,
@@ -1398,15 +1291,27 @@ inline bool Rename(Workspace &ws, const Json &params, JsonOut &j, string &error)
         return false;
     }
     // By URI: the file as an analysis reaching it has it, and the places.
-    RenameEdits edits;
+    map<string, pair<const FileIndex *, set<pair<size_t, size_t>>>> edits;
     ReferencesTo(ws, loc, target, [&](const Analysis &, const FileIndex &f, const Occurrence &o) {
         auto &[file, places] = edits[f.uri];
         file = &f;
         places.insert({ o.start + (o.name.size() - LeafOf(o.name).size()), o.start + o.len });
     });
-    if (!RenamePreservesBindings(ws, {loc.an, &tf, target.start}, edits, newname)) {
-        error = "rename would change bindings or cannot be proven safe";
-        return false;
+    auto declaration = tf.At(target.start);
+    auto local = declaration && (declaration->kind == Occurrence::LOCAL ||
+        declaration->kind == Occurrence::PARAM || declaration->kind == Occurrence::BINDER);
+    if (newname != leaf) for (auto &root : ws.roots) {
+        if (!root->analysis) continue;
+        for (auto &f : root->analysis->files) {
+            if (local && f.uri != tf.uri) continue;
+            for (auto &o : f.occs)
+                if (LeafOf(o.name) == newname && (edits.count(f.uri) || o.IsDeclaration())) {
+                    error = cat("'", newname, "' is already used at ", f.uri, ":",
+                                f.text.LineOf(o.start) + 1,
+                                "; renaming could change what it refers to");
+                    return false;
+                }
+        }
     }
     j.BeginObject();
     j.Key("changes");

@@ -451,9 +451,6 @@ def check_lsp_protocol(exe, base):
     # The names as written where the check rewrites a global's initializer
     # in place, the bindings of the arms a const for generates, and the
     # commas in literals and comments, which are no argument's.
-    # Checked rename requires active programs without errors.
-    for path in (recovery, broken):
-        client.send("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}}, request=False)
     sindex = fixtures / "source_index.goose"
     stext = sindex.read_text(encoding="utf-8")
     queries(sindex, stext, open_fixture(sindex, stext))
@@ -622,14 +619,10 @@ def check_lsp_protocol(exe, base):
                 **sdoc, "position": position("5:4"), "context": {"includeDeclaration": True}})),
              ["two_a.goose:5:19", "two_b.goose:6:11", "two_shared.goose:5:4"]),
             ("incoming 5:4", callers("5:4"), ["two_a.goose:main@5", "two_b.goose:main@6"]),
+            ("rename 8:4", renamed("8:4"), ["two_shared.goose:13:44", "two_shared.goose:8:4"]),
             ("incoming 8:4", callers("8:4"), ["two_shared.goose:apply@13"])):
         if got != want:
             fail(f"two entry files: {what} are not {want}", got)
-    ambiguous = two.request("textDocument/rename", {
-        **sdoc, "position": position("8:4"), "newName": "renamed"}, raw=True)
-    if ambiguous.get("error", {}).get("code") != -32803:
-        fail("rename of an ambiguous exemplar overload was not refused", ambiguous)
-    # Reuse this client for capture, scope, overlay and stale-source checks.
     safety = base / "rename_safety.goose"
     source = ("import std;\nfn main() {\n"
               "    /* 🪿 */ let first = 1; let second = 2;\n"
@@ -647,11 +640,12 @@ def check_lsp_protocol(exe, base):
     before = body[:body.index("first")]
     params = {"textDocument": {"uri": uri}, "position": {
         "line": before.count("\n"), "character": len(before.rsplit("\n", 1)[-1].encode("utf-16-le")) // 2}}
-    for name in ("second", "capture_name"):
+    for name in ("second", "capture_name", "q"):
         result = two.request("textDocument/rename", {**params, "newName": name}, raw=True)
-        if result.get("error", {}).get("code") != -32803:
-            fail(f"capturing rename to {name} was not refused", result)
-    result = two.request("textDocument/rename", {**params, "newName": "q"})
+        if (result.get("error", {}).get("code") != -32803 or
+                "already used at" not in result.get("error", {}).get("message", "")):
+            fail(f"colliding rename to {name} was not refused with its location", result)
+    result = two.request("textDocument/rename", {**params, "newName": "renamed_value"})
     edits = result.get("changes", {}).get(uri, [])
     if len(edits) != 2:
         fail("safe Unicode-position rename has wrong edits", result)
@@ -661,12 +655,6 @@ def check_lsp_protocol(exe, base):
         code, out, err = tc.run_capture([exe, "run", str(safety), "--offline"])
         if code or out != expected:
             fail("rename runtime output", {"exit": code, "out": out, "err": err, "expected": expected})
-    two.send("textDocument/didClose", {"textDocument": {"uri": uri}}, request=False)
-    two.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
-    safety.write_text(renamed_body + "// external change\n", encoding="utf-8")
-    result = two.request("textDocument/rename", {**params, "newName": "checked_value"}, raw=True)
-    if result.get("error", {}).get("code") != -32803:
-        fail("rename used stale disk contents", result)
     two.request("shutdown", None)
     two.send("exit", request=False)
     code = two.p.wait(timeout=30)
