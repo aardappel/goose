@@ -52,7 +52,7 @@ struct Server {
         j.BeginObject();
         j.Key("capabilities");
         j.BeginObject();
-        j.Member("positionEncoding", "utf-16");
+        j.Member("positionEncoding", utf8_positions ? "utf-8" : "utf-16");
         j.Member("textDocumentSync", (int64_t)1);   // Full, with incremental edits spliced where a client sends them.
         j.Member("hoverProvider", true);
         j.Member("definitionProvider", true);
@@ -146,6 +146,14 @@ struct Server {
                 for (auto &c : commands->arr)
                     if (c.kind == Json::STRING) ws.clientcommands.insert(c.str);
             auto caps = p.Get("capabilities");
+            // UTF-8 columns where the client offers them, since they are
+            // the compiler's own; else UTF-16, which every client takes.
+            auto gcaps = caps ? caps->Get("general") : nullptr;
+            auto encodings = gcaps ? gcaps->Get("positionEncodings") : nullptr;
+            utf8_positions = false;
+            if (encodings && encodings->kind == Json::ARRAY)
+                for (auto &e : encodings->arr)
+                    if (e.kind == Json::STRING && e.str == "utf-8") utf8_positions = true;
             auto wcaps = caps ? caps->Get("workspace") : nullptr;
             for (auto feature : { "codeLens", "semanticTokens", "inlayHint" }) {
                 auto fcaps = wcaps ? wcaps->Get(feature) : nullptr;

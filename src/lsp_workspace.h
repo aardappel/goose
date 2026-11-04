@@ -408,12 +408,12 @@ struct Workspace {
         j.Key("start");
         j.BeginObject();
         j.Member("line", (int64_t)line);
-        j.Member("character", (int64_t)Utf16Col(ltext, sc));
+        j.Member("character", (int64_t)ProtocolCol(ltext, sc));
         j.EndObject();
         j.Key("end");
         j.BeginObject();
         j.Member("line", (int64_t)eline);
-        j.Member("character", (int64_t)Utf16Col(t.LineText(eline), ec));
+        j.Member("character", (int64_t)ProtocolCol(t.LineText(eline), ec));
         j.EndObject();
         j.EndObject();
     }
