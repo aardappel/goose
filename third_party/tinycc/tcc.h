@@ -459,6 +459,9 @@ typedef struct CString {
 /* type definition */
 typedef struct CType {
     int t;
+    /* The typedef name the type was written with, a token (0 for none),
+       for goose's import c (tcc_cdecl.c): in what was padding. */
+    int tdef;
     struct Sym *ref;
 } CType;
 

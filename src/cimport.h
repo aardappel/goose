@@ -52,6 +52,7 @@ struct Ty {
     long long count = -1;        // An array's length.
     vector<Param> params;        // A function's.
     bool variadic = false, oldstyle = false;
+    string tdefname;             // A scalar's or pointer's typedef, as written (`sqlite3_int64`).
 };
 
 struct Field {
@@ -156,6 +157,7 @@ struct Reader {
         ty->ischar = gcd_type_char(t);
         ty->isenum = gcd_type_enum(t);
         ty->bitfield = gcd_type_bitfield(t);
+        if (auto tn = gcd_type_typedef(t)) ty->tdefname = tn;
         switch (ty->kind) {
             case GCD_PTR:
             case GCD_ARRAY:
@@ -383,7 +385,26 @@ struct Writer {
         return tag.alias.empty() ? tag.name : tag.alias;
     }
 
-    string Scalar(const Ty &t) {
+    // The scalar typedefs used, with what each names (`type X = i64;`).
+    map<string, string> aliases;
+
+    // A scalar's Goose type, by its typedef's name where it was written with
+    // one (an alias, `type sqlite3_int64 = i64;`) unless `base`.
+    string Scalar(const Ty &t, bool base = false) {
+        auto s = BaseScalar(t);
+        if (s.empty() || base || t.tdefname.empty() || !Visible(t.tdefname) || t.isenum) return s;
+        auto it = aliases.find(t.tdefname);
+        if (it != aliases.end() && it->second != s) return s;
+        aliases[t.tdefname] = s;
+        return t.tdefname;
+    }
+
+    string Unalias(const string &s) {
+        auto it = aliases.find(s);
+        return it == aliases.end() ? s : it->second;
+    }
+
+    string BaseScalar(const Ty &t) {
         switch (t.kind) {
             case GCD_BOOL: return "bool";
             case GCD_FLOAT: return "f32";
@@ -424,6 +445,19 @@ struct Writer {
     string Handle(int tag) {
         handles.insert(tag);
         return HandleName(tag);
+    }
+
+    // The handle a pointer `p` to an opaque struct is, by the typedef it was
+    // written with where that is another name for it (`HPDF_Page`, an alias
+    // of `HPDF_Dict`).
+    string HandleFor(const Ty &p) {
+        auto h = Handle(p.target->tag);
+        auto &n = p.tdefname;
+        if (n.empty() || n == h || !Visible(n)) return h;
+        auto it = aliases.find(n);
+        if (it != aliases.end() && it->second != h) return h;
+        aliases[n] = h;
+        return n;
     }
 
     // The Goose struct for a complete C struct: 1 with its fields, 2 as bytes
@@ -485,7 +519,7 @@ struct Writer {
         switch (t.kind) {
             case GCD_PTR:
                 usedptr = true;
-                if (Opaque(*t.target)) return Handle(t.target->tag);
+                if (Opaque(*t.target)) return HandleFor(t);
                 return "u64";
             case GCD_ARRAY: {
                 if (t.count < 0) return "";
@@ -512,7 +546,7 @@ struct Writer {
                 if (p.kind == GCD_INT && p.ischar && !p.uns && p.cnst) return "cstr";
                 auto ps = Scalar(p);
                 if (!ps.empty()) return cat(cnst, ps, "?");
-                if (Opaque(p)) return Handle(p.tag);
+                if (Opaque(p)) return HandleFor(t);
                 if (p.kind == GCD_STRUCT) {
                     auto st = Struct(p.tag);
                     if (st) return cat(cnst, TagName(p.tag), "?");
@@ -552,7 +586,7 @@ struct Writer {
     string CallbackType(const Ty &f) {
         if (f.variadic || (f.oldstyle && f.params.empty())) return "";
         auto one = [&](const Ty &t) -> string {
-            auto s = Scalar(t);
+            auto s = Scalar(t, true);   // A signature in a parameter's type is not resolved.
             if (!s.empty()) return s;
             if (t.kind == GCD_PTR) { usedptr = true; return "u64"; }
             return "";
@@ -577,7 +611,7 @@ struct Writer {
         if (t.kind == GCD_VOID) return "-";
         if (t.kind == GCD_PTR) {
             usedptr = true;
-            if (Opaque(*t.target)) return Handle(t.target->tag);
+            if (Opaque(*t.target)) return HandleFor(t);
             return "u64";
         }
         return ParamType(t, why);
@@ -640,7 +674,8 @@ struct Writer {
 
     // A constant macro argument as Goose, at a parameter of type pt; "" if
     // it has no Goose spelling there.
-    string ArgLiteral(const Macro &m, const string &pt) {
+    string ArgLiteral(const Macro &m, const string &written) {
+        auto pt = Unalias(written);
         auto isint = pt.size() >= 2 && (pt[0] == 'i' || pt[0] == 'u') && isdigit((unsigned char)pt[1]);
         auto isfloat = pt == "f32" || pt == "f64";
         auto pointer = pt == "cstr" || pt == "cptr" || pt == "const cptr" || pt.back() == '?' ||
@@ -850,6 +885,8 @@ inline CImported CImport(const string &header, const string &dir, const vector<s
     auto consts = w.Constants();
     auto wrappers = w.Wrappers();
     string types;
+    for (auto &[name, base] : w.aliases)
+        if (!w.globals.count(name)) Append(types, "type ", name, " = ", base, ";\n");
     for (auto t : w.handles) {
         auto name = w.HandleName(t);
         if (w.globals.count(name)) continue;

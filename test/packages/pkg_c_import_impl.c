@@ -107,6 +107,11 @@ int ci_box_take(ci_box b) {
     return v;
 }
 
+ci_big ci_big_twice(ci_big x) {
+    calls++;
+    return 2 * x;
+}
+
 int ci_sum_bytes(const void *p, size_t n) {
     const unsigned char *b = p;
     int s = 0;

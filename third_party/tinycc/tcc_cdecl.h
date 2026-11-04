@@ -53,6 +53,10 @@ int gcd_parse(const char *libpath, const char *const *sysinc, int nsys,
               const char *const *inc, int ninc, const char *const *defines, int ndef,
               const char *source, int names_only, gcd_cb *cb);
 
+/* The typedef name a scalar or pointer type was written with
+   (`sqlite3_int64`, `HPDF_Page`), or NULL. */
+const char *gcd_type_typedef(const void *type);
+
 /* A function-like macro (GCD_MACRO_FUNCTION's sym), inside a callback: its
    number of parameters (-1 if variadic), the i-th one's name and its body's
    tokens separated by spaces, written into buf; 0 where buf is too small. */

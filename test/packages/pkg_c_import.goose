@@ -28,7 +28,8 @@ fn main() {
     print(ci_counter_open("altro", d), " ", d.p != 0, " ", ffi::cstr(ci_counter_name(d)));
     ci_counter_free(d);
     let box: ci_box = ci_box_new(17);
-    print(ci_box_take(box));
+    let big: ci_big = ci_big_twice(1 << 40);
+    print(ci_box_take(box), " ", big);
 
     // C strings: any slice, copied with its NUL, short or long; or null.
     let parola: u8[>..] = "anatra";

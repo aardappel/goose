@@ -748,6 +748,7 @@ ST_FUNC Sym *sym_push(int v, CType *type, int r, int c)
         ps = &global_stack;
     s = sym_push2(ps, v, type->t, c);
     s->type.ref = type->ref;
+    s->type.tdef = type->tdef;
     s->r = r;
     /* don't record fields or anonymous symbols */
     if ((v & ~SYM_STRUCT) < SYM_FIRST_ANOM) {
@@ -1161,7 +1162,7 @@ ST_FUNC Sym *external_global_sym(int v, CType *type)
    This avoids type conflicts if the symbol is used from C too */
 ST_FUNC Sym *external_helper_sym(int v)
 {
-    CType ct = { VT_ASM_FUNC, NULL };
+    CType ct = { VT_ASM_FUNC, 0, NULL };
     return external_global_sym(v, &ct);
 }
 
@@ -3579,6 +3580,7 @@ ST_FUNC void mk_pointer(CType *type)
     s = sym_push(SYM_FIELD, type, 0, -1);
     type->t = VT_PTR | (type->t & VT_STORAGE);
     type->ref = s;
+    type->tdef = 0;
 }
 
 /* return true if type1 and type2 are exactly the same (including
@@ -4739,6 +4741,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
     t = VT_INT;
     bt = st = -1;
     type->ref = NULL;
+    type->tdef = 0;
 
     while(1) {
         switch(tok) {
@@ -4968,6 +4971,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             u = t & ~(VT_CONSTANT | VT_VOLATILE), t ^= u;
             type->t = (s->type.t & ~VT_TYPEDEF) | u;
             type->ref = s->type.ref;
+            type->tdef = n;
             if (t)
                 parse_btype_qualify(type, t);
             t = type->t;
@@ -5130,6 +5134,7 @@ static int post_type(CType *type, AttributeDef *ad, int storage, int td)
         s->next = first;
         type->t = VT_FUNC;
         type->ref = s;
+        type->tdef = 0;
         /* unlink parameter symbols from the token table, keep on stack */
         sym_pop(ps, sr, 1);
         --local_scope;
@@ -5232,6 +5237,7 @@ check:
         s = sym_push(SYM_FIELD, type, 0, n);
         type->t = (t1 ? VT_VLA : VT_ARRAY) | VT_PTR;
         type->ref = s;
+        type->tdef = 0;
 
         if (vla_array_str) {
             /* for function args, the top dimension is converted to pointer */

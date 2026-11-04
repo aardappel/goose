@@ -123,6 +123,30 @@ const void *gcd_type_tag(const void *type)
 }
 
 const char *gcd_tag_name(const void *tag) { return gcd_sym_name(tag); }
+
+/* The typedef a scalar or pointer type was written with (`sqlite3_int64`,
+   `HPDF_Page`), or NULL: only one naming that same type, so that a stale
+   tdef says nothing. A pointer typedef's uses share its pointee. */
+const char *gcd_type_typedef(const void *type)
+{
+    const CType *t = type;
+    const int mask = VT_BTYPE | VT_UNSIGNED | VT_LONG | VT_DEFSIGN;
+    TokenSym *ts;
+    Sym *s;
+    int bt = t->t & VT_BTYPE;
+    if (t->tdef < TOK_IDENT || t->tdef >= tok_ident)
+        return NULL;
+    if (bt == VT_FUNC || bt == VT_STRUCT || bt == VT_VOID || (t->t & VT_ARRAY))
+        return NULL;
+    ts = table_ident[t->tdef - TOK_IDENT];
+    if (!ts || !(s = ts->sym_identifier) || !(s->type.t & VT_TYPEDEF))
+        return NULL;
+    if (bt == VT_PTR && s->type.ref != t->ref)
+        return NULL;
+    if ((s->type.t & mask) != (t->t & mask) || (s->type.t & VT_ARRAY))
+        return NULL;
+    return ts->str;
+}
 int gcd_tag_complete(const void *tag) { return ((const Sym *)tag)->c >= 0; }
 
 /* --- macros ----------------------------------------------------------- */

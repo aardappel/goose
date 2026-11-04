@@ -34,6 +34,8 @@ ci_box ci_box_new(int v);
 int ci_box_take(ci_box b);
 
 size_t ci_strlen(const char *s);               /* NULL: 0 */
+typedef long long ci_big;                      /* a scalar typedef: a Goose alias */
+ci_big ci_big_twice(ci_big x);
 long ci_long_twice(long x);
 unsigned char ci_flags(unsigned char f);
 _Bool ci_is_even(int n);
