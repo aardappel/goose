@@ -413,7 +413,9 @@ node's end. The related lines show the instantiation chain
 (`TypeCheck::InstantiationChain`), with each entry located at the call it names.
 `RenderDiagnostic` produces the terminal output: `file:line: error: message`,
 the source line for an error, and the related lines. Lexer errors also get a
-caret under their column.
+caret under their column. Redundant-cast warnings echo their source line
+with a caret too, so that two casts on one line can be distinguished when
+only one may be removed.
 
 A `CompileError` carries both the text and the data (several diagnostics
 for a `checkfree` function's kept checks, `BCE::CheckfreeError`), and ends

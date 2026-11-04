@@ -4,10 +4,10 @@ severity, message, place and related lines, and the text the text mode would
 have printed; the progress lines go to stderr. Checks the two modes agree, and
 the places: a lexer error's column is its caret's, the errors after a raw
 string the lexer rejected are at their own lines, a typecheck error ranges
-over the node it is at with its instantiation chain at the calls, a warning
-has a range too, an import error covers the whole import, a checkfree
-function's kept checks are several errors at once, and an error with no
-place in the program is reported as its text alone."""
+over the node it is at with its instantiation chain at the calls, a redundant
+cast's range agrees with its terminal caret, an import error covers the whole
+import, a checkfree function's kept checks are several errors at once, and an
+error with no place in the program is reported as its text alone."""
 import json
 import re
 import tempfile
@@ -150,6 +150,38 @@ def check_diagnostics_json(exe, base):
                 diags[0]["line"] == 3 and diags[0]["col"] == lines[2].index("x as i64") + 1 and
                 diags[0]["endCol"] == lines[2].index("x as i64") + 1 + len("x as i64"),
                 "a warning over its cast", err + "\n" + json.dumps(diags))
+
+        # Only the later of two casts anchoring f32 inference is redundant.
+        # The terminal must point at it, too: a line number alone cannot
+        # distinguish them. Tabs stay tabs so the caret lines up visually.
+        casts = ("import std;\n"
+                 "fn consume(x: f32) {}\n"
+                 "fn main() {\n"
+                 "\tlet width: i32 = 2200;\n"
+                 "\tlet height: i32 = 1520;\n"
+                 "\tlet scale = max(0.25, min(width as f32 / 1100.0, height as f32 / 760.0));\n"
+                 "\tconsume(scale);\n"
+                 "}\n")
+        lines = casts.splitlines()
+        diags, err = both("casts.goose", casts)
+        require(len(diags) == 1 and diags[0]["severity"] == "warning" and
+                diags[0]["line"] == 6 and
+                diags[0]["col"] == lines[5].index("height as f32") + 1,
+                "only the later cast warns", err + "\n" + json.dumps(diags))
+        prefix = lines[5][:diags[0]["col"] - 1]
+        caret = "".join("\t" if ch == "\t" else " " for ch in prefix) + "^"
+        require(err.splitlines()[1:] == [lines[5], caret],
+                "a source line and caret identify the redundant cast", err)
+
+        # Applying just that diagnostic preserves the inferred f32 result.
+        # Removing the other cast as well changes it to f64 and is rejected.
+        repaired = casts.replace("height as f32", "height")
+        diags, err = both("repaired.goose", repaired)
+        require(not diags, "removing the warned cast preserves f32", err)
+        diags, err = both("unanchored.goose", repaired.replace("width as f32", "width"))
+        require(len(diags) == 1 and diags[0]["severity"] == "error" and
+                "cannot pass f64 as f32" in diags[0]["message"],
+                "the earlier cast still anchors f32 inference", err)
 
         # An import error, over the whole import.
         diags, err = both("imp.goose", "import no_such_module;\nfn main() {}\n")
