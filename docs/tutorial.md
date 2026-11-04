@@ -393,15 +393,22 @@ what can happen to their size.
 | Type | What it is | Metadata |
 |---|---|---|
 | `T[k]` | fixed size, known at compile time | none |
-| `T[]` | sized at construction, frozen after | a length |
-| `T[varint]` | the same, with a variable-length length | 1–2 bytes usually |
-| `T[..k]` | capacity `k` inline, grows and shrinks within it | a small length |
-| `T[..]` | capacity chosen at construction | length + capacity |
-| `T[>..]` | **grow-only**: the workhorse | a length |
-| `T[>..<]` | **grow-shrink**: stacks, queues, heaps | a length |
+| `T[]` | sized at construction, frozen after | a length (`u32` by default) |
+| `T[varint]` | the same, with a [`varint`](#8-nested-data-stays-inline) length | 1 byte up to 127 elements, 2 up to 16383 |
+| `T[..k]` | room for `k` elements, holding 0 to `k` of them | a length, as small as `k` allows |
+| `T[..]` | the same, with `k` chosen at construction | a capacity and a length |
+| `T[>..]` | *resizable*, **grow-only**: the workhorse | a length, kept by the owner |
+| `T[>..<]` | *resizable*, **grow-shrink**: stacks, queues, heaps | a length, kept by the owner |
 
-In every one of them the representation is `[metadata][elements...]`, inline
-and packed. There is never a pointer to an element block.
+All but the two resizables are stored as `[metadata][elements...]`, inline
+in whatever holds them (a variable, a struct field, an element of another
+array) and packed, with no pointer to a separate element block. A `T[..k]`
+reserves room for all `k` elements wherever it sits. Its length takes the
+smallest unsigned type that can count to `k`: a `u8` up to 255, a `u16` up
+to 65535. That is no limit on `k`: a `u8[..300]` has a `u16` length.
+
+A resizable's elements instead sit on top of a data stack (section 4),
+where they can grow, and the variable that owns them keeps the length.
 
 ```goose
 var fixed: i32[4] = [1, 2, 3, 4];
@@ -418,7 +425,31 @@ stack.pop_n(2);                    // drops the last two at once
 
 var small: u8[..8] = [];           // lives inline anywhere a fixed value can
 small.push('h'); small.push('i');
+print(small.len, " of ", small.cap);
 ```
+
+```
+2 of 8
+```
+
+Some things work differently from a `std::vector` or a `Vec`:
+
+* **Length and capacity.** `.len` is the number of elements the array holds
+  now, like `size()`. The limited arrays `[..k]` and `[..]` also have
+  `.cap`, like `capacity()`, except that it never changes: pushing past it
+  aborts instead of reallocating. The resizables have no `.cap`. They grow
+  until their data stack's address-space reservation runs out.
+* **Alignment.** Nothing is padded. A one-byte length followed by `i64`
+  elements leaves those elements unaligned, and Goose's loads and stores
+  allow for that, which costs little on x86-64 and ARM64. A struct that has
+  to match a foreign layout gets explicit `pad` fields
+  ([spec §3.2](goose_spec.md#32-structs)).
+* **Finishing a resizable.** The compiler does not work out that an array
+  is done growing: a resizable keeps its stack until its owner's scope ends.
+  Nothing else is waiting to go on top of it, since other values use other
+  stacks. Finished data that should be compact and free of the
+  one-per-stack rule below is copied into a `T[]`:
+  `let done: i64[] = copy(grow);`.
 
 Which to reach for:
 
