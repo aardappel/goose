@@ -220,8 +220,11 @@ struct Optimizer {
             r = ast.New<IntLit>(lit->line, v, v == i->val ? i->text : string_view {},
                                 it == IS_U64 && v < 0);
         } else if (i) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
-        else if (auto f = Is<FltLit>(lit)) r = ast.New<FltLit>(lit->line, f->val, f->text);
-        else r = ast.New<BoolLit>(lit->line, ((BoolLit *)lit)->val);
+        else if (auto f = Is<FltLit>(lit)) {
+            // Preserve source precision before the use can widen its type.
+            auto v = IsF32(lit->exprtype) ? (double)(float)f->val : f->val;
+            r = ast.New<FltLit>(lit->line, v, f->text);
+        } else r = ast.New<BoolLit>(lit->line, ((BoolLit *)lit)->val);
         r->exprtype = usetype ? usetype : lit->exprtype;
         return r;
     }
@@ -1335,8 +1338,9 @@ inline Node *AsCast::Opt(Optimizer &o) {
         return this;
     }
     if (auto fl = Is<FltLit>(child)) {
+        // A literal can still hold its unrounded value after taking f32.
+        auto d = IsF32(child->exprtype) ? (double)(float)fl->val : fl->val;
         if (tt->kind == TY_INT) {
-            auto d = fl->val;
             // In-range is required either way (out-of-range truncation is for
             // the runtime to define); `as` additionally needs an integral
             // value that fits the storage exactly.
@@ -1347,7 +1351,7 @@ inline Node *AsCast::Opt(Optimizer &o) {
                     return o.NewInt(this, t);
             }
         } else if (tt->kind == TY_FLT) {
-            return o.NewFlt(this, IsF32(tt) ? (double)(float)fl->val : fl->val);
+            return o.NewFlt(this, IsF32(tt) ? (double)(float)d : d);
         }
         return this;
     }
