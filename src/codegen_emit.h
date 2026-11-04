@@ -367,6 +367,10 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp, bool farreturn) {
             }
         }
         NodeVars(n, check);
+        // A conversion into an index or bound type checks against its
+        // array's global header (IndexTypeCheck), which the body need not
+        // name otherwise.
+        if (auto c = Is<AsCast>(n); c && c->totype && c->totype->ix) check(c->totype->ix->arr);
         RunChildren(n, walk);
     };
     walk(sp->body);
