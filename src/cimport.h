@@ -225,7 +225,7 @@ inline bool IsGooseKeyword(const string &s) {
         #define F(t, s) s,
         TOKENS_KEYWORDS
         #undef F
-        "cstr",
+        "cstr", "cptr",
     };
     return kw.count(s) != 0;
 }
@@ -383,8 +383,9 @@ struct Writer {
                 // `T **`: C writes a pointer, into a handle or else a u64.
                 if (p.kind == GCD_PTR && Opaque(*p.target)) return cat(Handle(p.target->tag), "?");
                 if (p.kind == GCD_PTR) return cat(cnst, "u64?");
-                // `void *`: bytes Goose owns, or null.
-                if (p.kind == GCD_VOID) return cat(cnst, "u8?");
+                // `void *`: any reference, slice or array, an address as
+                // u64, or null.
+                if (p.kind == GCD_VOID) return cat(cnst, "cptr");
                 return "u64";
             }
             case GCD_STRUCT:

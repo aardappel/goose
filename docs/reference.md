@@ -4079,8 +4079,14 @@ fn main() {
 * `const char *` is a `cstr` parameter: any `const u8[:]`, which is copied
   with a NUL after it for the call, or `null`.
 * A pointer to a scalar or to a struct the caller owns is an optional
-  reference, `T?`: a reference, or `null`. `void *` is `u8?`; any other
-  pointer, and every pointer a function returns but a handle, is a `u64`.
+  reference, `T?`: a reference, `null`, or a slice or an array of `T`,
+  which passes its elements' address, an empty slice's too. So
+  `(const int *xs, size_t n)` takes `(v, v.len as u64)`, with no dummy
+  element for an empty `v`.
+* `void *` is `cptr` (`const void *`, `const cptr`): a slice or an array
+  (its elements), other storage (bound by reference, as `&x`), an address
+  held as `u64`, or `null`. Any other pointer, and every pointer a function
+  returns but a handle, is a `u64`.
 * A complete struct is a Goose struct with `pad` where C pads it.
 * Enum constants and object-like macros that are constants (integer,
   floating, string, or a cast to a pointer such as `SQLITE_TRANSIENT`) are

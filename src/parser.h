@@ -836,8 +836,21 @@ struct Parser {
                         sl->cstr = true;
                         p.type = sl;
                         lex.Next();
+                    } else if (sf->isextern &&
+                               ((lex.tok == T_IDENT && lex.attr == "cptr") ||
+                                (lex.tok == T_CONST && lex.PeekTok() == T_IDENT &&
+                                 lex.PeekAttr() == "cptr"))) {
+                        // `cptr`, `const cptr`: a C `void *`, `const void *`.
+                        auto t = ast.NewType(TY_INT, CurLine());
+                        t->intstorage = IS_U64;
+                        t->cptr = true;
+                        t->cq = IsNext(T_CONST);
+                        p.type = t;
+                        lex.Next();
                     } else {
                         p.type = ParseType();
+                        if (sf->isextern && p.type->kind == TY_REF && p.type->ref->optional)
+                            p.type->cpointer = true;
                     }
                 }
                 if (IsNext(T_ASSIGN)) {

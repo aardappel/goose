@@ -159,6 +159,17 @@ struct Lexer {
         return copy.tok;
     }
 
+    // The next token's text, for an identifier after the current token.
+    string PeekAttr() const {
+        auto copy = *this;
+        try {
+            copy.Next();
+        } catch (CompileError &) {
+            return "";
+        }
+        return string(copy.attr);
+    }
+
     // An error on a line of the source, which its text echoes, with a caret
     // under the given position, else under the token's start where the line
     // is the token's. The caret's column is the error's; it extends over the

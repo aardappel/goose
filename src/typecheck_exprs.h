@@ -984,10 +984,11 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         if (!callsite && expected->kind == TY_REF && UserRefOf(n))
             Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
                         " binds by reference here without it (§4.1)"));
-        if (BindsRef(v, expected)) n = AutoRef(n, v, !expected->cq);
+        if (BindsRef(v, expected) || CPtrBindsLValue(v, expected)) n = AutoRef(n, v, !expected->cq);
         if (branchcopy) CheckBranchCopy(v, n, expected, copied);
         else RequireCopyable(v, n, expected);
-        if (!KeepsRef(v, expected)) v = DecayRef(v);
+        // A reference at a cptr is the pointer C gets (§7.10).
+        if (!KeepsRef(v, expected) && !(expected->cptr && IsPlainRef(v.type))) v = DecayRef(v);
         auto from = LoadType(v.type);
         auto litfloat = v.litfloat;
         MustFit(v, n, expected);
@@ -1073,6 +1074,13 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
 // slots pass curdst null: parameters always die before their arguments'
 // roots).
 inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
+    if ((dt->cptr || (dt->kind == TY_REF && dt->cpointer)) && !v.isnull && CPointerArgOk(dt, v))
+        return true;
+    if (CPointerNarrowInt(dt, v)) {
+        fitfail = cat("a ", TypeStr(v.type), " where C wants a pointer: a cptr takes an address held "
+                      "as u64, a reference (&x), a slice or an array, or null");
+        return false;
+    }
     auto t = v.type;
     // An lvalue at a reference destination is the reference to it (§4.1),
     // a `const T&` where the lvalue is read-only (§9.5).
@@ -1085,7 +1093,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     // The null literal fits any optional (plain or relative).
     if (v.isnull) {
         if (dt->kind == TY_REF && dt->ref->optional) { v.type = dt; return true; }
-        if (dt->cstr) { v.type = dt; return true; }   // NULL to C (§7.10)
+        if (dt->cstr || dt->cptr) { v.type = dt; return true; }   // NULL to C (§7.10)
         fitfail = cat("null is only a value of optional types, not ", TypeStr(dt));
         return false;
     }

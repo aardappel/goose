@@ -1,4 +1,5 @@
 /* pkg_c_import.h's functions. */
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "pkg_c_import.h"
@@ -33,6 +34,24 @@ void ci_item_fill(ci_item *it, char tag, int value, double weight) {
 }
 double ci_item_weight(const ci_item *it) { calls++; return it->weight * it->value; }
 ci_point ci_point_add(ci_point a, ci_point b) { calls++; ci_point r = { a.x + b.x, a.y + b.y }; return r; }
+long long ci_sum_ints(const int *xs, size_t n) {
+    long long s = 0;
+    calls++;
+    if (!xs) return -1;
+    for (size_t i = 0; i < n; i++) s += xs[i];
+    return s;
+}
+
+void ci_fill(int *out, size_t n, int v) {
+    calls++;
+    for (size_t i = 0; i < n; i++) out[i] = v + (int)i;
+}
+
+unsigned long long ci_addr(const void *p) {
+    calls++;
+    return (unsigned long long)(uintptr_t)p;
+}
+
 int ci_sum_bytes(const void *p, size_t n) {
     const unsigned char *b = p;
     int s = 0;

@@ -129,6 +129,43 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
             argstr += p;
             continue;
         }
+        if (pt->cptr || (pt->kind == TY_REF && pt->cpointer)) {
+            // A C pointer (CPointerArgOk): NULL, a slice's or an array's
+            // elements, a reference, or (at a cptr) an address held as u64.
+            auto ct = pt->cptr ? string(pt->cq ? "const void *" : "void *") : CT(pt);
+            auto at = an[i]->exprtype;
+            // A reference to a slice or array passes what it refers to.
+            if (at && at->kind == TY_REF &&
+                (at->ref->sub->kind == TY_SLICE || at->ref->sub->kind == TY_ARRAY))
+                at = at->ref->sub;
+            if (Is<NullLit>(an[i])) {
+                argstr += "NULL";
+                continue;
+            }
+            if (at && (at->kind == TY_SLICE || at->kind == TY_ARRAY)) {
+                auto st = at->kind == TY_SLICE ? at : ast.SliceOf(at->arr->sub, at->line);
+                string x;
+                if (at->kind == TY_ARRAY) {
+                    // The array where it is stored, sliced whole (§3.10).
+                    auto lv = GenLoc(an[i]);
+                    if (lv.t->kind == TY_REF) DerefLoc(lv);
+                    x = LoadLoc(lv, st, an[i]->line);
+                } else {
+                    x = GenXD(an[i], st);
+                }
+                auto sl = T();
+                L(CT(st), " ", sl, " = ", x, ";");
+                argstr += cat("(", ct, ")", sl, ".data");
+                continue;
+            }
+            if (pt->cptr) {
+                auto p = T();
+                if (at && at->kind == TY_REF) L(ct, p, " = (", ct, ")", GenX(an[i]), ";");
+                else L(ct, p, " = (", ct, ")(uintptr_t)", GenXD(an[i], pt), ";");
+                argstr += p;
+                continue;
+            }
+        }
         auto x = pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
         argstr += Snapshot(pt, x);
         if (HoldsFatRef(pt)) grows = true;
@@ -168,7 +205,9 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
             args += ", ";
         }
         // A C string parameter (`cstr`) is the C library's own type.
-        auto ct = sp->argtypes[i]->cstr ? string("const char *") : CT(sp->argtypes[i]);
+        auto at = sp->argtypes[i];
+        auto ct = at->cstr ? string("const char *")
+                  : at->cptr ? string(at->cq ? "const void *" : "void *") : CT(at);
         s += ct;
         Append(params, ct, " a", i);
         Append(args, "a", i);

@@ -36,9 +36,21 @@ fn main() {
     let p = ci_point_add(ci_point { x: 1, y: 2 }, ci_point { x: 10, y: 20 });
     print(p.x, " ", p.y);
 
-    // A void pointer to bytes Goose owns; an optional pointer, given or null.
+    // A void pointer (cptr): an array, a slice, an empty one, a reference,
+    // an address held as u64, or null. An optional pointer, given or null.
     let b: u8[4] = [1, 2, 3, 4];
+    let q = ci_point { x: 1, y: 2 };
+    print(ci_sum_bytes(b, 4), " ", ci_sum_bytes(b[1..3], 2), " ", ci_sum_bytes(b[0..0], 0), " ",
+          ci_sum_bytes(&q, 8), " ", ci_addr(12345), " ", ci_addr(null));
     var n: i32 = 0;
-    print(ci_sum_bytes(b[0], 4), " ", ci_maybe(n), " ", n, " ", ci_maybe(null));
+    print(ci_maybe(n), " ", n, " ", ci_maybe(null));
+
+    // A pointer and a length: a slice or an array where C wants `int *`,
+    // as its elements' address, also when there are none.
+    var xs: i32[3] = [1, 2, 3];
+    let tutti: i32[>..] = [4, 5, 6, 7];
+    print(ci_sum_ints(xs, 3), " ", ci_sum_ints(tutti[1..], 3), " ", ci_sum_ints(tutti[0..0], 0));
+    ci_fill(xs, xs.len as u64, 7);
+    print(xs[0], " ", xs[1], " ", xs[2]);
     print(ci_call_count());
 }

@@ -37,7 +37,10 @@ enum ci_color ci_next_color(enum ci_color c);
 void ci_item_fill(ci_item *it, char tag, int value, double weight);
 double ci_item_weight(const ci_item *it);
 ci_point ci_point_add(ci_point a, ci_point b);
-int ci_sum_bytes(const void *p, size_t n);
+int ci_sum_bytes(const void *p, size_t n);     /* const cptr */
+long long ci_sum_ints(const int *xs, size_t n); /* a pointer and a length: a slice, empty too */
+void ci_fill(int *out, size_t n, int v);
+unsigned long long ci_addr(const void *p);     /* an address held as u64 crosses as it is */
 int ci_maybe(int *out);                        /* NULL-able */
 int ci_call_count(void);
 

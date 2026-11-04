@@ -811,6 +811,9 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
                 auto at = st && st->kind == TY_REF ? StorageType(av) : av.type;
                 why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(at), " as ",
                           TypeStr(p.type));
+                if (CPointerNarrowInt(p.type, av))
+                    Append(why, " (C would take its value for an address: a cptr takes an address "
+                                "held as u64, a reference (&x), a slice or an array, or null)");
                 string litwhy;
                 auto tofloat = false;
                 if (av.litelems && st && !LitElemsAt(av, st, tofloat, &litwhy) &&
@@ -912,7 +915,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     };
     if (av.isnull) {
         auto ct = own();
-        if (ct && ct->cstr) {   // null at a C string parameter: NULL
+        if (ct && (ct->cstr || ct->cptr)) {   // null at a C string or pointer parameter: NULL
             tier = std::max(tier, 2);
             return ct;
         }
@@ -920,6 +923,13 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
         tier = std::max(tier, 2);
         return ct;
     }
+    // A C pointer parameter (`cptr`, or an extern's `T?`) also takes a
+    // slice or an array, and `cptr` any reference (CPointerArgOk).
+    if ((pt->cptr || (pt->kind == TY_REF && pt->cpointer)) && CPointerArgOk(pt, av)) {
+        tier = std::max(tier, 2);
+        return own();
+    }
+    if (CPointerNarrowInt(pt, av)) return nullptr;
     // A [] takes an array parameter's type, and at a slice parameter is a
     // temporary array of its elements, viewed whole (§4.2).
     if (av.emptyarr) {
@@ -2598,6 +2608,78 @@ inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why) {
     }
     if (t->kind == TY_SLICE) return ExternValueOk(t->sub, why);
     return ExternValueOk(t, why);
+}
+
+// What a C pointer parameter takes besides its own type (§7.10): at a
+// `cptr` (`void *`), a reference or a slice or array of flat elements; at an
+// extern's `T?` (`T *`), a slice or array of T. A slice or array crosses as
+// its elements' address, which an empty one has too, so C gets a valid
+// pointer and the length it is told. Where C may write (no const), what is
+// passed must be writable.
+// Storage other than an integer, a slice or an array at a cptr binds by
+// reference, as at a reference parameter (§4.1): a struct, a float, a bool.
+// A u64 is an address, and other integers are rejected (CPointerNarrowInt).
+inline bool TypeCheck::CPtrBindsLValue(const Val &v, TypeExpr *dt) {
+    auto t = v.type;
+    return dt->cptr && v.lvalue && !v.isnull && t && t->kind != TY_REF && t->kind != TY_SLICE &&
+           t->kind != TY_ARRAY && t->kind != TY_INT;
+}
+
+inline bool TypeCheck::CPointerArgOk(TypeExpr *pt, Val &v) {
+    auto t = v.type;
+    if (!t) return false;
+    if (CPtrBindsLValue(v, pt)) {
+        string why;
+        if (!ExternValueOk(StorageType(v), why)) return false;
+        if (!pt->cq && !v.writable) {
+            fitfail = "read-only storage where C may write (the parameter is not const cptr)";
+            return false;
+        }
+        return true;
+    }
+    // A reference to a slice or an array passes what it refers to.
+    if (t->kind == TY_REF && t->ref->lenstorage < 0 &&
+        (t->ref->sub->kind == TY_SLICE || t->ref->sub->kind == TY_ARRAY))
+        t = t->ref->sub;
+    auto cwrites = !pt->cq && !(pt->kind == TY_REF && pt->ref->sub->cq);
+    TypeExpr *elem = nullptr;
+    bool ro = false;
+    if (t->kind == TY_SLICE) {
+        elem = t->sub;
+        ro = t->cq || t->sub->cq;
+    } else if (t->kind == TY_ARRAY) {
+        // An array C points into is one stored somewhere.
+        if (v.type->kind != TY_REF && !v.lvalue) return false;
+        elem = t->arr->sub;
+        ro = (v.lvalue && !v.writable) || t->cq;
+    } else if (t->kind == TY_REF && pt->cptr) {
+        // A builder's reference crosses as its header and stack, not a pointer.
+        if (t->ref->lenstorage >= 0 || t->ref->sub->kind == TY_ARRAY) return false;
+        string why;
+        if (!ExternValueOk(t->ref->sub, why)) return false;
+        if (cwrites && t->cq) {
+            fitfail = "a read-only reference where C may write (the parameter is not const cptr)";
+            return false;
+        }
+        return true;
+    } else {
+        return false;
+    }
+    string why;
+    if (!ExternValueOk(elem, why)) return false;
+    if (pt->kind == TY_REF && !TypeEq(ast.PlainOf(elem), ast.PlainOf(pt->ref->sub))) return false;
+    if (cwrites && ro) {
+        fitfail = "read-only elements where C may write (the parameter is not const)";
+        return false;
+    }
+    return true;
+}
+
+// An integer other than a u64 at a `cptr`: C would take its value for an
+// address (a `b[0]` meant as the byte's), so only a u64 or a constant is one.
+inline bool TypeCheck::CPointerNarrowInt(TypeExpr *pt, Val &v) {
+    return pt->cptr && v.type && v.type->kind == TY_INT && v.type->intstorage != IS_U64 &&
+           v.ck == CK_NONE && !v.litint && !v.flexint && !v.unsized;
 }
 
 // A value a member of an extern block passes or returns by value goes to C

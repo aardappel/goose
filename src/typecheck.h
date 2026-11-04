@@ -804,6 +804,8 @@ struct TypeCheck {
         // No program names the type of a [] nothing gave an element type; it
         // shows as the literal.
         if (IsUntypedEmptyArray(t)) return "[]";
+        if (t->cptr) return t->cq ? "const cptr" : "cptr";
+        if (t->cstr) return "cstr";
         string s;
         t->Dump(s);
         return s;
@@ -2384,6 +2386,9 @@ struct TypeCheck {
     bool SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec);
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
+    bool CPointerArgOk(TypeExpr *pt, Val &v);
+    bool CPtrBindsLValue(const Val &v, TypeExpr *dt);
+    bool CPointerNarrowInt(TypeExpr *pt, Val &v);
     bool DylibValueOk(SFunction *sf, TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
     void CheckExport(SFunction *sf);

@@ -315,6 +315,14 @@ struct TypeExpr {
     // crosses as a NUL-terminated `const char *`, copied at the call, and
     // also takes `null`, which crosses as NULL.
     bool cstr = false;
+    // A `cptr` parameter of an extern fn (§7.10), a u64 that crosses as a
+    // `void *` (`const void *` where cq): it also takes a reference, a slice
+    // or an array (its elements' address, also when there are none), or
+    // `null`.
+    bool cptr = false;
+    // An optional reference parameter of an extern fn, a C pointer: it also
+    // takes a slice or an array of its pointee, as its elements' address.
+    bool cpointer = false;
     // On a TY_INT: an index or bound type (TypeIndex). Outside the union,
     // since intstorage is the member a TY_INT uses.
     TypeIndex *ix = nullptr;

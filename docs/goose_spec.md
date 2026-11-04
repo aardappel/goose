@@ -3293,10 +3293,17 @@ These values can cross the boundary (with layouts per C.2):
 * any flat fixed-size value (including structs, fixed and static-capacity
   limited arrays, and fixed-mode ADTs), by value as its packed C type;
 * `T&` to such a `T`, as a pointer, and the optional `T?`, as a pointer
-  that is NULL for `null`;
+  that is NULL for `null`. A `T?` parameter also takes a slice of `T`, or
+  an array of `T` stored somewhere, as the address of its elements, which
+  an empty slice has too;
 * `cstr`, written only as a parameter's type: a `const u8[:]` the call
   copies with a NUL after it and passes as `const char *`, or `null`,
   passed as NULL;
+* `cptr` and `const cptr`, written only as a parameter's type, passed as
+  `void *` and `const void *`: a `u64` (an address C gave), `null`, a
+  reference, a slice or an array stored somewhere (its elements' address),
+  or other storage, which binds by reference as at a `T&` (§4.1). Another
+  integer is an error, since C would take its value for an address;
 * `T[:]` of such a `T`, as the slice struct (`{ data, len }`);
 * `T[>..]&` of such a `T`, as the resizable's header plus its stack
   (`gs_rref`). C sees the elements as blocks of `T`'s packed size: it may
