@@ -151,6 +151,11 @@ add_dependencies(goose tcc_runtime)
 # build directory. A tcclib/ beside the compiler still wins (src/jit.h).
 set(GOOSE_TCC_LIB_PATH "${TCC_STAGE}" CACHE PATH "TinyCC's runtime directory")
 target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${GOOSE_TCC_LIB_PATH}")
+# Likewise where it installs stdlib/. The compiler looks there after the
+# directories around its executable (StdlibDirs in src/main.cpp); empty, it
+# names no such directory.
+set(GOOSE_STDLIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/stdlib" CACHE PATH "The standard library's directory")
+target_compile_definitions(goose PRIVATE GOOSE_STDLIB_PATH="${GOOSE_STDLIB_PATH}")
 
 # C headers included explicitly by a program see the same small host interface
 # as generated C. These paths precede TinyCC's own compiler headers.

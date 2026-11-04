@@ -4,9 +4,10 @@ exist yet, for the C and for `goose build`'s executable; a package source of
 when -o names a file in the working directory; an import that resolves
 nowhere, which names the module and where it was looked for, or says that no
 standard library was found; a directory where a file is read, a source or
-an embed_file, which a POSIX system opens and then fails to read; and
---gen-runtime-header from a compiler with no source tree around it, which
-says it cannot find the runtime's sources."""
+an embed_file, which a POSIX system opens and then fails to read; a compiler
+with no source tree around it, which finds the standard library it was
+configured with; and --gen-runtime-header from such a compiler, which says it
+cannot find the runtime's sources."""
 import os
 import re
 import shutil
@@ -104,14 +105,19 @@ def check_cli_paths(exe, cc, base):
         require(code == 1 and "error: embed_file: cannot open " in text,
                 "a directory to embed_file", text)
 
-        # A compiler with no standard library anywhere it looks.
+        # A compiler with no standard library around it, as from a build
+        # directory outside the source tree, finds the one it was configured
+        # with.
         lone = root / "lone" / "a" / "b" / "c"
         lone.mkdir(parents=True)
         lonexe = shutil.copy2(exe, lone / Path(exe).name)
         code, text = run([lonexe, "check", probe], cwd=lone)
-        require(code == 1 and "cannot find the module std" in text and
-                "found no standard library" in text and "GOOSE_STDLIB" in text,
-                "no standard library", text)
+        require(code == 0, "the configured standard library", text)
+        code, text = run([lonexe, "check", root / "missing.goose"], cwd=lone)
+        require(code == 1 and "cannot find the module no_such_module" in text and
+                "found no standard library" not in text and
+                re.search(r"/stdlib/no_such_module\.goose", text),
+                "an import resolving nowhere, from the configured standard library", text)
         # Nor the runtime's sources, which --gen-runtime-header says.
         code, text = run([lonexe, "--gen-runtime-header"], cwd=lone)
         require(code == 1 and "cannot locate the runtime sources" in text,

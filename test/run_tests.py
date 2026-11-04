@@ -2518,7 +2518,7 @@ def main():
             check_cli_paths(exe, cc, gendir)
             r.ok("command line paths: new -o directories, \".\" and \"..\" sources, rooted "
                  "--include, unresolved imports, a directory as a source or an embed_file, "
-                 "no standard library, no runtime sources")
+                 "the configured standard library, no runtime sources")
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("command line paths", str(e))
     r.show_task(cli_paths)

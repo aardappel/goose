@@ -125,9 +125,11 @@ string RelativeTo(const string &path, const string &dir) {
 }
 
 // Where the standard library lives (§11.1): an explicit --stdlib or
-// GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
-// was built in, found by walking up from the executable. A directory more
-// than one of those name is in the list once, as the first named it.
+// GOOSE_STDLIB, else a `stdlib/` directory found by walking up from the
+// executable (a release's, or the source tree's for a build inside it), else
+// the one CMake was configured with (GOOSE_STDLIB_PATH: the source tree's, or
+// a package's install location). A directory more than one of those name is
+// in the list once, as the first named it.
 vector<string> StdlibDirs(const string &stdlibdir, const string &exe) {
     vector<string> cands;
     if (!stdlibdir.empty()) cands.push_back(cat(stdlibdir, "/"));
@@ -137,6 +139,9 @@ vector<string> StdlibDirs(const string &stdlibdir, const string &exe) {
     cands.push_back(cat(exedir, "../stdlib/"));
     cands.push_back(cat(exedir, "../../stdlib/"));
     cands.push_back(cat(exedir, "../../../stdlib/"));
+    #ifdef GOOSE_STDLIB_PATH
+        if (*GOOSE_STDLIB_PATH) cands.push_back(cat(GOOSE_STDLIB_PATH, "/"));
+    #endif
     cands.push_back("stdlib/");
     vector<string> dirs;
     set<string> seen;

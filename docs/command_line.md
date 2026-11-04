@@ -448,7 +448,9 @@ or, for the shell at hand, `source <(goose completion bash)`.
 Without `--stdlib` or `GOOSE_STDLIB`, the compiler looks for the standard
 library in a `stdlib` directory beside its executable, then in the parent
 directories up to three levels above it, which finds a release's and a
-source tree's, and last in `./stdlib`.
+source tree's, then in the directory it was built to use (the `stdlib`
+of its source tree, wherever the build directory is, or where a package
+installs it, CMake's `GOOSE_STDLIB_PATH`), and last in `./stdlib`.
 
 `GOOSE_HOME/config` holds settings that apply to every build. It is written
 like a sidecar, and its one setting is the C compiler:
