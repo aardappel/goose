@@ -2171,7 +2171,8 @@ struct TypeCheck {
     bool ElementwiseOK(TypeExpr *t);
     TypeExpr *ElementwiseScalarType(TypeExpr *t);
     TypeExpr *UnsignedLeaf(TypeExpr *t);
-    Val CheckVariantConst(Dot *d, SEnum *en);
+    // `written`: the enum type of `Name<T>.Variant`, type arguments and all.
+    Val CheckVariantConst(Dot *d, SEnum *en, TypeExpr *written = nullptr);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
     Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,
                      bool wantvalue, bool onjoin);

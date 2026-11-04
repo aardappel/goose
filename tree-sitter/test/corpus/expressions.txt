@@ -49,6 +49,8 @@ fn f() {
     let b = Shape.Circle { r: 1.0 };
     let c = Pair<i64> { 1, 2 };
     let d = Opt<i64>.Some { 3 };
+    let e = Opt<i64>.None;
+    if e == Opt<i64>.None { e }
 }
 
 ---
@@ -95,7 +97,24 @@ fn f() {
             (primitive_type))
           (identifier)
           (initializer_list
-            (int_literal)))))))
+            (int_literal))))
+      (variable_declaration
+        (identifier)
+        (variant_constant
+          (identifier)
+          (type_arguments
+            (primitive_type))
+          (identifier)))
+      (if_expression
+        (binary_expression
+          (identifier)
+          (variant_constant
+            (identifier)
+            (type_arguments
+              (primitive_type))
+            (identifier)))
+        (block
+          (identifier))))))
 
 ========================================
 Generic calls against comparisons

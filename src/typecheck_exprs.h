@@ -2900,17 +2900,19 @@ inline TypeExpr *TypeCheck::ElementwiseScalarType(TypeExpr *t) {
     return rec(t) ? leaf : nullptr;
 }
 
-inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
-    if (!en->generics.empty())
+inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en, TypeExpr *written) {
+    if (!written && !en->generics.empty())
         Error(d, cat("generic enum ", en->name, " needs type arguments to name a variant"));
-    auto t = ast.EnumOf(en, {}, false, d->line);
+    auto t = ast.EnumOf(en, written ? written->enu->args : vector<TypeExpr *> {}, false, d->line);
     auto inst = GetEnumInst(t);
     auto found = en->FindVariant(d->name);
     if (!found && en->broken) throw Abandoned {};
     if (!found) Error(d, cat("enum ", en->name, " has no variant named ", d->name));
-    if (found->has_payload)
-        Error(d, cat("variant ", en->name, ".", d->name,
-                     " has a payload; construct it with ", en->name, ".", d->name, " { ... }"));
+    if (found->has_payload) {
+        auto spelled = written ? TypeStr(t) : string(en->name);
+        Error(d, cat("variant ", spelled, ".", d->name,
+                     " has a payload; construct it with ", spelled, ".", d->name, " { ... }"));
+    }
     d->variantconst = found;
     d->einst = inst;
     if (!inst->allfixed || inst->selfrel) t->enu->varmode = true;

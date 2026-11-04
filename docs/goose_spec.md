@@ -1335,7 +1335,9 @@ Literal forms usable in any construction context:
   uninitialized (§5.3, C.4). An array or string literal constructing a
   limited array of static capacity must fit it (a compile error otherwise);
 * variant literals `Shape.Circle { r: 1.0 }`, whose fields follow a struct
-  literal's rules, `..` included;
+  literal's rules, `..` included. A variant with no payload is also a
+  constant of its enum's type without the braces: `Shape.Point`, or
+  `Opt<i64>.None` for a generic enum, which names its type arguments;
 * `self`, inside a struct or variant literal only, as the initializer of a
   non-optional relative-reference field pointing at the value being
   constructed (`Node { prev: self, next: self }`, §3.9). This is the only
@@ -2915,9 +2917,11 @@ or `zero<f64>()` for `fn zero<T>() -> T`), or when only a `[]` or `null`
 does (`g<i64>([])` for `fn g<T>(xs: T[])`). It binds the leading type
 parameters in order, and the rest are inferred. Syntactically, `f<` commits
 to a type argument list only when the `<…>` is immediately followed by `(`,
-by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
-variant literal (`Opt<i64>.Some { … }`), and `x.f<` only when it is followed
-by `(` (`x.f<i64>(y)`, UFCS); otherwise `<` is the comparison operator.
+by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident` for a
+variant literal (`Opt<i64>.Some { … }`) or a payload-less variant
+(`Opt<i64>.None`), and `x.f<` only when it is followed by `(`
+(`x.f<i64>(y)`, UFCS); otherwise `<` is the comparison operator. No operand
+starts with `.`, so `a < b > .c` is never a comparison.
 
 **Floating computation context.** After ordinary argument inference and
 overload resolution, an `f32` destination can refine a call's inferred
@@ -5086,7 +5090,7 @@ binary      := (precedence climbing; tightest → loosest)
    levels   := * / %  →  + -  →  << >>  →  &  →  ^  →  |
              →  < <= > >=  →  == != .== .!=  →  &&  →  ||
 primary     := literal | qname | "null" | "self" | "(" expr ")"
-             | arraylit | structlit | genericcall
+             | arraylit | structlit | genericcall | qname tyargs "." ident
 genericcall := qname tyargs "(" args ")" trailingblock?
 trailingblock := "{" (params "=>")? stmt* expr? "}"
 sliceargs   := expr | bound? ".." bound?         // bound := "^"? expr
@@ -5105,7 +5109,7 @@ Known parse notes:
 * A statement that is a block-ended construct needs no `;` and ends at its
   `}` (§2).
 * `f<` commits to a type argument list only when followed by `(`, `{`, or
-  `.ident {`, and `x.f<` only when followed by `(` (§7.7); otherwise `<` is
+  `.ident`, and `x.f<` only when followed by `(` (§7.7); otherwise `<` is
   comparison.
 * `T&<u8>` tokenizes as `&` `<` in type context only.
 * `a..b` ranges exist only in `for` headers, slice brackets, and match arms.

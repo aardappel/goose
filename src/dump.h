@@ -362,7 +362,8 @@ inline void Binary::Dump(string &s, int ind) const {
 }
 
 inline void Dot::Dump(string &s, int ind) const {
-    DumpOperand(s, obj, ind, true);
+    if (enumtype) enumtype->Dump(s);
+    else DumpOperand(s, obj, ind, true);
     Append(s, ".", name);
 }
 

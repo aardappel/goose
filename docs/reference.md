@@ -1457,6 +1457,8 @@ a struct's fields, with the same defaults and `..` rules, and a variant
 with no payload is a plain constant. An enum whose variants all have no
 payload is a C-like enum, one byte. A variant literal is
 `Shape.Circle { r: 1.0 }`, or `Shape.Dot` for a variant with no payload.
+Those of a generic enum, such as `enum Opt<T> { None, Some { v: T } }`, give
+its type arguments: `Opt<i64>.Some { v: 1 }`, `Opt<i64>.None`.
 
 ### Two modes
 

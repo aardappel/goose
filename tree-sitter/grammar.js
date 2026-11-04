@@ -76,10 +76,11 @@ module.exports = grammar({
     [$._expression_name, $.function_value_parameter],
     [$._qualified_name, $.function_value_parameter],
     // `Name.Variant { … }` against a field access, and `f<T>(x)`,
-    // `x.f<T>(y)` or `Name<T> { … }` against a comparison: what follows
-    // decides.
+    // `x.f<T>(y)`, `Name<T> { … }` or `Name<T>.Variant` against a
+    // comparison: what follows decides.
     [$._primary_expression, $.struct_literal],
-    [$._primary_expression, $._callee, $.struct_literal],
+    [$._primary_expression, $._callee, $.struct_literal, $.variant_constant],
+    [$.struct_literal, $.variant_constant],
     [$._postfix_expression, $._callee],
     // `if f(x) {` against a trailing block.
     [$.call_expression, $._trailing_call],
@@ -476,6 +477,7 @@ module.exports = grammar({
       $.parenthesized_expression,
       $.array_literal,
       $.struct_literal,
+      $.variant_constant,
     ),
 
     _expression_name: $ => choice($.identifier, $.scoped_identifier),
@@ -605,6 +607,14 @@ module.exports = grammar({
       optional(field('type_arguments', $.type_arguments)),
       optional(seq('.', field('variant', $.identifier))),
       field('body', $.initializer_list),
+    ),
+
+    // `Name<T>.Variant`, a variant with no payload of a generic enum.
+    variant_constant: $ => seq(
+      field('name', $._expression_name),
+      field('type_arguments', $.type_arguments),
+      '.',
+      field('variant', $.identifier),
     ),
 
     // A trailing `..` fills in every field not given.

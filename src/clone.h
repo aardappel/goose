@@ -140,6 +140,7 @@ inline Node *Binary::Clone1(Ast &ast) const {
 
 inline Node *Dot::Clone1(Ast &ast) const {
     auto d = ast.New<Dot>(line, obj->Clone(ast), name, ns);
+    if (enumtype) d->enumtype = ast.CloneExpansionType(enumtype);
     d->accessorowner = accessorowner;
     d->incomplete = incomplete;
     return d;

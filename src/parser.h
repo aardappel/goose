@@ -1673,8 +1673,9 @@ struct Parser {
                 auto name = ParseQualifiedName("expression");
                 auto nameend = PrevEnd();
                 if (lex.tok == T_LT) {
-                    // Possibly f<T>(...), Name<T> { ... }, or the variant
-                    // literal Name<T>.Variant { ... }; backtrack if not.
+                    // Possibly f<T>(...), Name<T> { ... }, the variant
+                    // literal Name<T>.Variant { ... }, or the variant
+                    // constant Name<T>.Variant; backtrack if not.
                     vector<TypeExpr *> tyargs;
                     if (TryParseTyArgs(tyargs)) {
                         if (lex.tok == T_LPAREN) Role(R_LIST);
@@ -1683,9 +1684,16 @@ struct Parser {
                                                  std::move(tyargs), line);
                         auto t = NewUnresolvedType(name, line);
                         t->named->args = std::move(tyargs);
-                        if (IsNext(T_DOT)) {
+                        if (lex.tok == T_DOT) {
+                            auto dotline = CurLine();
+                            lex.Next();
                             auto vname = ExpectIdent("variant literal");
-                            return ParseStructLitBody(ast.VariantOf(t, vname, nullptr, line), line);
+                            if (lex.tok == T_LCURLY && !no_struct_lit)
+                                return ParseStructLitBody(ast.VariantOf(t, vname, nullptr, line), line);
+                            auto d = Finish(New<Dot>(dotline, Finish(New<Ident>(line, name, curns), nameend),
+                                                     vname, curns));
+                            d->enumtype = t;
+                            return d;
                         }
                         return ParseStructLitBody(t, line);
                     }
@@ -1700,8 +1708,9 @@ struct Parser {
         }
     }
 
-    // Tentatively parse `<` type, ... `>` immediately followed by `(` or `{`;
-    // restores the lexer and returns false when it is really a comparison.
+    // Tentatively parse `<` type, ... `>` immediately followed by `(`, `{` or
+    // `.ident`; restores the lexer and returns false when it is really a
+    // comparison. No operand starts with `.`, so `a < b > .c` is none.
     // Backtracking also deletes the types parsed meanwhile, and any function
     // a block in an array size among them declared: resolution would take
     // them for written ones, and the `ns::limit` of `a < ns::limit` is no type.
@@ -1735,19 +1744,13 @@ struct Parser {
                 return backtrack();
             }
             if (lex.tok == T_LPAREN || (lex.tok == T_LCURLY && !no_struct_lit)) return true;
-            if (lex.tok == T_DOT && !no_struct_lit) {
-                // Name<T>.Variant { ... }: commit only when the full variant
-                // literal head is present.
+            if (lex.tok == T_DOT) {
+                // Name<T>.Variant, with a payload or without.
                 auto save2 = lex;
                 lex.Next();
-                if (lex.tok == T_IDENT) {
-                    lex.Next();
-                    if (lex.tok == T_LCURLY) {
-                        lex = save2;  // Leave the '.' for the caller.
-                        return true;
-                    }
-                }
-                lex = save2;
+                auto ident = lex.tok == T_IDENT;
+                lex = save2;  // Leave the '.' for the caller.
+                if (ident) return true;
             }
         } catch (CompileError &) {}
         return backtrack();

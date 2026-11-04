@@ -125,6 +125,7 @@ struct ExpansionBinder {
         if (auto d = Is<Dot>(n)) {
             auto b = Find(d->name);
             if (b.accessor) n->expansionbinding = b.id;
+            Type(d->enumtype);
         }
         if (auto sl = Is<StructLit>(n)) { Type(sl->type); Inits(sl->inits); return; }
         if (auto vd = Is<VarDecl>(n)) Type(vd->type);

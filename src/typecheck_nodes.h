@@ -446,7 +446,15 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     TypeCheck::DestScope ds(tc, TypeCheck::Dest {});
     if (incomplete) tc.IncompleteDot(this);
-    // EnumName.Variant: a payload-less variant constant (§3.5).
+    // EnumName.Variant, or EnumName<T>.Variant of a generic enum: a
+    // payload-less variant constant (§3.5).
+    if (enumtype) {
+        tc.ConstNamesIn(enumtype);
+        auto t = tc.Subst(enumtype);
+        if (t->kind != TY_ENUM)
+            tc.Error(this, cat(tc.TypeStr(t), " is not an enum: it has no variant ", name));
+        return tc.CheckVariantConst(this, t->enu->en, t);
+    }
     if (auto id = Is<Ident>(obj); id && id->expansionerror.empty()) {
         const FnValBind *fb;
         if (!tc.LookupVar(id->name, id->ns) && !tc.LookupTypeParam(id->name, fb) && !fb)

@@ -1069,6 +1069,9 @@ NODE(Dot)
     string_view name;
     string_view ns;                 // For a UFCS call: the namespace of the declaration
                                     // this was written in, where the function resolves first.
+    // `Name<T>.Variant`, a payload-less variant constant of a generic enum:
+    // the enum type as written (obj is the Ident `Name`).
+    TypeExpr *enumtype = nullptr;
     // Filled by typecheck: field access, builtin property (.len/.cap), or a
     // payload-less variant constant (obj names the enum type).
     int fieldidx = -1;
