@@ -1,0 +1,2 @@
+// The sidecar of pkg_c_import.goose: the C behind the header it imports.
+c_sources = ["pkg_c_import_impl.c"];

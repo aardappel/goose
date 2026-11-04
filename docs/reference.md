@@ -3945,7 +3945,9 @@ What may cross is exactly what has a plain C shape:
 * the integer and float scalars and `bool`;
 * any flat fixed-size value (structs, fixed and static-capacity arrays,
   fixed-mode enums), by value as its packed C type;
-* `T&` to such a `T`, as a pointer;
+* `T&` to such a `T`, as a pointer, and `T?`, as a pointer that may be NULL;
+* `cstr`, a parameter only: a `const u8[:]` that C receives as a
+  NUL-terminated `const char *` (copied for the call), or `null`;
 * `T[:]` of such a `T`, as a `{ data, len }` struct;
 * `T[>..]&` of such a `T`, a builder C may write and append whole elements
   to (`gs_bld_append` appends bytes to a `u8[>..]&`).
@@ -4048,6 +4050,49 @@ members is called is never opened, so a block may declare an interface
 wider than any one program uses. A program whose only C is such libraries
 runs under the in-process backend with no C toolchain installed. Spec
 §7.10, [packages.md](packages.md#the-native-part).
+
+### `import c "x.h"`: a C header's declarations
+
+`import c` reads a C header with the TinyCC inside the compiler and
+declares what it finds, under the C names, by the rules above, so that no
+signature is written twice:
+
+<!-- fragment -->
+```goose
+import ffi;
+import c "sqlite3.h";       // beside this file, or in the sidecar's c_include
+
+fn main() {
+    var db = sqlite3 {};
+    if sqlite3_open_v2(":memory:", db, SQLITE_OPEN_READWRITE, null) != SQLITE_OK {
+        print(ffi::cstr(sqlite3_errmsg(db)));
+    }
+    sqlite3_close(db);
+}
+```
+
+* A function becomes an `extern fn` bound to its symbol (the library is
+  linked as any other, from the sidecar's `c_sources` or `c_libs`).
+* A pointer to a struct the header never completes, or one a function
+  hands out, is a **handle**: `struct sqlite3 { p: u64 = 0 }`, a typed
+  token, 0 for null. `T **` to it is `sqlite3?`, where C writes the pointer.
+* `const char *` is a `cstr` parameter: any `const u8[:]`, which is copied
+  with a NUL after it for the call, or `null`.
+* A pointer to a scalar or to a struct the caller owns is an optional
+  reference, `T?`: a reference, or `null`. `void *` is `u8?`; any other
+  pointer, and every pointer a function returns but a handle, is a `u64`.
+* A complete struct is a Goose struct with `pad` where C pads it.
+* Enum constants and object-like macros that are constants (integer,
+  floating, string, or a cast to a pointer such as `SQLITE_TRANSIENT`) are
+  `let`s with the value C gives them.
+* Variadic functions, variables, and functions passing a union, a bitfield,
+  `long double` or a padded struct by value are left out; the module says
+  which, and why, at its end.
+
+`goose --c-import x.h` prints the module. Sizes and layouts are those of
+the machine the compiler runs on; the generated C asserts the ones the
+module relies on (`sizeof(long)`), so a build for a machine where they
+differ stops instead of passing wrong values.
 
 ### `export fn`
 

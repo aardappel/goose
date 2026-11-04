@@ -3292,7 +3292,11 @@ These values can cross the boundary (with layouts per C.2):
 * the integer and float scalars and `bool`;
 * any flat fixed-size value (including structs, fixed and static-capacity
   limited arrays, and fixed-mode ADTs), by value as its packed C type;
-* `T&` to such a `T`, as a pointer;
+* `T&` to such a `T`, as a pointer, and the optional `T?`, as a pointer
+  that is NULL for `null`;
+* `cstr`, written only as a parameter's type: a `const u8[:]` the call
+  copies with a NUL after it and passes as `const char *`, or `null`,
+  passed as NULL;
 * `T[:]` of such a `T`, as the slice struct (`{ data, len }`);
 * `T[>..]&` of such a `T`, as the resizable's header plus its stack
   (`gs_rref`). C sees the elements as blocks of `T`'s packed size: it may
@@ -3314,6 +3318,14 @@ retain a borrowed argument beyond the call, and may only append to a
 builder. The compiler assumes an extern may write through its arguments
 but does not mutate unrelated Goose globals; C code is responsible for
 honoring those obligations.
+
+**Importing a C header.** `import c "x.h";` declares the functions,
+constants and types of a C header, read by the compiler's own C parser,
+as the extern fns, `let`s and structs of a module of the importing file's
+package (docs/reference.md §24 gives the rules). The header is found in the
+importing file's directory or in its package's `c_include` directories. The
+module describes the compiling machine's C; the generated C asserts the
+sizes it relies on.
 
 **Binding from a shared library.** An `extern` block names a shared
 library and declares functions that are bound from it by name when the
