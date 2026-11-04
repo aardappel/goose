@@ -5763,11 +5763,17 @@ forms use `Type { ` and ` }`, without field labels. Nested byte strings
 escape quote, backslash, newline, carriage return and tab, while other
 bytes remain literal; top-level byte strings are unquoted. Values are
 rendered in argument order, so an argument's rendering hook runs before
-the next argument is evaluated. Hook discovery currently accepts only
-top-level, non-generic two-parameter `format` functions with a
-`u8[>..]&` destination and an exact value or plain-reference parameter for
-the rendered type. This is narrower than ordinary generic overload
-resolution. Reference rendering follows pointees and has no cycle
+the next argument is evaluated. Hook discovery (`UserFormatIn`) accepts
+top-level two-parameter `format` functions with a `u8[>..]&` destination.
+It tries the non-generic ones first, whose value or plain-reference
+parameter must be exactly the rendered type, then generic ones whose
+parameter is a struct, ADT or variant pattern, matched as a call is
+(`TryMatch`) and kept when it binds to exactly the rendered type. The
+first match in declaration order wins; two overloads matching equally
+are not reported as ambiguous, as a direct call would be. A bare type
+variable, or an array or slice pattern, is never a hook: it would take
+over the rendering of strings and every other value, its own body's
+included. Reference rendering follows pointees and has no cycle
 detection: a cyclic value recurses through its render functions until the
 native stack runs out (§7, **Native stacks**). An integer's text comes
 from the runtime's digit loop (`gs_fmt_i64`, `gs_fmt_u64`): the digit

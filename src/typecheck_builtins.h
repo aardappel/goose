@@ -899,14 +899,33 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
     if (!n) return nullptr;
     auto fit = n->functionmap.find("format");
     if (fit == n->functionmap.end()) return nullptr;
+    // Non-generic overloads first, then generic ones whose value parameter
+    // is a struct, ADT or variant pattern such as Box<T> or Box<T>&, whose
+    // type variables bind to t's type arguments. One on a bare T, or an
+    // array or slice of T, would take over the rendering of every such
+    // value, the strings its own body formats included.
+    for (int pass = 0; pass < 2; pass++)
     for (auto sf : fit->second) {
         if (sf->params.size() != 2 || !sf->params[0].type || !sf->params[1].type ||
-            !sf->generics.empty() || sf->isnested)
+            sf->generics.empty() != (pass == 0) || sf->isnested)
             continue;
-        auto pt1 = Subst(sf->params[1].type);
-        auto p1 = IsPlainRef(pt1) ? pt1->ref->sub : pt1;
-        if (!TypeEq(p1, t)) continue;
-        auto pt0 = Subst(sf->params[0].type);
+        TypeExpr *pt1, *pt0;
+        if (pass == 0) {
+            pt1 = Subst(sf->params[1].type);
+            auto p1 = IsPlainRef(pt1) ? pt1->ref->sub : pt1;
+            if (!TypeEq(p1, t)) continue;
+            pt0 = Subst(sf->params[0].type);
+        } else {
+            // TryMatch binds the overload's own type variables; the types
+            // are used as written until then.
+            auto raw = sf->params[1].type;
+            auto p1 = IsPlainRef(raw) ? raw->ref->sub : raw;
+            if ((p1->kind != TY_STRUCT && p1->kind != TY_ENUM && p1->kind != TY_VARIANT) ||
+                p1->kind != t->kind)
+                continue;
+            pt1 = IsPlainRef(raw) ? ast.RefTo(t, c->line) : t;
+            pt0 = sf->params[0].type;
+        }
         if (!IsPlainRef(pt0) || !IsArrayKind(pt0->ref->sub, A_GROW) ||
             !IsU8(pt0->ref->sub->arr->sub))
             continue;
@@ -928,6 +947,11 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         mi.env = nullptr;
         string why;
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
+        if (pass == 1) {
+            pt1 = mi.paramtypes[1];
+            if (mi.tier > 1) continue;
+            if (!TypeEq(IsPlainRef(pt1) ? pt1->ref->sub : pt1, t)) continue;
+        }
         if (sf->isextern && IsRefOrSlice(pt1) && !pt1->cq && !argvals[1].writable)
             Error(c, "extern format hook needs a writable value or a const parameter");
         // Given a variable argument by a writable reference, the overload may

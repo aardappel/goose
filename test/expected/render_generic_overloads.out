@@ -1,0 +1,8 @@
+type with size=4
+type with size=4
+Box(3) BoolBox Box(Box(1.5))
+[Box(1), Box(2)] 6
+Big 5 of 1
+Some 4 nothing
+Box(6)
+x=Box(8) 9

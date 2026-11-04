@@ -1023,7 +1023,10 @@ nested inside an aggregate is quoted and escaped.
 A **`format` overload** `fn format(out: u8[>..]&, v: T)`, taking `T` by
 value or by reference, is called to render a `T` wherever a `T` occurs in
 an argument of any of the three builtins, so a type defines its text form
-in one place. The overload is looked up in the namespace `T` is declared
+in one place. A generic type renders through a generic overload such as
+`fn format<T>(out: u8[>..]&, b: Box<T>)`, unless a non-generic one for
+its instance exists; an overload on a bare type variable is not used for
+rendering. The overload is looked up in the namespace `T` is declared
 in, then globally, so the type decides how it is printed, not the code
 that prints it. A `T` that is not fixed-size is never copied implicitly,
 so its overload takes it by reference.

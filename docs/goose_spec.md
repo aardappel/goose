@@ -673,6 +673,12 @@ rendering: its thread runs out of native stack, which is a safe abort
 A user overload `fn format(out: u8[>..]&, v: T)` (taking `T` by value or by
 reference) is used instead to render a `T`, wherever a `T` occurs in an
 argument, so a type can choose its own text once for all three builtins.
+A generic overload whose value parameter is a struct, ADT or variant
+pattern, such as `fn format<T>(out: u8[>..]&, b: Box<T>)`, renders each
+instance of it the same way, its type variables bound as at a call (§7.1);
+a non-generic overload for one instance is preferred. A generic overload
+taking a bare type variable, or an array or slice of one, is an ordinary
+overload and does not change how anything renders.
 A `T` that is not fixed-size is never copied implicitly (§4.1), so its
 overload takes it by reference. An overload that takes the `T` by reference is given the storage the `T`
 lies in, as a reference parameter is (§4.1): the variable, field or element
