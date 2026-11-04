@@ -2,3 +2,4 @@ sphere: true
 mesh: true
 scalars: true
 alignment: true
+mixed: true 2 3.5 5.5 6
