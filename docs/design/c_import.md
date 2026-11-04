@@ -1,6 +1,8 @@
 # `import c`: C headers read by the compiler
 
 Status: a prototype on the branch `c-import`, with measurements, to discuss.
+The open points of its first version are addressed; what remains is at the
+end.
 
 ## The problem
 
@@ -8,8 +10,9 @@ Every C library a Goose program uses needs its interface written twice:
 once in C, by the library, and once in Goose, as `extern fn` declarations,
 in the shapes §7.10 and reference §24 allow. Where a C function does not fit
 those shapes, there is a third copy: an adapter in C. The adapter turns a
-pointer into a `u64`, a slice into a NUL-terminated string, and a returned
-string into a length plus a copy.
+pointer into a `u64`, a slice into a NUL-terminated string, a returned
+string into a length plus a copy, a Goose function into a callback, and a
+variadic call into a fixed one.
 
 In a larger program using several C libraries, most of the adapter C is
 mechanical, and it soon outgrows the Goose side of the boundary. Nothing
@@ -55,60 +58,145 @@ fn open(path: const u8[:]) -> sqlite3 {
 }
 ```
 
-## The proposal
+## What `import c` does
 
 ```goose
 import c "sqlite3.h";
 ```
 
-**What it does.** The compiler reads the header with the TinyCC it already
-contains, and declares what it finds, under the C names, as a module of the
-importing file's package. The module is generated Goose text that goes
-through the normal pipeline, so diagnostics point into it and `--dump`
-shows it. `goose --c-import x.h` prints it.
+The compiler reads the header with the TinyCC it already contains, and
+declares what it finds, under the C names, as a module of the importing
+file's package. The module is generated Goose text that goes through the
+normal pipeline, so diagnostics point into it and `--dump` shows it.
+`goose --c-import x.h` prints it. The header is found beside the importing
+file or in the sidecar's `c_include`.
 
-**The translation is reference §24 applied mechanically.** It has three
-additions to the language, which make up the core of this proposal:
+The module declares:
 
-1. **`import c "x.h"`.** The header is found beside the importing file or
-   in the sidecar's `c_include`.
-2. **`cstr`, a parameter type of `extern fn`.**
-   - The caller passes any `const u8[:]`, or `null`.
-   - The call copies the bytes with a NUL after them, on the C stack when
-     short, and frees the copy after the call.
-   - The prototype says `const char *`, which is the library's own type.
-3. **Optional references `T?` cross the boundary**, as pointers that may be
-   NULL. Their C form already was one; `ExternParamOk` only had to stop
-   rejecting them.
+- **functions**, as `extern fn` bound to their symbols, variadic ones with
+  `...`;
+- **handles** for structs the header never completes, or that a function
+  hands out: `extern struct sqlite3 { p: u64 = 0 }`. A handle is named by a
+  typedef of the pointer where the header has one (`XML_Parser`), and a
+  `T **` to one is `T?`, where C writes the pointer;
+- **complete structs**, as extern structs (below) with `pad` where C pads;
+- **constants**: enum constants and constant object-like macros as `let`s,
+  evaluated by TinyCC in the header's scope, so
+  `((sqlite3_destructor_type)-1)` works;
+- **typedefs** of scalars and of handle pointers, as aliases
+  (`type sqlite3_int64 = i64;`, `type HPDF_Page = HPDF_Dict;`), used in the
+  signatures, which then read as the header does;
+- **wrapper macros**: a function-like macro whose body calls a bound
+  function with its parameters and constants becomes a Goose function of
+  untyped parameters. zlib's `deflateInit(strm, level)` is
+  `deflateInit_(strm, level, "1.3.2", 112)`, with the constants as C
+  computes them (`ZLIB_VERSION`, `sizeof(z_stream)`).
 
-**Handles** need no language change.
-- **What becomes a handle:**
-  - a pointer to a struct the header never completes (`sqlite3 *`);
-  - a pointer to a struct some function returns (`HPDF_Doc`).
-- **The type** is `struct sqlite3 { p: u64 = 0 }`. It is typed, so a
-  statement cannot be passed where a connection goes, and it crosses as the
-  `u64` it holds on every 64-bit ABI.
-- **A double pointer** (`sqlite3 **`) is `sqlite3?`: C writes the pointer
-  into the handle.
+What has no Goose shape is left out: variables, statics, `va_list`
+functions, and unions, bitfields or `long double` by value. The module
+lists them at its end. Using one is an error that says why, where it is
+used, rather than an unknown name:
 
-**What the generated C checks.** It asserts what the module assumed about
-the target (`sizeof(void *) == 8`, `sizeof(long) == 8` when `long` was
-used). A build for Windows, where `long` has 4 bytes, therefore fails to
-compile instead of passing wrong values.
+```
+cis_take: not imported from c_import_skipped.h (parameter 1, a union by value)
+```
 
-**Implementation: about 1,100 lines.**
-- `third_party/tinycc/tcc_cdecl.c` (315 lines):
-  - It includes `libtcc.c`, so TinyCC's static internals are visible. No
-    TinyCC file changes; the library is built from this file instead of
-    `libtcc.c`.
-  - It parses the header without generating code.
-  - It walks the symbol table before TinyCC frees it.
-  - It evaluates each object-like macro as a C constant expression, in the
-    header's scope, so `((sqlite3_destructor_type)-1)` works.
+## Additions at the C boundary
+
+The translation is reference §24 applied mechanically. Where §24 needed an
+adapter, the boundary gains a shape, usable in hand-written `extern fn`s
+too. These are the language part of the proposal, each its own commit:
+
+1. **`cstr`**, a parameter type. The caller passes any `const u8[:]`, or
+   `null`. The call copies the bytes with a NUL after them, on the C stack
+   when short, and the prototype says `const char *`.
+2. **Optional references `T?` cross the boundary** as pointers that may be
+   NULL. At an extern's `T?`, a slice or a stored array of `T` also passes
+   its elements' address, which an empty slice has too. So
+   `(const int *p, size_t n)` takes `(v, v.len as u64)`, with no dummy
+   element for an empty `v`.
+3. **`cptr` and `const cptr`**, parameter types for `void *` and
+   `const void *`. They take a `u64` (an address C gave), `null`, a
+   reference, a slice or a stored array (its elements), or other storage,
+   bound by reference as at a `T&`. Another integer is an error, since C
+   would take its value for an address: `b[0]` meant as the byte's.
+4. **C function pointers**: an extern parameter written `fn(P...) -> R`,
+   with scalar `P` and `R` (pointers as `u64`).
+   - It takes `cfn(f)`, `null`, or an address held as `u64`.
+   - `cfn(f)` is the address of the C wrapper an `export fn f` already has,
+     and at such a parameter `f`'s parameters and result must be the
+     signature's.
+   - Function values stay compile-time only (§7.6): C gets the wrapper,
+     not a Goose value.
+   - C may call `f` back during any extern call. The call saves the top of
+     the caller's data stacks in `gs_export_sp`, where the wrapper starts
+     `f`'s. The stack count and the `gs_sp` analysis take `f` as a callee of
+     every extern call.
+5. **`extern struct`**: a struct whose pads put each field where C places
+   it, which the checker verifies, saying which pad is missing.
+   - **By value** (at an extern call, in an export's wrapper and in a
+     result), it crosses as a C struct of the same fields in C's natural
+     layout, with asserts on every offset and the size.
+   - **The bytes are the same**, so a copy converts, and the calling
+     convention is C's: `{ f32, pad 4, f64 }` arrives in the float
+     registers, where a packed struct with a pad would not.
+6. **`...`** ends an extern's parameters.
+   - **How a call is typed:** a call with N more arguments is a call of an
+     instance with N untyped parameters, so each call's further arguments
+     are specialized by their types, as an untyped parameter's are (§7.1).
+   - **What may follow:** integers (a literal that fits as C's `int`),
+     floats, `bool`, references (pointers), and bytes, which go as a C
+     string as for `cstr`.
+   - **The prototype** is the function's own with `...`, so C promotes the
+     arguments.
+
+## Checks
+
+The module is TinyCC's view of the header on the machine the compiler runs
+on. Three things keep a build from trusting it where it is wrong:
+
+- **The generated C asserts** what the module relies on of the target:
+  `sizeof(void *)`, and `sizeof(long)` where `long` was used.
+- **The header check.** Where the package has C sources, its native part
+  also compiles a generated file that includes the header itself. That file
+  asserts the size and every offset of each struct the module declares,
+  and the size of each typedef it names. It is compiled by the program's
+  own compiler, so a cross build or a header TinyCC reads differently stops
+  there. `goose --c-import-check x.h` prints the file.
+- **The JIT library's symbol table** names only the imported functions a
+  program calls. A header declares functions the library may be built
+  without (sqlite's for options left out), which would not link. The names
+  add up in the build directory, so programs calling different ones do not
+  rebuild it in turn.
+
+## Implementation
+
+The branch is a series of commits on the current master, one per piece, each
+building and passing the tests on its own.
+
+- `third_party/tinycc/tcc_cdecl.c` (415 lines):
+  - It includes `libtcc.c`, so TinyCC's static internals are visible.
+  - It parses the header without generating code, and walks the symbol
+    table before TinyCC frees it.
+  - It evaluates object-like macros, and the constant arguments of wrapper
+    macros, as C constant expressions in the header's scope.
   - It reports through a small C API (`tcc_cdecl.h`).
-- `src/cimport.h` (589 lines) holds the translation.
-- The parser, loader, typecheck and codegen need small changes (about 140
-  lines).
+- **One optional commit changes TinyCC:** `CType` gets an `int tdef`, the
+  typedef a type was written with, in what was padding. Dropping that
+  commit loses the typedef names (only the header check of the commit after
+  it reads them).
+- **One commit fixes TinyCC's x86-64 calling convention.**
+  - **The bug:** it gave a struct mixing integer and float eightbytes one
+    class, so `{ i64, f64 }` went to C in two integer registers, where the
+    double belongs in an SSE one.
+  - **Who it hit:** a JIT run passing or returning such a struct by value
+    to C on Linux or macOS x86-64. It hit any extern, not only
+    `import c`'s; a build was right.
+  - **What changed:** the struct is now classified per eightbyte, as System
+    V requires.
+- `src/cimport.h` (953 lines) holds the translation and the header check.
+- **The boundary additions and the loader** are about 840 lines in the
+  parser, loader, typecheck and codegen.
 - **Telling the header's names from the system's:** TinyCC reports every
   file the parse included. The system ones (outside the include
   directories) are parsed again on their own, and their names are
@@ -120,13 +208,17 @@ compile instead of passing wrong values.
 
 `goose --c-import`, macOS arm64:
 
-| Header | Functions bound | Constants | Handles | Structs | Left out |
-|---|---|---|---|---|---|
-| sqlite3.h (3.53) | 287 | 511 | 10 | 3 | 14: 8 variadic, 3 `va_list`, 3 variables |
-| zlib.h (1.3.2) | 86 | 42 | 2 | 2 | 2: 1 variadic, 1 `va_list` |
-| expat.h (2.7.5) | 67 | 89 | 2 | 4 | 0 |
-| hpdf.h (libharu) | 528 | 947 | 20 | 18 | 4: `HPDF_Date` by value, which C pads |
-| SDL3/SDL.h | n/a | n/a | n/a | n/a | the whole header: TinyCC cannot read the macOS SDK's `<inttypes.h>` |
+| Header | Functions (variadic) | Constants | Extern structs (handles) | Aliases | Wrapper macros | Callback parameters | Header check asserts | Left out |
+|---|---|---|---|---|---|---|---|---|
+| sqlite3.h 3.53 | 295 (8) | 511 | 13 (10) | 2 | 0 | 60 | 44 | 6: 3 `va_list`, 3 variables |
+| zlib.h 1.3.2 | 87 (1) | 42 | 4 (2) | 5 | 5 | 2 | 34 | 1 `va_list` |
+| expat.h 2.7.5 | 67 | 89 | 6 (2) | 4 | 0 | 31 | 21 | 0 |
+| hpdf.h (libharu) | 532 | 947 | 38 (20) | 31 | 0 | 14 | 104 | 0 |
+| SDL3/SDL.h | 1224 (16) | 2233 | 99 (49) | 37 | 3 | 47 | 401 | 23: 16 static inline, 7 `va_list` |
+
+The first version of the prototype bound 287, 86, 67 and 528 functions of
+the first four, and could not read SDL3/SDL.h at all. The header checks of
+all five hold with clang.
 
 ### One adapter replaced
 
@@ -138,68 +230,59 @@ online backup) of a larger program was rewritten on `import c
 |---|---|---|
 | C adapter | 118 lines | none |
 | Goose `extern fn` written by hand | 22 | none |
-| Goose for the wrapper | 145 lines | 158 lines, the logic that was in C now in Goose |
+| Goose for the wrapper | 145 lines | 155 lines, the logic that was in C now in Goose |
 | Sidecar | | one `c_include` line |
 
-The program's tests, which go through SQLite heavily, pass unchanged.
+The program's tests, which go through SQLite heavily, pass unchanged. The
+first version needed a one-byte dummy to bind an empty blob, and binding the
+pointer with `let p = if n > 0 { &v[0] } else { &none[0] }` copied the byte,
+which was the rewrite's one bug. Now the slice itself is passed:
+`sqlite3_bind_blob64(st, i, v, v.len as u64, SQLITE_TRANSIENT)`.
 
-## What is still missing, in order of what it would save
+## Comparison with Zig
 
-1. **A pointer and a length as one slice.** `const void *p, size_t n` is
-   two parameters, `const u8?` and `u64`.
-   - **Passing the bytes:** the caller passes `v[0]` and `v.len`, which needs
-     a non-empty slice. An empty blob needs a one-byte dummy.
-   - **The trap:** the natural
-     `let p = if n > 0 { &v[0] } else { &none[0] }` binds `p` to a *copy* of
-     the byte, so C read one byte and then garbage. This was the one bug of
-     the rewrite above, and only the tests caught it.
-   - **Proposal:** a `bytes`-like parameter shape, a slice crossing as
-     `(data, len)` with the data never NULL. The header cannot tell which
-     pointer and length go together, so it would come from a small
-     annotation, or from a parameter-name convention as an option.
-2. **The JIT symbol table.** For `goose run`, the package's table names
-   *every* `extern fn` in its sources. An imported header declares functions
-   the library may be compiled without (sqlite's `sqlite3_carray_bind`), and
-   the JIT library then fails to link. The table should name the externs
-   that are called, or bind them weakly. `goose build` is unaffected.
-3. **Callbacks.**
-   - **Today:** a function pointer is a `u64`. expat's handlers and sqlite's
-     `exec` callback still need C.
-   - **Needed:** taking the address of an `export fn` as a C function pointer
-     of a matching prototype, with `void *` user data.
-4. **Structs C pads, by value.**
-   - **Today:** `HPDF_Date { int ...; char ind; int ... }` cannot cross by
-     value, because Goose structs are packed (§24).
-   - **Needed:** a struct with C's natural layout (`extern struct`, say),
-     usable only at the boundary.
-5. **Names TinyCC drops.**
-   - **Typedef names are lost where types are used:** a pointer typedef
-     like `HPDF_Page` comes out as its struct, `HPDF_Dict_Rec`, and
-     `sqlite3_int64` as `i64`.
-   - **Function-like macros are not imported,** so `deflateInit` is missing
-     and only `deflateInit_` is bound.
-   - **Fix:** keeping typedef names needs a hook in TinyCC's declarator
-     parsing. Simple function-like macros could become Goose functions when
-     their body is an expression the module can type.
-6. **Platform headers.** On macOS, TinyCC needs two clang predefines
-   (`__has_extension`, the deployment target) to get past the SDK's
-   availability headers, and still fails on `<inttypes.h>`. Headers that
-   include only freestanding ones (`stddef.h`, `stdarg.h`, `stdint.h`)
-   work. Linux glibc headers are untested.
-7. **Returned memory.** A returned `const char *` is a `u64`, read with
-   `ffi::cstr`. Nothing says whether it is borrowed or must be freed; that
-   is the library's documentation, not its header.
-8. **The target's layout.** The module is the compiling machine's view; a
-   cross build only gets the assertions. Parsing for the target needs a
-   TinyCC configured for it, or a native check part that includes the
-   header and asserts each struct's size and offsets.
+Zig is the closest design: `@cImport` translated a header at compile time
+with libclang, and since 0.16 the build system does it (`b.addTranslateC`),
+backed by a C compiler written in Zig (Aro).
 
-## Not changed
+| | Zig | This prototype |
+|---|---|---|
+| Where the translation runs | the build system (0.16); before, a language builtin | the compiler's loader, on `import c` |
+| C parser | Aro (before, libclang) | the TinyCC every Goose compiler already links |
+| Untranslatable names | `@compileError` stubs, an error only where used | the same, through the unknown-name errors |
+| Function-like macros | inline functions where the body allows | functions of untyped parameters, for bodies that call a function |
+| C integer types | `c_int`, `c_long`, sized per target | fixed widths, asserted per target |
+| Strings | sentinel-terminated pointers `[*:0]const u8`, no copy | `cstr`, copied with a NUL |
+| Pointer and length | `s.ptr, s.len` | a slice at a `T?` or `cptr` passes its elements |
+| Callbacks | `callconv(.c)` functions | `cfn(f)` of an `export fn` |
+| C layout | `extern struct` | `extern struct` |
+| Variadic functions | callable | callable, with `...` |
+| Other targets | headers of many C libraries shipped, parsed for the target | the target's own compiler checks the module against the header |
 
-- **What may cross the boundary** is the same as in §7.10, plus `cstr` and
-  `T?`.
-- **Exports** still reject optional parameters.
-- **Programs without `import c`** compile to the same C as before.
-- **The test suite** passes as before, plus `packages/pkg_c_import` (every
-  rule of the translation, built and under the JIT) and
-  `errors/c_import_missing`.
+Zig moved C translation out of the language into the build system: to drop
+a dependency on libclang from the compiler, and to let the build step take
+options. Goose's sidecar could host `import c` the same way, as a
+`c_import = ["sqlite3.h"]` list making the module importable. The
+boundary additions above are needed either way.
+
+## What is still open
+
+1. **Returned memory.** A returned `const char *` is a `u64`, read with
+   `ffi::cstr`. Whether it is borrowed or must be freed is the library's
+   documentation, not its header.
+2. **Function pointers outside parameters.** A function pointer in a struct
+   field (`sqlite3_vfs`) or returned by C stays a `u64`. A struct field
+   could take `cfn(f)` as a `u64` today, unchecked.
+3. **A callback that leads back to itself while it holds data stacks** is
+   a cycle the stack analysis rejects with an internal error; it should be
+   a user-facing one.
+4. **Platforms.** Linux and Windows are untried. On Linux the system
+   directories are added (`/usr/include` and the multiarch one). On
+   Windows, `long` is 4 bytes, which the asserts catch, but the headers of
+   the platform's C library are not looked for.
+5. **The header check needs C sources** in the package, since it is
+   compiled with its native part. A package binding a system library with
+   `c_libs` alone gets the target asserts only.
+6. **Where the import is written.** `import c` in the source, or a sidecar
+   list as Zig's build step does: the semantics are the same, and both
+   could be offered.

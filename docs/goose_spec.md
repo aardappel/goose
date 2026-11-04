@@ -3338,16 +3338,17 @@ These values can cross the boundary (with layouts per C.2):
 A return is one scalar or flat fixed-size value by value, or nothing;
 references, slices and builders can only be parameters. Everything else
 (varints, references inside structs, variable and resizable values by
-value, slices of variable elements, optionals) is rejected at the
-declaration. A parameter of reference or slice type is as writable as its
+value, slices of variable elements, optionals as results) is rejected at
+the declaration. A parameter of reference or slice type is as writable as its
 type says (§9.5): passing a read-only argument requires the parameter to be
 declared `const`.
 
 C must preserve the types and lifetimes of borrowed storage, must not
 retain a borrowed argument beyond the call, and may only append to a
 builder. The compiler assumes an extern may write through its arguments
-but does not mutate unrelated Goose globals; C code is responsible for
-honoring those obligations.
+but does not mutate unrelated Goose globals, except through an export fn
+it calls back (`cfn`), which the compiler takes as called by every extern
+call; C code is responsible for honoring those obligations.
 
 **Importing a C header.** `import c "x.h";` declares the functions,
 constants and types of a C header, read by the compiler's own C parser,
