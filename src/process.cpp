@@ -237,7 +237,7 @@ string CommandLineText(const vector<string> &argv) {
     string s;
     for (auto &a : argv) {
         if (!s.empty()) s += ' ';
-        if (!a.empty() && a.find_first_of(" \t\"'&|<>^();$`\\") == string::npos) {
+        if (!a.empty() && a.find_first_of(" \t\"'&|<>^();$`\\*?[") == string::npos) {
             s += a;
             continue;
         }
