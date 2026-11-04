@@ -166,6 +166,17 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
                 continue;
             }
         }
+        if (CrossesAsMirror(pt)) {
+            // An extern struct by value: as C's own struct (CMirror).
+            auto x = GenXD(an[i], pt);
+            auto mt = CMirror(pt);
+            auto v = T(), m = T();
+            L(CT(pt), " ", v, " = ", x, ";");
+            L(mt, " ", m, ";");
+            L("memcpy(&", m, ", &", v, ", sizeof ", m, ");");
+            argstr += m;
+            continue;
+        }
         if (pt->cfnsig) {
             // A C function pointer: cfn(f), an address C gave, or null.
             if (Is<NullLit>(an[i])) {
@@ -204,6 +215,13 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     vector<string> rets;
     if (sp->rets.empty()) {
         L(callee, "(", argstr, ");");
+    } else if (CrossesAsMirror(sp->rets[0])) {
+        auto mt = CMirror(sp->rets[0]);
+        auto m = T(), r0 = T();
+        L(mt, " ", m, " = ", callee, "(", argstr, ");");
+        L(CT(sp->rets[0]), " ", r0, ";");
+        L("memcpy(&", r0, ", &", m, ", sizeof ", r0, ");");
+        rets.push_back(r0);
     } else {
         auto r0 = T();
         L(CT(sp->rets[0]), " ", r0, " = ", callee, "(", argstr, ");");
@@ -213,6 +231,36 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     for (auto &f : cstrs) L(f);
     if (grows) MarkReload();
     return rets;
+}
+
+// The C struct an extern struct crosses to C by value as (§7.10): its fields
+// in C's natural layout, without the pads, which the asserts check put
+// each field at the offset the packed Goose struct has. The bytes are the
+// same, so a copy converts; the calling convention is then C's own, which
+// passes a float field in a float register where a pad would not let it.
+inline string CodeGen::CMirror(TypeExpr *t) {
+    auto si = SI(t);
+    if (auto it = cmirrors.find(si); it != cmirrors.end()) return it->second;
+    auto packed = CT(t, false);
+    auto name = cat("gs_c_", packed);
+    auto &lo = StructLayout(si);
+    string d = cat("typedef struct ", name, " {\n"), asserts;
+    for (size_t i = 0; i < si->st->fields.size(); i++) {
+        auto &f = si->st->fields[i];
+        if (f.ispad) continue;
+        auto ft = si->ftypes[i];
+        auto fname = Sanitize(f.name);
+        auto elem = [&](TypeExpr *e) { return CrossesAsMirror(e) ? CMirror(e) : CT(e, false); };
+        if (ft->kind == TY_ARRAY) Append(d, "    ", elem(ft->arr->sub), " ", fname, "[", ArrSize(ft->arr), "];\n");
+        else Append(d, "    ", elem(ft), " ", fname, ";\n");
+        Append(asserts, "_Static_assert(offsetof(", name, ", ", fname, ") == ", lo.offs[i], ", ",
+               CStr(cat("extern struct ", si->st->name, ": field ", f.name, " where C places it")), ");\n");
+    }
+    Append(d, "} ", name, ";\n", asserts, "_Static_assert(sizeof(", name, ") == ", lo.size, ", ",
+           CStr(cat("extern struct ", si->st->name, ": its size in C")), ");\n");
+    cmirrors[si] = name;
+    cdecls += d;
+    return name;
 }
 
 // The C type of a pointer to a function of the signature `fn(...) -> R`
@@ -232,7 +280,8 @@ inline string CodeGen::CFnPtrType(TypeExpr *sig, const string &name) {
 // (GS_DL_CALL).
 inline string CodeGen::ExternProto(FnSpec *sp) {
     auto dynamic = !sp->sf->dylib.empty();
-    auto ret = sp->rets.empty() ? string("void") : CT(sp->rets[0]);
+    auto ret = sp->rets.empty() ? string("void")
+               : CrossesAsMirror(sp->rets[0]) ? CMirror(sp->rets[0]) : CT(sp->rets[0]);
     string s = dynamic ? "static " : "";
     s += ret;
     if (dynamic) Append(s, " (*", DlSlot(sp), ")(");
@@ -248,7 +297,8 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
         auto at = sp->argtypes[i];
         auto ct = at->cstr ? string("const char *")
                   : at->cptr ? string(at->cq ? "const void *" : "void *")
-                  : at->cfnsig ? CFnPtrType(at->cfnsig, "") : CT(at);
+                  : at->cfnsig ? CFnPtrType(at->cfnsig, "")
+                  : CrossesAsMirror(at) ? CMirror(at) : CT(at);
         s += ct;
         Append(params, ct, " a", i);
         Append(args, "a", i);

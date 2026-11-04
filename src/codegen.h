@@ -94,6 +94,8 @@ struct CodeGen {
     // driver-prepended runtime): predefs go before the runtime paste.
     string predefs;
     string tdecls;      // Packed typedefs.
+    string cdecls;      // C-layout mirrors of extern structs (CMirror), after the packed ones.
+    map<StructInst *, string> cmirrors;
     string pdata;       // Packed static data (string literals).
     string data;        // Queues, long-distance return channels, globals.
     // The members of gs_globals_t, the program instance's globals (§11.1):
@@ -976,6 +978,8 @@ struct CodeGen {
 
     string Snapshot(TypeExpr *t, const string &x);
     string CFnPtrType(TypeExpr *sig, const string &name);
+    string CMirror(TypeExpr *t);
+    bool CrossesAsMirror(TypeExpr *t) { return t->kind == TY_STRUCT && SI(t)->st->isextern; }
     // Fill operands are evaluated once; literal shells containing relative
     // links are replayed at each slot using these captured leaf values.
     unordered_map<Node *, Loc> fillvalues;
@@ -1637,7 +1641,10 @@ struct CodeGen {
             Append(includes, "#include \"", inc, "\"\n");
         }
         Append(head, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
-               "#pragma pack(pop)\n\n/* ---- data ---- */\n", data);
+               "#pragma pack(pop)\n");
+        if (!cdecls.empty())
+            Append(head, "\n/* ---- extern structs in C's layout ---- */\n#include <stddef.h>\n", cdecls);
+        Append(head, "\n/* ---- data ---- */\n", data);
         Append(result, "\n/* ---- includes ---- */\n", includes,
                "\n/* ---- extern prototypes ---- */\n", externs,
                "\n/* ---- prototypes ---- */\n", protos, "\n/* ---- code ---- */\n", code);

@@ -334,7 +334,9 @@ struct Writer {
             body = cat("bytes: u8[", tag.size, "]");
             pad = true;
         }
-        structtext[t] = cat("struct ", name, " { ", body, " }");
+        // With its fields it is an extern struct, which crosses by value as
+        // C's own; as bytes only, a plain one, which crosses by reference.
+        structtext[t] = cat(state == 1 ? "extern struct " : "struct ", name, " { ", body, " }");
         structpad[t] = pad;
         structstate[t] = state;
         structs.push_back(t);
@@ -399,9 +401,9 @@ struct Writer {
                     why = cat("the implementation's ", TagName(t.tag));
                     return "";
                 }
-                if (Struct(t.tag) == 1 && !structpad[t.tag]) return TagName(t.tag);
+                if (Struct(t.tag) == 1) return TagName(t.tag);
                 why = cat("a struct ", TagName(t.tag).empty() ? "" : TagName(t.tag) + " ",
-                          "by value that Goose's packed layout cannot match");
+                          "by value with a field Goose cannot spell");
                 return "";
             case GCD_UNION: why = "a union by value"; return "";
             case GCD_LDOUBLE: why = "long double"; return "";
@@ -631,7 +633,7 @@ inline CImported CImport(const string &header, const string &dir, const vector<s
     for (auto t : w.handles) {
         auto name = w.TagName(t);
         if (w.globals.count(name)) continue;
-        Append(types, "struct ", name, " { p: u64 = 0 }\n");
+        Append(types, "extern struct ", name, " { p: u64 = 0 }\n");
     }
     for (auto t : w.structs)
         if (!w.handles.count(t)) Append(types, w.structtext[t], "\n");

@@ -4037,6 +4037,10 @@ prototype in terms of Goose's shapes:
   literal cannot be a reference target: write
   `let r = Rect { 0, 0, 10, 10 }; SDL_HasIntersection(r, s)` rather than
   putting the literal in the call.
+  An `extern struct` crosses by value whatever its pads: the compiler
+  checks they put each field where C does, and passes it as C's own
+  struct, so `extern struct Mixed { x: f32, pad 4, y: f64 }` arrives in
+  the float registers C uses.
 * **Memory the library owns**, such as a `const char *` it returns or an
   array it keeps, also comes back as a `u64`. `ffi::cstr(p)` and
   `ffi::bytes(p, n)` ([stdlib.md](stdlib.md#ffi)) copy what is there into
@@ -4101,12 +4105,14 @@ fn main() {
   (its elements), other storage (bound by reference, as `&x`), an address
   held as `u64`, or `null`. Any other pointer, and every pointer a function
   returns but a handle, is a `u64`.
-* A complete struct is a Goose struct with `pad` where C pads it.
+* A complete struct is an `extern struct` with `pad` where C pads it, so
+  it crosses by value as well as by reference. One with a field Goose cannot
+  spell (a bitfield, a union) is a struct of its bytes, by reference only.
 * Enum constants and object-like macros that are constants (integer,
   floating, string, or a cast to a pointer such as `SQLITE_TRANSIENT`) are
   `let`s with the value C gives them.
-* Variadic functions, variables, and functions passing a union, a bitfield,
-  `long double` or a padded struct by value are left out; the module says
+* Variadic functions, variables, and functions passing a union, a bitfield
+  or `long double` by value are left out; the module says
   which, and why, at its end. Using one, or a function-like macro, is an
   error that says why it is missing:
   `sqlite3_mprintf: not imported from sqlite3.h (variadic)`.

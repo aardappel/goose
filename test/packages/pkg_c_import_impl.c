@@ -60,6 +60,23 @@ int ci_each(const int *xs, size_t n, ci_visit f, void *ud) {
     return s;
 }
 
+double ci_item_total(ci_item it) {
+    calls++;
+    return it.tag + it.value + it.weight;
+}
+
+ci_item ci_item_make(char tag, int value, double weight) {
+    ci_item it = { tag, value, weight };
+    calls++;
+    return it;
+}
+
+ci_fd ci_fd_swap(ci_fd x) {
+    ci_fd r = { (float)x.d, x.f };
+    calls++;
+    return r;
+}
+
 int ci_sum_bytes(const void *p, size_t n) {
     const unsigned char *b = p;
     int s = 0;

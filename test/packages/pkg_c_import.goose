@@ -43,6 +43,10 @@ fn main() {
     print(it.tag, " ", it.value, " ", it.weight, " ", ci_item_weight(it));
     let p = ci_point_add(ci_point { x: 1, y: 2 }, ci_point { x: 10, y: 20 });
     print(p.x, " ", p.y);
+    // Padded structs by value, both ways: extern structs, as C lays them out.
+    let fatto = ci_item_make('z', 7, 0.5);
+    let fd = ci_fd_swap(ci_fd { f: 1.5, d: 2.25 });
+    print(fatto.tag, " ", fatto.value, " ", fatto.weight, " ", ci_item_total(fatto), " ", fd.f, " ", fd.d);
 
     // A void pointer (cptr): an array, a slice, an empty one, a reference,
     // an address held as u64, or null. An optional pointer, given or null.

@@ -1048,11 +1048,21 @@ inline void CodeGen::EmitExports() {
         auto sp = sf->specs[0];
         auto &si = sinfo[sp];
         auto returnslice = !sp->rets.empty() && sp->rets[0]->kind == TY_SLICE;
-        string params, args;
+        string params, args, prologue;
         vector<string> argv;
         for (size_t i = 0; i < sp->argtypes.size(); i++) {
             auto arg = Unique(cat("gs_export_arg", i));
-            Append(params, params.empty() ? "" : ", ", CT(sp->argtypes[i]), " ", arg);
+            if (CrossesAsMirror(sp->argtypes[i])) {
+                // An extern struct comes as C's own (CMirror), copied into Goose's.
+                auto carg = Unique(cat("gs_export_carg", i));
+                auto mt = CMirror(sp->argtypes[i]);
+                auto pt = CT(sp->argtypes[i]);
+                Append(params, params.empty() ? "" : ", ", mt, " ", carg);
+                Append(prologue, "    ", pt, " ", arg, ";\n    memcpy(&", arg, ", &", carg, ", sizeof ",
+                       arg, ");\n");
+            } else {
+                Append(params, params.empty() ? "" : ", ", CT(sp->argtypes[i]), " ", arg);
+            }
             PushArg(argv, sp->argtypes[i], IsPoolParam(sp, i), arg);
         }
         for (auto &a : argv) Append(args, args.empty() ? "" : ", ", a);
@@ -1063,13 +1073,16 @@ inline void CodeGen::EmitExports() {
         // C calls one cfn handed out back during an extern call, above the
         // caller's data stacks (EmitExternCall); a host calls it at 0.
         if (si.needssp) args += ast.cfnexports.count(sf) ? "gs_export_sp" : "0";
+        auto retmirror = !sp->rets.empty() && CrossesAsMirror(sp->rets[0]);
         auto ret = sp->rets.empty() ? string("void")
-                   : returnslice ? string("const uint8_t *") : CT(sp->rets[0]);
+                   : returnslice ? string("const uint8_t *")
+                   : retmirror ? CMirror(sp->rets[0]) : CT(sp->rets[0]);
         Append(exportprotos, ret, " ", sf->cname, "(", params, ");\n");
         if (ast.cfnexports.count(sf)) Append(protos, ret, " ", sf->cname, "(", params, ");\n");
         Append(code, ret, " ", sf->cname, "(", params, ") {\n"
                      "    if (!gs_program_initialized)\n"
-                     "        gs_panic(\"goose_init must be called before exported functions\");\n");
+                     "        gs_panic(\"goose_init must be called before exported functions\");\n",
+               prologue);
         if (returnslice) {
             auto value = Unique("gs_export_result");
             Append(code, "    if (!", outlen,
@@ -1080,6 +1093,10 @@ inline void CodeGen::EmitExports() {
                    "    return (const uint8_t *)", value, ".data;\n");
         } else if (sp->rets.empty()) {
             Append(code, "    ", si.cname, "(", args, ");\n");
+        } else if (retmirror) {
+            auto v = Unique("gs_export_result"), r = Unique("gs_export_cresult");
+            Append(code, "    ", CT(sp->rets[0]), " ", v, " = ", si.cname, "(", args, ");\n    ", ret,
+                   " ", r, ";\n    memcpy(&", r, ", &", v, ", sizeof ", r, ");\n    return ", r, ";\n");
         } else {
             Append(code, "    return ", si.cname, "(", args, ");\n");
         }
@@ -1107,6 +1124,8 @@ inline string CodeGen::ExportHeader() {
                     "#pragma pack(push, 1)\n";
     header += tdecls;
     header += "#pragma pack(pop)\n\n";
+    // Extern structs an export takes or returns by value, in C's layout.
+    if (!cdecls.empty()) header += cat("#include <stddef.h>\n", cdecls, "\n");
     header += "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
               "void goose_init(int argc, char **argv);\n"
               "void goose_exit(void);\n";

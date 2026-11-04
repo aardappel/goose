@@ -2733,7 +2733,7 @@ inline bool TypeCheck::CPointerNarrowInt(TypeExpr *pt, Val &v) {
 inline bool TypeCheck::DylibValueOk(SFunction *sf, TypeExpr *t, string &why) {
     if (sf->dylib.empty() || t->kind == TY_REF || t->kind == TY_SLICE) return true;
     auto padded = Reaches(t, [&](TypeExpr *t) {
-        if (t->kind != TY_STRUCT) return false;
+        if (t->kind != TY_STRUCT || GetStructInst(t)->st->isextern) return false;
         for (auto &f : GetStructInst(t)->st->fields) if (f.ispad) return true;
         return false;
     });

@@ -64,6 +64,73 @@ template<typename Inst> Inst *Reused(Inst *inst) {
     return inst;
 }
 
+// The size and alignment C gives a field of an extern struct: a scalar, a
+// fixed array of fields, or an extern struct; false for anything else.
+inline bool TypeCheck::CLayoutOf(TypeExpr *t, int64_t &size, int64_t &align) {
+    switch (t->kind) {
+        case TY_INT:
+            if (t->intstorage == IS_VARINT) return false;
+            size = align = IntBits(t->intstorage) / 8;
+            return true;
+        case TY_FLT: size = align = t->fltstorage == FS_F32 ? 4 : 8; return true;
+        case TY_BOOL: size = align = 1; return true;
+        case TY_ARRAY: {
+            if (t->arr->akind != A_FIXED) return false;
+            if (!CLayoutOf(t->arr->sub, size, align)) return false;
+            size *= ArraySize(t->arr);
+            return true;
+        }
+        case TY_STRUCT: {
+            auto inst = GetStructInst(t);
+            if (!inst->st->isextern) return false;
+            size = inst->csize;
+            align = inst->calign;
+            return true;
+        }
+        default: return false;
+    }
+}
+
+// An extern struct (§7.10): its pads must put each field where C does, at
+// a multiple of its alignment, and end it at a multiple of the largest, so
+// that its bytes are those of the C struct and it crosses by value as one.
+inline void TypeCheck::CheckExternStruct(StructInst *inst) {
+    auto st = inst->st;
+    if (st->isroot) Error(st->line, "a struct is root or extern, not both");
+    if (!st->generics.empty()) Error(st->line, cat("extern struct ", st->name, " cannot be generic"));
+    int64_t pos = 0, maxalign = 1;
+    for (size_t i = 0; i < st->fields.size(); i++) {
+        auto &f = st->fields[i];
+        if (f.ispad) {
+            if (f.padsize < 0)
+                Error(st->line, cat("extern struct ", st->name, " writes its padding as pad N, "
+                                    "the bytes C leaves"));
+            pos += f.padsize;
+            continue;
+        }
+        int64_t size = 0, align = 1;
+        if (!CLayoutOf(inst->ftypes[i], size, align))
+            Error(st->line, cat("field ", f.name, " of extern struct ", st->name, " is ",
+                                TypeStr(inst->ftypes[i]), ": an extern struct holds scalars, "
+                                "fixed arrays of them and extern structs"));
+        if (pos % align) {
+            auto at = (pos + align - 1) / align * align;
+            Error(st->line, cat("field ", f.name, " of extern struct ", st->name, " is at offset ",
+                                pos, ", where C places it at ", at, ": write pad ", at - pos,
+                                " before it"));
+        }
+        pos += size;
+        maxalign = std::max(maxalign, align);
+    }
+    if (pos % maxalign) {
+        auto end = (pos + maxalign - 1) / maxalign * maxalign;
+        Error(st->line, cat("extern struct ", st->name, " is ", pos, " bytes, which C rounds up to ",
+                            end, ": write pad ", end - pos, " at its end"));
+    }
+    inst->csize = pos;
+    inst->calign = maxalign;
+}
+
 inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     auto st = t->struc->st;
     if (t->struc->inst) return Reused(t->struc->inst);
@@ -117,6 +184,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         }
         inst->flat = inst->flat && IsFlat(ft);
     }
+    if (st->isextern) CheckExternStruct(inst);
     if (inst->sclass == SC_RESIZABLE) {
         auto fo = true;
         for (auto i = 0; i < (int)st->fields.size(); i++) {

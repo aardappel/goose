@@ -1552,6 +1552,9 @@ struct SStruct {
     Line end;                   // As SFunction::end.
     string_view doc;            // As SFunction::doc.
     bool isroot = false;       // Explicit owning layout (docs/design/root_structs.md).
+    // `extern struct` (§7.10): its pads put each field where C would, so it
+    // also crosses to C by value, as a struct of C's own layout.
+    bool isextern = false;
     vector<GenericParam> generics;
     vector<Field> fields;
     vector<StructInst *> insts;  // Instantiations (typecheck), owned by Ast.
@@ -1873,6 +1876,8 @@ struct StructInst {
     // a frame object (C.2), whose fixed fields and tail header live in the
     // owning frame and whose tail alone occupies the data stack.
     bool frameobj = false;
+    // An extern struct's size and alignment as C lays it out.
+    int64_t csize = 0, calign = 1;
 };
 
 // An enum type with concrete generic arguments.

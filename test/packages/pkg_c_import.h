@@ -37,6 +37,10 @@ enum ci_color ci_next_color(enum ci_color c);
 void ci_item_fill(ci_item *it, char tag, int value, double weight);
 double ci_item_weight(const ci_item *it);
 ci_point ci_point_add(ci_point a, ci_point b);
+double ci_item_total(ci_item it);              /* padded, by value: an extern struct */
+ci_item ci_item_make(char tag, int value, double weight);
+typedef struct { float f; double d; } ci_fd;   /* a float in a float register, not a pad's */
+ci_fd ci_fd_swap(ci_fd x);
 int ci_sum_bytes(const void *p, size_t n);     /* const cptr */
 long long ci_sum_ints(const int *xs, size_t n); /* a pointer and a length: a slice, empty too */
 void ci_fill(int *out, size_t n, int v);

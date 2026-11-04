@@ -505,6 +505,11 @@ struct Parser {
                     ParseExternBlock(pre.cname, depth, startp);
                     return;
                 }
+                // `extern struct`: a struct with C's layout (§7.10).
+                if (lex.tok == T_STRUCT && pre.cname.empty()) {
+                    ParseStructDecl(false, true);
+                    return;
+                }
                 ast.topdecls.push_back(ParseFnDecl(false, &pre));
                 return;
             }
@@ -564,7 +569,7 @@ struct Parser {
         }
     }
 
-    void ParseStructDecl(bool isroot = false) {
+    void ParseStructDecl(bool isroot = false, bool isextern = false) {
         auto firsttype = ast.alltypes.size();
         auto line = CurLine();
         auto doc = lex.doc;
@@ -574,6 +579,7 @@ struct Parser {
         Expect(T_STRUCT, "struct declaration");
         auto st = new SStruct();
         st->isroot = isroot;
+        st->isextern = isextern;
         ast.structs.push_back(st);
         st->name = ParseDeclName("struct declaration");
         st->ns = curns;

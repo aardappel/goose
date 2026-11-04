@@ -2394,6 +2394,8 @@ struct TypeCheck {
     bool CPointerArgOk(TypeExpr *pt, Val &v);
     bool CPtrBindsLValue(const Val &v, TypeExpr *dt);
     bool CFnSigOk(TypeExpr *pt, Val &v);
+    void CheckExternStruct(StructInst *inst);
+    bool CLayoutOf(TypeExpr *t, int64_t &size, int64_t &align);
     bool CPointerNarrowInt(TypeExpr *pt, Val &v);
     bool DylibValueOk(SFunction *sf, TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);

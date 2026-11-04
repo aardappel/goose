@@ -3292,6 +3292,13 @@ These values can cross the boundary (with layouts per C.2):
 * the integer and float scalars and `bool`;
 * any flat fixed-size value (including structs, fixed and static-capacity
   limited arrays, and fixed-mode ADTs), by value as its packed C type;
+* an `extern struct`, by value as a struct of C's own layout. It is a
+  struct whose pads put each field where C places it, at a multiple of its
+  alignment, and end it at a multiple of the largest, which the compiler
+  checks; its fields are scalars, fixed arrays of them and extern structs.
+  Its bytes are those of the C struct, and the call converts it to the C
+  struct, so the calling convention passes it as C does (a float field in a
+  float register, where a pad would not);
 * `T&` to such a `T`, as a pointer, and the optional `T?`, as a pointer
   that is NULL for `null`. A `T?` parameter also takes a slice of `T`, or
   an array of `T` stored somewhere, as the address of its elements, which
