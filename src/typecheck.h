@@ -901,6 +901,8 @@ struct TypeCheck {
         } else if (auto b = Is<Binary>(n)) {
             ConstExprNames(b->left, what, f);
             ConstExprNames(b->right, what, f);
+        } else if (auto c = Is<AsCast>(n)) {
+            ConstExprNames(c->child, what, f);
         } else if (auto d = Is<Dot>(n)) {
             if (auto obj = Is<Ident>(d->obj)) f(obj, what);
         }

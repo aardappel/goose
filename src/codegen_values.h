@@ -700,6 +700,53 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
     return BytesLoc(cat("(", v.elems, " + ", ix, " * ", esz, ")"), v.elem, lv);
 }
 
+inline CodeGen::Loc CodeGen::WindowLoc(SliceExpr *se) {
+    auto lv = GenLoc(se->obj);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    auto v = ArrayView(lv);
+    if (se->lo && HasStmts(se->lo)) {
+        auto elems = T(), len = T();
+        L(v.typedelems ? CT(v.elem) : string("uint8_t"), " *", elems, " = ", v.elems, ";");
+        L("int64_t ", len, " = ", v.len, ";");
+        v.elems = elems;
+        v.len = len;
+    }
+    string lo = "0";
+    if (se->lo) {
+        if (locnow && Is<Ident>(se->lo)) {
+            lo = GenX(se->lo);
+            if (!IsCName(lo)) lo = Snapshot(se->lo->exprtype, lo);
+        } else {
+            lo = GenPure(se->lo);
+        }
+    }
+    if (lv.t->kind == TY_SLICE) {
+        auto p = T();
+        L(IsBytesT(v.elem) ? "uint8_t" : CT(v.elem), " *", p, " = ", v.elems, ";");
+        v.elems = p;
+    }
+    string ix;
+    auto il = se->lo ? Is<IntLit>(se->lo) : nullptr;
+    auto statlen = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED
+                       ? ArrSize(lv.t->arr) : -1;
+    auto const_lo = !se->lo ? 0 : (il ? il->val : -1);
+    if (se->nobc || (statlen >= 0 && const_lo >= 0 && const_lo <= statlen - se->win_len))
+        ix = lo;
+    else
+        ix = cat("gs_bc_win((int64_t)(", lo, "), ", se->win_len, ", ", v.len, ", ",
+                 LocArgs(se->line), ")");
+    auto ptr = ElemAddr(v, ix);
+    Loc r;
+    r.t = se->exprtype;
+    r.val = true;
+    r.s = cat("(*(", CT(se->exprtype), " *)(", ptr, "))");
+    r.stk = lv.stk;
+    r.fl = lv.fl;
+    r.flstk = lv.flstk;
+    r.viaref = lv.viaref;
+    return r;
+}
+
 // A path whose address takes no check and calls nothing: a variable, or a
 // field of one, through references too.
 static bool CheckFreePath(Node *n) {
@@ -789,12 +836,16 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
         if (lv.t->kind == TY_REF) DerefLoc(lv);
         return IndexLoc(lv, ix->idx, ix->line, ix->nobc);
     }
+    if (auto se = Is<SliceExpr>(n); se && se->is_window) {
+        return WindowLoc(se);
+    }
     // `&path` addressed as a location is the path itself: going through a
     // reference temporary would spell the value's stack a second way,
     // behind the top the function may be keeping in a local (see the
     // note on data-stack top caching).
     if (auto u = Is<Unary>(n); u && u->op == T_BITAND &&
-        (Is<Ident>(u->child) || Is<Dot>(u->child) || Is<Index>(u->child)) &&
+        (Is<Ident>(u->child) || Is<Dot>(u->child) || Is<Index>(u->child) ||
+         (Is<SliceExpr>(u->child) && ((SliceExpr *)u->child)->is_window)) &&
         u->child->exprtype && u->child->exprtype->kind != TY_REF)
         return GenLoc(u->child);
     // Any other expression: an addressed temporary (TC's LValueBase).
@@ -1149,11 +1200,13 @@ inline bool CodeGen::GenIntoLimited(Node *n, TypeExpr *want, const string &dst, 
         lv = GenLoc(n);
     } else if (!TEq(n->exprtype, want)) {
         return false;
-    } else if (auto se = Is<SliceExpr>(n)) {
+    } else if (auto se = Is<SliceExpr>(n); se && !se->is_window) {
         lv.val = true;
         lv.s = GenSlice(se);
         lv.t = ast.SliceOf(want->arr->sub, n->line);
-    } else if (Is<Ident>(n) || Is<Index>(n) || (dot && !dot->variantconst && dot->member < 0)) {
+    } else if (Is<Ident>(n) || Is<Index>(n) ||
+               (Is<SliceExpr>(n) && ((SliceExpr *)n)->is_window) ||
+               (dot && !dot->variantconst && dot->member < 0)) {
         // What their GenX reads: the location, loaded at `want`.
         lv = GenLoc(n);
         while (lv.t->kind == TY_REF) DerefLoc(lv);
@@ -1614,7 +1667,8 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
     // decayed back to its bytes pointee. A payload-less variant constant is
     // a value, not a path: it constructs below like the other rvalues.
     Node *path = nullptr;
-    if (Is<Ident>(n) || Is<Index>(n)) path = n;
+    if (Is<Ident>(n) || Is<Index>(n) || (Is<SliceExpr>(n) && ((SliceExpr *)n)->is_window))
+        path = n;
     else if (auto dot = Is<Dot>(n); dot && dot->IsField()) path = n;
     else if (auto u = Is<Unary>(n); u && u->op == T_BITAND) path = u->child;
     if (path) {

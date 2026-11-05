@@ -1191,6 +1191,8 @@ NODE(SliceExpr)
     Node *obj;
     Node *lo = nullptr, *hi = nullptr;      // Either may be absent.
     bool lo_from_end = false, hi_from_end = false;  // ^k bounds.
+    bool is_window = false;     // s[lo..+N] or s[..+N]: fixed-length window T[N].
+    int64_t win_len = -1;       // Evaluated N for is_window.
     bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
     bool cmpview = false;       // The whole slice `==` takes of an operand (§4.5).
     SliceExpr(Line l, Node *_obj) : Node(l, NKind), obj(_obj) {}

@@ -985,6 +985,8 @@ inline Node *SliceExpr::Cp1(Inliner &inl) const {
     if (hi) c->hi = inl.Cp(hi);
     c->lo_from_end = lo_from_end;
     c->hi_from_end = hi_from_end;
+    c->is_window = is_window;
+    c->win_len = win_len;
     c->cmpview = cmpview;
     return c;
 }
@@ -1308,6 +1310,11 @@ inline Node *Index::Opt(Optimizer &o) {
 }
 
 inline Node *SliceExpr::Opt(Optimizer &o) {
+    if (is_window) {
+        obj = o.Viewed(this) || (lo && !Optimizer::CodeFree(lo)) ? o.OptViewed(obj) : o.Opt(obj);
+        if (lo) lo = o.Opt(lo);
+        return this;
+    }
     obj = o.OptViewed(obj);
     if (lo) lo = o.Opt(lo);
     if (hi) hi = o.Opt(hi);
