@@ -1639,7 +1639,13 @@ struct Parser {
             auto sl = New<SliceExpr>(line, obj);
             sl->lo = lo;
             sl->lo_from_end = lo_from_end;
-            if (lex.tok != T_RBRACKET) {
+            if (lex.tok == T_PLUS) {
+                if (lo_from_end) Error("'^' bounds cannot be combined with '..+'");
+                Role(R_UNARY);
+                lex.Next();
+                sl->is_window = true;
+                sl->hi = ParseExpr();
+            } else if (lex.tok != T_RBRACKET) {
                 if (lex.tok == T_XOR) Role(R_UNARY);
                 sl->hi_from_end = IsNext(T_XOR);
                 sl->hi = ParseExpr();

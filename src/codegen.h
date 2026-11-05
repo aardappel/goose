@@ -993,6 +993,7 @@ struct CodeGen {
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);
     Loc IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc);
+    Loc WindowLoc(SliceExpr *se);
     Index *LeadingCheck(Node *arm);
     bool SamePath(Node *a, Node *b);
     bool SameCheck(Index *a, Index *b);

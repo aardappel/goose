@@ -101,6 +101,43 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         RecordVal(n, ContainerRead(lv));
         return lv;
     }
+    if (auto se = Is<SliceExpr>(n); se && se->is_window) {
+        auto lv = LValueBase(se->obj, se->cmpview);
+        DerefLValue(lv, se->obj);
+        SliceProvenance(lv, se->obj);
+        TypeExpr *elem;
+        if (lv.type->kind == TY_SLICE) {
+            elem = lv.type->sub;
+        } else {
+            if (lv.type->kind != TY_ARRAY)
+                Error(n, cat("cannot slice a value of type ", TypeStr(lv.type)));
+            RequireComplete(lv.type, n->line);
+            elem = lv.type->arr->sub;
+        }
+        if (ClassOf(elem) != SC_FIXED)
+            Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
+                         " of variable-size elements cannot take fixed-length windows"));
+        if (elem->kind == TY_INT && elem->intstorage == IS_VARINT)
+            Error(n, "varint arrays cannot take fixed-length windows");
+        if (lv.intemp) NoRelRefTempRead(se->obj, lv.type, elem);
+        if (se->lo) CheckIntAny(se->lo);
+        int64_t wlen = 0;
+        ConstUse use { se->hi, "slice window length" };
+        if (!se->hi || !ConstInt(se->hi, wlen, &use) || wlen <= 0)
+            Error(se, "slice window '..+N' requires a positive compile-time integer constant N");
+        CheckIntAny(se->hi);
+        se->win_len = wlen;
+        if (lv.type->cq) lv.writable = false;
+        lv.letbound = false;
+        lv.type = ast.ArrayOf(elem, A_FIXED, se->line, wlen);
+        lv.var = nullptr;
+        lv.fromstorage = true;
+        lv.isslot = true;
+        lv.isvarint = false;
+        n->exprtype = lv.type;
+        RecordVal(n, ContainerRead(lv));
+        return lv;
+    }
     Error(n, "not an assignable location");
 }
 
@@ -111,7 +148,9 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
 // which ends with the comparison, so it may view any temporary.
 inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
     DestScope ds(*this, Dest {});
-    if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n)) return CheckLValue(n);
+    if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n) ||
+        (Is<SliceExpr>(n) && ((SliceExpr *)n)->is_window))
+        return CheckLValue(n);
     auto v = CheckV(n, nullptr);
     NoUntypedEmptyArray(v, n, "an index, slice or field of it");
     if (!cmpview) NoTemporaryLiteral(n, v.type);
@@ -2683,6 +2722,18 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
         return true;
     }
     if (auto id = Is<Ident>(n)) {
+        if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal && vd->constlit &&
+            !vd->constflt) {
+            v.type = vd->type ? ast.PlainOf(vd->type)
+                              : ast.inttypes[vd->constuns ? IS_U64 : IS_I64];
+            v.ck = CK_INT;
+            v.ival = vd->constval;
+            v.uns = vd->constuns;
+            v.notconst = vd->constnot;
+            v.litlo = v.lithi = vd->constnot ? ~vd->constval : vd->constval;
+            literal = false;
+            return true;
+        }
         auto g = ast.LookupGlobal(id->name, id->ns);
         if (!g || g->isvar || g->inits.size() != 1) return false;
         if (!visiting.insert(g).second)
@@ -2777,6 +2828,25 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
         FoldInt(b->op, l, r, v, n);
         if (v.ck != CK_INT) Error(n, "signed overflow in constant expression");
         literal = llit && rlit;
+        return true;
+    }
+    if (auto c = Is<AsCast>(n)) {
+        if (!ConstIntValue(c->child, v, literal, visiting, use)) return false;
+        auto tt = Subst(c->type);
+        if (!IsIntT(tt) || tt->intstorage == IS_VARINT || tt->ix) return false;
+        if (v.notconst) {
+            if (!c->unchecked && !FitsIntStorage(v.litlo, false, tt->intstorage))
+                Error(n, ConstsNoFit(v, tt));
+            v.ival = WrapStorage(v.ival, tt->intstorage);
+            v.uns = tt->intstorage == IS_U64 && v.ival < 0;
+            v.notconst = false;
+        }
+        if (!c->unchecked && !FitsIntStorage(v.ival, v.uns, tt->intstorage))
+            Error(n, cat("constant ", ConstStr(v), " does not fit ", TypeStr(tt)));
+        v.ival = WrapStorage(v.ival, tt->intstorage);
+        v.uns = tt->intstorage == IS_U64 && v.ival < 0;
+        v.type = ast.PlainOf(tt);
+        literal = false;
         return true;
     }
     if (auto d = Is<Dot>(n)) {

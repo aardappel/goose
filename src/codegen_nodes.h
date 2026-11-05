@@ -298,6 +298,10 @@ inline string Index::CgX(CodeGen &cg) {
 }
 
 inline string SliceExpr::CgX(CodeGen &cg) {
+    if (is_window) {
+        auto lv = cg.GenLocNow(this);
+        return cg.LoadLoc(lv, exprtype, line);
+    }
     auto s = cg.GenSlice(this);
     if (!cg.IsStaticLimited(exprtype)) return s;
     // The range constructing a static-capacity limited array (§4.2).

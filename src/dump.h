@@ -440,6 +440,7 @@ inline void SliceExpr::Dump(string &s, int ind) const {
         lo->Dump(s, ind);
     }
     s += "..";
+    if (is_window) s += "+";
     if (hi) {
         if (hi_from_end) s += "^";
         hi->Dump(s, ind);

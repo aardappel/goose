@@ -250,6 +250,13 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
     ((uint64_t)(i) < (uint64_t)(n) ? (i) \
                                    : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
 
+static GS_INLINE int64_t gs_bc_win(int64_t lo, int64_t win_len, int64_t len,
+                                   const char *file, int line) {
+    if ((uint64_t)lo > (uint64_t)(len - win_len) || len < win_len)
+        gs_abort(GS_E_SLICE, file, line);
+    return lo;
+}
+
 /* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
    in debug builds, an optimizer hint in release. */
 #if GS_DEBUG

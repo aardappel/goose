@@ -2523,7 +2523,10 @@ struct BCE {
                 cur = d->obj;
                 continue;
             }
-            if (Is<Index>(cur)) { ch.kind = CH_INDEX; return ch; }
+            if (Is<Index>(cur) || (Is<SliceExpr>(cur) && ((SliceExpr *)cur)->is_window)) {
+                ch.kind = CH_INDEX;
+                return ch;
+            }
             return ch;
         }
     }
@@ -2933,6 +2936,7 @@ struct BCE {
         if (Is<Ident>(n)) return;
         if (auto d = Is<Dot>(n)) { Walk(d->obj); return; }
         if (auto ix = Is<Index>(n)) { Walk(ix); return; }
+        if (auto se = Is<SliceExpr>(n); se && se->is_window) { Walk(se); return; }
         Walk(n);
     }
 
@@ -3625,7 +3629,7 @@ inline void Index::BceMark(BCE &b) {
 inline void SliceExpr::BceMark(BCE &b) {
     b.NotePlace(obj);
     b.NoteRel(obj, lo);
-    b.NoteRel(obj, hi);
+    if (!is_window) b.NoteRel(obj, hi);
     Node::BceMark(b);
 }
 
@@ -3758,12 +3762,16 @@ inline bool SliceExpr::BceWalk(BCE &b) {
                      : b.SliceBound(lo, lo_from_end, lent,
                                     BCE::Term { true, BCE::Zero(), 0 });
     auto gen = b.nextgen;
-    b.Walk(hi);
-    auto hit = kills ? BCE::Term {} : b.SliceBound(hi, hi_from_end, lent, lent);
+    if (!is_window) b.Walk(hi);
+    auto hit = kills ? BCE::Term {}
+               : is_window
+                   ? (lot.ok ? BCE::Term { true, lot.b, BCE::SatAdd(lot.off, win_len) }
+                             : BCE::Term {})
+                   : b.SliceBound(hi, hi_from_end, lent, lent);
     // Evaluating the upper bound may have re-pinned what the lower one names,
     // in which case the captured term no longer denotes the value compared.
     if (b.nextgen != gen) lot = BCE::Term {};
-    if (!kills) b.slicelen = BCE::SliceLenTerm(lot, hit);
+    if (!kills && !is_window) b.slicelen = BCE::SliceLenTerm(lot, hit);
     if (b.mode == BCE::M_JUDGE) b.JudgeSlice(this, lent, lot, hit);
     if (!kills) {
         // A completed slice has 0 <= lo <= hi <= len.
@@ -4477,7 +4485,8 @@ inline bool Assign::BceWalk(BCE &b) {
         }
         return true;
     };
-    if (Is<Index>(lval)) return elemwrite();
+    if (Is<Index>(lval) || (Is<SliceExpr>(lval) && ((SliceExpr *)lval)->is_window))
+        return elemwrite();
     if (lt && !BCE::HoldsLen(lt, true))
         return true;                    // Nor can a field write of a value without one.
     auto ch = b.ChainOf(lval);
