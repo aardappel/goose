@@ -1537,8 +1537,10 @@ struct CodeGen {
 
     void DetectNrvo(FnSpec *sp);
     // What a specialization's C declaration says besides its signature.
-    static const char *FnAttrs(FnSpec *sp) {
-        return sp->outofline ? "GS_NOINLINE " : sp->cinline ? "GS_INLINE " : "";
+    static string FnAttrs(FnSpec *sp) {
+        string a = sp->outofline ? "GS_NOINLINE " : sp->cinline ? "GS_INLINE " : "";
+        if (!sp->target_attr.empty()) Append(a, "GS_TARGET(", CStr(sp->target_attr), ") ");
+        return a;
     }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
@@ -1644,7 +1646,9 @@ struct CodeGen {
         // reaches. Emit their types without making the functions live.
         for (auto sp : ast.fnspecs) {
             if (!sp->sf->isextern) continue;
-            for (auto t : sp->argtypes) {
+            for (size_t i = 0; i < sp->argtypes.size(); i++) {
+                if (i < sp->sf->params.size() && sp->sf->params[i].is_const) continue;
+                auto t = sp->argtypes[i];
                 CT(t);
                 // CT only forward-declares a struct behind a pointer; an
                 // adapter needs its fields too. Builders use gs_rref instead.
@@ -1665,7 +1669,7 @@ struct CodeGen {
             externs += ExternProto(sp);
         }
         externs += jit_thunk_decls;
-        externs += c_converters;
+        if (!jit_mode) externs += c_converters;
         // The shared libraries the dynamic externs bind from and the
         // pointers each symbol fills, which gs_program_init hands to
         // gs_dl_bind (design/dynamic_externs.md §5). Only a used extern is

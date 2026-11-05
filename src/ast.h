@@ -1145,6 +1145,8 @@ NODE(Call)
     bool nobc = false;
     TypeExpr *qtype = nullptr;  // qlimit<T>: T, which names the queue (§11.2).
     const string *shaderblob = nullptr;  // embed_shader's compiled blob or embed_file's bytes, in Ast::shaders.
+    uint32_t target_mask = 0;   // B_TARGET_HAS: runtime CPUID feature mask.
+    int target_const = -1;      // B_TARGET_HAS: 0 = compile-time false, 1 = compile-time true, -1 = runtime.
     Call(Line l, Node *_callee) : Node(l, NKind), callee(_callee) {}
     // What the call passes for the callee's free variable v (fvremap).
     VarDef *FreeVarArg(VarDef *v) const {
@@ -1654,6 +1656,106 @@ inline int LastRealField(const vector<Field> &fields) {
 // ADT's union has no member for it.
 inline bool EmptyLayout(const vector<Field> &fields) {
     for (auto &f : fields) if (!f.ispad || f.padsize > 0) return false;
+    return true;
+}
+
+struct TargetFeatureInfo {
+    string_view name;
+    int kind;       // 0 = arch, 1 = os, 2 = x86_64 isa, 3 = aarch64 isa
+    uint32_t mask;  // GS_CPU_* bitmask for kind >= 2
+};
+
+inline const vector<TargetFeatureInfo> &CanonicalTargetTable() {
+    static const vector<TargetFeatureInfo> table = {
+        { "x86_64",  0, 0 },
+        { "aarch64", 0, 0 },
+        { "wasm32",  0, 0 },
+        { "wasm64",  0, 0 },
+        { "linux",   1, 0 },
+        { "windows", 1, 0 },
+        { "macos",   1, 0 },
+        { "wasi",    1, 0 },
+        { "sse2",    2, 1u << 0 },
+        { "ssse3",   2, 1u << 1 },
+        { "sse4.1",  2, 1u << 2 },
+        { "sse4.2",  2, 1u << 3 },
+        { "avx",     2, 1u << 4 },
+        { "avx2",    2, 1u << 5 },
+        { "avx512f", 2, 1u << 6 },
+        { "aes",     2, 1u << 7 },
+        { "pclmul",  2, 1u << 8 },
+        { "bmi1",    2, 1u << 9 },
+        { "bmi2",    2, 1u << 10 },
+        { "popcnt",  2, 1u << 11 },
+        { "neon",    3, 1u << 12 },
+        { "pmull",   3, 1u << 13 },
+        { "crc",     3, 1u << 14 },
+        { "sha2",    3, 1u << 15 },
+    };
+    return table;
+}
+
+inline const TargetFeatureInfo *LookupTargetFeature(string_view tok) {
+    for (auto &f : CanonicalTargetTable())
+        if (f.name == tok) return &f;
+    return nullptr;
+}
+
+inline string_view HostTargetArch() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return "aarch64";
+#elif defined(__wasm64__)
+    return "wasm64";
+#elif defined(__wasm32__) || defined(__wasm__)
+    return "wasm32";
+#else
+    return "unknown";
+#endif
+}
+
+inline string_view HostTargetOS() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#elif defined(__wasi__)
+    return "wasi";
+#elif defined(__linux__)
+    return "linux";
+#else
+    return "unknown";
+#endif
+}
+
+inline bool TargetListContains(string_view list, string_view feat) {
+    size_t pos = 0;
+    while (pos < list.size()) {
+        auto comma = list.find(',', pos);
+        if (comma == string_view::npos) comma = list.size();
+        auto tok = list.substr(pos, comma - pos);
+        while (!tok.empty() && tok.front() == ' ') tok.remove_prefix(1);
+        while (!tok.empty() && tok.back() == ' ') tok.remove_suffix(1);
+        if (tok == feat) return true;
+        pos = comma + 1;
+    }
+    return false;
+}
+
+inline bool MergeTargetAttrs(string &dst, string_view src, string_view guarded = {}) {
+    string res;
+    for (auto &f : CanonicalTargetTable()) {
+        if (f.kind < 2) continue;
+        bool in_dst = TargetListContains(dst, f.name);
+        bool in_src = TargetListContains(src, f.name) && !TargetListContains(guarded, f.name);
+        if (in_dst || in_src) {
+            if (!res.empty()) res += ',';
+            res.append(f.name);
+        }
+    }
+    if (res == dst) return false;
+    dst = std::move(res);
     return true;
 }
 
@@ -2395,7 +2497,8 @@ struct FnSpec {
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.
     vector<ConstArgBind> const_args;
-    string required_target;
+    string target_attr;
+    vector<pair<FnSpec *, string>> target_edges;  // (callee, unguarded_features_at_call)
     vector<pair<string_view, FnValBind>> fnvals;  // Generic name -> bound function value.
     vector<pair<string_view, TypeExpr *>> bindings;  // Generic name -> concrete type.
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.

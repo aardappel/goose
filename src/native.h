@@ -77,7 +77,7 @@ inline void ExternNamesIn(const string &path, const string &text, set<string> &n
         }
         // An extern block's functions come from its shared library (§7.10) or
         // C header, not from the native part: skipped through its `}`.
-        if (lex.tok == T_IDENT && lex.sval == "target") {
+        if (lex.tok == T_IDENT && lex.attr == "target") {
             lex.Next();
             if (lex.tok == T_STRLIT) lex.Next();
         }

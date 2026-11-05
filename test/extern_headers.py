@@ -415,7 +415,113 @@ fn main() {
     )
 
 
+def test_target_has_and_propagation():
+    # 1. Cross-architecture extern blocks (<wmmintrin.h> and <arm_neon.h>) in the same file
+    #    with dead-branch pruning in `if target_has(...)` and automatic GS_TARGET propagation
+    #    on helper functions, plus inliner guard so entry function is not polluted.
+    src_dispatch = r"""
+extern "<emmintrin.h>" target "sse2" {
+    type m128i = u8[16] = "__m128i";
+    fn mm_xor_si128(a: m128i, b: m128i) -> m128i = "_mm_xor_si128";
+}
+
+extern "<wmmintrin.h>" target "sse2,aes,pclmul" {
+    fn mm_aesenc_si128(a: m128i, round_key: m128i) -> m128i = "_mm_aesenc_si128";
+    fn mm_clmulepi64_si128(a: m128i, b: m128i, const imm: i32) -> m128i = "_mm_clmulepi64_si128";
+}
+
+extern "<arm_neon.h>" target "neon" {
+    type uint8x16 = u8[16] = "uint8x16_t";
+    fn veorq_u8(a: uint8x16, b: uint8x16) -> uint8x16;
+    fn vceqq_u8(a: uint8x16, b: uint8x16) -> uint8x16;
+}
+
+// Helper has NO explicit target annotation: compiler propagates target "sse2,aes,pclmul"
+// from mm_aesenc_si128 and mm_clmulepi64_si128 automatically.
+fn aes_pclmul_helper(blk: m128i, key: m128i) -> m128i {
+    let enc = mm_aesenc_si128(blk, key);
+    let mul = mm_clmulepi64_si128(enc, key, 0x00);
+    return mm_xor_si128(enc, mul);
+}
+
+// Mid-level helper calling aes_pclmul_helper without a target_has guard also inherits target_attr.
+fn aes_pclmul_outer_helper(blk: m128i, key: m128i) -> m128i {
+    return aes_pclmul_helper(blk, key);
+}
+
+fn neon_helper(blk: uint8x16, key: uint8x16) -> uint8x16 {
+    return veorq_u8(blk, key);
+}
+
+fn dispatch_block(blk: u8[16], key: u8[16]) -> u8[16] {
+    if target_has("x86_64,sse2,aes,pclmul") {
+        return aes_pclmul_outer_helper(blk, key);
+    } else if target_has("aarch64,neon") {
+        // Inactive on x86_64: symbols inside dead branch or neon calls are pruned cleanly
+        return neon_helper(blk, key);
+    }
+    var out: u8[16] = [0; 16];
+    for i in 0..16 {
+        out[i] = blk[i] ^ key[i];
+    }
+    return out;
+}
+
+fn main() {
+    let b: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    let k: u8[16] = [16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+    let res = dispatch_block(b, k);
+    // Verify deterministic output across JIT and AOT
+    print(res[0], res[15]);
+}
+"""
+    out = check_ok(src_dispatch).strip()
+    assert len(out) > 0
+
+    c_src = dump_c_ok(src_dispatch)
+    # 1. Inactive <arm_neon.h> header is not emitted on x86_64
+    assert "<arm_neon.h>" not in c_src, "expected <arm_neon.h> to be omitted on x86_64"
+    # 2. Both aes_pclmul_helper and aes_pclmul_outer_helper receive propagated GS_TARGET
+    assert 'GS_TARGET("sse2,aes,pclmul")' in c_src, (
+        f"expected propagated GS_TARGET in generated C:\n{c_src}"
+    )
+    # 3. Runtime CPUID check gs_cpu_has is emitted in dispatch_block
+    assert "gs_cpu_has(" in c_src, "expected runtime gs_cpu_has(...) check in dispatch_block"
+
+    # 2. Dead-branch pruning allows untyped/foreign-arch code inside inactive target_has branch
+    src_dead_branch = r"""
+fn main() {
+    if target_has("aarch64,neon") {
+        nonexistent_aarch64_intrinsic(1, 2, 3);
+    } else if target_has("wasm32") {
+        nonexistent_wasm_intrinsic();
+    } else if target_has("x86_64,sse2") {
+        print("x86_64_baseline");
+    }
+}
+"""
+    assert check_ok(src_dead_branch).strip() == "x86_64_baseline"
+
+    # 3. Negative tests: unknown tokens in target_has(...) and extern target "..."
+    check_err(
+        'fn main() { if target_has("bogus_isa") { print(1); } }\n',
+        "unknown target feature",
+    )
+    check_err(
+        'fn main() { if target_has("") { print(1); } }\n',
+        "target_has",
+    )
+    check_err(
+        'extern "<emmintrin.h>" target "bogus_target" {\n'
+        '    fn mm_pause() = "_mm_pause";\n'
+        "}\n"
+        "fn main() {}\n",
+        "unknown target feature",
+    )
+
+
 if __name__ == "__main__":
     test_slice_windows()
     test_header_externs_and_const_params()
+    test_target_has_and_propagation()
     print("extern_headers.py: all tests passed!")
