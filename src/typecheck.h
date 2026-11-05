@@ -348,9 +348,15 @@ struct TypeCheck {
     };
     void CheckStmts(Block *b);
     size_t expansionsize = 0;
-    Node *ExpansionConstant(Node *n, set<VarDecl *> &visiting);
+    Node *ExpansionConstant(Node *n, set<VarDecl *> &visiting,
+                            const char *what = "const for source");
     void ExpandConstFor(ConstFor *cf, const function<void(ExpansionClone &)> &emit);
     Block *ExpandStatements(ConstFor *cf);
+    bool ConstCondition(Node *n);
+    bool ConstComparison(Binary *b);
+    bool ConstQueryValue(ConstQuery *q);
+    ConstIfBranch *SelectBranch(ConstIf *ci);
+    Block *ExpandSelection(ConstIf *ci);
     void ExpandInitializers(vector<FieldInit> &inits);
     void ExpandArms(vector<MatchArm> &arms);
     bool IsValuelessTail(const Node *n);

@@ -3227,6 +3227,7 @@ inline void TypeCheck::CheckStmts(Block *b) {
         if (lost(i)) throw Abandoned {};
         blockpos.back().idx = i;
         if (auto cf = Is<ConstFor>(b->stmts[i])) b->stmts[i] = ExpandStatements(cf);
+        if (auto ci = Is<ConstIf>(b->stmts[i])) b->stmts[i] = ExpandSelection(ci);
         CheckStmt(b->stmts[i]);
     }
     if (lost(b->stmts.size())) throw Abandoned {};

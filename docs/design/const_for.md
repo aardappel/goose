@@ -1,9 +1,9 @@
 # `const for` and `const if`: specialization-time expansion (v1)
 
-Status: `const for` is implemented. V1 supports the four sources below in
-statement lists, constructor initializer lists, and `match` arm lists.
-`const if`, which selects fragments in those same lists on compile-time
-predicates, is designed in section 11 and not yet implemented.
+Status: implemented. V1 supports the four sources below in statement lists,
+constructor initializer lists, and `match` arm lists. `const if`, which
+selects fragments in those same lists on compile-time predicates, is
+section 11.
 
 This design replaces a family of compiler-provided field visitors with one
 expansion construct inside ordinary Goose functions. The compiler supplies a
@@ -612,7 +612,7 @@ generate ordinary runtime data or operations.
 
 ## 11. `const if`: specialization-time selection
 
-Status: designed, not implemented.
+Status: implemented.
 
 `const if` chooses one of its fragment lists while a function is
 specialized, and generates nothing of the others. It is the selection
@@ -825,7 +825,7 @@ a trailing `..`:
 ```goose
 // A copy of src with every field that declares a default reset to it.
 fn reset_defaults<T>(src: T&) -> T {
-    T { const for <N, A> in fields<T> { const if !has_default<A> { A: src.A, } } .. }
+    T { const for <N, A> in fields<T> { const if !has_default<A> { A: src.A, } }, .. }
 }
 ```
 
@@ -886,9 +886,11 @@ resolves as a type in a `types<...>` source does.
    comparisons fold on those; `has_default` reads the field's declaration in
    the owner's instantiation; `same` substitutes both types, rejects one
    that is not concrete, and compares them with the checker's type equality.
-5. Splice the chosen branch's fragments in place of the node, cloned as a
-   `const for` instance is and counted against the same expansion limit.
-   Recurse for nested expansions and selections.
+5. Splice the chosen branch's fragments in place of the node: the statement
+   block as a nested block, the entries or arms into the enclosing list.
+   They need no cloning of their own, since the body they stand in is
+   already the specialization's clone, or the enclosing entry's. Recurse for
+   nested expansions and selections.
 6. Round-trip the unexpanded syntax in the source dump; give the query
    brackets the angle-bracket token role the `const for` header uses; add
    the construct to the tree-sitter and VS Code grammars beside

@@ -835,6 +835,8 @@ enum NodeKind : uint8_t {
     NK_LoopExpr,
     NK_ForLoop,
     NK_ConstFor,
+    NK_ConstIf,
+    NK_ConstQuery,
     NK_Return,
     NK_Break,
     NK_Continue,
@@ -1368,6 +1370,38 @@ NODE(ConstFor)
     bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
     vector<MatchArm> arms;
     ConstFor(Line l) : Node(l, NKind) {}
+NODE_END
+
+// A compile-time query, valid in a `const if` condition only (const_for.md
+// §11.3): `has_default<A>` of a fields<T> accessor binding, or `same<T1, T2>`
+// of two types.
+enum QueryKind { Q_HAS_DEFAULT, Q_SAME };
+
+NODE(ConstQuery)
+    QueryKind query;
+    string_view name;               // has_default: the accessor binding, as written.
+    vector<TypeExpr *> types;       // same: the two types.
+    // Filled by cloning under an expansion, as a Dot's accessor is: the
+    // field the binding stands for, in its owning struct or variant type.
+    TypeExpr *owner = nullptr;
+    string_view field;
+    ConstQuery(Line l, QueryKind _query, string_view _name)
+        : Node(l, NKind), query(_query), name(_name) {}
+NODE_END
+
+// One branch of a `const if`: its condition, null for the final else, and
+// fragments of the enclosing list's category, as a ConstFor's are.
+struct ConstIfBranch {
+    Node *cond = nullptr;
+    Block *body = nullptr;          // Statement fragments, or null for initializer or arm fragments.
+    vector<FieldInit> inits;
+    vector<MatchArm> arms;
+};
+
+NODE(ConstIf)
+    vector<ConstIfBranch> branches;
+    bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
+    ConstIf(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(Return)

@@ -79,6 +79,13 @@ inline Node *Node::Clone(Ast &ast) const {
             d->expansionbinding = 0;
         }
     }
+    if (ctx) if (auto q = Is<ConstQuery>(c)) {
+        if (auto arg = ctx->Find(expansionbinding)) {
+            q->owner = arg->owner;
+            q->field = arg->field;
+            q->expansionbinding = 0;
+        }
+    }
     return c;
 }
 
@@ -340,6 +347,28 @@ inline Node *ConstFor::Clone1(Ast &ast) const {
     return cf;
 }
 
+inline Node *ConstQuery::Clone1(Ast &ast) const {
+    auto q = ast.New<ConstQuery>(line, query, name);
+    for (auto t : types) q->types.push_back(ast.CloneExpansionType(t));
+    q->owner = owner;
+    q->field = field;
+    return q;
+}
+
+inline Node *ConstIf::Clone1(Ast &ast) const {
+    auto ci = ast.New<ConstIf>(line);
+    ci->armfragments = armfragments;
+    for (auto &br : branches) {
+        ConstIfBranch b;
+        b.cond = CloneOrNull(ast, br.cond);
+        b.body = CloneOrNull(ast, br.body);
+        for (auto &fi : br.inits) b.inits.push_back(ast.CloneFieldInit(fi));
+        for (auto &arm : br.arms) b.arms.push_back(CloneArm(ast, arm));
+        ci->branches.push_back(b);
+    }
+    return ci;
+}
+
 inline FieldInit Ast::CloneFieldInit(const FieldInit &fi) {
     auto out = fi;
     out.val = fi.val->Clone(*this);
@@ -420,10 +449,7 @@ inline Node *AliasDecl::Clone1(Ast &ast) const { return ast.New<AliasDecl>(line,
 
 #define CH(c) if (c) f(c)
 
-inline void ConstFor::Children(const function<void(Node *)> &f) const {
-    for (auto c : constants) f(c);
-    CH(body);
-    for (auto &fi : inits) f(fi.val);
+inline void ArmChildren(const vector<MatchArm> &arms, const function<void(Node *)> &f) {
     for (auto &arm : arms) {
         CH(arm.expansion);
         for (auto &pi : arm.pat.items) {
@@ -431,6 +457,24 @@ inline void ConstFor::Children(const function<void(Node *)> &f) const {
             CH(pi.hi);
         }
         CH(arm.body);
+    }
+}
+
+inline void ConstFor::Children(const function<void(Node *)> &f) const {
+    for (auto c : constants) f(c);
+    CH(body);
+    for (auto &fi : inits) f(fi.val);
+    ArmChildren(arms, f);
+}
+
+inline void ConstQuery::Children(const function<void(Node *)> &) const {}
+
+inline void ConstIf::Children(const function<void(Node *)> &f) const {
+    for (auto &br : branches) {
+        CH(br.cond);
+        CH(br.body);
+        for (auto &fi : br.inits) f(fi.val);
+        ArmChildren(br.arms, f);
     }
 }
 
@@ -505,14 +549,7 @@ inline void IfExpr::Children(const function<void(Node *)> &f) const {
 
 inline void MatchExpr::Children(const function<void(Node *)> &f) const {
     f(scrutinee);
-    for (auto &arm : arms) {
-        CH(arm.expansion);
-        for (auto &pi : arm.pat.items) {
-            f(pi.lo);
-            CH(pi.hi);
-        }
-        CH(arm.body);
-    }
+    ArmChildren(arms, f);
 }
 
 inline void EarlyBlock::Children(const function<void(Node *)> &f) const { f(body); }

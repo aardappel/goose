@@ -7,3 +7,8 @@ src/tree_sitter/
 # The tree-sitter CLI
 node_modules/
 package-lock.json
+
+# What `tree-sitter test` links the parser into on Windows
+*.exp
+*.lib
+*.obj

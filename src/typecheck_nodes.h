@@ -590,7 +590,16 @@ inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val ConstFor::Check(TypeCheck &tc, TypeExpr *) {
-    tc.Error(this, "const for is only valid in statement or constructor initializer lists");
+    tc.Error(this, "const for is only valid in statement, constructor initializer or match arm lists");
+}
+
+inline Val ConstIf::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "const if is only valid in statement, constructor initializer or match arm lists");
+}
+
+inline Val ConstQuery::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, cat(query == Q_SAME ? "same" : "has_default",
+                       " is only valid in a const if condition"));
 }
 
 inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {

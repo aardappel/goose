@@ -91,6 +91,27 @@ struct ExpansionBinder {
             Arms(cf->arms);
             return;
         }
+        if (auto ci = Is<ConstIf>(n)) {
+            // Conditions bind in the enclosing scope; each body is a scope
+            // of its own (the Block case).
+            for (auto &br : ci->branches) {
+                Walk(br.cond);
+                Walk(br.body);
+                Inits(br.inits);
+                Arms(br.arms);
+            }
+            return;
+        }
+        if (auto q = Is<ConstQuery>(n)) {
+            // has_default<A> names an accessor binding; any other name stays
+            // unbound, which the check diagnoses.
+            if (q->query == Q_HAS_DEFAULT) {
+                auto b = Find(q->name);
+                if (b.accessor) n->expansionbinding = b.id;
+            }
+            for (auto t : q->types) Type(t);
+            return;
+        }
         if (auto b = Is<Block>(n)) {
             Scope scope(*this);
             for (auto st : b->stmts) {

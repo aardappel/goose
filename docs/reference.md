@@ -77,8 +77,9 @@ uses.
 [Appendix A](#appendix-a-keywords-and-operators). A few words are keywords
 only in one position and names everywhere else: `from` after a `return`
 value, `upto` after an unsigned type in a type, `inline` and `checkfree`
-before `fn`, and `fields`, `variants` and `types` in a `const for` header. `in` is a
-keyword throughout.
+before `fn`, `fields`, `variants` and `types` in a `const for` header, and
+`has_default` and `same` in a `const if` condition. `in` is a keyword
+throughout.
 
 **Integer literals** are decimal (`42`) or hexadecimal (`0xFF`). The whole
 unsigned 64-bit range is accepted: a value above `i64.max` is a `u64`
@@ -2971,6 +2972,86 @@ Dot
 
 Spec §6.5, `docs/design/const_for.md`.
 
+### `const if`: selection at specialization time
+
+`const if` chooses one of its fragment lists while a function is
+specialized, and generates nothing of the others. It stands where a
+`const for` stands: in a statement list, a constructor's initializer list,
+or a `match`'s arm list, with fragments of that list's kind in each branch.
+A chain continues with `else const if`; a plain `else if` after a
+`const if` is an error.
+
+```goose
+struct Item { name: u8[..8], price: i64, tax: i64 = 20, discount: i64 = 0 }
+enum Shape { Circle { r: i64 }, Dot }
+
+fn required<T>() {
+    const for <N, A> in fields<T> { const if !has_default<A> { print("required: ", N); } }
+}
+
+// A copy of src with every field that declares a default reset to it.
+fn reset_defaults<T>(src: T&) -> T {
+    T { const for <N, A> in fields<T> { const if !has_default<A> { A: src.A, } }, .. }
+}
+
+fn describe<T>(v: T) {
+    const if same<T, i64> { print("an integer ", v); }
+    else const if same<T, Shape> { print("a shape"); }
+    else { print("something else"); }
+}
+
+fn main() {
+    required<Item>();
+    var item = Item { name: "pen", price: 5, tax: 7, discount: 3 };
+    print(reset_defaults(item));
+    describe(1);
+    describe(2.5);
+    const for <C> in [1, 2, 4] {
+        const if C > 1 { print(C, " is wide"); } else { print(C, " is narrow"); }
+    }
+}
+```
+
+```
+required: name
+required: price
+Item { "pen", 5, 20, 0 }
+an integer 1
+something else
+1 is narrow
+2 is wide
+4 is wide
+```
+
+The condition is a constant of the specialization: `true`, `false` or a
+named `bool` constant; a query; `!`, `&&`, `||` and parentheses over
+conditions; or a comparison of two constants of one kind, the constants a
+`const for` list accepts (literals, named constants, the integer
+expressions an array size allows, and enclosing `const for` bindings).
+Integers compare at the type their constants unify to, an integer beside a
+float converts, and booleans and strings take `==` and `!=` only. A local, a
+call, a field read or anything else computed at runtime is an error, not a
+runtime branch.
+
+The queries are valid in a `const if` condition only. `has_default<A>` is
+`true` exactly when the field an accessor `A` from `fields<T>` stands for
+declares a written `= …`, a default equal to the type's zero included;
+nothing is evaluated. `same<T1, T2>` is `true` when the two types are
+identical after substitution, `const` qualification included, so
+`same<V, Shape.Dot>` picks a variant and `same<T, i64>` a generic
+instantiation.
+
+The branch not chosen is parsed but never checked, which is the point: a
+`const if` over a field can write to it in one branch and leave it alone in
+the other, where a runtime `if` on the same predicate would have to
+typecheck both for every field. In a statement list the chosen branch is a
+nested block, not an expansion: `break`, `continue` and `return` in it mean
+what they mean in an `if`. In a constructor the chosen entries join the
+initializer list, and in a `match` the chosen arms join the arm list, so a
+`const for` over `variants<E>` can leave some variants to written arms.
+
+Spec §6.5, `docs/design/const_for.md` section 11.
+
 ### Functions that never return
 
 `abort(msg)` and `exit(code)` never return, and the checker takes this
@@ -4135,7 +4216,8 @@ varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`.
 **Contextual keywords**, which are ordinary names everywhere else: `from`
 (after a `return` value), `upto` (after an unsigned type in a type),
 `inline` and `checkfree` (before `fn`, `recursive`, `simd` or
-`thread_fn`), `fields` and `types` (in a `const for` header).
+`thread_fn`), `fields`, `variants` and `types` (in a `const for` header),
+`has_default` and `same` (in a `const if` condition).
 
 **Operators**, tightest first; the precedence is Rust's:
 
