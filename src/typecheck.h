@@ -2245,6 +2245,7 @@ struct TypeCheck {
         vector<pair<string_view, FnValBind>> fnvals;
         vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.
         vector<int> litparams;          // Literal arguments to type variables (§7.7).
+        vector<ConstArgBind> const_args;
         FnSpec *env = nullptr;          // Lexical parent for nested functions.
         // The parameters the call's arguments bind, in order; the rest take
         // their defaults (§7.1).
@@ -2415,8 +2416,9 @@ struct TypeCheck {
                            Call *call = nullptr);
     bool SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec);
     bool ExternValueOk(TypeExpr *t, string &why);
-    bool ExternParamOk(TypeExpr *t, string &why);
+    bool ExternParamOk(TypeExpr *t, string &why, bool is_header = false);
     bool DylibValueOk(SFunction *sf, TypeExpr *t, string &why);
+    bool IsCConstImmExpr(Node *n);
     void CheckExternSpec(FnSpec *spec);
     void CheckExport(SFunction *sf);
     int ClassDepth(VarDef *r);
@@ -3076,6 +3078,9 @@ struct TypeCheck {
                 vd->isglobal = true;
                 vd->globalindex = globalindex++;
                 vd->reusable = g->reusable;
+                vd->cheader = g->cheader;
+                vd->cname = g->cname;
+                vd->cheader_fileidx = g->cheader_fileidx;
                 g->defs.push_back(vd);
             }
         }
@@ -3087,6 +3092,16 @@ struct TypeCheck {
             if (st->generics.empty()) GetStructInst(ast.StructOf(st, {}, st->line));
         for (auto en : ast.enums)
             if (en->generics.empty()) GetEnumInst(ast.EnumOf(en, {}, true, en->line));
+        for (auto al : ast.aliases) {
+            if (al->c_repr.empty()) continue;
+            ValidateType(al->type, al->line, VT_LOCAL);
+            if (ClassOf(al->type) != SC_FIXED || !IsFlat(al->type))
+                Error(al->line, cat("type ", al->name, ": boundary-mapped C type requires a flat "
+                                    "fixed-size Goose backing type"));
+            else if (ZeroSizeKind(al->type))
+                Error(al->line, cat("type ", al->name, ": boundary-mapped C type cannot have "
+                                    "zero size"));
+        }
         // And the sizes in every function's signature, for its parameters' and
         // type parameters' names, and in every generic type's fields.
         for (auto sf : ast.functions) SignatureNames(sf->params, sf->rets, sf->generics);
@@ -3232,6 +3247,7 @@ struct TypeCheck {
     void CheckUnreached(SFunction *sf) {
         if (!sf->specs.empty() || sf->isthread || sf->isnested || sf->brokensig) return;
         if (sf->IsGeneric()) return;
+        for (auto &p : sf->params) if (p.is_const) return;
         set<string_view> names = { sf->name };
         auto foreign = false;
         if (sf->body) ScanForeignFrom(sf->body, names, foreign);

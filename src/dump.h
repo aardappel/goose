@@ -641,6 +641,10 @@ inline void VarDecl::Dump(string &s, int ind) const {
         s += names[i];
     }
     if (type) { s += ": "; type->Dump(s); }
+    if (!cheader.empty() && !names.empty() && cname != names[0]) {
+        s += " = ";
+        EscapeString(s, cname, '"');
+    }
     for (size_t i = 0; i < inits.size(); i++) {
         s += i ? ", " : byref ? " .= " : " = ";
         inits[i]->Dump(s, ind);
@@ -693,7 +697,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
     if (sf->isextern) {
         // A block's member is written without `extern`, inside the block
         // Ast::Dump prints around the run of them.
-        if (sf->dylib.empty()) s += "extern ";
+        if (sf->dylib.empty() && sf->cheader.empty()) s += "extern ";
     }
     // A nested function takes its enclosing function's checkfree.
     if (sf->checkfree && !(sf->isnested && sf->outer && sf->outer->checkfree))
@@ -707,6 +711,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
     s += "(";
     for (size_t i = 0; i < sf->params.size(); i++) {
         if (i) s += ", ";
+        if (sf->params[i].is_const) s += "const ";
         if (sf->params[i].isvar) s += "var ";
         s += sf->params[i].name;
         if (sf->params[i].type) { s += ": "; sf->params[i].type->Dump(s); }
@@ -764,26 +769,44 @@ inline void EnumDecl::Dump(string &s, int ind) const {
 inline void AliasDecl::Dump(string &s, int) const {
     Append(s, "type ", al->qname, " = ");
     al->type->Dump(s);
+    if (!al->c_repr.empty() && al->c_repr != al->name) {
+        s += " = ";
+        EscapeString(s, al->c_repr, '"');
+    }
     s += ";";
 }
 
 inline void Ast::Dump(string &s) const {
     // The members of an extern block (§7.10) are consecutive declarations
-    // with its library, printed back inside the block; two blocks of one
-    // library in a row print as one, which declares the same.
+    // with its library or header (and optional target), printed back inside
+    // the block; two blocks with identical header+target in a row print as one.
     string openlib;
+    string opentarget;
     for (auto d : topdecls) {
-        auto fd = Is<FnDecl>(d);
-        auto lib = fd && !fd->sf->dylib.empty() ? fd->sf->dylib : string();
-        if (!openlib.empty() && lib != openlib) {
+        string lib, tgt;
+        if (auto fd = Is<FnDecl>(d)) {
+            if (!fd->sf->dylib.empty()) lib = fd->sf->dylib;
+            else if (!fd->sf->cheader.empty()) { lib = fd->sf->cheader; tgt = fd->sf->target_attr; }
+        } else if (auto ad = Is<AliasDecl>(d)) {
+            if (!ad->al->c_header.empty()) { lib = ad->al->c_header; tgt = ad->al->target_attr; }
+        } else if (auto vd = Is<VarDecl>(d)) {
+            if (!vd->cheader.empty()) { lib = vd->cheader; tgt = vd->target_attr; }
+        }
+        if (!openlib.empty() && (lib != openlib || tgt != opentarget)) {
             s += "}\n";
             openlib.clear();
+            opentarget.clear();
         }
         if (!lib.empty() && openlib.empty()) {
             s += "extern ";
             EscapeString(s, lib, '"');
+            if (!tgt.empty()) {
+                s += " target ";
+                EscapeString(s, tgt, '"');
+            }
             s += " {\n";
             openlib = lib;
+            opentarget = tgt;
         }
         if (!openlib.empty()) s += "    ";
         d->Dump(s, 0);

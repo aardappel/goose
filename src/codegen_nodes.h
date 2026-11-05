@@ -62,6 +62,25 @@ inline string StrLit::CgX(CodeGen &cg) {
 
 inline string Ident::CgX(CodeGen &cg) {
     assert(vdef);   // Named-function values never reach runtime.
+    if (vdef->c_const_expr) {
+        return cg.EmitConstImmArg(vdef->c_const_expr);
+    }
+    if (!vdef->cheader.empty()) {
+        cg.UseHeader(vdef->cheader, vdef->cheader_fileidx);
+        auto ct = cg.CT(exprtype ? exprtype : vdef->type);
+        if (!cg.jit_mode) return cat("((", ct, ")(", vdef->cname, "))");
+        auto it = cg.jit_const_getters.find(vdef);
+        if (it == cg.jit_const_getters.end()) {
+            auto gname = cg.Unique(cat("__gs_hdr_const_", vdef->cname));
+            cg.jit_const_getters[vdef] = gname;
+            cg.jit_thunk_symbols.push_back(gname);
+            Append(cg.jit_thunk_decls, ct, " ", gname, "(void);\n");
+            Append(cg.jit_thunk_defs, ct, " ", gname, "(void) { return (", ct, ")(",
+                   vdef->cname, "); }\n");
+            return cat(gname, "()");
+        }
+        return cat(it->second, "()");
+    }
     auto x = cg.LoadLoc(cg.VarLoc(vdef), exprtype, line);
     // A literal parameter (§7.7) is passed at its nominal type and read at
     // the type each use adapted it to; the call-site check made the

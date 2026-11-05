@@ -538,6 +538,7 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
     };
     for (size_t i = 0; i < sp->params.size(); i++) {
         auto vd = sp->params[i];
+        if (vd->c_const_expr) continue;
         auto pt = sp->argtypes[i];
         auto pn = decls ? LocalName(vd) : cat("p", i);
         if (IsPoolParam(sp, i)) {

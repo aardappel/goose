@@ -311,6 +311,9 @@ struct TypeExpr {
     // sizes name what they name where the alias is declared, at top level,
     // whatever scope the use is in (TypeCheck::ConstNamesIn).
     bool aliasuse = false;
+    string_view c_repr;
+    string_view c_header;
+    int c_fileidx = -1;
     // On a TY_INT: an index or bound type (TypeIndex). Outside the union,
     // since intstorage is the member a TY_INT uses.
     TypeIndex *ix = nullptr;
@@ -332,6 +335,12 @@ struct TypeExpr {
     // and the caller cuts s back to the limit.
     void Dump(string &s, size_t limit = string::npos) const;
 };
+
+inline bool IsHeaderSpec(string_view s) {
+    return !s.empty() &&
+           ((s.front() == '<' && s.back() == '>') || s.ends_with(".h") ||
+            s.ends_with(".hh") || s.ends_with(".hpp"));
+}
 
 // The views of a type's shape that every pass asks for.
 inline bool IsRefOrSlice(const TypeExpr *t) { return t->kind == TY_REF || t->kind == TY_SLICE; }
@@ -389,6 +398,7 @@ struct Param {
     TypeExpr *type = nullptr;   // Null = untyped, i.e. generic.
     Node *defaultval = nullptr; // What a call leaving the argument out passes (§7.1).
     bool isvar = false;
+    bool is_const = false;
 };
 
 struct Field {
@@ -1461,6 +1471,10 @@ NODE(VarDecl)
     bool inline_arg = false;    // Synthesized call argument: caller-scope storage.
     string_view ns;             // A global's namespace ("" = global; docs/design/namespaces.md).
     string_view doc;            // The comment lines above it (Lexer::doc).
+    string cheader;
+    string target_attr;
+    string cname;
+    int cheader_fileidx = -1;
     vector<string_view> names;  // let a, b = f();
     // The results of `a, b = f();`, which the assignments after it in its
     // block take (Parser::ParseMultiAssign).
@@ -1534,6 +1548,9 @@ struct SFunction {
     // The shared library an extern block binds it from by that symbol as
     // the program starts (§7.10); empty for an extern the link resolves.
     string dylib;
+    string cheader;
+    string target_attr;
+    int cheader_fileidx = -1;
     // An extern that reads every data-stack top of its thread program
     // (os.trim_memory): each caller, and transitively theirs, publishes all
     // of its cached tops before the call (CodeGen::CollectSpecs, SyncReach).
@@ -1650,6 +1667,10 @@ struct SAlias {
     Line end;                   // As SFunction::end.
     string_view doc;            // As SFunction::doc.
     TypeExpr *type = nullptr;
+    string c_repr;
+    string c_header;
+    string target_attr;
+    int c_fileidx = -1;
 };
 
 // The namespace a nominal type was declared in; "" for every other type.
@@ -1744,6 +1765,11 @@ struct VarDef {
     bool constflt = false;      // A float constant, of value constfval.
     double constfval = 0;
     VarDef *constfrom = nullptr;    // The initializer's Val::constfrom.
+    string cheader;
+    string cname;
+    int cheader_fileidx = -1;
+    Node *c_const_expr = nullptr;
+    Node *initexpr = nullptr;
     // A `let` initialized to exactly `X.len` (§5.2): the path X, as checked
     // there. Resizing the same X back to it is a balanced shrink.
     Node *markof = nullptr;
@@ -2310,6 +2336,19 @@ struct FnRecord {
     vector<BodyEvent> bodyevents;
 };
 
+struct ConstArgBind {
+    int param_idx = -1;
+    bool has_int = false;
+    int64_t ival = 0;
+    bool uns = false;
+    string c_expr_dump;
+    Node *c_expr = nullptr;
+    bool operator==(const ConstArgBind &o) const {
+        return param_idx == o.param_idx && has_int == o.has_int &&
+               ival == o.ival && uns == o.uns && c_expr_dump == o.c_expr_dump;
+    }
+};
+
 // One monomorphic specialization of a function: the unit of typechecking and
 // of later codegen. The body is an Ast-owned clone with annotations filled;
 // only a recursive round's previous analysis record is owned here.
@@ -2355,6 +2394,8 @@ struct FnSpec {
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.
+    vector<ConstArgBind> const_args;
+    string required_target;
     vector<pair<string_view, FnValBind>> fnvals;  // Generic name -> bound function value.
     vector<pair<string_view, TypeExpr *>> bindings;  // Generic name -> concrete type.
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.

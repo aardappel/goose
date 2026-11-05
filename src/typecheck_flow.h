@@ -2499,6 +2499,14 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         ValidateType(ann, vd->line, global ? VT_GLOBAL : VT_LOCAL);
         if (vd->isconst) ann = ast.ConstOf(ann);   // `const x: T` is `let x: const T`.
     }
+    if (global && !vd->cheader.empty()) {
+        if (!ann || !IsIntT(ann))
+            Error(vd, "extern const requires an explicit fixed-width integer type");
+        auto d = vd->defs[0];
+        d->type = ann ? ast.ConstOf(ann) : ast.ConstOf(ast.inttypes[IS_I32]);
+        d->assigned = d->maybeassigned = true;
+        return;
+    }
     auto MakeDef = [&](size_t i) -> VarDef * {
         if (global) return vd->defs[i];  // Pre-created by the driver.
         if (vd->defs.size() <= i) vd->defs.push_back(nullptr);
@@ -2696,6 +2704,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         d->constflt = v.ck == CK_FLT;
         d->constfval = v.fval;
         d->constfrom = d->constlit ? v.constfrom : nullptr;
+        if (!vd->isvar && !global && vd->inits.size() == 1) d->initexpr = vd->inits[i];
         Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
         auto len = Is<Dot>(vd->inits[i]);
         if (!vd->isvar && !global && len && len->member == B_LEN &&

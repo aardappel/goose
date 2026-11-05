@@ -16,11 +16,6 @@ struct PackageSource {
     string url, ref;    // A git source: what git clones, and the tag, branch or commit.
 };
 
-inline string ForwardSlashes(string path) {
-    for (auto &c : path) if (c == '\\') c = '/';
-    return path;
-}
-
 // `dir` absolute, with forward slashes and one trailing slash.
 inline string PackageDir(const string &dir) {
     auto abs = ForwardSlashes(AbsolutePath(dir));

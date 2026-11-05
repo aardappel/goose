@@ -453,6 +453,45 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         FlagScope rs(reachable, entryreach);
         BindBranchesByRef(argnodes, argvals, best.paramtypes, best.sf, -1, best.nwritten);
     }
+    best.const_args.clear();
+    for (size_t i = 0; i < best.sf->params.size() && i < argnodes.size(); i++) {
+        if (!best.sf->params[i].is_const) continue;
+        auto pt = best.paramtypes[i];
+        if (!IsIntT(pt)) {
+            Error(best.sf->line, cat("fn ", best.sf->name, ": const parameter ",
+                                     best.sf->params[i].name, " requires an integer type"));
+            continue;
+        }
+        Val cv;
+        bool lit = false;
+        set<VarDecl *> visiting;
+        ConstUse use { argnodes[i], "const parameter argument" };
+        auto has_int = ConstIntValue(argnodes[i], cv, lit, visiting, &use);
+        if (!has_int && !IsCConstImmExpr(argnodes[i])) {
+            Error(argnodes[i], cat("fn ", name, ": parameter ", best.sf->params[i].name,
+                                   " requires a compile-time constant argument"));
+            continue;
+        }
+        if (has_int && !FitsIntStorage(cv.ival, cv.uns, pt->intstorage)) {
+            Error(argnodes[i], cat("fn ", name, ": constant ", ConstStr(cv),
+                                   " does not fit parameter ", best.sf->params[i].name,
+                                   " of type ", TypeStr(pt)));
+            continue;
+        }
+        if (!best.sf->isextern) {
+            ConstArgBind cab;
+            cab.param_idx = (int)i;
+            cab.has_int = has_int;
+            if (has_int) {
+                cab.ival = cv.ival;
+                cab.uns = cv.uns;
+            } else {
+                cab.c_expr = argnodes[i];
+                argnodes[i]->Dump(cab.c_expr_dump, 0);
+            }
+            best.const_args.push_back(std::move(cab));
+        }
+    }
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name, argnodes);
     ApplyCalleeGrows(c, spec, argvals, name);
@@ -466,8 +505,16 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     if (best.sf->isextern) {
         for (size_t i = 0; i < best.paramtypes.size() && i < argvals.size(); i++) {
             auto pt = best.paramtypes[i];
-            if (!IsRefOrSlice(pt) || pt->cq || argvals[i].writable)
-                continue;
+            if (!IsRefOrSlice(pt) || pt->cq) continue;
+            auto writable = argvals[i].writable;
+            if (writable && !best.sf->cheader.empty() && pt->kind == TY_REF && i < argnodes.size()) {
+                auto a = argnodes[i];
+                if (auto u = Is<Unary>(a); u && u->op == T_BITAND) a = u->child;
+                if (auto id = Is<Ident>(a); id && id->vdef && !id->vdef->isvar &&
+                    !IsRefOrSlice(id->vdef->type))
+                    writable = false;
+            }
+            if (writable) continue;
             Error(argnodes[i], cat("extern fn ", name, ": parameter ", best.sf->params[i].name,
                                    " of type ", TypeStr(pt), " takes a writable value; a "
                                    "read-only one needs the parameter declared const (§9.5)"));
@@ -1686,6 +1733,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         // only in the bindings.
         if (!BindingsEq(spec->bindings, mi.bindings)) continue;
         if (spec->litparams != mi.litparams) continue;
+        if (spec->const_args != mi.const_args) continue;
         if (spec->fnvals.size() != mi.fnvals.size()) continue;
         auto fvok = true;
         for (size_t i = 0; i < mi.fnvals.size(); i++)
@@ -1795,6 +1843,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     spec->roots = roots;
     spec->views = views;
     spec->litparams = mi.litparams;
+    spec->const_args = mi.const_args;
     spec->fnvals = mi.fnvals;
     spec->bindings = mi.bindings;
     // An error in what the call's literal arguments rely on is the call
@@ -2654,16 +2703,60 @@ inline bool TypeCheck::ExternValueOk(TypeExpr *t, string &why) {
     return true;
 }
 
-inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why) {
+inline bool TypeCheck::IsCConstImmExpr(Node *n) {
+    if (!n) return false;
+    int64_t dummy;
+    if (ConstInt(n, dummy)) return true;
+    if (auto id = Is<Ident>(n)) {
+        if (!id->vdef) id->vdef = LookupVar(id->name, id->ns);
+        if (auto vd = id->vdef) {
+            if (!vd->cheader.empty() || vd->constlit || vd->c_const_expr) return true;
+            if (vd->isglobal && !vd->isvar && !vd->refwrite) return true;
+            if (!vd->isglobal && !vd->isvar && vd->initexpr) {
+                ConstUse use { n, "const parameter argument", vd };
+                RelyOnConstant(use, vd);
+                return IsCConstImmExpr(vd->initexpr);
+            }
+        }
+        return false;
+    }
+    if (auto u = Is<Unary>(n)) {
+        if (u->op == T_BITAND) return IsCConstImmExpr(u->child);
+        if (u->op != T_MINUS && u->op != T_BITNOT) return false;
+        return IsCConstImmExpr(u->child);
+    }
+    if (auto b = Is<Binary>(n)) {
+        switch (b->op) {
+            case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD:
+            case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR:
+                return IsCConstImmExpr(b->left) && IsCConstImmExpr(b->right);
+            default:
+                return false;
+        }
+    }
+    if (auto c = Is<AsCast>(n)) {
+        auto tt = c->totype ? c->totype : c->type;
+        return IsIntT(tt) && IsCConstImmExpr(c->child);
+    }
+    return false;
+}
+
+inline bool TypeCheck::ExternParamOk(TypeExpr *t, string &why, bool is_header) {
     if (t->kind == TY_REF) {
-        if (t->ref->optional || t->ref->lenstorage >= 0) {
+        if (t->ref->lenstorage >= 0 || (t->ref->optional && !is_header)) {
             why = "only plain references cross";
             return false;
         }
         auto s = t->ref->sub;
         // A resizable crosses as its header and stack (gs_rref), and C sees
         // its elements as blocks of their packed size.
-        if (s->kind == TY_ARRAY && s->arr->akind == A_GROW) return ExternValueOk(s->arr->sub, why);
+        if (s->kind == TY_ARRAY && s->arr->akind == A_GROW) {
+            if (is_header) {
+                why = "grow-only array references do not cross to header externs; pass a slice";
+                return false;
+            }
+            return ExternValueOk(s->arr->sub, why);
+        }
         return ExternValueOk(s, why);
     }
     if (t->kind == TY_SLICE) return ExternValueOk(t->sub, why);
@@ -2729,8 +2822,11 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
                                          " needs a type"));
         auto pt = spec->argtypes[i];
         ValidateType(pt, sf->line, VT_PARAM);
+        if (p.is_const && !IsIntT(pt))
+            Error(sf->line, cat("extern fn ", sf->name, ": const parameter ", p.name,
+                                " requires an integer type"));
         string why;
-        if (!ExternParamOk(pt, why) || !DylibValueOk(sf, pt, why))
+        if (!ExternParamOk(pt, why, !sf->cheader.empty()) || !DylibValueOk(sf, pt, why))
             Error(sf->line, cat("extern fn ", sf->name, ": parameter ", p.name, " of type ",
                                 TypeStr(pt), " cannot cross to C: ", why));
         auto vd = ast.NewVarDef();
@@ -3085,6 +3181,20 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         vd->isparam = true;
         vd->assigned = vd->maybeassigned = true;
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
+        if (p.is_const) {
+            vd->type = ast.ConstOf(pt);
+            for (auto &cab : spec->const_args) {
+                if (cab.param_idx != (int)i) continue;
+                if (cab.has_int) {
+                    vd->constlit = true;
+                    vd->constval = cab.ival;
+                    vd->constuns = cab.uns;
+                } else {
+                    vd->c_const_expr = cab.c_expr;
+                }
+                break;
+            }
+        }
         if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
             if (ra.unknown) {

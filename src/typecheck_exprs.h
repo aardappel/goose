@@ -2648,7 +2648,7 @@ inline void TypeCheck::ReportRedundantCasts() {
 // its scope makes something else is an error as well (DefaultScopeName).
 inline void TypeCheck::ConstName(Ident *id, const char *what) {
     if (!id->expansionerror.empty()) Error(id, string(id->expansionerror));
-    if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal)
+    if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal && !vd->constlit)
         Error(id, cat(what, " ", id->name, " names a local variable, not a constant"));
     if (auto kind = ScopeNameKind(id->name))
         Error(id, cat(what, " ", id->name, " names a ", kind, ", not a constant"));
@@ -2722,17 +2722,18 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
         return true;
     }
     if (auto id = Is<Ident>(n)) {
-        if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal && vd->constlit &&
-            !vd->constflt) {
-            v.type = vd->type ? ast.PlainOf(vd->type)
-                              : ast.inttypes[vd->constuns ? IS_U64 : IS_I64];
-            v.ck = CK_INT;
-            v.ival = vd->constval;
-            v.uns = vd->constuns;
-            v.notconst = vd->constnot;
-            v.litlo = v.lithi = vd->constnot ? ~vd->constval : vd->constval;
-            literal = false;
-            return true;
+        if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal) {
+            if (vd->constlit && !vd->constflt) {
+                v.type = vd->type ? ast.PlainOf(vd->type)
+                                  : ast.inttypes[vd->constuns ? IS_U64 : IS_I64];
+                v.ck = CK_INT;
+                v.ival = vd->constval;
+                v.uns = vd->constuns;
+                v.notconst = vd->constnot;
+                v.litlo = v.lithi = vd->constnot ? ~vd->constval : vd->constval;
+                literal = false;
+                return true;
+            }
         }
         auto g = ast.LookupGlobal(id->name, id->ns);
         if (!g || g->isvar || g->inits.size() != 1) return false;
@@ -2765,6 +2766,7 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
         return true;
     }
     if (auto u = Is<Unary>(n)) {
+        if (u->op == T_BITAND) return ConstIntValue(u->child, v, literal, visiting, use);
         if (u->op != T_MINUS && u->op != T_BITNOT) return false;
         if (!ConstIntValue(u->child, v, literal, visiting, use)) return false;
         // A constant a check gives no type of its own: a literal, or a named
