@@ -247,10 +247,14 @@ fn general_digits(x: f64, out: u8[:]) -> i64, i64 {
     while p < 1e14 && s < 22 { s++; p = x * float_text::POW10[s]; }
     while p >= 1e15 && s > -22 { s--; p = if s >= 0 { x * float_text::POW10[s] } else { x / float_text::POW10[-s] }; }
     if p >= 1e14 && p < 1e15 {
+        // n may round up to 10^15, one digit too many. It is checked at
+        // this s, still within POW10, and only then written as 10^14 one
+        // power of ten higher: at s = -22 that power is 10^23, past the
+        // table's end.
         var n = (p + 0.5) as! u64;
-        if n == 1000000000000000 { n = 100000000000000; s--; }
         let back = if s >= 0 { n / float_text::POW10[s] } else { n * float_text::POW10[-s] };
         if back == x {
+            if n == 1000000000000000 { n = 100000000000000; s--; }
             put_digits(out[..15], n);
             return 15, 15 - s;
         }
