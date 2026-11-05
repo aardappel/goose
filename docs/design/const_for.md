@@ -1,7 +1,9 @@
-# `const for`: specialization-time expansion (v1)
+# `const for` and `const if`: specialization-time expansion (v1)
 
-Status: implemented. V1 supports the four sources below in statement lists,
-constructor initializer lists, and `match` arm lists.
+Status: `const for` is implemented. V1 supports the four sources below in
+statement lists, constructor initializer lists, and `match` arm lists.
+`const if`, which selects fragments in those same lists on compile-time
+predicates, is designed in section 11 and not yet implemented.
 
 This design replaces a family of compiler-provided field visitors with one
 expansion construct inside ordinary Goose functions. The compiler supplies a
@@ -583,10 +585,10 @@ includes:
   and not every storage type is legal as an ordinary function result.
 * **Constant integer ranges.** Reuse half-open `lo..hi` syntax with constant
   bounds if adopted. V1 supports explicit constant lists only.
-* **`const if` or filtering.** Define a set of compile-time predicates for
-  selecting fragments. For example, a predicate could expand only some variants
-  into arms alongside written arms. This would be distinct from an ordinary
-  runtime `if` and would not allow arbitrary compile-time calls.
+* **`const if` or filtering.** Designed in section 11: a set of compile-time
+  predicates for selecting fragments, distinct from an ordinary runtime `if`
+  and without arbitrary compile-time calls. Its `has_default<A>` query is
+  the narrowest form of the defaults item below.
 * **Additional fragment positions.** Argument lists and array-element lists,
   followed by other justified grammar positions. The shared expansion model
   permits these additions, but each needs explicit parsing, ordering, and
@@ -607,3 +609,363 @@ The library can build richer traversal functions over the v1 primitives
 without adding another compiler-provided visitor pattern. Future reflection
 information remains compile-time-only unless a program explicitly uses it to
 generate ordinary runtime data or operations.
+
+## 11. `const if`: specialization-time selection
+
+Status: designed, not implemented.
+
+`const if` chooses one of its fragment lists while a function is
+specialized, and generates nothing of the others. It is the selection
+counterpart of `const for`'s repetition, with the same sensibilities: a
+small, closed source language, fragments of the enclosing syntactic
+category, ordinary runtime code inside, and no fallback to runtime behavior
+when something is not constant.
+
+The motivating request is [issue #200](https://github.com/aardappel/goose/issues/200).
+Honk, a web framework, validates JSON request bodies against plain Goose
+structs. A `fields<T>` expansion can read every field's value in `T { .. }`,
+but cannot tell `discount: f64 = 0.0` from `price: f64`, so it cannot tell a
+required field from an optional one. The answer is a compile-time predicate
+on the field. A predicate alone is not enough: a runtime `if` on it checks
+both branches for every field (section 5.1), so the branch a field does not
+take must still typecheck for that field. `const if` is where such
+predicates live. They are valid only in its condition, as `fields<T>` is
+valid only as a `const for` source, which keeps compile-time code visibly
+apart from runtime code.
+
+### 11.1 Syntax
+
+```goose
+const for <N, A> in fields<T> {
+    const if !has_default<A> {
+        if !seen[i] { add_error(errors, N, "Field required"); }
+    }
+    i++;
+}
+
+const for <U> in types<i8, i16, i32, i64, f32, f64> {
+    const if same<U, f32> || same<U, f64> { check_float<U>(); }
+    else { check_integer<U>(); }
+}
+
+const for <C> in [1, 2, 4, 8] {
+    const if C >= 4 { check_wide<C>(); } else const if C == 2 { check_pair(); }
+}
+
+const if TRACE { print("checked ", i, " fields"); }
+```
+
+`const`, `if` and `else` are existing keywords. A `const if` is followed by
+a condition, a brace-delimited fragment list, and optionally `else` with
+either another `const if` or a fragment list. The condition is in scrutinee
+position, as an `if`'s is: a `{` ends it and begins the fragments.
+
+```text
+constif    := "const" "if" condition "{" fragments "}" constelse?
+constelse  := "else" ("const" "if" condition "{" fragments "}" constelse?
+                     | "{" fragments "}")
+condition  := expr                   // the expression grammar, validated by 11.2
+query      := "has_default" "<" ident ">"
+            | "same" "<" type "," type ">"
+```
+
+A chain continues with `else const if`, as its first branch was written. A
+plain `else if` directly after a `const if` is an error: whether it is a
+compile-time or a runtime `if` would be invisible at the keyword, and a
+runtime `if` in the else branch is written out as `else { if ... }`.
+
+The enclosing list determines the grammar of `fragments`, as for `const for`
+(section 2). A `const if` occupies one position of the enclosing statement,
+initializer or arm list, and every branch holds fragments of that category.
+
+Queries are contextual names, as `fields`, `variants` and `types` are. Inside
+a `const if` condition, `has_default` or `same` followed by `<` begins a
+query, and the angle brackets hold a binding name or types, read by the type
+grammar. Elsewhere the names are ordinary identifiers, so a user function or
+variable called `same` is unaffected, and so is a comparison `same < x`
+outside a condition. There are no parentheses after a query: a query is not a
+call, and its operand is not a value. `has_default(A)` would suggest an
+argument, which an accessor cannot be (section 3.1). The angle brackets say
+what `fields<T>` says: what stands inside is a type or a binding known
+during specialization.
+
+### 11.2 Conditions
+
+A condition is a constant of the specialization. It is parsed by the
+ordinary expression grammar, so precedence and parentheses are the ordinary
+ones (specification appendix D), and validated during specialization against
+the following list. Anything else is an error; a nonconstant condition does
+not become a runtime branch.
+
+A condition is one of:
+
+* `true`, `false`, or a named global `bool` constant under section 3.3's
+  rules for named constants;
+* a query (11.3);
+* `!c`, `c && d`, `c || d` and `(c)` for conditions `c` and `d`. Both
+  operands of `&&` and `||` are validated, even when the left one decides
+  the result;
+* a comparison `a op b`, with `op` one of `== != < <= > >=`, between two
+  constant operands of one kind.
+
+The operands are exactly the constant-list entries of section 3.3: integer,
+character, floating-point, boolean and string literals, named global
+constants, the integer constant expressions array sizes accept, and the
+constant bindings of enclosing `const for` expansions. The comparison rules
+per kind:
+
+| Kind | Operators | Typing |
+|---|---|---|
+| integers | all six | the operands unify as the integer constant expressions of section 3.3 unify them for `+` (specification section 6.1): equal types stay, a literal adapts to the other's type and must fit it; the comparison is signed or unsigned per that type |
+| floats | all six | two float constants; an integer constant beside one converts as specification section 6.3 converts it |
+| booleans | `==`, `!=` | |
+| strings | `==`, `!=` | by content |
+
+Operands of different kinds do not compare: `N == 0` for a name binding `N`
+is an error, not `false`. A type is never a comparison operand; `same` is the
+only way to compare types (11.3). A literal parameter (specification section
+7.7) has no known value in the body it reaches and is not a constant here.
+Neither is a local, whatever it is declared with, a field read such as
+`v.A`, a call, or an aggregate value.
+
+This is deliberately the constant language the compiler already evaluates
+for array sizes and `const for` sources, plus comparisons and the boolean
+connectives on literal results. No evaluator for further operators, no
+constant-ness of locals or calls, and no execution model are implied. A
+program that wants a computed constant writes a named global constant, which
+keeps the two languages visibly apart in the source.
+
+A use of a named constant in a condition relies on the constant keeping its
+initializer's value, as an array size does (specification section 3.1), and
+is recorded the same way.
+
+### 11.3 Queries
+
+**`has_default<A>`** requires an accessor bound by `fields<T>` (a struct's
+field, or a variant payload's through `fields<V>`) to be in scope under that
+name. It is `true` exactly when the field's declaration has a written
+`= ...`. The expression is not evaluated, inspected or compared: a default
+equal to the type's zero (`discount: f64 = 0.0`) counts, and a field whose
+type happens to have a default of its own (a nested struct whose fields all
+declare defaults, or an optional) does not. The answer is the same for every
+instantiation of a generic struct, since the declaration is written once. The
+default value is still obtained as today, through `T { .. }` at runtime;
+section 10's rule that defaults are not executed during expansion stands.
+
+**`same<T1, T2>`** takes two types of the ordinary type grammar, resolved as
+`types<...>` entries are (section 3.2): in their lexical environment, with
+enclosing generic parameters and expansion bindings available, each required
+to be concrete when the condition is evaluated. It is `true` when the two are
+identical after resolution, by the equality the typechecker uses for
+concrete types: aliases resolve, generic instantiations compare by their
+arguments, array sizes by their value, `const` qualification counts, and a
+reference type differs from its pointee. A variants binding `V` is a type, so
+`same<V, Shape.Dot>` selects a variant, as `N == "Dot"` does by name.
+
+Queries are boolean constants, so they compose with the connectives and may
+even be compared with `==`, though there is no reason to.
+
+Section 11.6 records the queries considered and left out of v1.
+
+### 11.4 Semantics
+
+A `const if` is evaluated when ordinary checking reaches the list it stands
+in, at the same point a `const for` there is expanded. The first branch
+whose condition holds supplies its fragments; with no `else` and no holding
+condition, nothing is supplied. The chosen fragments replace the `const if`
+in the enclosing list, as a `const for`'s instances do, and then receive the
+ordinary checks of that list.
+
+A branch that is not chosen is parsed and name-bound, so it must be
+syntactically valid and its own `const for` and `const if` bindings must
+resolve, but it is never cloned, expanded or checked. A call to a function
+that does not exist, or a write to a `varint` field, in a branch the
+specialization does not take is not an error. This is the difference from a
+runtime `if` on a constant, and the point of the construct. It is the rule
+`const for` already applies to a body over an empty source (section 7). A
+branch no specialization ever takes is therefore never checked at all.
+
+A `const if` need not stand inside a `const for`. Its condition may use
+generic parameters (`same<T, i64>`), named constants (`const if TRACE`), or
+nothing specialization-dependent at all; it is evaluated the same way in
+every case.
+
+**Statement lists.** The chosen branch is one nested block with its own
+scope. It is not an expansion boundary: `break`, `continue` and `return` in
+it mean what they mean in a runtime `if`'s branch, and a `const if` inside a
+`const for` body still cannot `break` out of the expansion (section 5.1).
+Flow after the `const if` is the flow of the generated code, since the
+generated code is the program: a `const if C { return; }` makes what follows
+unreachable when `C` holds, and both arms of
+`const if C { x = 1; } else { x = 2; }` definitely assign `x`. A nested
+function declared in a branch exists when the branch is chosen.
+
+```goose
+fn numbers_distinct<E>() -> bool {
+    const for <N1, V1> in variants<E> {
+        const for <N2, V2> in variants<E> {
+            const if N1 != N2 {
+                if number(V1) == number(V2) { return false; }
+            }
+        }
+    }
+    true
+}
+```
+
+Here the diagonal is never generated, where a runtime `if N1 != N2` would
+generate and then optimize away each comparison.
+
+**Constructor initializer lists.** Each branch holds initializer entries;
+the chosen branch's entries join the enclosing list in place, and flattening
+precedes the ordinary constructor checks of section 5.2. A `const if` that
+supplies nothing leaves its fields to explicit entries, declared defaults or
+a trailing `..`:
+
+```goose
+// A copy of src with every field that declares a default reset to it.
+fn reset_defaults<T>(src: T&) -> T {
+    T { const for <N, A> in fields<T> { const if !has_default<A> { A: src.A, } } .. }
+}
+```
+
+**Match arm lists.** Each branch holds arms; the chosen branch's arms join
+the enclosing list in place, before the checks of section 5.3. This is the
+filtering that section 10 anticipated: a `const for` over `variants<E>` may
+leave some variants to written arms, which the exhaustiveness check then
+demands.
+
+```goose
+fn payload_area(s: Shape) -> i64 {
+    match s {
+        const for <N, V> in variants<Shape> {
+            const if !same<V, Shape.Dot> { V v => area(v), }
+        },
+        Dot => -1,
+    }
+}
+```
+
+The shape walk that decides whether a block's tail is a statement
+(`IsValuelessTail` in `typecheck_expansion.h`) does not evaluate conditions. It considers every
+branch of a `const if`, as it does for a runtime `if`: a `match` whose arms
+come from a `const if` is a statement when any branch's arms are.
+
+**Bindings and hygiene.** The condition's names bind lexically, as section 4
+binds everything else. `A` in `has_default<A>` is the accessor binding of
+that name in scope; a local declared with that name hides it, and the query
+is then an error rather than a lookup of a field called `A`. A type in `same`
+resolves as a type in a `types<...>` source does.
+
+### 11.5 Compiler integration
+
+1. Parse `const if` into a selection node with a list of branches, each a
+   condition (null for the final `else`) and fragments of the enclosing
+   category, next to `ParseConstFor` in the three places `const for` is
+   recognized: statement, initializer and arm lists. The condition is parsed
+   by the expression parser in scrutinee mode, under a flag that makes
+   `has_default<` and `same<` begin query nodes: a query kind, a binding
+   name, and types read by the type grammar, with the usual `>>` splitting.
+   A query node is a primary expression, so `&&`, `||` and comparisons
+   continue around it normally. After `else`, an `if` is the diagnosed
+   `else if`.
+2. Bind the names in conditions as section 7 step 2 binds expansion
+   parameters. A query's binding name resolves through the same scope
+   stack, and `has_default` requires it to resolve to an accessor. Query
+   types go through the binder's type walk, so type bindings in them survive
+   cloning.
+3. Clone conditions and fragments with the branch structure intact.
+   Constant bindings in a condition substitute to their literals as they do
+   anywhere else; a query copies its accessor's owner and field name from
+   the expansion argument, as a member access does today; query types clone
+   through `CloneExpansionType`.
+4. Evaluate the condition where the enclosing list is expanded (the
+   statement loop, `ExpandInitializers`, `ExpandArms`). Literal results come
+   from `ExpansionConstant`, which already yields typed integer, float,
+   boolean and string literals and records reliance on named constants;
+   comparisons fold on those; `has_default` reads the field's declaration in
+   the owner's instantiation; `same` substitutes both types, rejects one
+   that is not concrete, and compares them with the checker's type equality.
+5. Splice the chosen branch's fragments in place of the node, cloned as a
+   `const for` instance is and counted against the same expansion limit.
+   Recurse for nested expansions and selections.
+6. Round-trip the unexpanded syntax in the source dump; give the query
+   brackets the angle-bracket token role the `const for` header uses; add
+   the construct to the tree-sitter and VS Code grammars beside
+   `const_for_statement`; extend the specification's section 6.5 and
+   appendix D.
+
+The chosen fragments need no expansion trace line of their own: their
+locations are their own, inside any enclosing `const for` trace.
+
+Useful diagnostics:
+
+* a condition that is not constant, naming the offending subexpression;
+* a query outside a `const if` condition;
+* `has_default<X>` where `X` is not a `fields` accessor in scope (a type or
+  constant binding, a hidden name, an unknown name);
+* a `same` type that is not concrete or not valid where written;
+* operands of different kinds, an ordering on booleans or strings, or a type
+  written as a comparison operand;
+* a literal parameter, local, call or field read in a condition;
+* `else if` after `const if`;
+* and the flattened-list diagnostics of sections 5.2 and 5.3 for whatever
+  the chosen fragments produce.
+
+Regression fixtures follow section 9's layout as `test/typing/const_if_*.goose`,
+`test/errors/const_if_*.goose` and `test/errors_tc/const_if_*.goose`:
+
+* `has_default` over a struct, a variant payload, and a generic struct at
+  two instantiations; a default equal to zero; a nested struct whose fields
+  all default; an optional field.
+* An unchosen branch left unchecked: an unknown function and a `varint`
+  write in it; `const if false` in a non-generic function.
+* Comparisons of each kind, literal beside typed named constant, integer
+  beside float, strings by content, and precedence with the connectives.
+* `same` over `types<...>` bindings, variants, generic parameters,
+  qualifiers, references and generic instantiations.
+* Chains, `else`, and a false condition without `else` that supplies
+  nothing.
+* Statement context: `break` and `continue` through a `const if` inside a
+  runtime loop, `return`, definite assignment through both arms, branch
+  scoping, nesting with `const for` both ways, a nested function in a branch.
+* Initializer context: `reset_defaults` with `..`, an empty contribution,
+  and mixed or duplicate entries detected after flattening.
+* Arm context: filtered variants with written arms for the rest, a missing
+  variant when none is written, arms beside `_`, and a constant list's arms
+  under a `const if`.
+* Every diagnostic above, and the query names used as ordinary identifiers
+  elsewhere.
+* Parse and dump round trips.
+
+### 11.6 Considered for v1 and left out
+
+* **The field's type.** A predicate `has_type<A, T>` would answer whether
+  the field's declared type is `T`. It was dropped to avoid deciding, in a
+  throwaway form, the storage-versus-read-type question section 10 raises
+  for a third binding `<N, A, U>`: a `varint` field is declared `varint`
+  and reads as `i64`. Once `U` exists, `same<U, i64>` covers fields, and a
+  v1 `has_type` that had picked one answer could disagree with it. Until
+  then, per-type behavior of a field's value is written as overloads, as
+  Honk writes it today.
+* **Type kind predicates.** `is_struct<T>`, `is_adt<T>`, `is_array<T>`,
+  `is_integer<T>` and the like. Overloading already dispatches on kind at
+  runtime, and without a field-type binding a kind predicate cannot drive
+  `fields<U>` recursion, which is where it would earn its place. A concrete
+  need should fix the set.
+* **A value form.** `let x = const if C { a } else { b };` is cheap, since
+  the chosen block is already an expression and no branch joining is needed,
+  but it needs an expression-position parse, the tail rule above and a
+  decision on whether an unchosen branch's shape counts. V1 follows
+  `const for`: fragments only, no result value.
+* **Counts, indices and positions.** `const for` gives no index binding by
+  design; a runtime counter does the job, as Honk's `enum_message` shows.
+* **`has_field<T, "name">`.** A `const for` over `fields<T>` with
+  `const if N == "name"` already reaches the field; a pure existence check
+  can set a runtime flag the same way.
+* **The default's value.** Defaults may contain runtime work and are not
+  executed during expansion (section 10); `T { .. }` is the way to the value.
+* **A compile-time assertion.** `const assert c;` with this condition
+  language is a natural sibling and a separate small addition.
+* **Top-level selection.** Conditional declarations need the separate design
+  section 10 already requires for top-level `const for`.
