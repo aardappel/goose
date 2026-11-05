@@ -114,6 +114,11 @@ and the reference describe what was built; these say why.
   the compiler writes; what that costs against the existing non-copyable
   class, how pools and coroutine frames would use it, and what it leaves
   untouched; a research note.
+* [Child threads](design/child_threads.md): fork-join over shared memory
+  inside one program, with the parent dormant: `par for` as one claim with
+  a thread level and a lane level, what a body may touch, structural and
+  proven disjointness, a pool measured against today's spawn, and what
+  ISPC, Halide, OpenMP, rayon and the rest built; a research note.
 
 ## Getting the compiler
 
