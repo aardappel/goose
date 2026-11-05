@@ -160,7 +160,9 @@ module.exports = grammar({
 
     // --- Declarations ---
 
+    // `root` is a keyword only before `struct`, at the top level.
     struct_declaration: $ => seq(
+      optional('root'),
       'struct',
       field('name', $._qualified_name),
       optional(field('type_parameters', $.type_parameters)),
@@ -350,7 +352,7 @@ module.exports = grammar({
       optional(seq(
         '<',
         field('width', alias(choice(...UNSIGNED_TYPES, 'varint'), $.primitive_type)),
-        optional(seq('in', field('pool', $._qualified_name))),
+        optional(seq('in', field('pool', $.storage_name))),
         '>',
       )),
     )),
@@ -370,8 +372,16 @@ module.exports = grammar({
       optional('const'),
       alias(choice(...UNSIGNED_TYPES), $.primitive_type),
       choice('in', 'upto'),
-      field('domain', $._qualified_name),
+      field('domain', $.storage_name),
     ),
+
+    // A global, or a field path into one (`pool.items`): an index type's
+    // domain and a relative reference's pool name. Greedy, as the compiler's
+    // parser is: a `.` after `x as u8 in pool` extends the name.
+    storage_name: $ => prec.right(seq(
+      $._qualified_name,
+      repeat(seq('.', field('field', $.identifier))),
+    )),
 
     // --- Statements ---
 

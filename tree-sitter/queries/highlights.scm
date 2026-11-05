@@ -61,6 +61,7 @@
 (self) @variable.builtin
 
 (function_modifier) @keyword.modifier
+"root" @keyword.modifier
 
 ; The queries of a const if condition, keywords there only.
 (const_query name: (identifier) @keyword)

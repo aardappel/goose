@@ -313,7 +313,8 @@ fn f() {
         (parenthesized_type
           (index_type
             (primitive_type)
-            (identifier)))
+            (storage_name
+              (identifier))))
         (identifier)
         (block))
       (expression_statement
