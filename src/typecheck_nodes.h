@@ -578,6 +578,7 @@ inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
         if (!IsIntT(st))
             tc.Error(this, cat("only an integer converts to ", tc.TypeStr(tt), ", not ",
                                tc.TypeStr(st), " (§3.11)"));
+        tc.RequireIndexArray(tt, this, cat("converting to ", tc.TypeStr(tt)));
         return v;
     }
     tc.NoteCast(this, raw, cv, v);

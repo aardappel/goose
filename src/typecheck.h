@@ -1772,7 +1772,8 @@ struct TypeCheck {
     LVal LValueBase(Node *n, bool cmpview = false);
     void NoTemporaryLiteral(Node *n, TypeExpr *t);
     void DerefLValue(LVal &lv, Node *at);
-    void RequireAssigned(VarDef *vd, Node *at);
+    void RequireAssigned(VarDef *vd, Node *at, string_view use = {});
+    void RequireIndexArray(TypeExpr *t, Node *at, string_view what);
     void SliceProvenance(LVal &lv, Node *at);
     void ReadBackLVal(LVal &lv);
     bool SlotLoadWritable(TypeExpr *t, bool path);

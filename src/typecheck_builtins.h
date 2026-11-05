@@ -220,6 +220,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             string why;
             if (!VerifiableElem(el, el, why))
                 Error(c, cat("from_bytes<", TypeStr(t), "> has no verifier: ", why));
+            Reaches(el, [&](TypeExpr *x) {
+                if (IsIndexT(x))
+                    RequireIndexArray(x, c, cat("from_bytes<", TypeStr(t), "> verifying ",
+                                                TypeStr(x)));
+                return false;
+            });
             // The verifier checks a link against the loaded image, but a
             // grow-shrink result can free the element it names while the
             // array's own contents still hold it: the store rule that keeps

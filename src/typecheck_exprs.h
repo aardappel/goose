@@ -170,8 +170,9 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
 }
 
 // A global is unassigned until the driver reaches its declaration, which
-// is when its initializer runs (§11.1).
-inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at) {
+// is when its initializer runs (§11.1). `use`: what reads vd where no
+// identifier at `at` names it.
+inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at, string_view use) {
     if (vd->assigned) return;
     // Its initializer's check failed and reported why: a use is no error
     // of its own.
@@ -181,7 +182,17 @@ inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at) {
                            "(§11.1), so ", vd->name, " has no value until its initializer at ",
                            Where(vd->line), " has run")
                      : string();
+    if (!use.empty()) Error(at, cat(use, " reads ", vd->name, " before it is assigned", order));
     Error(at, cat("variable ", vd->name, " may be used before it is assigned", order));
+}
+
+// A conversion into an index or bound type, and from_bytes' verification of
+// one, compare against its array's length (§3.11): a read of the global
+// holding the array, which the type names rather than the code.
+inline void TypeCheck::RequireIndexArray(TypeExpr *t, Node *at, string_view what) {
+    auto a = t->ix->arr;
+    RequireAssigned(a->componentowner ? a->componentowner : a, at,
+                    cat(what, " checks against ", a->name, ".len, which"));
 }
 
 // Accessing through a slice variable: writes and roots follow the slice

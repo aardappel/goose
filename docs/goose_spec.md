@@ -4397,7 +4397,10 @@ it leaves the caller's own facts about `src` intact.
   global has no value until its initializer has run, and nothing else can
   give it one. Naming it earlier is an error (§4.4), whether to read or to
   write it, and whether in an earlier global's initializer, in its own
-  initializer, or in a function that one of those calls. A compile-time
+  initializer, or in a function that one of those calls. A conversion
+  into an index or bound type of a global array, and a `from_bytes` whose
+  elements hold one, read that array's length (§3.11), so they count as
+  naming it (or, for a root owner's component, its owner). A compile-time
   size or match pattern may still name a later named constant (below).
   That outermost scope is a frame like any other: a global's storage
   belongs to the program instance running it and is never shared with

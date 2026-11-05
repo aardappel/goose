@@ -3694,7 +3694,9 @@ Globals are initialized before `main`, in declaration order within a
 file, with imported files first. So an initializer may use a global from a
 module the file imports, and may call functions. It is an error to name a
 global before its initializer has run, whether in an earlier initializer
-or in a function that such an initializer calls. The whole program runs
+or in a function that such an initializer calls. Converting into an index
+type of a global array, or a `from_bytes` verifying one, reads that
+array's length, so it counts as naming the array. The whole program runs
 inside an implicit outermost scope that owns the globals: they are the
 outermost roots for the lifetime rules. A global growable array owns the
 bottom of a data stack for the program's life, which makes it a natural
