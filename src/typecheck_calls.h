@@ -517,6 +517,11 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     // Arguments the re-check rebound by reference replace the originals.
     c->SetArgNodes(argnodes);
     c->spec = spec;
+    if (auto caller = CurRealFrame().spec; caller && spec && caller != spec) {
+        auto guarded = ActiveGuardedTargets();
+        MergeTargetAttrs(caller->target_attr, spec->target_attr, guarded);
+        caller->target_edges.push_back({ spec, std::move(guarded) });
+    }
     CheckCalleeRelative(c, spec, argvals);
     CalleesReturn(c, { spec }, argsreach);
     return CallResult(c, spec, argvals);
@@ -1817,6 +1822,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     spec->views = views;
     spec->litparams = mi.litparams;
     spec->const_args = mi.const_args;
+    MergeTargetAttrs(spec->target_attr, sf->target_attr);
     spec->fnvals = mi.fnvals;
     spec->bindings = mi.bindings;
     // An error in what the call's literal arguments rely on is the call

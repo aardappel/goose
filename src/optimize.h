@@ -805,6 +805,7 @@ inline Node *Optimizer::TryInline(Call *c) {
     auto K = c->spec;
     auto &info = inlineinfo[K];
     if (!K->live || !K->body) return nullptr;
+    if (curspec ? curspec->target_attr != K->target_attr : !K->target_attr.empty()) return nullptr;
     auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
     // An `inline fn` passes the size rules wherever inlining is on.
     auto small = (K->sf->isinline && nc > 0) || info.nodecount < nc || info.nodecount * K->uses < ncuhere;
@@ -969,6 +970,8 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->poolcheck = poolcheck;
     c->qtype = qtype;
     c->shaderblob = shaderblob;
+    c->target_mask = target_mask;
+    c->target_const = target_const;
     c->rettypes = rettypes;
     c->fmtspecs = fmtspecs;
     c->fmtcontexts = fmtcontexts;
@@ -1300,6 +1303,9 @@ inline Node *Call::Opt(Optimizer &o) {
                                                            : o.OptIn(this, args[i]);
     if (fvbody) o.OptBlock(fvbody);
     if (defaultinit) defaultinit = o.Opt(defaultinit);
+    if (builtin == B_TARGET_HAS && target_const >= 0) {
+        return o.NewBool(this, target_const != 0);
+    }
     if (builtin == B_ASSERT) {
         if (auto b = Is<BoolLit>(FirstArg()); b && b->val) {
             o.folded++;

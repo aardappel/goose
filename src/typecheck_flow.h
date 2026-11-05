@@ -1428,14 +1428,25 @@ template<typename F> Val TypeCheck::CheckJoin(Node *x, TypeExpr *expected, F che
 inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == x;
     auto onjoin = joinpath == x;
+    int target_cv = -1;
+    string target_isa;
+    EvalStaticTargetCond(x->cond, target_cv, target_isa);
     CheckCond(x->cond);
     auto entry = SaveFlow();
     NarrowCond(x->cond, true);
     Val tv;
-    {
+    if (target_cv == 0) {
+        x->thenb->stmts.clear();
+        x->thenb->tail = nullptr;
+        x->thenb->exprtype = ast.voidtype;
+        reachable = false;
+        tv.type = nullptr;
+    } else {
+        if (!target_isa.empty()) cur.guarded_targets.push_back(target_isa);
         PathScope ps(*this, onpath ? x->thenb : nullptr);
         JoinPathScope js(*this, onjoin ? x->thenb : nullptr);
         tv = CheckBlockVal(x->thenb, expected, wantvalue);
+        if (!target_isa.empty()) cur.guarded_targets.pop_back();
     }
     auto aflow = SaveFlow();
     RestoreFlow(entry);
@@ -1443,14 +1454,18 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     NarrowCond(x->cond, false);
     PathScope ps(*this, onpath ? x->elseb : nullptr);
     JoinPathScope js(*this, onjoin ? x->elseb : nullptr);
-    if (auto ei = Is<IfExpr>(x->elseb)) {
+    if (target_cv == 1) {
+        x->elseb = nullptr;
+        reachable = false;
+        ev.type = nullptr;
+    } else if (auto ei = Is<IfExpr>(x->elseb)) {
         // On the node path, whose later parts are what its own condition
         // decides between (AfterHead).
         NodeScope ns(*this, ei);
         ev = CheckIf(ei, expected, wantvalue);
     } else if (x->elseb) {
         ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue);
-    } else if (wantvalue) {
+    } else if (wantvalue && target_cv != 1) {
         Error(x, "an if used as a value requires an else branch");
     }
     // A nested else-if is checked here rather than through its own Check,
@@ -1464,6 +1479,16 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     }
     x->flat = last == x && x->elseb && entry.reachable && !bflow.reachable;
     RestoreFlow(entry);
+    if (target_cv == 0) {
+        RestoreFlow(bflow);
+        if (!wantvalue) return VoidVal();
+        return onjoin ? ev : TempCopy(ev);
+    }
+    if (target_cv == 1) {
+        RestoreFlow(aflow);
+        if (!wantvalue) return VoidVal();
+        return onjoin ? tv : TempCopy(tv);
+    }
     MergeFlow(aflow, bflow);
     if (!wantvalue) return VoidVal();
     auto v = JoinBranches(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, onjoin);

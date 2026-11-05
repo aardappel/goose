@@ -358,7 +358,7 @@ inline string CodeGen::Sanitize(string_view name) {
     if (s.empty()) s = "_";
     // `result#1`, a name the parser makes that no program can write
     // (Parser::ParseMultiAssign); a local's C name is unique either way.
-    for (auto &c : s) if (c == '#') c = '_';
+    for (auto &c : s) if (!isalnum((unsigned char)c) && c != '_') c = '_';
     return s + "_g";
 }
 

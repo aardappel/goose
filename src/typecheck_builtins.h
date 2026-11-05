@@ -166,6 +166,25 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             v.writable = false;
             return v;
         }
+        case B_TARGET_HAS: {
+            auto sl = Is<StrLit>(args[0]);
+            if (!sl)
+                Error(args[0], "target_has requires a string literal argument");
+            args[0]->exprtype = cu8slice;
+            int cv = -1;
+            uint32_t m = 0;
+            if (sl) ValidateTargetString(sl->val, c->line, "target_has", cv, m);
+            c->target_const = cv;
+            c->target_mask = m;
+            c->rettypes.push_back(ast.booltype);
+            Val v;
+            v.type = ast.booltype;
+            if (cv >= 0) {
+                v.ck = CK_INT;
+                v.ival = cv;
+            }
+            return v;
+        }
         case B_COPY: {
             // copy(x): a fresh value from stored one (§4.1), for the
             // destinations that never copy implicitly.
