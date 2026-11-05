@@ -424,7 +424,8 @@ struct Optimizer {
                                    u->child->exprtype->kind != TY_REF)
             n = u->child;
         auto d = Is<Dot>(n);
-        return Is<Ident>(n) || (d && d->IsField()) || Is<Index>(n);
+        auto se = Is<SliceExpr>(n);
+        return Is<Ident>(n) || (d && d->IsField()) || Is<Index>(n) || (se && se->is_window);
     }
 
     // A path to a value in storage that a view can see into.
@@ -710,6 +711,7 @@ struct Inliner {
         for (auto &c : nv->components) c = Remap(c);
         auto fit = o.facts.find(v);
         if (fit != o.facts.end()) o.facts[nv] = fit->second;
+        if (nv->initexpr) nv->initexpr = Cp(nv->initexpr);
         return nv;
     }
 
@@ -731,11 +733,13 @@ struct Inliner {
     // Remap owns all copied-variable state, including the write/address facts
     // that later folds use, for ordinary and recursive base-case inlining.
     VarDecl *BindArg(VarDef *pv, Node *arg, Line ln) {
-        if (Optimizer::AsLiteral(arg) && Optimizer::Unwritten(o.facts, pv) &&
+        if ((pv->constlit ||
+             (Optimizer::AsLiteral(arg) && Optimizer::Unwritten(o.facts, pv))) &&
             !(keepcaptured && pv->captured)) {
             subst[pv] = arg;
             return nullptr;
         }
+        if (pv->c_const_expr) return nullptr;
         auto vd = ast.New<VarDecl>(ln, pv->isvar);
         vd->names.push_back(pv->name);
         vd->defs.push_back(Remap(pv));
@@ -895,6 +899,11 @@ inline Node *Defer::Cp1(Inliner &inl) const { return inl.ast.New<Defer>(line, in
 
 inline Node *Ident::Cp1(Inliner &inl) const {
     if (vdef) {
+        if (vdef->c_const_expr) {
+            auto r = vdef->c_const_expr->Clone(inl.ast);
+            r->exprtype = exprtype;
+            return r;
+        }
         // A parameter bound to a constant argument substitutes right here.
         auto it = inl.subst.find(vdef);
         if (it != inl.subst.end()) {

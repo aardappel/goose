@@ -68,12 +68,6 @@ string DirOf(const string &path) {
 
 string ExePath(const char *argv0);
 
-static bool FileExists(const string &path) {
-    auto f = fopen(path.c_str(), "rb");
-    if (f) fclose(f);
-    return f != nullptr;
-}
-
 // A path split on either separator, with "." and cancelled "x/.." dropped. A
 // path with a leading separator keeps a leading empty component ("/a" ->
 // {"", "a"}), so two rooted paths share it and a rooted and a relative one
@@ -1566,6 +1560,9 @@ int Main(int argc, char **argv) {
     vector<string> includes;
     // What a JIT run compiles and starts, once the compile produced it.
     string program;
+    string jit_thunk_src;
+    vector<string> jit_thunk_symbols;
+    vector<string> jit_local_headers;
     // The program's Ast outlives the compile: a build and a JIT run read
     // its packages, for the native parts the program needs (native.h).
     unique_ptr<Ast> astp;
@@ -1692,7 +1689,11 @@ int Main(int argc, char **argv) {
         for (auto &rf : runtime_files)
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
         auto stackcfg = StackConfigOf(cdefines);
-        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, stackcfg.maxstacks);
+        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, stackcfg.maxstacks,
+                   jit && !nocgen, outfile.empty() ? string() : DirOf(outfile));
+        jit_thunk_src = cg.jit_thunk_src;
+        jit_thunk_symbols = cg.jit_thunk_symbols;
+        jit_local_headers = cg.jit_local_headers;
         if (stacks) cg.StackReport(msgs, stackcfg);
         // The packages whose native parts the program needs, which a JIT
         // run takes functions from and a build links: its own, when it has
@@ -1800,6 +1801,9 @@ int Main(int argc, char **argv) {
                 if (FileExists(inc)) inc = AbsolutePath(inc);
         }
         program.clear();
+        jit_thunk_src.clear();
+        jit_thunk_symbols.clear();
+        jit_local_headers.clear();
         astp.reset();
         nativepkgs.clear();
         found.clear();
@@ -1840,6 +1844,19 @@ int Main(int argc, char **argv) {
             vector<pair<string, const void *>> symbols;
             BuildOptions jitopts;
             jitopts.verbose = verbose;
+            if (!jit_thunk_symbols.empty()) {
+                if (!findtc()) return 1;
+                Builder b { tc, jitopts, msgs };
+                string hdrlib;
+                if (!BuildHeaderJitLib(filename, jit_thunk_src, jit_thunk_symbols,
+                                       jit_local_headers, b, hdrlib))
+                    return 1;
+                string err;
+                if (!LoadSharedSymbols(hdrlib, symbols, err)) {
+                    fprintf(stderr, "cannot load header JIT library: %s\n", err.c_str());
+                    return 1;
+                }
+            }
             for (auto pkg : nativepkgs) {
                 auto &p = astp->packages[pkg];
                 if (p.builtin >= 0) {

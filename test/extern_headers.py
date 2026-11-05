@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for Header-Backed Externs v2, Fixed-Length Slice Windows, Const Params, and target_has."""
 
 import os
@@ -254,17 +253,15 @@ struct Mixed {
 }
 
 root struct RootState {
-    buf: u8[..],
+    buf: u8[>..],
     mask: m128i,
 }
 
 let g_pad: u8 = 7;
 let g_vec: m128i = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
-fn make_root() -> RootState {
-    var r = RootState { buf: [], mask: [0x5A; 16] };
+fn touch_root(r: RootState&) {
     r.buf.push(r.mask[0]);
-    return r;
 }
 
 fn main() {
@@ -285,7 +282,8 @@ fn main() {
     let mx = Mixed { tag: 3, len: 99, vec: x };
     assert(mx.vec[7] == 8);
 
-    var rs = make_root();
+    var rs = RootState { buf: [], mask: [0x5A; 16] };
+    touch_root(rs);
     assert(rs.buf[0] == 0x5A && rs.mask[15] == 0x5A);
     print("simd_ok");
 }
@@ -312,7 +310,7 @@ inline fn wrap_shift(x: i64, const k: i32) -> i64 {
     return my_shift_add(x, r);
 }
 
-inline fn pair_shift(x: i64, const k: i32) -> (i64, i32) {
+inline fn pair_shift(x: i64, const k: i32) -> i64, i32 {
     return my_shift_add(x, k), k + 1;
 }
 
@@ -325,8 +323,8 @@ fn main() {
     assert(b == 43 && c == 4);
 
     var sum: i64 = 0;
-    const for i in 1..4 {
-        sum += wrap_shift(10, i as i32);
+    const for <i_val> in [1, 2, 3] {
+        sum += wrap_shift(10, i_val as i32);
     }
     assert(sum == (21 + 42 + 83));
     print("const_ok");
@@ -341,15 +339,16 @@ fn main() {
     sub_hdr_v1 = "#define SUB_VAL() 111\n"
     sub_hdr_v2 = "#define SUB_VAL() 222\n"
     sub_goose = r"""
+namespace sub;
 extern "sub_hdr.h" {
     fn sub_val() -> i64 = "SUB_VAL";
 }
-pub fn get_sub() -> i64 {
+fn get_sub() -> i64 {
     return sub_val();
 }
 """
     main_sub = r"""
-import sub;
+import sub from "./sub";
 fn main() {
     print(sub::get_sub());
 }
@@ -399,8 +398,24 @@ fn main() { run(2); }
 """,
         "compile-time constant",
     )
+    check_err(
+        r"""
+extern "<emmintrin.h>" {
+    fn mm_slli_si128(a: u8[16], const imm: i32) -> u8[16] = "_mm_slli_si128";
+}
+fn mutate(x: i32&) { x = 9; }
+fn main() {
+    let k: i32 = 2;
+    let z: u8[16] = [0; 16];
+    let _ = mm_slli_si128(z, k);
+    mutate(&k);
+}
+""",
+        "writable reference",
+    )
 
 
 if __name__ == "__main__":
     test_slice_windows()
+    test_header_externs_and_const_params()
     print("extern_headers.py: all tests passed!")

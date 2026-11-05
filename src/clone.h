@@ -290,6 +290,10 @@ inline Node *VarDecl::Clone1(Ast &ast) const {
     vd->isglobal = isglobal;
     vd->byref = byref;
     vd->results = results;
+    vd->cheader = cheader;
+    vd->target_attr = target_attr;
+    vd->cname = cname;
+    vd->cheader_fileidx = cheader_fileidx;
     vd->names = names;
     vd->type = ast.CloneExpansionType(type);
     CloneNodes(ast, inits, vd->inits);
