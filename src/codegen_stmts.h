@@ -704,7 +704,10 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         return;
     }
     if (!init) {
-        L(VarCT(d), " ", name, ";");
+        // A thread_pool assigned later is a closed one until then. Nothing
+        // destroys one at its scope's exit: pool.close() does, where the
+        // program writes it (docs/design/parallel_blocks.md §3.1).
+        L(VarCT(d), " ", name, t->kind == TY_POOL ? " = NULL;" : ";");
         return;
     }
     if (PrefVar(d)) {

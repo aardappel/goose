@@ -158,6 +158,7 @@ inline void TypeExpr::Dump(string &s, size_t limit) const {
             s += ".";
             s += var->name;
             break;
+        case TY_POOL: s += "thread_pool"; break;
         case TY_VOID: s += "void"; break;
     }
 }

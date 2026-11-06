@@ -941,7 +941,7 @@ struct TypeCheck {
         switch (a->kind) {
             case TY_INT:  return a->intstorage == b->intstorage && SameIndex(a, b);
             case TY_FLT:  return a->fltstorage == b->fltstorage;
-            case TY_BOOL: case TY_VOID: case TY_FN: return true;
+            case TY_BOOL: case TY_POOL: case TY_VOID: case TY_FN: return true;
             case TY_STRUCT: {
                 if (a->struc->st != b->struc->st) return false;
                 return TypeArgsEq(a->struc->args, b->struc->args);
@@ -1965,10 +1965,12 @@ struct TypeCheck {
     bool UserRefOf(Node *n);
     bool IsOwnLocal(Node *n);
     bool ImplicitCopy(const Val &v, Node *n, TypeExpr *dt);
-    [[noreturn]] void ImplicitCopyError(Node *n);
+    [[noreturn]] void ImplicitCopyError(Node *n, TypeExpr *t = nullptr);
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
         if (ClassOf(dt) == SC_ROOT && (v.lvalue || IsPlainRef(v.type)))
             Error(n, "root owners cannot be copied; bind a reference instead");
+        if (dt && dt->kind == TY_POOL && (v.lvalue || IsPlainRef(v.type)))
+            Error(n, "thread_pool cannot be copied; pass it by reference (thread_pool&) instead");
         if (ImplicitCopy(v, n, dt)) ImplicitCopyError(n);
     }
     void CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out);
@@ -2407,6 +2409,9 @@ struct TypeCheck {
     void ReturnThroughCalls(Val &v, int tf, Return *r);
     void CheckReturn(Return *r);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
+    FnSpec *EnsurePoolSpec(SFunction *sf, TypeExpr *chunktype, bool &has_idx,
+                           size_t nextra, Line l);
+    static bool PoolGrowableParam(SFunction *sf);
 
     // ------------------------------------------------------------------
     // Struct and variant literals (§4.2). The per-node entry is
@@ -2476,7 +2481,7 @@ struct TypeCheck {
     // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
-    void CheckByteOut(Call *c, Node *out, const string &form);
+    Val CheckByteOut(Call *c, Node *out, const string &form);
     void CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
                         const Val *out = nullptr);
     // The types on the path from an argument to the part being checked
@@ -3136,6 +3141,12 @@ struct TypeCheck {
             auto sf = ast.functions[i];
             CheckRoot([&] { CheckUnreached(sf); });
         }
+        // A pool.apply worker is specialized where its apply is checked, which
+        // for an export or other code no call reaches is the loop above, so
+        // the workers' programs are checked for globals once all of them exist.
+        for (auto sp : ast.fnspecs)
+            if (sp->poolentry && !sp->failed)
+                CheckRoot([&] { CheckThreadGlobals(sp); });
         auto exportcount = 0;
         for (auto sf : ast.functions) {
             if (!sf->isexport) continue;
@@ -3409,6 +3420,14 @@ struct TypeCheck {
                         Error(n, cat("thread programs cannot copy root global ", id->name,
                                      " (reached from thread_fn ", entry->sf->name,
                                      "); construct worker-local state instead"));
+                    // A thread_pool, `let` or `var`, is a handle to the threads
+                    // of the program that made it, which a worker's copy would
+                    // share: applying it there can wait on the worker's task.
+                    if (g && g->isglobal && g->type && g->type->kind == TY_POOL)
+                        Error(n, cat("cannot use global thread_pool ", id->name,
+                                     " inside a worker (reached from ",
+                                     entry->poolentry ? "pool.apply worker fn " : "thread_fn ",
+                                     entry->sf->name, ")"));
                     if (g && g->isglobal && g->type && !IsFlat(g->type) && !StaticViewsOnly(g))
                         Error(n, cat("thread programs may access only flat globals, and `let` "
                                      "globals whose references lead only to static data "

@@ -3612,6 +3612,11 @@ inline void Dot::BceMark(BCE &b) {
 }
 
 inline void Call::BceMark(BCE &b) {
+    if (builtin == B_APPLY || builtin == B_APPLY_CONTAINED) {
+        auto an = ArgNodes();
+        if (an.size() >= 2)
+            if (auto cc = Is<Call>(an[1]); cc && !cc->args.empty()) b.MarkAddr(cc->args[0]);
+    }
     for (auto p : fvparams) b.NoteOwn(p);
     RunChildren(this, [&](Node *ch) { b.Mark(ch); });
 }
@@ -3936,6 +3941,20 @@ inline bool Call::BceWalk(BCE &b) {
             }
             case B_ABORT: case B_EXIT:
                 return false;   // The program ends here (§9.3).
+            case B_APPLY: case B_APPLY_CONTAINED: {
+                // The tasks write the array chunks() names, or, where the
+                // worker grows an output of its own (Call::pool_growable),
+                // the apply appends their output to it: either way its
+                // storage and length are not what they were.
+                auto an = ArgNodes();
+                if (an.size() >= 2)
+                    if (auto cc = Is<Call>(an[1]); cc && !cc->args.empty())
+                        b.KillArgStorage(cc->args[0]);
+                // apply_contained(chunks(...), msg, fn, ...) appends the
+                // first abort's message to msg, as thread_wait(id, msg) does.
+                if (pool_has_why && an.size() > 2) b.GrowShrinkKill(an[2], 1);
+                break;
+            }
             default:
                 break;   // len/cap/print/free/queues/threads: no tracked effect.
         }

@@ -1,0 +1,2 @@
+cannot apply on a closed thread_pool
+pool_close_extra_arg.goose:17)

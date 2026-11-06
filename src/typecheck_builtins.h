@@ -49,6 +49,197 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             else CheckIntAny(args[0]);
             reachable = false;
             return VoidVal();
+        case B_THREAD_POOL: {
+            if (!args.empty()) CheckArg(args[0], ast.inttypes[IS_I64]);
+            c->rettypes.push_back(ast.pooltype);
+            Val v;
+            v.type = ast.pooltype;
+            return v;
+        }
+        case B_CHUNKS:
+            Error(c, "chunks(array, size_or_offsets) can only be used as the first argument of "
+                     "pool.apply() or pool.apply_contained()");
+        case B_APPLY: case B_APPLY_CONTAINED: {
+            auto pv = CheckV(args[0], nullptr);
+            args[0]->exprtype = pv.type;
+            if (DecayedType(pv)->kind != TY_POOL)
+                Error(args[0], cat(d.name, "() requires a thread_pool receiver, got ",
+                                   TypeStr(pv.type)));
+            auto cc = Is<Call>(args[1]);
+            auto cid = cc ? Is<Ident>(cc->callee) : nullptr;
+            if (!cc || cc->trailing || !cc->tyargs.empty() || !cid || cid->name != "chunks" ||
+                !cid->ns.empty() || cc->args.size() != 2)
+                Error(args[1], cat(d.name, "()'s second argument must be chunks(array, "
+                                           "size_or_offsets)"));
+            cc->builtin = B_CHUNKS;
+            // The top-level fns an argument names: a variable in scope, a
+            // type parameter or a nested function of the name hides them.
+            auto fnsnamed = [&](Node *a) {
+                vector<SFunction *> fns;
+                auto id = Is<Ident>(a);
+                auto vd = id ? LookupVar(id->name, id->ns) : nullptr;
+                if (id && !(vd && !vd->isglobal) && !ScopeNameKind(id->name))
+                    for (auto sf : ast.LookupFunctions(id->name, id->ns)) fns.push_back(sf);
+                return fns;
+            };
+            // apply_contained may take a message buffer after the chunks,
+            // ahead of the worker's name, which the first aborting task's
+            // message is appended to, as thread_wait(id, msg) appends a
+            // contained worker's (§11.2). An argument there that names a
+            // top-level fn is the worker. The buffer grows once the tasks
+            // have ended, not while one of them writes its chunk, but a
+            // buffer that is the array chunks() partitions is a mistake.
+            auto has_why = d.kind == B_APPLY_CONTAINED && args.size() >= 4 &&
+                           fnsnamed(args[2]).empty();
+            c->pool_has_why = has_why;
+            size_t fi = has_why ? 3 : 2;    // The worker's name.
+            auto wid = Is<Ident>(args[fi]);
+            auto fns = fnsnamed(args[fi]);
+            // The worker says what chunks() makes of its array. One whose
+            // first parameter is a T[>..]& of its own grows output of a size
+            // only its run knows (docs/design/parallel_blocks.md §3.4):
+            // chunks(out, n) hands out n tasks, each with an empty array of
+            // its own, and the apply appends what they grew to out, in task
+            // order, once all of them have returned. No task touches out
+            // meanwhile. Any other worker takes a chunk T[:] cut out of the
+            // array, which its task writes in place.
+            auto growable = fns.size() == 1 && PoolGrowableParam(fns[0]);
+            c->pool_growable = growable;
+            auto iv = CheckV(cc->args[0], nullptr);
+            NoUntypedEmptyArray(iv, cc->args[0], "chunks()");
+            NoTemporaryLiteral(cc->args[0], iv.type);
+            cc->args[0]->exprtype = iv.type;
+            auto t = iv.type;
+            Prov iterprov = iv;
+            if (t->kind == TY_REF && !t->ref->optional) {
+                t = t->ref->sub;
+                iterprov.ClearReads();
+                if (t->kind == TY_SLICE) iterprov = SlotView(iv, t);
+            }
+            t = LoadType(t);
+            RequireComplete(t, cc->line);
+            if (growable) {
+                if (t->kind != TY_ARRAY ||
+                    (t->arr->akind != A_GROW && t->arr->akind != A_GROWSHRINK))
+                    Error(cc->args[0],
+                          cat("chunks() of a growable output parameter T[>..]& appends to a "
+                              "grow-only or grow-shrink array (T[>..], T[>..<]), not ",
+                              TypeStr(t)));
+            } else if (t->kind != TY_SLICE &&
+                       !(t->kind == TY_ARRAY && (RecvKindOf(t) & BR_INDEXABLE))) {
+                Error(cc->args[0],
+                      cat("chunks() requires an indexable array or slice, not ", TypeStr(t)));
+            }
+            if (!iterprov.writable || iv.type->cq || t->cq)
+                Error(cc->args[0], "chunks() requires a writable array or slice");
+            auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
+            if (ClassOf(elem) != SC_FIXED || !IsFlat(elem))
+                Error(cc->args[0],
+                      cat("chunks() requires fixed-size flat elements, not ", TypeStr(elem)));
+            // What a task grows comes from its own thread program, as a
+            // value through a queue does.
+            if (growable && HoldsIndexT(elem)) ThreadIndexError(cc->args[0], elem);
+            auto data_root = iterprov.Root();
+            if (!iterprov.Exact() || !data_root)
+                Error(cc->args[0], "chunks() requires an array or slice with a single known root");
+            if (auto id = Is<Ident>(cc->args[0]); id && id->vdef && iv.lvalue)
+                NoteWritableRef(id->vdef, cc->args[0]);
+            // What the array is to the apply, for a shared argument or a
+            // message buffer that may not alias it.
+            auto held = growable ? cat(", which ", d.name, "() appends its tasks' output to")
+                                 : string(", which is mutably partitioned by chunks()");
+            auto sv = CheckV(cc->args[1], nullptr);
+            auto sdt = DecayedType(sv);
+            auto byoffsets = (sdt->kind == TY_SLICE || sdt->kind == TY_ARRAY) &&
+                             TypeEq(sdt->kind == TY_SLICE ? sdt->sub : sdt->arr->sub,
+                                    ast.inttypes[IS_I64]);
+            if (IsIntT(sdt)) {
+                CheckArg(cc->args[1], ast.inttypes[IS_I64]);
+            } else if (growable) {
+                Error(cc->args[1],
+                      byoffsets ? string("chunks() of a growable output parameter T[>..]& takes "
+                                         "a task count (i64), not an offsets slice")
+                                : cat("chunks(out, num_tasks) requires an i64 task count, got ",
+                                      TypeStr(sv.type)));
+            } else if (byoffsets) {
+                auto ci64slice = ast.ConstOf(ast.SliceOf(ast.inttypes[IS_I64], cc->line));
+                auto ov = CheckArg(cc->args[1], ci64slice);
+                if (ov.Has(data_root))
+                    Error(cc->args[1],
+                          cat("chunks() offsets cannot alias ", data_root->name,
+                              ", which is mutably partitioned by chunks()"));
+            } else {
+                Error(cc->args[1],
+                      cat("chunks(array, size_or_offsets) requires an i64 chunk size or a const "
+                          "i64[:] offsets slice, got ",
+                          TypeStr(sv.type)));
+            }
+            // The chunk is a slice of the array, or the task's own array,
+            // whose elements the apply appends to it: the array grows once
+            // its later arguments have run, as a member operation's receiver
+            // does (§1.3(4)), which is logged here, ahead of them.
+            auto chunktype = growable ? ast.RefTo(ast.ArrayOf(elem, A_GROW, cc->line), cc->line)
+                                      : ast.SliceOf(elem, cc->line);
+            cc->exprtype = growable ? ast.SliceOf(elem, cc->line) : chunktype;
+            if (growable) NoteGrow(c, iterprov, cat("append to ", ExprStr(cc->args[0])), t);
+            if (has_why) {
+                auto wv = CheckByteOut(c, args[2], "apply_contained(chunks(...), msg, fn, ...)");
+                if (wv.Has(data_root))
+                    Error(args[2], cat("apply_contained()'s message cannot alias ",
+                                       data_root->name, held));
+            }
+            if (fns.size() > 1)
+                Error(args[fi], cat("ambiguous ", d.name, "() function ", wid->name,
+                                    ": more than one fn has that name"));
+            if (fns.empty())
+                Error(args[fi], cat(d.name, "()'s function argument must name a top-level fn"));
+            auto wsf = fns[0];
+            wid->fnref = wsf;
+            wid->exprtype = fntype;
+            bool has_idx = false;
+            size_t nextra = args.size() - fi - 1;
+            auto spec = EnsurePoolSpec(wsf, chunktype, has_idx, nextra, c->line);
+            c->pool_has_idx = has_idx;
+            size_t first_extra = has_idx ? 2 : 1;
+            {
+                DestScope ds(*this, Dest {});
+                for (size_t j = 0; j < nextra; j++) {
+                    auto pt = spec->argtypes[first_extra + j];
+                    if (HoldsIndexT(pt)) ThreadIndexError(c, pt);
+                    auto &a = args[fi + 1 + j];
+                    auto av = CheckArg(a, pt);
+                    if ((pt->kind == TY_SLICE || IsPlainRef(pt)) && av.Has(data_root))
+                        Error(a, cat("shared argument to ", d.name, "() cannot alias ",
+                                     data_root->name, held));
+                }
+            }
+            c->spec = spec;
+            if (d.kind == B_APPLY) return VoidVal();
+            // apply_contained: whether every task returned (§11.2's thread_wait).
+            Val v;
+            v.type = ast.booltype;
+            return v;
+        }
+        case B_POOL_CLOSE: {
+            // pool.close() ends the pool: no scope's exit does, as nothing
+            // runs there that the program did not write
+            // (docs/design/ownership.md). The variable the pool is in holds a
+            // closed pool after it, which a later close leaves as it is and
+            // an apply aborts on, so close takes the variable, or a
+            // reference to it, through which it can be written.
+            auto pv = precv ? *precv : CheckV(args[0], nullptr);
+            args[0]->exprtype = pv.type;
+            auto pt = DecayedType(pv);
+            if (pt->kind != TY_POOL)
+                Error(args[0], cat("close() requires a thread_pool, got ", TypeStr(pv.type)));
+            if (!pv.lvalue && !IsPlainRef(pv.type))
+                Error(args[0], "close() requires a thread_pool variable or a reference to one, "
+                               "not a temporary");
+            if (!pv.writable || pv.type->cq || pt->cq)
+                Error(args[0], "cannot close a thread_pool through a non-writable value "
+                               "(const, or a read-only instantiation, §9.5)");
+            return VoidVal();
+        }
         case B_THREAD_SPAWN: case B_THREAD_SPAWN_CONTAINED: {
             auto wid = Is<Ident>(args[0]);
             vector<SFunction *> workers;
@@ -174,6 +365,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             auto v = DecayRef(av);
             if (ClassOf(v.type) == SC_ROOT)
                 Error(c, "root owners cannot be copied; bind a reference instead");
+            // A second handle to the pool, left dangling when either closes it.
+            if (v.type->kind == TY_POOL)
+                Error(c, "thread_pool cannot be copied; pass it by reference (thread_pool&) instead");
             if (v.type->kind == TY_SLICE)
                 Error(c, "copy takes a value or a reference, not a slice");
             if (!av.lvalue && !IsPlainRef(av.type))
@@ -674,8 +868,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
 }
 
 // The growable u8 array a builtin's `out` argument appends to (BF_OUTARG),
-// as `form` names the call: to_bytes(a, out), thread_wait(id, msg).
-inline void TypeCheck::CheckByteOut(Call *c, Node *out, const string &form) {
+// as `form` names the call: to_bytes(a, out), thread_wait(id, msg),
+// apply_contained(chunks(...), msg, fn, ...). Its checked value.
+inline Val TypeCheck::CheckByteOut(Call *c, Node *out, const string &form) {
     auto ov = CheckV(out, nullptr);
     out->exprtype = ov.type;
     auto ot = ov.type;
@@ -688,6 +883,7 @@ inline void TypeCheck::CheckByteOut(Call *c, Node *out, const string &form) {
         Error(c, "cannot append through a non-writable value (let, or "
                  "non-writable provenance, §9.5)");
     NoteGrow(c, ov, cat(BuiltinByKind(c->builtin).grows, " ", ExprStr(out)), ot);
+    return ov;
 }
 
 // An argument of print/str/format (§3.7): every value type has a text
