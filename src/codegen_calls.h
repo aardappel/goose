@@ -88,6 +88,49 @@ inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
     }
 }
 
+inline string CodeGen::EmitConstImmArg(Node *n) {
+    if (auto il = Is<IntLit>(n)) {
+        if (il->uns) return cat((uint64_t)il->val, "ULL");
+        if (il->val == INT64_MIN) return "(-9223372036854775807LL - 1)";
+        return cat(il->val);
+    }
+    if (auto id = Is<Ident>(n)) {
+        auto vd = id->vdef;
+        assert(vd);
+        if (vd->c_const_expr) return EmitConstImmArg(vd->c_const_expr);
+        if (!vd->cheader.empty()) {
+            UseHeader(vd->cheader, vd->cheader_fileidx);
+            return cat("(", vd->cname, ")");
+        }
+        if (vd->constlit) {
+            if (vd->constuns) return cat((uint64_t)vd->constval, "ULL");
+            if (vd->constval == INT64_MIN) return "(-9223372036854775807LL - 1)";
+            return cat(vd->constval);
+        }
+        if (vd->isglobal && gstatic.count(vd))
+            return EmitConstImmArg(gstatic[vd]);
+        if (!vd->isglobal && !vd->isvar && vd->initexpr)
+            return EmitConstImmArg(vd->initexpr);
+    }
+    if (auto u = Is<Unary>(n)) {
+        if (u->op == T_BITAND) return EmitConstImmArg(u->child);
+        if (u->op == T_MINUS) return cat("(-(", EmitConstImmArg(u->child), "))");
+        if (u->op == T_BITNOT) return cat("(~(", EmitConstImmArg(u->child), "))");
+    }
+    if (auto b = Is<Binary>(n)) {
+        auto l = EmitConstImmArg(b->left);
+        auto r = EmitConstImmArg(b->right);
+        return cat("(", l, " ", TName(b->op), " ", r, ")");
+    }
+    if (auto ac = Is<AsCast>(n)) {
+        auto tt = ac->totype ? ac->totype : ac->type;
+        auto ct = CT(tt, false);
+        auto ch = EmitConstImmArg(ac->child);
+        return cat("((", ct, ")(", ch, "))");
+    }
+    return GenX(n);
+}
+
 // A call to an extern fn (§7.10): the C function directly, or through the
 // pointer the runtime bound from its shared library, each argument in its
 // C type, no calling-convention extras but the location a runtime entry
@@ -96,8 +139,165 @@ inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
 inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     if (std::find(usedexterns.begin(), usedexterns.end(), sp) == usedexterns.end())
         usedexterns.push_back(sp);
-    auto callee = sp->sf->dylib.empty() ? sp->sf->cname : DlCall(sp);
     auto an = CallArgNodes(c, sp->argtypes.size());
+    if (!sp->sf->cheader.empty()) {
+        UseHeader(sp->sf->cheader, sp->sf->cheader_fileidx);
+        for (auto pt : sp->argtypes) {
+            if (!pt->c_header.empty()) UseHeader(pt->c_header, pt->c_fileidx);
+            if ((pt->kind == TY_REF || pt->kind == TY_SLICE)) {
+                auto sub = pt->kind == TY_SLICE ? pt->sub : pt->ref->sub;
+                if (!sub->c_header.empty()) UseHeader(sub->c_header, sub->c_fileidx);
+            }
+        }
+        for (auto rt : sp->rets)
+            if (!rt->c_header.empty()) UseHeader(rt->c_header, rt->c_fileidx);
+
+        auto c_ptr_type = [&](TypeExpr *pt) -> string {
+            auto sub = pt->kind == TY_SLICE ? pt->sub : pt->ref->sub;
+            auto elem = !sub->c_repr.empty() ? string(sub->c_repr) : CT(sub, false);
+            return cat(pt->cq ? "const " : "", elem, " *");
+        };
+
+        if (!jit_mode) {
+            string argstr;
+            for (size_t i = 0; i < an.size(); i++) {
+                auto pt = sp->argtypes[i];
+                if (i) argstr += ", ";
+                if (sp->sf->params[i].is_const) {
+                    argstr += EmitConstImmArg(an[i]);
+                    continue;
+                }
+                if (pt->kind == TY_SLICE) {
+                    auto x = Snapshot(pt, GenXD(an[i], pt));
+                    Append(argstr, "(", c_ptr_type(pt), ")", x, ".data");
+                } else if (pt->kind == TY_REF) {
+                    auto x = Snapshot(pt, GenX(an[i]));
+                    Append(argstr, "(", c_ptr_type(pt), ")", x);
+                } else if (!pt->c_repr.empty()) {
+                    auto x = Snapshot(pt, GenXD(an[i], pt));
+                    auto m = EnsureCConverter(pt);
+                    Append(argstr, "gs_to_c_", m, "(", x, ")");
+                } else {
+                    auto x = Snapshot(pt, GenXD(an[i], pt));
+                    argstr += x;
+                }
+            }
+            vector<string> rets;
+            if (sp->rets.empty()) {
+                L(sp->sf->cname, "(", argstr, ");");
+            } else {
+                auto rt = sp->rets[0];
+                auto r0 = T();
+                if (!rt->c_repr.empty()) {
+                    auto m = EnsureCConverter(rt);
+                    L(CT(rt), " ", r0, " = gs_from_c_", m, "(", sp->sf->cname, "(", argstr, "));");
+                } else {
+                    L(CT(rt), " ", r0, " = (", CT(rt), ")", sp->sf->cname, "(", argstr, ");");
+                }
+                rets.push_back(r0);
+            }
+            return rets;
+        }
+
+        // JIT mode: emit a compiled C wrapper thunk into jit_thunk_defs and call it from TCC.
+        string key = sp->sf->cname;
+        for (size_t i = 0; i < sp->argtypes.size(); i++) {
+            Append(key, "__", Mangle(sp->argtypes[i]));
+        }
+        if (!sp->rets.empty()) Append(key, "__ret_", Mangle(sp->rets[0]));
+        string call_args;
+        string thunk_params;
+        string c_call_args;
+        for (size_t i = 0; i < an.size(); i++) {
+            auto pt = sp->argtypes[i];
+            if (sp->sf->params[i].is_const) {
+                auto imm = EmitConstImmArg(an[i]);
+                Append(key, "__imm_", imm);
+                if (!c_call_args.empty()) c_call_args += ", ";
+                c_call_args += imm;
+                continue;
+            }
+            auto x = pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
+            x = Snapshot(pt, x);
+            if (!call_args.empty()) call_args += ", ";
+            call_args += x;
+            if (!thunk_params.empty()) thunk_params += ", ";
+            Append(thunk_params, CT(pt), " a", i);
+            if (!c_call_args.empty()) c_call_args += ", ";
+            if (pt->kind == TY_SLICE) {
+                Append(c_call_args, "(", c_ptr_type(pt), ")a", i, ".data");
+            } else if (pt->kind == TY_REF) {
+                Append(c_call_args, "(", c_ptr_type(pt), ")a", i);
+            } else if (!pt->c_repr.empty()) {
+                Append(c_call_args, "({ ", pt->c_repr, " _c", i, "; memcpy(&_c", i, ", &a", i,
+                       ", sizeof(_c", i, ")); _c", i, "; })");
+            } else {
+                Append(c_call_args, "a", i);
+            }
+        }
+        if (thunk_params.empty()) thunk_params = "void";
+        string tname = cat("__gs_hdr_thunk_", Sanitize(key));
+        if (jit_thunk_set.insert(tname).second) {
+            jit_thunk_symbols.push_back(tname);
+            auto ret_ct = sp->rets.empty() ? string("void") : CT(sp->rets[0]);
+            Append(jit_thunk_decls, ret_ct, " ", tname, "(", thunk_params, ");\n");
+            string tgt = !sp->sf->target_attr.empty()
+                             ? cat("GS_TARGET(", CStr(sp->sf->target_attr), ") ")
+                             : string();
+            Append(jit_thunk_defs, tgt, ret_ct, " ", tname, "(", thunk_params, ") {\n");
+            for (size_t i = 0; i < an.size(); i++) {
+                if (sp->sf->params[i].is_const) continue;
+                auto pt = sp->argtypes[i];
+                if (!pt->c_repr.empty()) {
+                    Append(jit_thunk_defs, "    _Static_assert(sizeof(", pt->c_repr, ") == ",
+                           FixedSize(pt), ", \"C type size mismatch\");\n");
+                    Append(jit_thunk_defs, "    ", pt->c_repr, " _ca", i, "; memcpy(&_ca", i,
+                           ", &a", i, ", ", FixedSize(pt), ");\n");
+                }
+            }
+            string clean_c_args;
+            for (size_t i = 0; i < an.size(); i++) {
+                if (i) clean_c_args += ", ";
+                auto pt = sp->argtypes[i];
+                if (sp->sf->params[i].is_const) {
+                    clean_c_args += EmitConstImmArg(an[i]);
+                } else if (pt->kind == TY_SLICE) {
+                    Append(clean_c_args, "(", c_ptr_type(pt), ")a", i, ".data");
+                } else if (pt->kind == TY_REF) {
+                    Append(clean_c_args, "(", c_ptr_type(pt), ")a", i);
+                } else if (!pt->c_repr.empty()) {
+                    Append(clean_c_args, "_ca", i);
+                } else {
+                    Append(clean_c_args, "a", i);
+                }
+            }
+            if (sp->rets.empty()) {
+                Append(jit_thunk_defs, "    ", sp->sf->cname, "(", clean_c_args, ");\n}\n");
+            } else {
+                auto rt = sp->rets[0];
+                if (!rt->c_repr.empty()) {
+                    Append(jit_thunk_defs, "    _Static_assert(sizeof(", rt->c_repr, ") == ",
+                           FixedSize(rt), ", \"C type size mismatch\");\n");
+                    Append(jit_thunk_defs, "    ", rt->c_repr, " _cr = ", sp->sf->cname, "(",
+                           clean_c_args, ");\n    ", ret_ct, " _gr; memcpy(&_gr, &_cr, ",
+                           FixedSize(rt), ");\n    return _gr;\n}\n");
+                } else {
+                    Append(jit_thunk_defs, "    return (", ret_ct, ")", sp->sf->cname, "(",
+                           clean_c_args, ");\n}\n");
+                }
+            }
+        }
+        vector<string> rets;
+        if (sp->rets.empty()) {
+            L(tname, "(", call_args, ");");
+        } else {
+            auto r0 = T();
+            L(CT(sp->rets[0]), " ", r0, " = ", tname, "(", call_args, ");");
+            rets.push_back(r0);
+        }
+        return rets;
+    }
+    auto callee = sp->sf->dylib.empty() ? sp->sf->cname : DlCall(sp);
     string argstr;
     // A builder argument (`u8[>..]&`, or a value holding one) is appended
     // to by the C side through its stack's top, so a cached top is written
@@ -170,6 +370,7 @@ inline vector<Node *> CodeGen::CallArgNodes(Call *c, size_t nparams) {
 // One argument by the parameter's calling convention; appends to args.
 inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &args,
                              bool later) {
+    if (i < sp->params.size() && sp->params[i]->c_const_expr) return;
     auto pt = sp->argtypes[i];
     if (IsPoolParam(sp, i)) {
         PushArg(args, pt, true, GenPrefVal(node));

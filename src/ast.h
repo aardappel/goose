@@ -311,6 +311,9 @@ struct TypeExpr {
     // sizes name what they name where the alias is declared, at top level,
     // whatever scope the use is in (TypeCheck::ConstNamesIn).
     bool aliasuse = false;
+    string_view c_repr;
+    string_view c_header;
+    int c_fileidx = -1;
     // On a TY_INT: an index or bound type (TypeIndex). Outside the union,
     // since intstorage is the member a TY_INT uses.
     TypeIndex *ix = nullptr;
@@ -332,6 +335,12 @@ struct TypeExpr {
     // and the caller cuts s back to the limit.
     void Dump(string &s, size_t limit = string::npos) const;
 };
+
+inline bool IsHeaderSpec(string_view s) {
+    return !s.empty() &&
+           ((s.front() == '<' && s.back() == '>') || s.ends_with(".h") ||
+            s.ends_with(".hh") || s.ends_with(".hpp"));
+}
 
 // The views of a type's shape that every pass asks for.
 inline bool IsRefOrSlice(const TypeExpr *t) { return t->kind == TY_REF || t->kind == TY_SLICE; }
@@ -389,6 +398,7 @@ struct Param {
     TypeExpr *type = nullptr;   // Null = untyped, i.e. generic.
     Node *defaultval = nullptr; // What a call leaving the argument out passes (§7.1).
     bool isvar = false;
+    bool is_const = false;
 };
 
 struct Field {
@@ -1135,6 +1145,8 @@ NODE(Call)
     bool nobc = false;
     TypeExpr *qtype = nullptr;  // qlimit<T>: T, which names the queue (§11.2).
     const string *shaderblob = nullptr;  // embed_shader's compiled blob or embed_file's bytes, in Ast::shaders.
+    uint32_t target_mask = 0;   // B_TARGET_HAS: runtime CPUID feature mask.
+    int target_const = -1;      // B_TARGET_HAS: 0 = compile-time false, 1 = compile-time true, -1 = runtime.
     Call(Line l, Node *_callee) : Node(l, NKind), callee(_callee) {}
     // What the call passes for the callee's free variable v (fvremap).
     VarDef *FreeVarArg(VarDef *v) const {
@@ -1196,6 +1208,8 @@ NODE(SliceExpr)
     Node *obj;
     Node *lo = nullptr, *hi = nullptr;      // Either may be absent.
     bool lo_from_end = false, hi_from_end = false;  // ^k bounds.
+    bool is_window = false;     // s[lo..+N] or s[..+N]: fixed-length window T[N].
+    int64_t win_len = -1;       // Evaluated N for is_window.
     bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
     bool cmpview = false;       // The whole slice `==` takes of an operand (§4.5).
     SliceExpr(Line l, Node *_obj) : Node(l, NKind), obj(_obj) {}
@@ -1459,6 +1473,10 @@ NODE(VarDecl)
     bool inline_arg = false;    // Synthesized call argument: caller-scope storage.
     string_view ns;             // A global's namespace ("" = global; docs/design/namespaces.md).
     string_view doc;            // The comment lines above it (Lexer::doc).
+    string cheader;
+    string target_attr;
+    string cname;
+    int cheader_fileidx = -1;
     vector<string_view> names;  // let a, b = f();
     // The results of `a, b = f();`, which the assignments after it in its
     // block take (Parser::ParseMultiAssign).
@@ -1532,6 +1550,9 @@ struct SFunction {
     // The shared library an extern block binds it from by that symbol as
     // the program starts (§7.10); empty for an extern the link resolves.
     string dylib;
+    string cheader;
+    string target_attr;
+    int cheader_fileidx = -1;
     // An extern that reads every data-stack top of its thread program
     // (os.trim_memory): each caller, and transitively theirs, publishes all
     // of its cached tops before the call (CodeGen::CollectSpecs, SyncReach).
@@ -1638,6 +1659,106 @@ inline bool EmptyLayout(const vector<Field> &fields) {
     return true;
 }
 
+struct TargetFeatureInfo {
+    string_view name;
+    int kind;       // 0 = arch, 1 = os, 2 = x86_64 isa, 3 = aarch64 isa
+    uint32_t mask;  // GS_CPU_* bitmask for kind >= 2
+};
+
+inline const vector<TargetFeatureInfo> &CanonicalTargetTable() {
+    static const vector<TargetFeatureInfo> table = {
+        { "x86_64",  0, 0 },
+        { "aarch64", 0, 0 },
+        { "wasm32",  0, 0 },
+        { "wasm64",  0, 0 },
+        { "linux",   1, 0 },
+        { "windows", 1, 0 },
+        { "macos",   1, 0 },
+        { "wasi",    1, 0 },
+        { "sse2",    2, 1u << 0 },
+        { "ssse3",   2, 1u << 1 },
+        { "sse4.1",  2, 1u << 2 },
+        { "sse4.2",  2, 1u << 3 },
+        { "avx",     2, 1u << 4 },
+        { "avx2",    2, 1u << 5 },
+        { "avx512f", 2, 1u << 6 },
+        { "aes",     2, 1u << 7 },
+        { "pclmul",  2, 1u << 8 },
+        { "bmi1",    2, 1u << 9 },
+        { "bmi2",    2, 1u << 10 },
+        { "popcnt",  2, 1u << 11 },
+        { "neon",    3, 1u << 12 },
+        { "pmull",   3, 1u << 13 },
+        { "crc",     3, 1u << 14 },
+        { "sha2",    3, 1u << 15 },
+    };
+    return table;
+}
+
+inline const TargetFeatureInfo *LookupTargetFeature(string_view tok) {
+    for (auto &f : CanonicalTargetTable())
+        if (f.name == tok) return &f;
+    return nullptr;
+}
+
+inline string_view HostTargetArch() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return "aarch64";
+#elif defined(__wasm64__)
+    return "wasm64";
+#elif defined(__wasm32__) || defined(__wasm__)
+    return "wasm32";
+#else
+    return "unknown";
+#endif
+}
+
+inline string_view HostTargetOS() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#elif defined(__wasi__)
+    return "wasi";
+#elif defined(__linux__)
+    return "linux";
+#else
+    return "unknown";
+#endif
+}
+
+inline bool TargetListContains(string_view list, string_view feat) {
+    size_t pos = 0;
+    while (pos < list.size()) {
+        auto comma = list.find(',', pos);
+        if (comma == string_view::npos) comma = list.size();
+        auto tok = list.substr(pos, comma - pos);
+        while (!tok.empty() && tok.front() == ' ') tok.remove_prefix(1);
+        while (!tok.empty() && tok.back() == ' ') tok.remove_suffix(1);
+        if (tok == feat) return true;
+        pos = comma + 1;
+    }
+    return false;
+}
+
+inline bool MergeTargetAttrs(string &dst, string_view src, string_view guarded = {}) {
+    string res;
+    for (auto &f : CanonicalTargetTable()) {
+        if (f.kind < 2) continue;
+        bool in_dst = TargetListContains(dst, f.name);
+        bool in_src = TargetListContains(src, f.name) && !TargetListContains(guarded, f.name);
+        if (in_dst || in_src) {
+            if (!res.empty()) res += ',';
+            res.append(f.name);
+        }
+    }
+    if (res == dst) return false;
+    dst = std::move(res);
+    return true;
+}
+
 // Not a type: a name referring to a type. Uses are substituted away during
 // resolution; the symbol remains for the declaration itself and lookups.
 struct SAlias {
@@ -1648,6 +1769,10 @@ struct SAlias {
     Line end;                   // As SFunction::end.
     string_view doc;            // As SFunction::doc.
     TypeExpr *type = nullptr;
+    string c_repr;
+    string c_header;
+    string target_attr;
+    int c_fileidx = -1;
 };
 
 // The namespace a nominal type was declared in; "" for every other type.
@@ -1742,6 +1867,11 @@ struct VarDef {
     bool constflt = false;      // A float constant, of value constfval.
     double constfval = 0;
     VarDef *constfrom = nullptr;    // The initializer's Val::constfrom.
+    string cheader;
+    string cname;
+    int cheader_fileidx = -1;
+    Node *c_const_expr = nullptr;
+    Node *initexpr = nullptr;
     // A `let` initialized to exactly `X.len` (§5.2): the path X, as checked
     // there. Resizing the same X back to it is a balanced shrink.
     Node *markof = nullptr;
@@ -2308,6 +2438,19 @@ struct FnRecord {
     vector<BodyEvent> bodyevents;
 };
 
+struct ConstArgBind {
+    int param_idx = -1;
+    bool has_int = false;
+    int64_t ival = 0;
+    bool uns = false;
+    string c_expr_dump;
+    Node *c_expr = nullptr;
+    bool operator==(const ConstArgBind &o) const {
+        return param_idx == o.param_idx && has_int == o.has_int &&
+               ival == o.ival && uns == o.uns && c_expr_dump == o.c_expr_dump;
+    }
+};
+
 // One monomorphic specialization of a function: the unit of typechecking and
 // of later codegen. The body is an Ast-owned clone with annotations filled;
 // only a recursive round's previous analysis record is owned here.
@@ -2353,6 +2496,9 @@ struct FnSpec {
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.
+    vector<ConstArgBind> const_args;
+    string target_attr;
+    vector<pair<FnSpec *, string>> target_edges;  // (callee, unguarded_features_at_call)
     vector<pair<string_view, FnValBind>> fnvals;  // Generic name -> bound function value.
     vector<pair<string_view, TypeExpr *>> bindings;  // Generic name -> concrete type.
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.

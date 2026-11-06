@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>

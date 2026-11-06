@@ -180,9 +180,12 @@ inline void ResolveTypeNames(Ast &ast) {
         if (!use->args.empty())
             ErrorAt(t, use, cat("type alias ", use->name, " takes no type arguments"));
         auto target = t;
+        SAlias *c_al = nullptr;
         for (auto depth = 0; target->kind == TY_UNRESOLVED; depth++) {
             assert(depth <= (int)ast.aliases.size());   // checkaliases ended every cycle.
-            target = ast.LookupAlias(target->named->name, target->named->ns)->type;
+            auto al = ast.LookupAlias(target->named->name, target->named->ns);
+            if (!c_al && !al->c_repr.empty()) c_al = al;
+            target = al->type;
         }
         auto varmode = use->varmode;
         if (varmode && target->kind == TY_ENUM && target->enu->varmode) {
@@ -209,6 +212,11 @@ inline void ResolveTypeNames(Ast &ast) {
             *t = *target;
             t->line = line;
             t->cq = t->cq || cq;   // `const Alias` keeps its qualifier.
+        }
+        if (c_al) {
+            t->c_repr = c_al->c_repr;
+            t->c_header = c_al->c_header;
+            t->c_fileidx = c_al->c_fileidx;
         }
         t->aliasuse = true;
     }

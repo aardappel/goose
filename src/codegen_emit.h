@@ -808,6 +808,7 @@ inline bool CodeGen::StaticInitX(Node *n, TypeExpr *t, string &out) {
 
 inline void CodeGen::EmitGlobalDecls() {
     for (auto g : ast.globals) {
+        if (!g->cheader.empty()) continue;
         for (size_t di = 0; di < g->defs.size(); di++) {
             auto d = g->defs[di];
             auto name = Unique(Sanitize(g->ns, d->name));
@@ -922,7 +923,7 @@ inline void CodeGen::EmitGlobalInit() {
     spexpr = "0";
     PushSc(SC_FN);
     for (auto g : ast.globals) {
-        if (g->inits.empty()) continue;
+        if (g->inits.empty() || !g->cheader.empty()) continue;
         PushSc(SC_STMT);
         for (size_t i = 0; i < g->defs.size(); i++) {
             auto d = g->defs[i];

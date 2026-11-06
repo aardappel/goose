@@ -15,8 +15,8 @@ inline vector<int> NativePackagesUsed(const Ast &ast, const vector<FnSpec *> &us
     set<int> needed;
     if (ast.packages[0].HasNative()) needed.insert(0);
     for (auto sp : used) {
-        // One bound from a shared library at run time comes from no package's C.
-        if (!sp->sf->dylib.empty()) continue;
+        // One bound from a shared library at run time or a C header comes from no package's C.
+        if (!sp->sf->dylib.empty() || !sp->sf->cheader.empty()) continue;
         auto pkg = ast.filepkg[sp->sf->line.fileidx];
         if (ast.packages[pkg].HasNative()) needed.insert(pkg);
     }
@@ -75,10 +75,14 @@ inline void ExternNamesIn(const string &path, const string &text, set<string> &n
             cname = lex.sval;
             lex.Next();
         }
-        // An extern block's functions come from its shared library (§7.10),
-        // not from the native part: skipped through its `}`.
+        // An extern block's functions come from its shared library (§7.10) or
+        // C header, not from the native part: skipped through its `}`.
+        if (lex.tok == T_IDENT && lex.attr == "target") {
+            lex.Next();
+            if (lex.tok == T_STRLIT) lex.Next();
+        }
         if (lex.tok == T_LCURLY) {
-            if (libs && !cname.empty()) libs->insert(cname);
+            if (libs && !cname.empty() && !IsHeaderSpec(cname)) libs->insert(cname);
             auto depth = 0;
             do {
                 if (lex.tok == T_LCURLY) depth++;
@@ -87,6 +91,7 @@ inline void ExternNamesIn(const string &path, const string &text, set<string> &n
             } while (depth > 0 && lex.tok != T_EOF);
             continue;
         }
+        if (IsHeaderSpec(cname)) continue;
         if (lex.tok != T_FN) continue;
         lex.Next();
         if (lex.tok == T_IDENT) {
@@ -570,6 +575,57 @@ inline bool BuildNativePart(const Ast &ast, int pkg, const string &rootfile,
             return false;
     }
     if (!b.opts.dryrun) WriteFileIfChanged(stampfile, wantjit ? jitstamp : aotstamp);
+    return true;
+}
+
+inline bool BuildHeaderJitLib(const string &rootfile, const string &thunk_src,
+                              const vector<string> &symbols,
+                              const vector<string> &local_headers,
+                              const Builder &program, string &out_jitlib) {
+    string sym_table = "\ntypedef struct { const char *name; const void *addr; } goose_symbol;\n"
+                       "#ifdef _WIN32\n__declspec(dllexport)\n#endif\n"
+                       "const goose_symbol *goose_symbols(void) {\n"
+                       "    static const goose_symbol table[] = {\n";
+    for (auto &n : symbols) Append(sym_table, "        { \"", n, "\", (const void *)&", n, " },\n");
+    sym_table += "        { 0, 0 }\n    };\n    return table;\n}\n";
+    string full_src = thunk_src + sym_table;
+    auto key = Hex8(cat(program.tc.id, "\n", full_src, "\n", FilesHash(local_headers)));
+    auto dir = cat(ProgramBuildDir(rootfile), "/hdrjit/", program.tc.id, "-", key);
+    #ifdef _WIN32
+        auto jitext = ".dll";
+    #elif defined(__APPLE__)
+        auto jitext = ".dylib";
+    #else
+        auto jitext = ".so";
+    #endif
+    out_jitlib = cat(dir, "/goose_hdr_jit_", key, jitext);
+    auto stampfile = cat(dir, "/stamp");
+    if (!program.opts.dryrun && ReadStamp(stampfile) == key && PathExists(out_jitlib))
+        return true;
+    std::error_code ec;
+    filesystem::create_directories(filesystem::path(dir), ec);
+    optional<FileLock> lock;
+    if (!program.opts.dryrun) {
+        lock.emplace(cat(dir, "/build.lock"), "waiting for another goose building header JIT thunks");
+        if (ReadStamp(stampfile) == key && PathExists(out_jitlib)) return true;
+    }
+    auto srcfile = cat(dir, "/thunks.c");
+    auto msvc = program.tc.style == "msvc";
+    auto objfile = cat(dir, "/thunks", msvc ? ".obj" : ".o");
+    if (!program.opts.dryrun && !WriteFileMakingDirs(srcfile, full_src))
+        throw CompileError { cat("cannot write ", srcfile) };
+    vector<string> flags;
+    #ifndef _WIN32
+        if (!msvc) flags.push_back("-fPIC");
+    #endif
+    Builder b { program.tc, program.opts, program.msgs };
+    if (!b.CompileObject(srcfile, objfile, "compiling C header thunks for JIT",
+                         cat(dir, "/thunks.cc.log"), flags))
+        return false;
+    if (!b.LinkShared({ objfile }, {}, out_jitlib, dir, cat(dir, "/jit.cc.log"),
+                      "linking C header thunks for JIT"))
+        return false;
+    if (!program.opts.dryrun) WriteFileIfChanged(stampfile, key);
     return true;
 }
 

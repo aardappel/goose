@@ -172,11 +172,76 @@ struct CodeGen {
     string exportprotos;
     bool usesthreads = false;
     bool library = false;
+    bool jit_mode = false;
+    string outdir;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
     // that never takes a long-distance return still prints the right answer
     // and the checks' cost can be priced (--unsafe-no-rf-check).
     bool norfcheck = false;
+
+    vector<pair<string, int>> used_headers;
+    set<pair<string, int>> used_header_set;
+    string c_converters;
+    set<string> c_converter_keys;
+    string jit_thunk_decls;
+    string jit_thunk_defs;
+    string jit_thunk_src;
+    vector<string> jit_thunk_symbols;
+    set<string> jit_thunk_set;
+    vector<string> jit_local_headers;
+    map<const VarDef *, string> jit_const_getters;
+
+    void UseHeader(string_view hdr, int fileidx) {
+        if (hdr.empty()) return;
+        pair<string, int> key { string(hdr), fileidx };
+        if (used_header_set.insert(key).second) used_headers.push_back(key);
+    }
+
+    string FormatHeaderInclude(const string &hdr, int fileidx, bool for_jit_thunk) {
+        if (!hdr.empty() && hdr.front() == '<' && hdr.back() == '>')
+            return cat("#include ", hdr, "\n");
+        string path = hdr;
+        if (fileidx >= 0 && fileidx < (int)ast.sources.size() &&
+            !filesystem::path(hdr).is_absolute()) {
+            auto src_dir = DirOf(ast.sources[fileidx].first);
+            auto cand = cat(src_dir, hdr);
+            if (FileExists(cand)) path = AbsolutePath(cand);
+        }
+        if (FileExists(path)) {
+            auto abs = ForwardSlashes(AbsolutePath(path));
+            if (std::find(jit_local_headers.begin(), jit_local_headers.end(), abs) ==
+                jit_local_headers.end())
+                jit_local_headers.push_back(abs);
+            if (!for_jit_thunk && !outdir.empty())
+                path = RelativeTo(abs, outdir);
+            else
+                path = abs;
+        }
+        for (auto &ch : path) if (ch == '\\') ch = '/';
+        return cat("#include \"", path, "\"\n");
+    }
+
+    string EnsureCConverter(TypeExpr *t) {
+        assert(!t->c_repr.empty());
+        UseHeader(t->c_header, t->c_fileidx);
+        auto m = Mangle(t);
+        auto gct = CT(t);
+        string key = cat(m, ":", t->c_repr);
+        if (c_converter_keys.insert(key).second) {
+            auto sz = FixedSize(t);
+            Append(c_converters,
+                   "_Static_assert(sizeof(", t->c_repr, ") == ", sz,
+                   ", \"C type size mismatch for ", t->c_repr, "\");\n"
+                   "static GS_INLINE ", t->c_repr, " gs_to_c_", m, "(", gct, " v) { ",
+                   t->c_repr, " r; memcpy(&r, &v, ", sz, "); return r; }\n"
+                   "static GS_INLINE ", gct, " gs_from_c_", m, "(", t->c_repr, " v) { ",
+                   gct, " r; memcpy(&r, &v, ", sz, "); return r; }\n");
+        }
+        return m;
+    }
+
+    string EmitConstImmArg(Node *n);
 
     [[noreturn]] void Fail(Line l, const string &msg) {
         auto s = cat("codegen: ", msg);
@@ -992,6 +1057,7 @@ struct CodeGen {
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);
     Loc IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc);
+    Loc WindowLoc(SliceExpr *se);
     Index *LeadingCheck(Node *arm);
     bool SamePath(Node *a, Node *b);
     bool SameCheck(Index *a, Index *b);
@@ -1457,8 +1523,10 @@ struct CodeGen {
 
     void DetectNrvo(FnSpec *sp);
     // What a specialization's C declaration says besides its signature.
-    static const char *FnAttrs(FnSpec *sp) {
-        return sp->outofline ? "GS_NOINLINE " : sp->cinline ? "GS_INLINE " : "";
+    static string FnAttrs(FnSpec *sp) {
+        string a = sp->outofline ? "GS_NOINLINE " : sp->cinline ? "GS_INLINE " : "";
+        if (!sp->target_attr.empty()) Append(a, "GS_TARGET(", CStr(sp->target_attr), ") ");
+        return a;
     }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
@@ -1518,8 +1586,10 @@ struct CodeGen {
     // process state that the driver must install before constructing us.
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
-            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0)
-        : ast(_ast), library(_library), norfcheck(_norfcheck), maxstacks(_maxstacks) {
+            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0,
+            bool _jit_mode = false, string _outdir = {})
+        : ast(_ast), library(_library), jit_mode(_jit_mode), outdir(std::move(_outdir)),
+          norfcheck(_norfcheck), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
@@ -1561,7 +1631,9 @@ struct CodeGen {
         // reaches. Emit their types without making the functions live.
         for (auto sp : ast.fnspecs) {
             if (!sp->sf->isextern) continue;
-            for (auto t : sp->argtypes) {
+            for (size_t i = 0; i < sp->argtypes.size(); i++) {
+                if (i < sp->sf->params.size() && sp->sf->params[i].is_const) continue;
+                auto t = sp->argtypes[i];
                 CT(t);
                 // CT only forward-declares a struct behind a pointer; an
                 // adapter needs its fields too. Builders use gs_rref instead.
@@ -1575,11 +1647,14 @@ struct CodeGen {
             CT(ast.SliceOf(ast.inttypes[IS_U8], Line {}));
         }
         for (auto sp : usedexterns) {
+            if (!sp->sf->cheader.empty()) continue;
             if (sp->sf->dylib.empty() &&
                 runtime_ext_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos)
                 continue;
             externs += ExternProto(sp);
         }
+        externs += jit_thunk_decls;
+        if (!jit_mode) externs += c_converters;
         // The shared libraries the dynamic externs bind from and the
         // pointers each symbol fills, which gs_program_init hands to
         // gs_dl_bind (design/dynamic_externs.md §5). Only a used extern is
@@ -1605,12 +1680,43 @@ struct CodeGen {
             externs += "};\n";
         }
         string includes;
+        if (!jit_mode) {
+            for (auto &[hdr, fidx] : used_headers)
+                includes += FormatHeaderInclude(hdr, fidx, false);
+        }
         for (auto inc : headers) {
             // Forward slashes even for a Windows path: a backslash inside a
             // header name is undefined, and every C compiler on Windows takes
             // the slash form.
             for (auto &c : inc) if (c == '\\') c = '/';
             Append(includes, "#include \"", inc, "\"\n");
+        }
+        if (jit_mode && !jit_thunk_symbols.empty()) {
+            string jsrc = "#include <stdint.h>\n#include <string.h>\n"
+                          "#if defined(_MSC_VER) && !defined(__clang__)\n"
+                          "#define GS_TARGET(x)\n"
+                          "#elif defined(__GNUC__) || defined(__clang__)\n"
+                          "#define GS_TARGET(x) __attribute__((target(x)))\n"
+                          "#else\n"
+                          "#define GS_TARGET(x)\n"
+                          "#endif\n"
+                          "#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)\n"
+                          "#define GS_ALIGN1 __attribute__((aligned(1)))\n"
+                          "#else\n#define GS_ALIGN1\n#endif\n"
+                          "typedef int16_t gs_i16 GS_ALIGN1;\n"
+                          "typedef int32_t gs_i32 GS_ALIGN1;\n"
+                          "typedef int64_t gs_i64 GS_ALIGN1;\n"
+                          "typedef uint16_t gs_u16 GS_ALIGN1;\n"
+                          "typedef uint32_t gs_u32 GS_ALIGN1;\n"
+                          "typedef uint64_t gs_u64 GS_ALIGN1;\n"
+                          "typedef float gs_f32 GS_ALIGN1;\n"
+                          "typedef double gs_f64 GS_ALIGN1;\n"
+                          "typedef struct gs_stack gs_stack;\n";
+            for (auto &[hdr, fidx] : used_headers)
+                jsrc += FormatHeaderInclude(hdr, fidx, true);
+            Append(jsrc, "#pragma pack(push, 1)\n", tdecls, "#pragma pack(pop)\n\n",
+                   jit_thunk_defs);
+            jit_thunk_src = std::move(jsrc);
         }
         Append(head, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
                "#pragma pack(pop)\n\n/* ---- data ---- */\n", data);

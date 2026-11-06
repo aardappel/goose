@@ -156,6 +156,12 @@ typedef double gs_f64 GS_ALIGN1;
 #define GS_INLINE inline
 #endif
 
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#define GS_TARGET(x) __attribute__((target(x)))
+#else
+#define GS_TARGET(x)
+#endif
+
 #if GS_NEED_THREADS
 #ifdef _MSC_VER
 #define GS_TLS __declspec(thread)
@@ -249,6 +255,13 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_IDX(i, n, f, l) \
     ((uint64_t)(i) < (uint64_t)(n) ? (i) \
                                    : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
+
+static GS_INLINE int64_t gs_bc_win(int64_t lo, int64_t win_len, int64_t len,
+                                   const char *file, int line) {
+    if ((uint64_t)lo > (uint64_t)(len - win_len) || len < win_len)
+        gs_abort(GS_E_SLICE, file, line);
+    return lo;
+}
 
 /* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
    in debug builds, an optimizer hint in release. */
@@ -355,6 +368,7 @@ static inline int gs_simd_detect(void) {
 /* Detected at the first call and kept. Every thread computes the same
    level, so a relaxed atomic is all a race between two first calls needs. */
 static inline int gs_simd_level(void) {
+    /* Once more, where the callees still used once now inline: the walk */
     static int level = -1;
     int l = __atomic_load_n(&level, __ATOMIC_RELAXED);
     if (l < 0) {
@@ -364,6 +378,110 @@ static inline int gs_simd_level(void) {
     return l;
 }
 #endif
+
+/* target_has("...") runtime feature bits and lazy CPUID detector. */
+enum {
+    GS_CPU_SSE2    = 1u << 0,
+    GS_CPU_SSSE3   = 1u << 1,
+    GS_CPU_SSE41   = 1u << 2,
+    GS_CPU_SSE42   = 1u << 3,
+    GS_CPU_AVX     = 1u << 4,
+    GS_CPU_AVX2    = 1u << 5,
+    GS_CPU_AVX512F = 1u << 6,
+    GS_CPU_AES     = 1u << 7,
+    GS_CPU_PCLMUL  = 1u << 8,
+    GS_CPU_BMI1    = 1u << 9,
+    GS_CPU_BMI2    = 1u << 10,
+    GS_CPU_POPCNT  = 1u << 11,
+    GS_CPU_NEON    = 1u << 12,
+    GS_CPU_PMULL   = 1u << 13,
+    GS_CPU_CRC     = 1u << 14,
+    GS_CPU_SHA2    = 1u << 15,
+};
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(_MSC_VER) && !defined(__clang__) && !defined(GS_EMBEDDED_JIT)
+#include <intrin.h>
+#endif
+
+static inline uint32_t gs_cpu_detect_features(void) {
+#if defined(__x86_64__) || defined(_M_X64)
+    uint32_t mask = GS_CPU_SSE2;
+    uint32_t r0 = 0, r1 = 0, r2 = 0, r3 = 0, max_leaf = 0;
+#if defined(_MSC_VER) && !defined(__clang__)
+    int info[4];
+    __cpuid(info, 0);
+    max_leaf = (uint32_t)info[0];
+    if (max_leaf >= 1) {
+        __cpuid(info, 1);
+        r2 = (uint32_t)info[2];
+        r3 = (uint32_t)info[3];
+    }
+#else
+    __asm__ volatile("cpuid" : "=a"(max_leaf), "=b"(r1), "=c"(r2), "=d"(r3) : "a"(0), "c"(0));
+    if (max_leaf >= 1)
+        __asm__ volatile("cpuid" : "=a"(r0), "=b"(r1), "=c"(r2), "=d"(r3) : "a"(1), "c"(0));
+#endif
+    if (max_leaf < 1) return mask;
+    if (r2 & (1u << 9))  mask |= GS_CPU_SSSE3;
+    if (r2 & (1u << 19)) mask |= GS_CPU_SSE41;
+    if (r2 & (1u << 20)) mask |= GS_CPU_SSE42;
+    if (r2 & (1u << 23)) mask |= GS_CPU_POPCNT;
+    if (r2 & (1u << 25)) mask |= GS_CPU_AES;
+    if (r2 & (1u << 1))  mask |= GS_CPU_PCLMUL;
+    int osxsave = (r2 & (1u << 27)) != 0;
+    uint32_t xcr0 = 0;
+    if (osxsave) {
+#if defined(_MSC_VER) && !defined(__clang__)
+        xcr0 = (uint32_t)_xgetbv(0);
+#else
+        uint32_t xhi = 0;
+        __asm__ volatile(".byte 0x0f, 0x01, 0xd0" : "=a"(xcr0), "=d"(xhi) : "c"(0));
+        (void)xhi;
+#endif
+    }
+    int ymm_ok = osxsave && ((xcr0 & 0x6u) == 0x6u);
+    int zmm_ok = ymm_ok && ((xcr0 & 0xe0u) == 0xe0u);
+    if (ymm_ok && (r2 & (1u << 28))) mask |= GS_CPU_AVX;
+    if (max_leaf >= 7) {
+        uint32_t b7 = 0;
+#if defined(_MSC_VER) && !defined(__clang__)
+        __cpuidex(info, 7, 0);
+        b7 = (uint32_t)info[1];
+#else
+        __asm__ volatile("cpuid" : "=a"(r0), "=b"(b7), "=c"(r2), "=d"(r3) : "a"(7), "c"(0));
+#endif
+        if (b7 & (1u << 3)) mask |= GS_CPU_BMI1;
+        if (b7 & (1u << 8)) mask |= GS_CPU_BMI2;
+        if (ymm_ok && (b7 & (1u << 5)))  mask |= GS_CPU_AVX2;
+        if (zmm_ok && (b7 & (1u << 16))) mask |= GS_CPU_AVX512F;
+    }
+    return mask;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    uint32_t mask = GS_CPU_NEON;
+#if defined(__ARM_FEATURE_AES) || defined(__APPLE__)
+    mask |= GS_CPU_PMULL;
+#endif
+#if defined(__ARM_FEATURE_CRC32) || defined(__APPLE__)
+    mask |= GS_CPU_CRC;
+#endif
+#if defined(__ARM_FEATURE_SHA2) || defined(__APPLE__)
+    mask |= GS_CPU_SHA2;
+#endif
+    return mask;
+#else
+    return 0;
+#endif
+}
+
+static GS_INLINE int gs_cpu_has(uint32_t req) {
+    static uint32_t cached = 0;
+    uint32_t m = cached;
+    if (!m) {
+        m = gs_cpu_detect_features() | (1u << 31);
+        cached = m;
+    }
+    return (m & req) == req;
+}
 
 /* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
    is built for FMA and twice where it is not, so its results are the
