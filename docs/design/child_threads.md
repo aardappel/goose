@@ -56,18 +56,20 @@ section 6 the alternatives, section 7 the order to build in.
 
 ## 0. Summary
 
-* **One construct, two levels.** `par for` is the one claim, "these
-  iterations are independent", and the compiler gives it two lowerings:
-  chunks of the range on *child threads* of the same program, and
-  iterations within a chunk on *lanes*. A `par for` that is not inside
-  another one gets threads, with its chunk loop vectorized where the body
-  allows; a `par for` inside a child gets lanes only; a nest of two is
-  OpenMP's `parallel for` outside and `simd` inside, which is also what
-  ISPC's `launch` plus `foreach`, Mojo's `parallelize` plus `vectorize`,
-  Halide's `.parallel(y).vectorize(x)` and Futhark's multicore backend all
-  produce ([3.1](#31-thread-level-and-lane-level-side-by-side)). Either
-  level is useful alone, and neither has a meaning of its own: the program
-  computes what the sequential loop computes
+* **One claim, two keywords, two levels.** A loop marked `simd for`,
+  `par for` or `par simd for` makes one claim, "these iterations are
+  independent", checked by one set of rules; the keywords say which
+  lowering it gets. `simd` puts iterations on *SIMD lanes* of the calling
+  thread and never forks; `par` cuts the range into contiguous chunks on
+  *child threads* of the same program and leaves each chunk a plain loop;
+  `par simd` does both, chunks on threads and lanes within each chunk,
+  which is OpenMP's `parallel for simd`. A `simd for` written inside a
+  `par for` body is the other way to get both: ISPC's `launch` plus
+  `foreach`, Mojo's `parallelize` plus `vectorize`, Halide's
+  `.parallel(y).vectorize(x)`
+  ([3.1](#31-thread-level-and-lane-level-side-by-side)). Each level is
+  useful alone, and neither has a meaning of its own: the program computes
+  what the sequential loop computes
   ([4.1](#41-one-construct-two-levels), [4.2](#42-which-level-a-loop-gets)).
 * **The parent is dormant, so sharing is safe.** While the loop runs, no
   code of the parent runs, nothing it owns can grow, shrink or go out of
@@ -106,8 +108,8 @@ section 6 the alternatives, section 7 the order to build in.
   ([4.7](#47-aborts)).
 * **Order.** Structural chunks and stackless children first, which needs no
   prover work and only a small checker rule; then child programs; then the
-  two-iteration proof; then lanes as a vectorizer hint and later as SPMD
-  ([7](#7-recommendation-and-order)).
+  two-iteration proof; then `simd for` as a vectorizer assertion and later
+  as SPMD ([7](#7-recommendation-and-order)).
 
 ## 1. The problem
 
@@ -307,13 +309,14 @@ already.
 
 "Programs with threads need a real C compiler (`goose build`), since the
 in-process TinyCC backend cannot place thread-local storage"
-([reference §22](../reference.md#22-threads)). A `par for` has no meaning
-of its own, so under TinyCC, wasm and any build that asks for it
-(`GOOSE_THREADS=1`), the loop runs sequentially, iteration by iteration, on
-the calling thread, and the program's output is the same. This is also the
-debugging mode: a `par for` that gives a different answer at
-`GOOSE_THREADS=1` has broken a rule the compiler should have caught, which
-is a compiler bug, never a program bug. `goose run` keeps working on every
+([reference §22](../reference.md#22-threads)). Neither `par` nor `simd`
+has a meaning of its own, so under TinyCC and wasm a loop marked with
+either runs as the plain loop, iteration by iteration on the calling
+thread, and in any build `GOOSE_THREADS=1` does the same to every `par`;
+the program's output is the same. This is also the debugging mode: a
+marked loop that gives a different answer at `GOOSE_THREADS=1` or under
+`goose run` has broken a rule the compiler should have caught, which is a
+compiler bug, never a program bug. `goose run` keeps working on every
 program; `goose build` parallelizes.
 
 ### 2.7 What the checker knows about effects today
@@ -464,8 +467,9 @@ exact in any order; that is the line Goose draws
   strided writes.
 * The combined form for one loop (threads over chunks, lanes within),
   which every system converges on for 1-D kernels, and lexical nesting
-  for two loops. The programmer writes `par` where the parallelism is;
-  the compiler does not guess at loop nests it was not told about.
+  for two loops. The programmer names the level, `simd`, `par` or both,
+  on the loop where the parallelism is; the compiler does not guess at
+  loop nests it was not told about.
 * Lazy pool, cores less one, caller runs chunk 0, spin then park, no
   stealing in v1.
 * Integer reductions only; floats go through per-iteration elements.
@@ -474,68 +478,140 @@ exact in any order; that is the line Goose draws
 
 ### 4.1 One construct, two levels
 
-`par for` has the syntax of `for` in every form `for` has:
+The construct is a `for` loop whose iterations the programmer declares
+independent, with one or two words in front that say where those
+iterations may run:
 
 ```goose
-par for i in n { ... }              // a count
+simd for i in n { ... }             // lanes: this thread, iterations on SIMD lanes
+par for i in n { ... }              // threads: contiguous chunks on the pool, a plain loop in each
+par simd for i in n { ... }         // both: chunks on threads, lanes within each chunk
+```
+
+Each takes every range form `for` has:
+
+```goose
 par for i in a..b { ... }           // a range
 par for x in arr { ... }            // element copies: the body reads arr
 par for &x in arr { ... }           // element references: iteration i owns arr[i]
 par for &x, i in arr { ... }        // with index
 ```
 
-Its meaning is the `for` loop's. The compiler may run its iterations on
-several threads of the same program over the same memory, and iterations
-within a thread's share on SIMD lanes, when it has checked that doing so
-is unobservable. The rules are in [4.3](#43-what-a-body-may-touch) to
-[4.7](#47-aborts). The body is a block of the enclosing function, as a
-`for` body is: it sees the function's locals and parameters and the
-program's globals, declares its own locals, calls what it likes, and ends
-with the iteration.
+The meaning is the `for` loop's. Both words are permissions, not
+instructions: the compiler may run the iterations as the word says once it
+has checked that doing so is unobservable, and may always run them
+sequentially instead. `simd` on a loop is `simd` on a function
+([spec §7.12](../goose_spec.md#712-simd-fn-versions-per-instruction-set))
+scaled down to one loop, with the same rule: no meaning of its own, every
+lowering computes what the baseline computes. The rules a body must meet
+are the same for all three spellings and are in
+[4.3](#43-what-a-body-may-touch) to [4.7](#47-aborts). The body is a
+block of the enclosing function, as a `for` body is: it sees the
+function's locals and parameters and the program's globals, declares its
+own locals, calls what it likes, and ends with the iteration.
 
 What the construct does *not* have: a thread count, a chunk size, a
-schedule, or a reduction clause. The thread count is the pool's
-([4.9](#49-the-runtime)), the chunking is static and contiguous, and a
-reduction is a shape the compiler recognizes
+schedule, a lane width, or a reduction clause. The thread count is the
+pool's ([4.9](#49-the-runtime)), the chunking is static and contiguous,
+the lane width is the C compiler's or the enclosing `simd fn` version's,
+and a reduction is a shape the compiler recognizes
 ([4.6](#46-results-reductions-determinism)). OpenMP's `schedule(dynamic)`
 and TBB's partitioners answer uneven iterations; Goose's answer is in
 [4.9](#49-the-runtime), without syntax.
 
 ### 4.2 Which level a loop gets
 
-The rule is lexical and dynamic at once, and short:
+The keywords decide; nothing is inferred from nesting or from the body.
+The four ways to write it:
 
-1. A `par for` that runs outside any child, that is, not dynamically
-   inside another `par for`'s body, gets **threads**: its range is cut
-   into contiguous chunks, one per pool thread plus the caller.
-2. Within a chunk, the chunk's loop is the **lane** loop when the body is
-   stackless ([4.5](#45-stackless-and-stackful-bodies)); the compiler
-   tells the C compiler the iterations are independent, and later lowers
-   the body as SPMD ([4.10](#410-what-the-compiler-needs)).
-3. A `par for` that runs inside a child, whether written inside the outer
-   body or in a function it calls, gets no threads: it is a lane loop (2),
-   or a plain loop.
+**Lanes only: `simd for`.** The loop runs on the calling thread, and its
+iterations may be spread over SIMD lanes. In v1 that means the loop is
+emitted with the C compiler's "iterations are independent" assertion
+(`#pragma clang loop vectorize(assume_safety)`, `#pragma GCC ivdep`) and
+`restrict` on the arrays it writes, so the vectorizer no longer has to
+prove what the checker proved; later it means the SPMD lowering of
+llm_frontier §4.4, where the body is compiled per lane width with masks
+for its `if`s. No thread is started, nothing is forked, and the loop
+costs what a `for` costs to enter. This is the form for an inner loop
+over pixels, for any loop that already runs inside a child, and for a
+loop the programmer wants vectorized without threads:
 
-So one `par for` over a million elements is OpenMP's `parallel for simd`:
-chunks on threads, lanes within. A `par for` over rows with a `par for`
-over pixels inside is ISPC's `launch` with `foreach` inside, Mojo's
-`parallelize` with `vectorize` inside, Halide's `.parallel(y).vectorize(x)`:
-the outer loop's chunks are rows per thread, the inner loop is the lane
-loop. A `par for` written only on the inner loop gives lanes under a
-sequential outer loop, and one written only on the outer gives threads over
-rows with the inner loop left to the autovectorizer. The programmer says
-where the parallelism is and the nesting says which level is which; the
-compiler never promotes a loop that was not marked. An explicit override
-(`par(threads)`, `par(lanes)`) is left as an open question until a program
-needs it ([8](#8-open-questions)).
+```goose
+fn scale(xs: f32[:], s: f32) {
+    simd for &x in xs { x = x * s; }        // one thread; lanes; iteration i owns xs[i]
+}
+```
 
-A lane-level `par for` is also what llm_frontier §4.3 and §4.4 describe,
-and nothing there changes except that the thread pool it asked for is the
-one this note specifies, and that its admission rules are the ones below.
+**Threads only: `par for`.** The range is cut into contiguous chunks, one
+per pool thread plus the caller, and each thread runs its chunk as an
+ordinary loop, which the C compiler may or may not vectorize as it would
+any loop; no independence assertion is given, because `simd` was not
+written. This is the form for an outer loop over rows or over `chunk`
+indices, and the only form whose body may hold growable locals
+([4.5](#45-stackless-and-stackful-bodies)):
+
+```goose
+fn count_distinct(rows: const i64[:], bits: i64, distinct: i64[:]) {
+    par for k in P {                        // threads; one chunk of rows each
+        var table: Slot[>..] = [];          // growable: a child program, which has no lane form
+        ...                                 // the body is in section 5
+        distinct[k] = n;
+    }
+}
+```
+
+**Both on one loop: `par simd for`.** Chunks on threads, and each
+thread's chunk loop is a `simd for`. This is OpenMP's `parallel for simd`
+([omp-pfs]) and what every system in
+[3.1](#31-thread-level-and-lane-level-side-by-side) emits for a 1-D
+kernel; it is the form for a flat loop over a large array:
+
+```goose
+fn saxpy(ys: f32[:], xs: const f32[:], a: f32) {
+    assert(xs.len == ys.len);
+    par simd for &y, i in ys { y = a * xs[i] + y; }
+}
+```
+
+**Both on a nest: `par for` outside, `simd for` inside.** Rows on
+threads, pixels on lanes; the blur in
+[5](#5-the-query-engines-phases-written-out) is written this way. This is
+ISPC's `launch` with `foreach` inside, Mojo's `parallelize` with
+`vectorize` inside, Halide's `.parallel(y).vectorize(x)`. The outer
+loop's chunks are bands of rows per thread, and the inner `simd for` runs
+inside each child, on that child's thread.
+
+What nesting does, and does not do:
+
+* A `par for` that runs while its thread is already inside a child,
+  whether written in the outer body or reached through a call, does not
+  fork: it runs sequentially, as OpenMP's nested regions do by default. A
+  function containing a `par for` may therefore be called from anywhere;
+  from inside a child it costs a loop. The runtime knows from a
+  thread-local flag, which the parent's own thread sets while it runs
+  chunk 0 ([4.9](#49-the-runtime)).
+* A `simd for` whose body reaches a `par for` is not vectorized: a fork is
+  a call the lane lowering cannot inline, so the loop runs as written and
+  the fork happens inside it.
+* A `simd for` inside a `simd for` body is a plain loop in each lane. ISPC
+  makes a nested `foreach` an error ([ispc]); Goose has nothing to gain by
+  refusing it.
+* A plain `for` around a `par for` forks once per outer iteration. The
+  compiler does not hoist a fork out of a loop it was not told about; if
+  the forks are the cost, mark the outer loop instead.
+
+A reader knows a loop's lowering from its first word, and the compiler
+never promotes a loop that was not marked. What llm_frontier §4.3
+sketched as `par for` is this note's `par simd for`, with threads and
+lanes named separately so that each can be asked for alone; its §4.4
+option 2, the SPMD lowering, is the second lowering of `simd for`.
+Nothing else there changes except the thread pool, which is the one this
+note specifies, and the admission rules, which are the ones below.
 
 ### 4.3 What a body may touch
 
-Inside the body, with `i` the loop variable:
+Inside the body of any of the three spellings, with `i` the loop
+variable:
 
 * **R1. Captured places are read-only.** Every variable of the enclosing
   function and every global is `const` inside the body, as a by-value
@@ -558,7 +634,7 @@ Inside the body, with `i` the loop variable:
   gives it; otherwise the schedule would be observable.
 * **R4. No exits across the boundary.** No `return`, no `return … from`
   a function outside the body, no `break` or `continue` of an enclosing
-  loop. `continue` of the `par for` itself ends the iteration; `defer`
+  loop. `continue` of the marked loop itself ends the iteration; `defer`
   inside the body runs at the iteration's end.
 * **R5. The body's own locals are its own.** A local declared in the body
   exists per iteration, on the thread's native stack or, for a nonfixed
@@ -633,7 +709,7 @@ that order.
 **Stackless.** A body whose locals are all fixed-size, through every
 function it calls, needs no data stack: it is the recursion rule's shape
 ([2.4](#24-two-body-shapes-the-stack-model-allows)). It runs on a pool
-thread's native stack, reserves nothing, and may be a lane loop. This is
+thread's native stack, reserves nothing, and may be a `simd for`. This is
 every kernel in the issue's list (scan, filter into a chunk with a count,
 partition into chunks of a table, probe, merge of per-worker states), the
 blur and Sobel of `samples/22_image_filters.goose`, Mandelbrot rows, and
@@ -657,7 +733,8 @@ stack assignment with N″ stacks, like a `thread_fn`'s N′
 * The chunk the parent's own thread runs needs no block: from the
   parent's point of view it is a call, and its nonfixed locals go on the
   parent's stacks above the parent's watermarks, where a callee's would.
-* It runs on threads only. A nonfixed local has no lane form.
+* It runs on threads only: `par for`, never `simd for` or `par simd for`.
+  A nonfixed local has no lane form.
 * `hardware_threads()` already reports "no more workers than the
   implementation's address space for data stacks holds beside the main
   program" ([spec §11.2](../goose_spec.md#112-concurrency)); the pool's
@@ -666,8 +743,8 @@ stack assignment with N″ stacks, like a `thread_fn`'s N′
   a block is N″ times 2 GB, so the cap is in the thousands and never
   binds on a pool the size of the core count.
 
-The programmer sees one rule: "a `par for` body with growable locals runs
-on threads, never on lanes". The compiler sees two specializations of the
+The programmer sees one rule: "a body with growable locals may be `par`,
+not `simd`". The compiler sees two specializations of the
 same body shape it already has (a function in the main program, a function
 in a thread program), and one new one (a function in a child program,
 whose stack indices are its own and whose globals are the parent's).
@@ -741,30 +818,32 @@ costs exactly one thing:
 * Stack overflow on a pool thread's native stack, `exit(code)` and runtime
   failures end the program, as they do for workers.
 
-For the lane level the stricter rule stays where it matters: an SPMD
-lowering needs the body to have no kept check, or the lowering is the
-scalar loop. With the v1 lane lowering being the C compiler's vectorizer
-plus a hint, a kept check simply means the loop does not vectorize, as
+For `simd for` the stricter rule stays where it matters: an SPMD lowering
+needs the body to have no kept check, or the lowering is the scalar loop.
+With the v1 lane lowering being the C compiler's vectorizer plus an
+assertion, a kept check simply means the loop does not vectorize, as
 today.
 
 ### 4.8 In the spec
 
 A new section beside §11.2, stating:
 
-* `par for` computes what `for` computes; an implementation may run its
-  iterations in any interleaving on any number of threads of the same
-  program instance, and on SIMD lanes, or sequentially; the program's
-  output, aborts and exit status do not depend on which.
+* A loop marked `simd`, `par` or `par simd` computes what `for` computes;
+  an implementation may run its iterations in any interleaving on any
+  number of threads of the same program instance (`par`), on SIMD lanes
+  (`simd`), or sequentially; the program's output, aborts and exit status
+  do not depend on which.
 * Admission: R1 to R5, the chunking builtins and their facts, the core of
   accepted index shapes for the proven case (as §7.14 lists shapes for
   `checkfree`), the reduction shape, the abort rule.
-* Nesting: a `par for` inside the body of another is not a fork; it runs
-  on lanes or sequentially.
+* Nesting: a `par for` that runs inside a child is not a fork; it runs
+  sequentially. A `simd for` inside a child is a lane loop on that child's
+  thread.
 * Inside a `thread_fn` worker, the rules are the same; the pool is the
   process's ([4.9](#49-the-runtime)).
 * The data-race promise, restated: a program has no data race because
-  threads share nothing (§11.2) and because the iterations of a `par for`
-  write only places the compiler showed they alone own. Both are checked;
+  threads share nothing (§11.2) and because the iterations of a marked
+  loop write only places the compiler showed they alone own. Both are checked;
   neither is trusted.
 
 Nothing about queues, workers or globals changes.
@@ -800,8 +879,9 @@ A few hundred lines of C beside `runtime_threads.h`:
   choice (`GOOSE_PAR_BLOCK=n`) and never syntax. No stealing in v1.
 * **Busy pool.** A fork claims the pool threads that are idle at that
   moment and runs the remaining chunks on its own thread. A pool thread
-  never forks ([4.2](#42-which-level-a-loop-gets) rule 3), so it never
-  waits on the pool, and there is no deadlock to reason about. A
+  never forks, nor does the parent's thread while it runs chunk 0
+  ([4.2](#42-which-level-a-loop-gets)), so no thread waits on the pool
+  from inside a task, and there is no deadlock to reason about. A
   `thread_fn` worker that forks uses the same pool; with several workers
   forking at once the pool is shared and the cores are oversubscribed at
   worst, as they would be under OpenMP's nested regions.
@@ -824,7 +904,7 @@ A few hundred lines of C beside `runtime_threads.h`:
 
 | Where | What | Exists | New |
 |---|---|---|---|
-| parser | `par for` in `for`'s forms | `for` | one keyword |
+| parser | `simd for`, `par for`, `par simd for` in `for`'s forms | `for`, `simd` | one keyword, one new position |
 | checker | R1: captured places `const` inside the body | writability inference, by-value `for` bindings | a boundary that re-views every captured variable, ~100 lines |
 | checker | R2 structural: `chunk`, `chunk_at`, `for &x`; the fact that these are owned | slicing, `for &x` | three builtins with a "disjoint per index" mark, and the ownership check at a write, ~200 lines |
 | checker | R2 proven: two-iteration disjointness | the prover's domain, `HandedApart`, `DistinctTypes` | the judgement and its diagnostics, ~1,000 lines (llm_frontier's estimate) |
@@ -832,7 +912,7 @@ A few hundred lines of C beside `runtime_threads.h`:
 | checker | R4, R5, reductions, aborts, nesting | `needs` for `return from`, cycle rules | ~200 lines |
 | codegen | outline the body with an environment struct; the chunk loop; the fork call | nested-function free variables, thread thunks, `simd` versions | ~400 lines |
 | codegen | child programs: a third program kind | thread programs' per-program specialization and stack numbering | ~300 lines |
-| codegen | lanes: `restrict` from `distinct` roots and an independence hint on the chunk loop | §4.1's `restrict` | ~50 lines; SPMD later, per llm_frontier §4.4 |
+| codegen | `simd for`: `restrict` from `distinct` roots and an independence assertion on the loop | §4.1's `restrict`, `simd` versions | ~50 lines; SPMD later, per llm_frontier §4.4 |
 | runtime | the pool, forks, stack blocks, knobs | `runtime_threads.h`'s threads and regions | ~300 lines of C, three platforms |
 | spec, reference, tests | the section, the diagnostics, `test/errors_tc` fixtures per rule, a `--par-test` report | | |
 
@@ -848,8 +928,8 @@ outputs; partition build rows and build P disjoint partitions of a hash
 table; probe the table as a shared read-only slice from all workers while
 writing matches into disjoint output runs; merge per-worker aggregation
 states. Each phase in the proposed syntax (the sequential stand-ins of
-these, with `par for` as `for` and `chunk` as a function, compile and run
-on today's compiler).
+these, with `par` and `simd` dropped and `chunk` as a function, compile
+and run on today's compiler).
 
 **Scan and filter**, stackless, structural. Each iteration reads its chunk
 of the column, writes survivors into the same chunk of the output, and
@@ -960,8 +1040,8 @@ fn totals(a: const f64[:], b: const f64[:], partial: f64[:]) -> i64 {
 
 **Two levels**, the blur of `samples/22_image_filters.goose`: rows on
 threads, pixels on lanes. The row slice of `dst` is owned by the proven
-rule (rows are disjoint for distinct `y`), the inner `par for` is the lane
-loop, and nothing else is written:
+rule (rows are disjoint for distinct `y`), the inner `simd for` is the
+lane loop, and nothing else is written:
 
 ```goose
 fn blur(src: const u8[:], dst: u8[:]) {
@@ -972,7 +1052,7 @@ fn blur(src: const u8[:], dst: u8[:]) {
         let c = src[(y + 1) * W..(y + 2) * W];
         let d = dst[y * W..(y + 1) * W];        // proven: rows of dst are disjoint per y
         assert(a.len == W && b.len == W && c.len == W && d.len == W);
-        par for x in 1..W - 1 {                 // lanes, inside a child
+        simd for x in 1..W - 1 {                // lanes, on the child's thread
             let s = a[x - 1] as u16 + a[x] + a[x + 1]
                   + b[x - 1] + b[x] + b[x + 1]
                   + c[x - 1] + c[x] + c[x + 1];
@@ -984,7 +1064,7 @@ fn blur(src: const u8[:], dst: u8[:]) {
 
 Without the proven rule, the same kernel is written structurally with
 `dst.chunk(k, P)` over row bands and a sequential row loop inside, which
-is the form the issue's prototype used; the inner `par for` is unchanged.
+is the form the issue's prototype used; the inner `simd for` is unchanged.
 
 ## 6. Options side by side
 
@@ -993,7 +1073,7 @@ is the form the issue's prototype used; the inner `par for` is unchanged.
 | A. `par for` with structural ownership, stackless bodies, a static pool | [4.1](#41-one-construct-two-levels)-[4.4](#44-disjoint-writes-structural-first-proven-second) without the prover, [4.5](#45-stackless-and-stackful-bodies)'s first half, [4.9](#49-the-runtime) | the issue's every phase, no copies, 10 µs forks; the core count on partitioned work | ~1,500 lines; three builtins; one keyword | **v1** |
 | B. Child programs (stackful bodies) | [4.5](#45-stackless-and-stackful-bodies)'s second half | growable scratch per iteration; the issue's point 4 | a third program kind in codegen; stack blocks per pool thread; the budget cap | **v2**, when A's "size the output from the input" idiom proves insufficient |
 | C. Proven disjointness | the two-iteration judgement | stencils and strided writes without restructuring; the reviewer's "parallel because proven" | ~1,000 lines of prover and diagnostics; `distinct` from llm_frontier §4.1 | **v3**, after `requires`/`abortfree` per llm_frontier §7 |
-| D. Lanes | the hint now, SPMD later | the MSVC blur gap at once; ISPC-class gains later | hint: ~50 lines; SPMD: mask maintenance, per llm_frontier §4.4 | hint in v1, SPMD when measured |
+| D. `simd for`, and `par simd for` as the two together | the independence assertion now, SPMD later | the MSVC blur gap at once; ISPC-class gains later | assertion: ~50 lines; SPMD: mask maintenance, per llm_frontier §4.4 | assertion in v1, SPMD when measured |
 | E. Pooled `thread_fn` workers given borrowed `const` views, joined by `thread_wait` in the same scope (the issue's literal shape) | today's workers, with reference parameters allowed when every id is waited before the scope ends | no new construct | ids are runtime values flowing through arrays and loops; the checker cannot see the join; the scope would have to become a construct, at which point it is A with worse syntax | rejected; Rust's RFC 3151 made the same choice, "relying on closures rather than guards" ([rfc-3151]) |
 | F. A statement form, `par { f(a); g(b); }`, each statement a child (ISPC's `launch`/`sync`, Cilk's `spawn`/`sync`, ParaSail's `\|\|`) | heterogeneous children | pipelines with unlike stages | same rules as A (each statement a body with R1-R5); a second syntax | later, as sugar over A's rules when a program needs it |
 | G. Work-stealing tasks | TBB, Cilk, rayon | nested and irregular parallelism balanced automatically | a deque per thread, nondeterministic block-to-thread mapping, no gain on static kernels | not in v1; the atomic-counter block mode of [4.9](#49-the-runtime) covers uneven rows |
@@ -1016,8 +1096,9 @@ is the form the issue's prototype used; the inner `par for` is unchanged.
    bytes. Measure the issue's two workloads (reconstructed in `bench/`),
    `samples/22_image_filters.goose`, `samples/23_mandelbrot_threads.goose`
    rewritten without queues, and the `blur`, `particles` and `scene` rows.
-4. **The lane hint** (option D's first half) on the chunk loop, with
-   `restrict` from distinct roots, measured on the MSVC `blur` row.
+4. **`simd for`** with the independence assertion (option D's first half)
+   and `restrict` from distinct roots, measured on the MSVC `blur` row;
+   `par simd for` is then the two lowerings on one loop.
 5. **Child programs** (option B) when a program needs per-iteration
    growables: the third program kind, the kept stack blocks, the cap.
 6. **Proven disjointness** (option C) after `requires` and `abortfree`
@@ -1032,10 +1113,12 @@ cores; steps 1 and 2 are small and independent and can land at any time.
 
 ## 8. Open questions
 
-* **An explicit level.** `par(threads) for` / `par(lanes) for` to override
-  [4.2](#42-which-level-a-loop-gets), as ISPC, Mojo and Halide make the
-  programmer say. The nesting rule covers every example in this note;
-  the first program it gets wrong decides.
+* **An unasked assertion on `par for`.** A `par for` body that would be
+  admitted as `simd for` could get the independence assertion on its chunk
+  loop without `simd` being written; the claim is the same. Left off so
+  that a loop's lowering reads from its keywords
+  ([4.2](#42-which-level-a-loop-gets)); the first measurement where the
+  autovectorizer gives up on a `par for` chunk loop decides.
 * **`print` in a body.** Excluded by R3 because the order of lines would
   depend on the schedule (lines never interleave, so the content would
   not). Allowing it under a documented "order unspecified" would help
