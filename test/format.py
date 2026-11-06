@@ -286,8 +286,31 @@ def check_docs(exe, root):
         raise RuntimeError(f"format: the documentation comments changed:\n{after}{err}\nnot:\n{before}")
 
 
+def check_deep_indent_cap(exe):
+    depth = 1000
+    src = "fn f() -> i64 {\n" + "(\n" * depth + "1\n" + ")\n" * depth + "}\n"
+    code, out, err = run(exe, [], src.encode("utf-8"))
+    if code != 0:
+        raise RuntimeError(f"format deep indentation: exit {code}: {err}")
+    text = out.decode("utf-8")
+    max_indent = max((len(line) - len(line.lstrip(" ")) for line in text.splitlines()), default=0)
+    if max_indent > 256:
+        raise RuntimeError(f"format deep indentation: {max_indent} > 256")
+    # At a 256-column cap this line-per-bracket case has about
+    # 2 * depth output lines. Bound the output linearly in depth.
+    linear_bound = 2 * depth * 256 + 4096
+    if len(out) > linear_bound:
+        raise RuntimeError(
+            f"format deep indentation output too large: {len(out)} > {linear_bound}"
+        )
+    code, again, err = run(exe, [], out)
+    if code != 0 or again != out:
+        raise RuntimeError("format deep indentation result is not idempotent")
+
+
 def check_format(exe, base):
     """Raises RuntimeError on a failure."""
+    check_deep_indent_cap(exe)
     for name, src, want in GOLDEN:
         check_golden(exe, name, src, want)
     base = Path(base).resolve()
