@@ -214,14 +214,32 @@ fn hash(k: key) -> u64 { hash_combine(hash(k.a), hash(k.b)) }
 struct rng { s: u64 }                    // splitmix64; the seed is the state
 fn rand_u64(r: rng&) -> u64
 fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n), without modulo bias; asserts n > 0
-fn rand_flt(r: rng&) -> f64              // uniform in [0, 1)
+fn rand_range(r: rng&, size: i64) -> i64            // uniform in [0, size); asserts size > 0
+fn rand_range(r: rng&, lo: i64, size: i64) -> i64   // uniform in [lo, lo + size); asserts size > 0
+fn rand_flt(r: rng&) -> f64              // uniform in [0, 1), 53 bits
+fn rand_f32(r: rng&) -> f32              // uniform in [0, 1), 24 bits
+fn rand_gaussian(r: rng&) -> f64         // standard normal distribution: mean 0, variance 1
 fn shuffle<T>(xs: T[:], r: rng&)         // Fisher-Yates
 ```
 
 ```goose
 var r = rng { os.random_seed() };   // or any fixed seed
-let d = r.rand_int(6);
+let d = r.rand_range(6);            // 0 to 5
+let roll = r.rand_range(1, 6);      // a die: 1 to 6
+let height = 170.0 + 7.5 * r.rand_gaussian();
 ```
+
+`rand_range` takes a count rather than an end, as a slice's length does, so
+`rand_range(r, lo, n)` has exactly `n` results; `lo + size - 1` has to fit
+in `i64`. Without `lo` it starts at 0, the same as `rand_int`. `rand_flt`
+and `rand_f32` take the top 53 or 24 bits of a draw, so every result is a
+multiple of 2^-53 or 2^-24 and each is equally likely. `rand_gaussian` draws
+from the normal (Gaussian) distribution by Marsaglia's polar method. It
+draws pairs from `rand_flt` until one falls inside the unit circle, which
+takes about 1.27 tries on average. The method yields two draws, but `rng`
+keeps only its seed, so the second one is dropped. The draws from a seed are
+the same on every run, and on every platform whose libm `log` gives the same
+results.
 
 ### Arrays: reading and searching
 
