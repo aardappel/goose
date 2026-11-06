@@ -18,6 +18,20 @@ int32_t abi_mix(int32_t a, Mix m, double b, Xim x) {
 }
 
 Mix abi_mix_make(int64_t n, double d) { Mix m = { n, d }; return m; }
+
+/* Goose's own packed layout, a field at an offset that is not a multiple of
+   its alignment: the convention passes and returns such a struct in
+   memory, where TinyCC used registers. */
+#pragma pack(push, 1)
+typedef struct { int32_t a; double b; } Packed;   /* b at offset 4 */
+typedef struct { uint8_t c; int32_t v; } Small;   /* v at offset 1 */
+#pragma pack(pop)
+
+int32_t abi_packed(int32_t x, Packed p, Small s, double y) {
+    return x == 1 && p.a == 2 && p.b == 3.5 && s.c == 4 && s.v == 5 && y == 6.5;
+}
+
+Packed abi_packed_make(int32_t a, double b) { Packed p = { a, b }; return p; }
 Xim abi_xim_make(double d, int64_t n) { Xim x = { d, n }; return x; }
 
 static int is3(V3 v, float x, float y, float z) {

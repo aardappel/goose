@@ -1138,6 +1138,33 @@ static void classify_x86_64_eightbytes(CType *ty, int offset, X86_64_Mode cls[2]
         cls[i] = classify_x86_64_merge(cls[i], classify_x86_64_inner(ty));
 }
 
+/* Whether an aggregate has a field at an offset that is not a multiple of
+   its alignment (a packed struct's): the ABI passes and returns such an
+   aggregate in memory (System V ABI 3.2.3). Bitfields are left out, as
+   other compilers leave them. */
+static int classify_x86_64_unaligned(CType *ty, int offset)
+{
+    Sym *f;
+    int i, n, size, align;
+    if (ty->t & VT_ARRAY) {
+        CType *et = &ty->ref->type;
+        size = type_size(et, &align);
+        n = ty->ref->c;
+        for (i = 0; i < n && size > 0; i++)
+            if (classify_x86_64_unaligned(et, offset + i * size))
+                return 1;
+        return 0;
+    }
+    if ((ty->t & VT_BTYPE) == VT_STRUCT) {
+        for (f = ty->ref->next; f; f = f->next)
+            if (!(f->type.t & VT_BITFIELD) && classify_x86_64_unaligned(&f->type, offset + f->c))
+                return 1;
+        return 0;
+    }
+    type_size(ty, &align);
+    return align > 1 && offset % align != 0;
+}
+
 /* For a struct of the mixed mode, the classes of its two eightbytes. */
 static int classify_x86_64_mixed(CType *ty, X86_64_Mode cls[2])
 {
@@ -1185,6 +1212,8 @@ static X86_64_Mode classify_x86_64_arg(CType *ty, CType *ret, int *psize, int *p
         *reg_count = 0; /* avoid compiler warning */
 
         if (size > 16) {
+            mode = x86_64_mode_memory;
+        } else if ((ty->t & VT_BTYPE) == VT_STRUCT && classify_x86_64_unaligned(ty, 0)) {
             mode = x86_64_mode_memory;
         } else if (classify_x86_64_mixed(ty, cls)) {
             mode = x86_64_mode_mixed;
