@@ -91,24 +91,24 @@ checkfree fn swap<T>(a: T&, b: T&) {
 // upwards. The fold and the mix are invertible, so distinct floats hash
 // apart.
 
-fn hash_mix(x: u64) -> u64 {
+checkfree fn hash_mix(x: u64) -> u64 {
     var h = x * 11400714819323198485;
     h = h ^ (h >> 32);
     return h;
 }
 
-fn hash(x: i8) -> u64 { hash_mix(x as! u64) }
-fn hash(x: i16) -> u64 { hash_mix(x as! u64) }
-fn hash(x: i32) -> u64 { hash_mix(x as! u64) }
-fn hash(x: i64) -> u64 { hash_mix(x as! u64) }
-fn hash(x: u8) -> u64 { hash_mix(x) }
-fn hash(x: u16) -> u64 { hash_mix(x) }
-fn hash(x: u32) -> u64 { hash_mix(x) }
-fn hash(x: u64) -> u64 { hash_mix(x) }
-fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
+checkfree fn hash(x: i8) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: i16) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: i32) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: i64) -> u64 { hash_mix(x as! u64) }
+checkfree fn hash(x: u8) -> u64 { hash_mix(x) }
+checkfree fn hash(x: u16) -> u64 { hash_mix(x) }
+checkfree fn hash(x: u32) -> u64 { hash_mix(x) }
+checkfree fn hash(x: u64) -> u64 { hash_mix(x) }
+checkfree fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
 // -0.0 hashes as 0.0, which it equals; an f32 as the f64 of its value.
-fn hash(x: f32) -> u64 { hash(x as f64) }
-fn hash(x: f64) -> u64 {
+checkfree fn hash(x: f32) -> u64 { hash(x as f64) }
+checkfree fn hash(x: f64) -> u64 {
     if x == 0.0 { return hash_mix(0); }
     let b = float_text::bits_of(x);
     return hash_mix(b ^ (b >> 32));
@@ -183,7 +183,7 @@ fn hash_lanes(s: u8[:]) -> u64 {
     return h ^ (h >> 32);
 }
 
-fn hash_combine(seed: u64, h: u64) -> u64 {
+checkfree fn hash_combine(seed: u64, h: u64) -> u64 {
     seed ^ (h + 11400714819323198485 + (seed << 6) + (seed >> 2))
 }
 
@@ -1636,7 +1636,7 @@ const float_text::POW5: u64[28] = [1, 5, 25, 125, 625, 3125, 15625, 78125, 39062
                                    1490116119384765625, 7450580596923828125];
 
 // The bits of a double.
-fn float_text::bits_of(x: f64) -> u64 {
+checkfree fn float_text::bits_of(x: f64) -> u64 {
     let a: f64[1] = [x];
     let b = bytes_of(a);
     return b[0] | (b[1] as u64) << 8 | (b[2] as u64) << 16 | (b[3] as u64) << 24 |

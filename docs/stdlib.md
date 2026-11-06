@@ -168,7 +168,8 @@ fn hash(s: u8[:]) -> u64            // 8 bytes per multiply; any u8 array coerce
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
-These hashes mix all of their input into the low 32 bits. `dictionary`
+These hashes mix all of their input into the low 32 bits. The scalar
+overloads and `hash_combine` are `checkfree` (spec §7.14). `dictionary`
 masks those bits to find the home slot and keeps them as the slot's tag.
 A float hashes as its bits, `-0.0` as `0.0`, and an `f32` as the `f64` of
 its value.
