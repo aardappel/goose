@@ -1692,6 +1692,7 @@ fn mouse_pos() -> float2    fn mouse_delta() -> float2      // in the screen's p
 fn mouse_wheel() -> f32     fn mouse_in_window() -> bool    // over the window, or dragging from it
 fn focused() -> bool                                      // keyboard focus at the last frame()
 fn set_mouse_relative(on: bool) -> bool    fn mouse_relative() -> bool
+fn set_cursor(shape: i64) -> bool                         // a system cursor, CURSOR_*
 fn set_cursor_visible(visible: bool) -> bool    fn cursor_visible() -> bool
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
 fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // to pixel x, y; button 0 only moves
@@ -1738,6 +1739,28 @@ Its preference applies outside relative mode: relative mode always hides the
 cursor, and `cursor_visible()` reports that effective state inside the window.
 The preference is restored when relative mode is disabled. Hiding a cursor
 without focus fails; showing one always works while gfx is open.
+
+`set_cursor` selects one of the system's cursors, to show what a click on the
+thing under the mouse would do:
+
+| Constant | Cursor |
+|---|---|
+| `CURSOR_DEFAULT` | the arrow |
+| `CURSOR_TEXT` | a text caret |
+| `CURSOR_POINTER` | a hand, over a link or button |
+| `CURSOR_CROSSHAIR` | a crosshair |
+| `CURSOR_WAIT`, `CURSOR_PROGRESS` | busy, and busy but still clickable |
+| `CURSOR_MOVE` | moves in four directions |
+| `CURSOR_NOT_ALLOWED` | no action here |
+| `CURSOR_EW_RESIZE`, `CURSOR_NS_RESIZE` | resizes a side, both ways |
+| `CURSOR_NWSE_RESIZE`, `CURSOR_NESW_RESIZE` | resizes a corner, both ways |
+| `CURSOR_N_RESIZE`, `CURSOR_E_RESIZE`, `CURSOR_S_RESIZE`, `CURSOR_W_RESIZE` | resizes from that side |
+| `CURSOR_NW_RESIZE`, `CURSOR_NE_RESIZE`, `CURSOR_SE_RESIZE`, `CURSOR_SW_RESIZE` | resizes from that corner |
+
+It returns false for any other value or on failure; `error()` gives the
+reason. The shape persists until changed, and visibility and relative mode
+are left as they are. When headless, it checks the shape and changes nothing
+on the desktop. `close()` restores the default cursor.
 
 `focused()` reports keyboard focus, which differs from `mouse_in_window()`.
 `events()` includes `EVENT_FOCUS_GAINED` and `EVENT_FOCUS_LOST` in order with
