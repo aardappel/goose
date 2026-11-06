@@ -1407,7 +1407,10 @@ struct CodeGen {
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
     void EmitLeCheck(Line ln);
     void PayloadOf(Node *n, string &src, string &sz);
-    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln);
+    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln,
+                     const string &owned = "");
+    void AppendMessage(const Loc &lv, const string &m, const string &n, Line ln);
+    void PinMessageBuffer(Loc &lv);
     vector<string> EmitBytesOf(Call *c, vector<Node *> &an, Line ln);
     vector<string> EmitToBytes(vector<Node *> &an, Dst d0, Line ln);
     vector<string> EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln);
@@ -1446,6 +1449,8 @@ struct CodeGen {
     unordered_map<FnSpec *, string> thunks;
 
     vector<string> EmitThreadSpawn(Call *c, vector<Node *> &an);
+    vector<string> EmitPoolApply(Call *c, vector<Node *> &an);
+    void AppendPoolOuts(const Loc &lv, const string &outs, const string &n, const string &ok);
     string EnsureThreadThunk(FnSpec *sp);
     void EmitThreadThunk(FnSpec *sp, int64_t stacks);
     // The image of a resizable value at a scratch stack's top: [int64 count]

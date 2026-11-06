@@ -328,7 +328,7 @@ inline SizeClass TypeCheck::ClassOf(TypeExpr *t) {
             // A varint-width relative reference is varint-encoded storage,
             // so it makes its container variable-class like any varint (§3.6).
             return t->ref->lenstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
-        case TY_FLT: case TY_BOOL: case TY_SLICE: return SC_FIXED;
+        case TY_FLT: case TY_BOOL: case TY_POOL: case TY_SLICE: return SC_FIXED;
         case TY_STRUCT: {
             auto inst = GetStructInst(t);
             // Still being validated = the struct (transitively) contains
@@ -363,7 +363,7 @@ inline SizeClass TypeCheck::ClassOf(TypeExpr *t) {
 // Flat (§1.1): no references, slices, or relative references at any depth.
 inline bool TypeCheck::IsFlat(TypeExpr *t) {
     switch (t->kind) {
-        case TY_REF: case TY_SLICE: return false;
+        case TY_REF: case TY_SLICE: case TY_POOL: return false;
         case TY_STRUCT: return GetStructInst(t)->flat;
         case TY_ENUM:   return GetEnumInst(t)->flat;
         case TY_ARRAY:  return IsFlat(t->arr->sub);
@@ -447,6 +447,9 @@ inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
         case TY_FN:
             why = "function values are addresses";
             return false;
+        case TY_POOL:
+            why = "thread_pool is a runtime handle and cannot be serialized";
+            return false;
         default: return !AnyField(t, [&](TypeExpr *ft) { return !ImageSafe(ft, why); });
     }
 }
@@ -504,6 +507,9 @@ inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
             }
             return true;
         case TY_FLT: case TY_BOOL: case TY_SLICE: return true;
+        case TY_POOL:
+            why = "thread_pool must be initialized with thread_pool()";
+            return false;
         case TY_REF:
             if (t->ref->optional) return true;
             why = cat(TypeStr(t), " is a non-optional reference");
@@ -628,6 +634,13 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
         }
         case TY_FLT: return;
         case TY_BOOL: return;
+        case TY_POOL:
+            if (pos != VT_LOCAL && pos != VT_GLOBAL && pos != VT_POINTEE)
+                Error(l, cat("thread_pool can only be owned by a local or global variable; ",
+                             pos == VT_PARAM ? "pass it by reference (thread_pool&) instead"
+                             : pos == VT_RET ? "return a reference instead"
+                             : "nested thread_pool owners are not supported"));
+            return;
         case TY_VOID:
             Error(l, "expression has no value here");
         case TY_FN:

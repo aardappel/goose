@@ -289,6 +289,7 @@ this table is an overview.
 | `T&`, `T?` | a reference, an optional (nullable) reference | [10](#10-references-and-optionals) |
 | `T&<u32>`, `T&<u32 in pool>`, `T&<u32>?` | relative references | [11](#11-relative-references) |
 | `const T`, `const T&`, `const T[:]` | read-only contents, a read-only reference or view | [12](#12-lifetimes-roots-stores-and-writability) |
+| `thread_pool`, `thread_pool&` | a pool of worker threads, owned by a variable; a reference to one, which functions take | [22](#thread-pools) |
 | `u32 in a`, `u32 upto a` | an index of the global array `a`, a bound of it | [15](#15-index-types-and-checkfree-functions) |
 | `fn(i64) -> bool` | a function value's shape, as documentation | [18](#18-generics-and-function-values) |
 
@@ -3829,7 +3830,9 @@ with its own data stacks and its own copies of the globals it uses. Those
 copies are taken from the spawning program at the moment of the spawn. A
 worker that increments a global increments its own copy, and main's copy
 keeps its value. So there are no data races, and the language has no
-locks, atomics or memory orderings.
+locks, atomics or memory orderings. The one exception,
+[thread pools](#thread-pools), hands each task a disjoint part of one
+array to write in place, which the compiler checks cannot race either.
 
 | Builtin | Meaning |
 |---|---|
@@ -3843,6 +3846,12 @@ locks, atomics or memory orderings.
 | `qget<T>(ms) -> T, bool` | the same, waiting at most `ms` milliseconds; else `T`'s zero value and `false` |
 | `qpoll<T>() -> T, bool` | takes one if there is one; else `T`'s zero value and `false` |
 | `qlimit<T>(n)` | lets the queue for `T` hold at most `n` messages |
+| `thread_pool(n)`, `thread_pool()` | a [thread pool](#thread-pools) of `n` workers, or of `hardware_threads()` |
+| `pool.apply(chunks(a, size), fn, args…)` | runs `fn` on each run of `size` elements of `a` at once; returns once every task has |
+| `pool.apply(chunks(a, offsets), fn, args…)` | the same over the runs `a[offsets[i]..offsets[i + 1]]` |
+| `pool.apply(chunks(out, n), fn, args…)` | `n` tasks, each growing an array of its own, appended to `out` in task order |
+| `pool.apply_contained(chunks(…), msg, fn, args…) -> bool` | as `apply`, but an abort ends only its task; `false` if one did. `msg` is optional |
+| `pool.close()` | ends the pool: joins its workers and releases their storage |
 
 Values cross between programs through **typed queues**, one per type.
 Whatever crosses, including a worker's arguments, must be **flat**: it
@@ -3925,6 +3934,141 @@ Stack overflow, `exit(code)`, and aborts on main's thread still end the
 program. A worker that a contained worker starts with `thread_spawn` is
 not contained. Files and other resources opened through `extern fn` stay
 open. Spec §11.2.
+
+### Thread pools
+
+A **thread pool** runs one ordinary function over disjoint parts of an
+array on several threads at once, and the call returns once every part is
+done. It is the data-parallel counterpart of `thread_spawn`: its workers
+stay up from one call to the next, the tasks read shared inputs in place
+rather than copies, and each task writes its part of the caller's array
+directly, with no queue in between. The compiler checks that no two tasks
+can touch the same element.
+
+The function is a top-level `fn`, not a `thread_fn`, so the same function
+can also be called directly. Its first parameter takes the task's chunk, a
+`T[:]` of the array, and an optional second one, `idx: i64`, the chunk's
+index, from 0. The rest take `args…`: each a flat value, or a `const U&` or
+`const U[:]` of a fixed-size flat `U`, which every task reads in place.
+`chunks(…)` is not a value of its own: it is written only as the first
+argument of `pool.apply` or `pool.apply_contained`.
+
+<!-- check-only -->
+```goose
+fn scale(chunk: i64[:], idx: i64, weights: const i64[:], bias: i64) {
+    for &x in chunk { x = x * weights[idx] + bias; }
+}
+
+fn main() {
+    var pool = thread_pool(4);
+    defer pool.close();
+    let weights = [1, 10, 100];
+    var data: i64[>..] = [1, 2, 3, 4, 5, 6];
+    pool.apply(chunks(data, 2), scale, weights, 0);        // data[0..2], [2..4] and [4..6]
+    print(data);
+    let offsets = [0, 1, 6];
+    pool.apply(chunks(data, offsets), scale, weights, 1);  // data[0..1] and data[1..6]
+    print(data);
+}
+```
+
+```
+[1, 2, 30, 40, 500, 600]
+[2, 21, 301, 401, 5001, 6001]
+```
+
+The array is a writable fixed, limited, grow-only or grow-shrink array, or
+a slice, whose elements are fixed-size and flat, and whose root the
+compiler knows exactly. The tasks cannot race: chunks never overlap, and
+an argument that is a reference or slice, or the offsets, may not share a
+root with the array, even where it views a part of the array no chunk
+covers. A chunk size of zero or less aborts, and so do offsets that
+decrease or leave the array. Since the caller waits inside `apply` until
+every task has returned, everything the tasks are handed outlives them,
+and nothing writes what they read.
+
+Each task is a thread program, as a `thread_fn` worker is: it runs on data
+stacks of its own, with its own copies of the globals it uses, taken as
+the task is handed out, so a task's writes to a global are its own. An
+argument of a fixed-size type is evaluated once, before the first task is
+handed out, unless its values take no bytes (a `T[0]`, or a variant type
+without a payload). Such an argument, like one of any other type, is
+evaluated again for each task, as the task is handed out. A pool of `n`
+workers is `n - 1` threads and the thread that applies it, which runs
+tasks while it waits, so `thread_pool(1)` starts no thread. A worker keeps
+the data stacks it has reserved from one task to the next, so a task
+reserves new ones only where it needs more than every earlier task on that
+worker did.
+
+A pool lives in a local or global variable and nowhere else. It is never
+copied, reassigned or returned: a function takes a `thread_pool&`, and a
+`const thread_pool&` can apply a pool but not close it. Nothing closes a
+pool at its scope's exit, so `defer pool.close();` right after making one
+is the usual form. A closed pool closes again as nothing, and applying it
+aborts. A pool left open lasts until the program ends.
+
+**Output whose size only a task knows.** A function whose first parameter
+is `out: T[>..]&` rather than a chunk grows an array of its own, which
+starts empty for each task. `chunks(out, n)` then names the array the
+tasks' output goes to and the number of tasks, and once all of them have
+returned, the apply appends each one's elements to `out` in the order of
+`idx`, whatever order they ran in. A parallel filter needs no counting
+pass first:
+
+<!-- check-only -->
+```goose
+import std;
+
+fn keep_even(out: i64[>..]&, idx: i64, rows: const i64[:], step: i64) {
+    let lo = idx * step;
+    for i in lo..min(lo + step, rows.len) {
+        if rows[i] % 2 == 0 { out.push(rows[i]); }
+    }
+}
+
+fn main() {
+    var pool = thread_pool();
+    defer pool.close();
+    let rows = [5, 8, 2, 7, 4, 4, 9, 6];
+    var evens: i64[>..] = [];
+    pool.apply(chunks(evens, 3), keep_even, rows, 3);    // three tasks of three rows
+    print(evens);
+}
+```
+
+```
+[8, 2, 4, 4, 6]
+```
+
+**Contained tasks.** A failed check or `abort(msg)` in a task of
+`pool.apply` ends the program, wherever it runs. In a task of
+`pool.apply_contained` it ends only that task, as in a contained worker:
+the tasks no worker has started yet are skipped, the call returns `false`
+once the others have finished, and the first abort's message is appended
+to `msg`, the optional buffer before the function's name. Where every task
+returned, it returns `true`, and only then does a growing apply append its
+tasks' output. The pool runs on as before.
+
+<!-- check-only -->
+```goose
+fn check_rows(chunk: i64[:], limit: i64) {
+    for x in chunk { assert(x <= limit); }
+}
+
+fn main() {
+    var pool = thread_pool(2);
+    defer pool.close();
+    var rows: i64[>..] = [3, 1, 4, 1, 5, 9, 2, 6];
+    print(pool.apply_contained(chunks(rows, 4), check_rows, 9));        // true
+    var why: u8[>..] = [];
+    print(pool.apply_contained(chunks(rows, 4), why, check_rows, 5));   // false: 9 > 5
+    print(why);                                     // assert failed (example.goose:2)
+}
+```
+
+Programs with pools need `goose build`, as programs with workers do. The
+[design note](design/parallel_blocks.md) has the reasoning behind pools and
+a parallel hash join. Spec §11.2.
 
 ---
 
@@ -4194,6 +4338,7 @@ standard library, written in Goose under `stdlib/` and documented in
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it, declared defaults applied | [8](#field-defaults) |
 | `hardware_threads()`, `thread_spawn(worker, args…)`, `thread_spawn_contained(worker, args…)`, `thread_wait(id)`, `thread_wait(id, msg)` | workers | [22](#22-threads) |
 | `qput(v)`, `qget<T>()`, `qpoll<T>()`, `qlimit<T>(n)` | the typed queues | [22](#22-threads) |
+| `thread_pool(n)`, `thread_pool()`, `pool.apply(chunks(a, size_or_offsets), fn, args…)`, `pool.apply_contained(chunks(…), msg, fn, args…)`, `pool.close()` | thread pools | [22](#thread-pools) |
 | `to_bytes(a)`, `to_bytes(a, out)`, `bytes_of(a)`, `from_bytes<T[>..]>(b)` | serialization | [23](#23-serialization) |
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |
 
@@ -4287,6 +4432,9 @@ Spec §6.1, Appendix D.
   read-only. §12.
 * **Temporary**: a value that lasts for the rest of its statement: a
   literal, a call's result, a `copy`, a control construct's value. §12.
+* **Thread pool**: worker threads that run one function over the disjoint
+  chunks of an array at once (`pool.apply`), each task writing its own
+  chunk in place, and return when every task has. Not a storage pool. §22.
 * **Transparent**: the property of a reference that it behaves as its
   target in every value context. §10.
 * **Variable mode, fixed mode**: an enum stored as exactly its variant's

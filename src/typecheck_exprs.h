@@ -304,17 +304,20 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
 // A condition and a scrutinee are read before the construct's parts run, so
 // they hold nothing over them: a match binder is a variable in scope, which
 // the scans see. A `for` walks its sequence in place, so that is held while
-// the body runs (HoldForSequence).
+// the body runs (HoldForSequence). apply_contained's message buffer, after
+// the pool and the chunks, is appended to once its later operands have run,
+// so it is held as a member's receiver is.
 template<typename F> void TypeCheck::ForOperands(Node *n, F f) {
     if (auto c = Is<Call>(n)) {
         auto builtin = c->builtin >= 0;
         auto member = builtin && (BuiltinByKind(c->builtin).flags & BF_MEMBER);
         auto render = builtin && (c->builtin == B_PRINT || c->builtin == B_STR ||
                                   c->builtin == B_FORMAT);
-        auto first = true;
+        auto out = c->builtin == B_APPLY_CONTAINED && c->pool_has_why ? 2 : -1;
+        auto at = 0;
         auto kind = [&]() {
-            auto k = member && first ? HK_RECEIVER : render ? HK_NONE : HK_VALUE;
-            first = false;
+            auto k = (member && !at) || at == out ? HK_RECEIVER : render ? HK_NONE : HK_VALUE;
+            at++;
             return k;
         };
         if (auto d = Is<Dot>(c->callee)) f(d->obj, kind());
@@ -867,6 +870,10 @@ inline bool TypeCheck::UserRefOf(Node *n) {
 // final expression.
 inline bool TypeCheck::ImplicitCopy(const Val &v, Node *n, TypeExpr *dt) {
     if (!reachable) return false;
+    // A thread_pool is fixed-size, but a copy of one in storage is a second
+    // handle to the pool, which close() through either would leave dangling
+    // in the other (RequireCopyable).
+    if (dt->kind == TY_POOL) return v.lvalue || v.pointee || IsPlainRef(v.type);
     if (IsRefOrSlice(dt) || dt->kind == TY_VOID) return false;
     if (ClassOf(dt) == SC_FIXED) return false;
     auto src = IsPlainRef(v.type) ? v.type->ref->sub : v.type;
@@ -877,9 +884,13 @@ inline bool TypeCheck::ImplicitCopy(const Val &v, Node *n, TypeExpr *dt) {
     return true;
 }
 
-inline void TypeCheck::ImplicitCopyError(Node *n) {
+// The copied value's type is t where the caller knows it, else n's.
+inline void TypeCheck::ImplicitCopyError(Node *n, TypeExpr *t) {
     auto u = Is<Unary>(n);
     auto what = ExprStr(u && u->op == T_BITAND ? u->child : n);
+    if (!t) t = n->exprtype;
+    if (t && (IsPlainRef(t) ? LoadType(t->ref->sub) : t)->kind == TY_POOL)
+        Error(n, "thread_pool cannot be copied; pass it by reference (thread_pool&) instead");
     Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1): pass copy(",
                  what, ") for a copy, or bind it by reference"));
 }
@@ -905,7 +916,7 @@ inline void TypeCheck::CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val 
     out.implicitcopy = v.implicitcopy;
     out.refcopies = v.refcopies;
     if (!ImplicitCopy(v, n, dt)) return;
-    if (argpath != n && joinpath != n) ImplicitCopyError(n);
+    if (argpath != n && joinpath != n) ImplicitCopyError(n, dt);
     if (!out.implicitcopy) out.implicitcopy = n;
 }
 
@@ -938,6 +949,12 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
     if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
+    // No result owns a thread_pool, declared (ValidateType) or inferred: one
+    // by value would be a second handle to a pool in storage, or to one a
+    // defer of the function closes as it returns.
+    if (v.type && v.type->kind == TY_POOL)
+        Error(n, "thread_pool can only be owned by a local or global variable; return a "
+                 "reference instead");
     NoRelRefCopy(n, v.type);
     if (reachable && IsNonFixedRef(v)) {
         auto dies = v.Any([&](const RootAlt &a) {
