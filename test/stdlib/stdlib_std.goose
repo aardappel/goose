@@ -216,6 +216,12 @@ fn searching() {
     var tot = 0;
     each_chunk(xs, 2) { c, i => chunks += 1; tot += c.len * (i + 1); };
     print(chunks, " ", tot);                                                   // 3 9
+    var big_chunks = 0; // chunk size larger than slice, 1 chunk containing all elements
+    each_chunk(xs, 10) { c, i => big_chunks += 1; assert(c.len == xs.len); };
+    assert(big_chunks == 1);
+    var empty_chunks = 0; // empty slice, run 0 times
+    each_chunk(xs[..0], 2) { c, i => empty_chunks += 1; };
+    assert(empty_chunks == 0);
     let f = find(xs) { it > 6 };
     if f { print(f); }                                                         // 9
     print(find_index(xs) { it == 1 }, " ", find_index(xs) { it == 2 });        // 3 -1
