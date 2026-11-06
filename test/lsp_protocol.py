@@ -542,7 +542,10 @@ def check_lsp_protocol(exe, base):
         starts = [0]
         for line in lines:
             starts.append(starts[-1] + len(line) + 1)
-        offset = lambda pos: min(starts[pos["line"]] + pos["character"], len(text))
+        def offset(pos):
+            line = pos["line"]
+            prefix = (lines[line] if line < len(lines) else "").encode("utf-16-le")[:pos["character"] * 2]
+            return min(starts[line] + len(prefix.decode("utf-16-le")), len(text))
         for e in sorted(edits, key=lambda e: offset(e["range"]["start"]), reverse=True):
             text = text[:offset(e["range"]["start"])] + e["newText"] + text[offset(e["range"]["end"]):]
         return text
@@ -620,6 +623,38 @@ def check_lsp_protocol(exe, base):
             ("incoming 8:4", callers("8:4"), ["two_shared.goose:apply@13"])):
         if got != want:
             fail(f"two entry files: {what} are not {want}", got)
+    safety = base / "rename_safety.goose"
+    source = ("import std;\nfn main() {\n"
+              "    /* 🪿 */ let first = 1; let second = 2;\n"
+              "    fn inner(value) { let stop: i64 = value; return capture_name; }\n"
+              "    print(first + second);\n}\n"
+              "fn unrelated(value) { let stop: i64 = value; return q; }\n")
+    safety.write_text(source, encoding="utf-8")
+    two.send("textDocument/didClose", sdoc, request=False)
+    two.send("workspace/didChangeConfiguration", {"settings": {"goose": {"entryFiles": [str(safety)]}}}, request=False)
+    body, uri = "// unsaved\n" + source, uri_of(safety)
+    two.send("textDocument/didOpen", {"textDocument": {
+        "uri": uri, "languageId": "goose", "version": 1, "text": body}}, request=False)
+    if two.diagnostics_for(uri):
+        fail("rename safety fixture has diagnostics", two.published.get(uri.lower()))
+    before = body[:body.index("first")]
+    params = {"textDocument": {"uri": uri}, "position": {
+        "line": before.count("\n"), "character": len(before.rsplit("\n", 1)[-1].encode("utf-16-le")) // 2}}
+    for name in ("second", "capture_name", "q"):
+        result = two.request("textDocument/rename", {**params, "newName": name}, raw=True)
+        if (result.get("error", {}).get("code") != -32803 or
+                "already used at" not in result.get("error", {}).get("message", "")):
+            fail(f"colliding rename to {name} was not refused with its location", result)
+    result = two.request("textDocument/rename", {**params, "newName": "renamed_value"})
+    edits = result.get("changes", {}).get(uri, [])
+    if len(edits) != 2:
+        fail("safe Unicode-position rename has wrong edits", result)
+    renamed_body = apply(body, edits)
+    for candidate, expected in ((body, "3\n"), (body.replace("first", "second"), "4\n"), (renamed_body, "3\n")):
+        safety.write_text(candidate, encoding="utf-8")
+        code, out, err = tc.run_capture([exe, "run", str(safety), "--offline"])
+        if code or out != expected:
+            fail("rename runtime output", {"exit": code, "out": out, "err": err, "expected": expected})
     two.request("shutdown", None)
     two.send("exit", request=False)
     code = two.p.wait(timeout=30)
