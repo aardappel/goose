@@ -1279,7 +1279,7 @@ inline bool CodeGen::ZeroDefaultValue(Node *n, TypeExpr *t) {
 
 // ------------------------------------------------------------------
 // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
-// bytes values as pointers. Gap-free fixed types without floats or relative
+// bytes values as pointers. Gap-free fixed types without floats or self-relative
 // references of more than a few scalars shortcut to memcmp.
 
 inline bool CodeGen::BitwiseEq(TypeExpr *t) {
@@ -1295,14 +1295,14 @@ inline bool CodeGen::BitwiseEq(TypeExpr *t) {
             if (t->arr->akind == A_LIMITED) return false;   // Uninitialized slots.
             return BitwiseEq(t->arr->sub);
         case TY_FLT: return false;       // IEEE: -0.0 == 0.0, NaN != NaN.
-        case TY_REF: return !IsRelRef(t); // Offsets are not target addresses.
+        case TY_REF: return !IsSelfRelRef(t); // Pool offsets compare exactly.
         default: return true;
     }
 }
 
 inline bool CodeGen::ScalarEq(TypeExpr *t) {
     return t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL ||
-           (t->kind == TY_REF && t->ref->lenstorage < 0 && !IsFatRef(t));
+           (t->kind == TY_REF && IsFix(t) && !IsSelfRelRef(t) && !IsFatRef(t));
 }
 
 // How many scalars an equality test of fixed type t compares, counting
@@ -1501,7 +1501,7 @@ inline void CodeGen::EmitEqFixed(string &bo, TypeExpr *t) {
 
 inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
     // Canonical encodings (minimal varints) make bytewise comparison exact
-    // without pads, floats or relative references; walk-compare covers the rest.
+    // without pads, floats or self-relative references; walk-compare covers the rest.
     auto bitwise = [&](TypeExpr *tt) {
         // Bytes layouts have no bare-pad alignment, but explicit pads,
         // embedded fixed-mode ADTs and floats still defeat memcmp.
@@ -1509,7 +1509,7 @@ inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
             if (IsFix(x)) return BitwiseEq(x);
             switch (x->kind) {
                 case TY_INT: return true;
-                case TY_REF: return false;
+                case TY_REF: return !IsSelfRelRef(x);
                 // A runtime-capacity limited array's capacity and the slots
                 // past its length are no part of its value.
                 case TY_ARRAY: return x->arr->akind != A_LIMITED && rec(x->arr->sub);
@@ -1553,11 +1553,14 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
     }
     switch (t->kind) {
         case TY_REF:
-            Append(bo, I, "if (!", EqFn(t), "(", pa, ", ", pb, ")) return 0;\n",
-                   I, pa, " += gs_uleb_size(", pa, "); ", pb, " += gs_uleb_size(", pb,
-                   ");\n");
-            return;
-        case TY_INT: {  // varint: canonical bytes.
+            if (IsSelfRelRef(t)) {
+                Append(bo, I, "if (!", EqFn(t), "(", pa, ", ", pb, ")) return 0;\n",
+                       I, pa, " += gs_uleb_size(", pa, "); ", pb, " += gs_uleb_size(", pb,
+                       ");\n");
+                return;
+            }
+            [[fallthrough]];
+        case TY_INT: {  // Varints and pool-relative links have canonical bytes.
             Append(bo, I, "{ int64_t n = gs_uleb_size(", pa, ");\n",
                    I, "  if (gs_uleb_size(", pb, ") != n || memcmp(", pa, ", ", pb,
                    ", (size_t)n) != 0) return 0;\n",

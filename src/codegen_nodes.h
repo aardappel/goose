@@ -222,7 +222,8 @@ inline string Binary::CgX(CodeGen &cg) {
     // it in its original storage, as it does a bytes value; save its address
     // before the right operand runs, not a copy of its relative offsets.
     string l, r;
-    if ((op == T_EQ || op == T_NEQ) && cg.IsFix(lt) && cg.HasSelfRelRef(lt)) {
+    if ((op == T_EQ || op == T_NEQ) && cg.HasSelfRelRef(lt)) {
+        auto fix = cg.IsFix(lt);
         auto value = [&](Node *n) {
             // A spliced reference return can have the context's decayed
             // exprtype. Receive the reference, not a copy of its pointee.
@@ -233,14 +234,24 @@ inline string Binary::CgX(CodeGen &cg) {
                 auto p = cg.T();
                 cg.FixedLocal(rt, p);
                 cg.GenAny(n, Dst { DK_LVALUE, p, rt });
-                return cat("(*", p, ")");
+                return fix ? cat("(*", p, ")") : cat("((uint8_t *)", p, ")");
             }
-            return cg.GenVal(n);
+            // A call's reference result to a bytes value is its pointer
+            // already (CallVal0); GenVal would construct a copy (GenPtr).
+            auto c = Is<Call>(n);
+            if (!fix && c && c->rettypes.size() == 1 && IsPlainRef(c->rettypes[0]))
+                return cat("((uint8_t *)", cg.GenX(n), ")");
+            return fix ? cg.GenVal(n) : cg.GenPureVal(n);
         };
         auto x = value(left);
         auto p = cg.T();
-        cg.L("const ", cg.CT(lt), " *", p, " = &(", x, ");");
-        l = cat("(*", p, ")");
+        if (fix) {
+            cg.L("const ", cg.CT(lt), " *", p, " = &(", x, ");");
+            l = cat("(*", p, ")");
+        } else {
+            cg.L("uint8_t *", p, " = ", x, ";");
+            l = p;
+        }
         r = value(right);
     } else {
         // Copyable fixed operands are read before later statements (§2).

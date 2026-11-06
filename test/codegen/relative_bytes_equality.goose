@@ -1,8 +1,10 @@
-// runtime-debug: byte walks decode reference members at each field address.
+// runtime-debug all-levels: byte walks decode reference members at each field address.
 struct Node { value: i64, next: Node&<varint>? }
 enum Item { End, Link { value: i64, next: Item..&<u16>? } }
 enum VItem { End, Link { value: i64, next: VItem..&<varint>? } }
 struct Mixed { values: u8[], next: Mixed&<u32>? }
+
+fn identity<T>(n: T&) -> T& { n }
 
 fn main() {
     var ns: Node[>..] = [];
@@ -14,6 +16,9 @@ fn main() {
     let ns5 .= ns.push(Node { value: 3, next: ns0 });
     print("targets ", ns1.next .== ns2.next, " ", ns1.next .== ns3.next);
     print("records ", ns1 == ns2, " ", ns1 == ns3, " ", ns1 != ns2, " ", ns1 != ns3);
+    print("record calls ", ns1 == identity(ns2), " ", identity(ns1) == ns3, " ",
+          identity(ns1) == identity(ns2), " ", ns1 != identity(ns2), " ",
+          identity(ns1) != ns3, " ", identity(ns1) != identity(ns2));
     print("controls ", ns0 == ns4, " ", ns1 == ns1, " ", ns1 == ns4, " ", ns4 == ns1, " ", ns1 == ns5);
     print("ranges ", ns == ns);
 
@@ -30,6 +35,9 @@ fn main() {
         End => {},
     }
     print("adt ", items1 == items2, " ", items1 == items3, " ", items0 == items1);
+    print("adt calls ", items1 == identity(items2), " ", identity(items1) == items3, " ",
+          identity(items1) == identity(items2), " ", items1 != identity(items2), " ",
+          identity(items1) != items3, " ", identity(items1) != identity(items2));
     match items1 {
         Link &a => match items2 {
             Link &b => print("variant ", a == b),
@@ -51,6 +59,9 @@ fn main() {
         End => {},
     }
     print("varint adt ", vs1 == vs2, " ", vs1 == vs3);
+    print("varint adt calls ", vs1 == identity(vs2), " ", identity(vs1) == vs3, " ",
+          identity(vs1) == identity(vs2), " ", vs1 != identity(vs2), " ",
+          identity(vs1) != vs3, " ", identity(vs1) != identity(vs2));
 
     var mixed: Mixed[>..] = [];
     let mixed0 .= mixed.push(Mixed { values: [1, 2], next: null });
@@ -59,4 +70,7 @@ fn main() {
     let mixed3 .= mixed.push(Mixed { values: [1, 2], next: mixed2 });
     print("mixed targets ", mixed1.next .== mixed2.next, " ", mixed1.next .== mixed3.next);
     print("mixed ", mixed1 == mixed2, " ", mixed1 == mixed3);
+    print("mixed calls ", mixed1 == identity(mixed2), " ", identity(mixed1) == mixed3, " ",
+          identity(mixed1) == identity(mixed2), " ", mixed1 != identity(mixed2), " ",
+          identity(mixed1) != mixed3, " ", identity(mixed1) != identity(mixed2));
 }
