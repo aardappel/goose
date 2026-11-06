@@ -1055,7 +1055,10 @@ typedef enum X86_64_Mode {
   x86_64_mode_memory,
   x86_64_mode_integer,
   x86_64_mode_sse,
-  x86_64_mode_x87
+  x86_64_mode_x87,
+  /* A struct of 9 to 16 bytes whose eightbytes are of different classes,
+     one INTEGER and one SSE: it travels in one register of each. */
+  x86_64_mode_mixed
 } X86_64_Mode;
 
 static X86_64_Mode classify_x86_64_merge(X86_64_Mode a, X86_64_Mode b)
@@ -1111,8 +1114,88 @@ static X86_64_Mode classify_x86_64_inner(CType *ty)
     return 0;
 }
 
+/* The class of each eightbyte of a type at `offset` in an aggregate of at
+   most 16 bytes (System V ABI 3.2.3): the fields that fall in it merged. */
+static void classify_x86_64_eightbytes(CType *ty, int offset, X86_64_Mode cls[2])
+{
+    Sym *f;
+    int i, n, size, align;
+    if (ty->t & VT_ARRAY) {
+        CType *et = &ty->ref->type;
+        size = type_size(et, &align);
+        n = ty->ref->c;
+        for (i = 0; i < n && size > 0; i++)
+            classify_x86_64_eightbytes(et, offset + i * size, cls);
+        return;
+    }
+    if ((ty->t & VT_BTYPE) == VT_STRUCT) {
+        for (f = ty->ref->next; f; f = f->next)
+            classify_x86_64_eightbytes(&f->type, offset + f->c, cls);
+        return;
+    }
+    i = offset / 8;
+    if (i < 2)
+        cls[i] = classify_x86_64_merge(cls[i], classify_x86_64_inner(ty));
+}
+
+/* Whether an aggregate has a field at an offset that is not a multiple of
+   its alignment (a packed struct's): the ABI passes and returns such an
+   aggregate in memory (System V ABI 3.2.3). Bitfields are left out, as
+   other compilers leave them. */
+static int classify_x86_64_unaligned(CType *ty, int offset)
+{
+    Sym *f;
+    int i, n, size, align;
+    if (ty->t & VT_ARRAY) {
+        CType *et = &ty->ref->type;
+        size = type_size(et, &align);
+        n = ty->ref->c;
+        for (i = 0; i < n && size > 0; i++)
+            if (classify_x86_64_unaligned(et, offset + i * size))
+                return 1;
+        return 0;
+    }
+    if ((ty->t & VT_BTYPE) == VT_STRUCT) {
+        for (f = ty->ref->next; f; f = f->next)
+            if (!(f->type.t & VT_BITFIELD) && classify_x86_64_unaligned(&f->type, offset + f->c))
+                return 1;
+        return 0;
+    }
+    type_size(ty, &align);
+    return align > 1 && offset % align != 0;
+}
+
+/* For a struct of the mixed mode, the classes of its two eightbytes. */
+static int classify_x86_64_mixed(CType *ty, X86_64_Mode cls[2])
+{
+    int size, align;
+    if ((ty->t & (VT_BTYPE | VT_ARRAY | VT_BITFIELD)) != VT_STRUCT)
+        return 0;
+    size = type_size(ty, &align);
+    if (size <= 8 || size > 16)
+        return 0;
+    cls[0] = cls[1] = x86_64_mode_none;
+    classify_x86_64_eightbytes(ty, 0, cls);
+    return (cls[0] == x86_64_mode_integer && cls[1] == x86_64_mode_sse) ||
+           (cls[0] == x86_64_mode_sse && cls[1] == x86_64_mode_integer);
+}
+
+/* A struct returned in one integer and one SSE register (x86_64_mode_mixed):
+   the types of its two eightbytes, read from RAX or XMM0 as each is. */
+ST_FUNC int gfunc_sret_mixed(CType *vt, CType *t0, CType *t1)
+{
+    X86_64_Mode cls[2];
+    if (!classify_x86_64_mixed(vt, cls))
+        return 0;
+    t0->ref = t1->ref = NULL;
+    t0->t = cls[0] == x86_64_mode_sse ? VT_DOUBLE : VT_LLONG;
+    t1->t = cls[1] == x86_64_mode_sse ? VT_DOUBLE : VT_LLONG;
+    return 1;
+}
+
 static X86_64_Mode classify_x86_64_arg(CType *ty, CType *ret, int *psize, int *palign, int *reg_count)
 {
+    X86_64_Mode cls[2];
     X86_64_Mode mode;
     int size, align, ret_t = 0;
     
@@ -1130,6 +1213,12 @@ static X86_64_Mode classify_x86_64_arg(CType *ty, CType *ret, int *psize, int *p
 
         if (size > 16) {
             mode = x86_64_mode_memory;
+        } else if ((ty->t & VT_BTYPE) == VT_STRUCT && classify_x86_64_unaligned(ty, 0)) {
+            mode = x86_64_mode_memory;
+        } else if (classify_x86_64_mixed(ty, cls)) {
+            mode = x86_64_mode_mixed;
+            *reg_count = 2;
+            ret_t = VT_QLONG;   /* not read as such: see gfunc_sret_mixed */
         } else {
             mode = classify_x86_64_inner(ty);
             switch (mode) {
@@ -1253,6 +1342,10 @@ void gfunc_call(int nb_args)
 	} else if (mode == x86_64_mode_integer && nb_reg_args + reg_count <= REGN) {
             nb_reg_args += reg_count;
 	    onstack[i] = 0;
+	} else if (mode == x86_64_mode_mixed && nb_reg_args + 1 <= REGN && nb_sse_args + 1 <= 8) {
+            nb_reg_args += 1;
+            nb_sse_args += 1;
+	    onstack[i] = 0;
 	} else if (mode == x86_64_mode_none) {
 	    onstack[i] = 0;
 	} else {
@@ -1363,6 +1456,32 @@ void gfunc_call(int nb_args)
     for(i = 0; i < nb_args; i++) {
         mode = classify_x86_64_arg(&vtop->type, &type, &size, &align, &reg_count);
         if (size == 0) continue;
+        if (mode == x86_64_mode_mixed) {
+            /* one eightbyte to the next integer register, the other to the
+               next SSE one, each read from the struct where it is */
+            CType t[2];
+            int k, d;
+            gfunc_sret_mixed(&vtop->type, &t[0], &t[1]);
+            gen_reg -= 1;
+            sse_reg -= 1;
+            for (k = 0; k < 2; k++) {
+                vdup();
+                if (k)
+                    incr_offset(8);
+                vtop->type = t[k];
+                if ((t[k].t & VT_BTYPE) == VT_DOUBLE) {
+                    gv(RC_XMM0 << sse_reg);
+                } else {
+                    r = gv(RC_INT);
+                    d = arg_prepare_reg(gen_reg);
+                    orex(1,d,r,0x89); /* mov */
+                    o(0xc0 + REG_VALUE(r) * 8 + REG_VALUE(d));
+                }
+                vtop--;
+            }
+            vtop--;
+            continue;
+        }
         /* Alter stack entry type so that gv() knows how to treat it */
         vtop->type = type;
         if (mode == x86_64_mode_sse) {
@@ -1472,6 +1591,13 @@ void gfunc_prolog(Sym *func_sym)
 		    goto stack_arg;
 		seen_sse_num += reg_count;
                 break;
+
+            case x86_64_mode_mixed:
+                if (seen_reg_num + 1 > REGN || seen_sse_num + 1 > 8)
+                    goto stack_arg;
+                seen_reg_num += 1;
+                seen_sse_num += 1;
+                break;
             }
         }
 
@@ -1550,7 +1676,29 @@ void gfunc_prolog(Sym *func_sym)
             param_addr = addr;
             addr += size;
             break;
-            
+
+        case x86_64_mode_mixed: {
+            /* each eightbyte from the register of its class */
+            CType t[2];
+            int k;
+            if (reg_param_index + 1 <= REGN && sse_param_index + 1 <= 8) {
+                gfunc_sret_mixed(type, &t[0], &t[1]);
+                loc -= 16;
+                param_addr = loc;
+                for (k = 0; k < 2; k++) {
+                    if ((t[k].t & VT_BTYPE) == VT_DOUBLE)
+                        gen_modrm32(0xd60f66, sse_param_index++, VT_LOCAL, NULL, param_addr + k*8);
+                    else
+                        gen_modrm64(0x89, arg_regs[reg_param_index++], VT_LOCAL, NULL, param_addr + k*8);
+                }
+            } else {
+                addr = (addr + align - 1) & -align;
+                param_addr = addr;
+                addr += size;
+            }
+            break;
+        }
+
         case x86_64_mode_integer: {
             if (reg_param_index + reg_count <= REGN) {
                 /* save arguments passed by register */
