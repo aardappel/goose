@@ -1,0 +1,25 @@
+self targets true false
+pool targets true false
+self arrays true false
+pool arrays true false
+self nested true false
+pool nested true false
+self limited true false
+pool limited true false
+self generic true false
+pool generic true false
+pool first true false
+self second true false
+self pool generic true false
+pool self generic true false
+varint self targets true false
+varint pool targets true false
+varint self arrays true false
+varint pool arrays true false
+varint self generic true false
+varint pool generic true false
+self enums true false
+pool enums true false
+self variants true false
+pool variants true false
+controls true true false true true true
