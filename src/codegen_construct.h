@@ -297,7 +297,7 @@ inline bool CodeGen::HasRelRef(TypeExpr *t) {
 inline bool CodeGen::IsFlatFixed(TypeExpr *t) {
     if (!IsFix(t)) return false;
     switch (t->kind) {
-        case TY_REF: case TY_SLICE: return false;
+        case TY_REF: case TY_SLICE: case TY_POOL: return false;
         case TY_STRUCT: return SI(t)->flat;
         case TY_ENUM: return EIOf(t)->flat;
         case TY_VARIANT: return !AnyField(t, [&](TypeExpr *ft) { return !IsFlatFixed(ft); });

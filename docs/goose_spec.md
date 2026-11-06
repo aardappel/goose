@@ -59,7 +59,8 @@ class regardless of their fields; references to them are fixed-size.
 
 Additionally, a type is **flat** if it contains no references, slices, or
 relative references at any depth and is not a root struct. Only flat values may
-cross thread boundaries (§11.2).
+cross thread boundaries, as copies or, to a thread pool's tasks, viewed in place
+(§11.2).
 
 ### 1.2 Memory model
 
@@ -79,7 +80,8 @@ A Goose program's memory consists of:
 
 There is no general-purpose heap and no `malloc`. All dynamic allocation is
 expressed as values living on data stacks, owned by locals (or globals).
-(The runtime itself may allocate internally for thread queues, §11.2.)
+(The runtime itself may allocate internally for thread queues and thread
+pools, §11.2.)
 
 Rewinding a data stack makes its storage reusable, while normally keeping
 its pages committed. After a large workload, `trim_memory()` from `os`
@@ -476,6 +478,9 @@ references cannot be copied (§3.9). Empty slices, including defaults, are valid
   another struct (including another root struct), an array or slice (even
   fixed-length or empty), an ADT payload, a parameter, or a result. References
   to root structs follow the usual reference placement and lifetime rules.
+* **`thread_pool`** values (§11.2), although they are fixed: as root values,
+  owned by local/global declarations only, and passed and returned by
+  reference.
 * **zero-size** values, although they are fixed: zero-length arrays (`T[0]`,
   and `T[..0]` of capacity 0) and variant types with no fields
   (`Shape.Point`, or a variant with only pads that insert nothing, §3.2),
@@ -1157,10 +1162,11 @@ var edges: NodeId[>..] = [];
   array of `u8 in x`, which is not a byte array. When `from_bytes` verifies
   an image, it checks each index in the image against its array's length,
   and rejects the image if any index is out of range. The arguments of
-  `qput`, `qget`, `qpoll`, `qlimit` and `thread_spawn` take no type holding
-  an index type: each thread program's copy of the array grows on its own
-  (§11.2). An `extern fn` or `export fn` signature holds none either, since
-  C code is not checked against the array.
+  `qput`, `qget`, `qpoll`, `qlimit` and `thread_spawn`, and the extra
+  arguments and the growable output of a thread pool's apply, take no type
+  holding an index type: each thread program's copy of the array grows on
+  its own (§11.2). An `extern fn` or `export fn` signature holds none
+  either, since C code is not checked against the array.
 
 ---
 
@@ -2560,9 +2566,9 @@ Restrictions, all checked statically:
   global initializer has no scope exit.
 
 A `defer` body does not run where no exit happens: `abort`, a failed
-`assert` or bounds check, `exit`, a contained worker's abort (§11.2), and
-workers still running when `main` returns. The process or the worker's end
-reclaims what the body would have released.
+`assert` or bounds check, `exit`, a contained worker's or thread pool task's
+abort (§11.2), and workers still running when `main` returns. The process
+or the worker's end reclaims what the body would have released.
 
 ---
 
@@ -3487,8 +3493,9 @@ thread. `--header` requires generated C output and at least one export, and
 writes declarations and the required packed C type definitions for the
 exported API.
 
-The header also declares `goose_exit()`, which ends the program: it releases
-what `goose_init` set up (the data stack regions, the queues, and the
+The header also declares `goose_exit()`, which ends the program: it closes
+the thread pools the program left open (§11.2) and releases what
+`goose_init` set up (the data stack regions, the queues, and the
 runtime's handling of faults, which returns to the host's), after which
 `goose_init` may start a program in the process again, this one or another
 build of it, as a host that reloads a library does. It must be called from
@@ -3909,8 +3916,8 @@ Violations are compile errors. There is no escape hatch in v1.
 ### 9.3 What the runtime still checks
 
 The runtime aborts (prints a message and exits; an abort cannot be caught)
-on each of the following. In a contained worker (§11.2), each of them except
-the last two ends only that worker:
+on each of the following. In a contained worker or a contained thread pool
+task (§11.2), each of them except the last two ends only that worker or task:
 
 * array/slice indexing out of bounds (elided wherever the compiler proves it
   cannot fire, §10.5; can be disabled wholesale in a designated unsafe-fast
@@ -4479,8 +4486,10 @@ it leaves the caller's own facts about `src` intact.
 
 ### 11.2 Concurrency
 
-Threads never share mutable memory. The model is a statically typed
-relative of the Linda tuple-space / coordination style.
+Threads never share mutable memory, but for the disjoint chunks of an array
+that a thread pool's tasks each write in place while the thread applying the
+pool waits for them (below). The model is a statically typed relative of the
+Linda tuple-space / coordination style.
 
 * A worker entry point is declared `thread_fn worker(a: i64, ...) { }`.
   The compiler compiles a `thread_fn` and everything it calls **as a
@@ -4568,6 +4577,155 @@ relative of the Linda tuple-space / coordination style.
   the queue holds keeps the messages queued, and puts fail until fewer than
   `n` remain. A limit of zero or less aborts with a runtime diagnostic.
 
+**Thread pools** (`docs/design/parallel_blocks.md`) run one ordinary
+function over disjoint parts of an array on several threads at once, for
+data-parallel work; `thread_fn` and the queues above are unchanged by them.
+A pool's tasks are thread programs, as workers are, with stacks and globals
+of their own, but an apply hands them parts of the applying program's
+storage in place, with no copy: each task writes its own *chunk* of one
+array and reads the `const` data shared with all of them. The apply is one
+call, which returns once every task has, so everything a task is handed
+outlives it, and the rules below keep the tasks from racing.
+
+* **Pools.** `thread_pool(n: i64)` makes a pool of `n` workers, and
+  `thread_pool()` one of `hardware_threads()`; a count of zero or less
+  aborts with a runtime diagnostic. A pool of `n` workers is `n - 1`
+  threads of its own and the thread that applies it, which runs tasks while
+  it waits for the others, so `thread_pool(1)` starts no thread. The
+  workers serve one apply after another until the pool is closed.
+* **The type.** `thread_pool` is a builtin type, fixed-size and not flat
+  (§1.1), that only a local or global variable owns, as only an owning
+  declaration owns a root struct (§3.4): never a field, an element, a
+  payload, a parameter or a result by value. A function takes a pool as a
+  `thread_pool&`, an ordinary reference, or as a `const thread_pool&`,
+  which applies the pool but cannot close it. A pool has no default value,
+  so a global pool needs an initializer, and it is not assigned after its
+  initialization (§4.4). It is never copied, since a second handle to it
+  would outlive its close: `copy(p)` is an error, and so is a binding by
+  value of a pool in storage or of a reference to one (`var q = p;`,
+  `var q = r;` with `r: thread_pool&`, a multi-value binding without `.=`),
+  also where a construct (§6.4) chooses the pool
+  (`var q = if c { a } else { b };`), and a function value's block (§7.6)
+  whose value is a pool in storage. A construct choosing between pools,
+  handed to a `thread_pool&`, binds the one it chooses by reference, and a
+  construct whose branches each make a pool, or a function value's block
+  that makes one, gives the pool it makes. No function result is a pool,
+  declared or inferred; a function returns a `thread_pool&` instead. A pool
+  does not cross a queue or a `thread_spawn`, and a function that a
+  worker's or a task's thread program reaches may not use a global pool,
+  which is a handle to the threads of the program instance that made it.
+* **Closing.** `close(p)`, or `p.close()`, ends a pool: it runs to the end
+  any task the pool has yet to finish, joins the pool's threads and
+  releases their data stacks. It takes the pool's variable (`let` or
+  `var`), or a reference to it that is not `const`, and leaves a closed
+  pool there, which a second close leaves as it is and an apply aborts on.
+  No scope exit closes a pool, since none runs code the program did not
+  write, so a pool is usually closed with `defer` (§6.6) where it is made:
+  `var pool = thread_pool(4); defer pool.close();`. A pool left open lasts
+  as long as the process, and `goose_exit` (§7.11) closes those its
+  program leaves open.
+* **Applying.** `p.apply(chunks(a, size_or_offsets), fn, args…)`, or
+  `apply(p, chunks(…), fn, args…)`, cuts `a` into chunks and runs `fn`
+  once for each, as a *task*, on whichever of the pool's workers takes it.
+  The tasks run concurrently and in no specified order, and the apply
+  returns once every task has returned. `chunks(…)` is not a value: it is
+  valid only as the argument after the pool of `apply` and
+  `apply_contained`.
+  * `a` is a writable (§9.5) indexable array (`T[k]`, `T[..k]`, `T[..]`,
+    `T[>..]`, `T[>..<]`) or slice `T[:]`, or a reference to one, whose root
+    (§9.2) is one variable the compiler knows exactly, and whose element
+    type `T` is fixed-size and flat.
+  * `chunks(a, size: i64)` cuts `a` front to back into runs of `size`
+    elements, the last one shorter where `size` does not divide `a.len`:
+    ⌈`a.len / size`⌉ tasks, and none for an empty `a`. A `size` of zero or
+    less aborts with a runtime diagnostic.
+  * `chunks(a, offsets: const i64[:])` cuts out
+    `a[offsets[i]..offsets[i + 1]]` for each `i` below `offsets.len - 1`,
+    an empty run included. Before it hands out the task of index `i`, the
+    apply checks that `0 <= offsets[i] <= offsets[i + 1] <= a.len` (and,
+    for an `offsets` of one element, that `0 <= offsets[0] <= a.len`), and
+    aborts with a runtime diagnostic where that fails, with the tasks
+    before it handed out.
+* **The worker.** `fn` names a top-level `fn`: not a nested function, a
+  function value, a `thread_fn` or an `extern fn`. It is not generic, every
+  parameter has a type, and it returns nothing. Its parameters are
+  `(chunk: T[:], idx: i64, extra…)`, or the same without `idx`, which the
+  number of `args` decides: `chunk` takes the task's chunk, `idx` the
+  chunk's index in the order the chunks are cut, from 0, and the extra
+  parameters take `args…`, one each. An extra parameter is of a flat type,
+  passed by value, or is a `const U&` or `const U[:]` with `U` fixed-size
+  and flat, through which every task reads its argument in place; none
+  holds an index type (§3.11). The worker stays an ordinary function,
+  which the program may also call directly.
+* **No races.** No reference or slice argument, and no `offsets`, may
+  share a root with `a` (§9.2), even where it views a part of `a` that no
+  chunk covers. So a task's chunk is the only path to its elements that
+  writes them, no two chunks overlap, and nothing a task reads through its
+  other parameters is written while it runs: the applying thread is inside
+  the apply until every task has returned, and the other tasks write only
+  their own chunks. Since the elements and the shared data are flat, and a
+  task's globals are its own (below), a task keeps no reference to what it
+  was handed once it returns.
+* **Evaluation.** The pool, the array `chunks()` names and its chunk size,
+  offsets or task count (below), the message buffer of `apply_contained`
+  and every argument of a fixed-size type whose values take at least one
+  byte are evaluated once, in that order, before any task is handed out.
+  Every other argument is built for each task as the task is handed out:
+  it is evaluated once per task, in order, after the tasks before it are
+  out, and not at all where there is no task. Such an argument is one of a
+  variable-size or resizable type, or one of a fixed-size type whose values
+  take no bytes: a zero-length array `T[0]`, or a variant type with no
+  bytes of its own (Appendix C.2). A limited array of capacity 0 keeps its
+  length field and an empty struct takes a byte, so an argument of either
+  is evaluated once. The apply reads the pool from its variable after the
+  arguments, any of which may close it, and aborts on a closed pool before
+  it hands it a task.
+* **Tasks.** A task runs `fn` as a thread program runs a `thread_fn`
+  (above): on data stacks of its own, whichever thread runs it, with its
+  own copies of the globals that `fn` and what it calls use, taken from the
+  applying instance as the task is handed out. A task's writes to a global
+  are its own, and the rule on globals that are not flat holds for it. A
+  task may make and apply pools of its own. An abort in a task of `apply`
+  (§9.3) ends the program, whichever thread runs it, as one in a worker
+  that a contained worker spawns does, also where the thread applying the
+  pool is a contained worker's.
+* **Output whose size only a task knows.** A worker whose first parameter
+  is `out: T[>..]&` rather than a chunk grows output of its own:
+  `chunks(o, n: i64)` then hands out `n` tasks, one or more (zero or less
+  aborts with a runtime diagnostic), and an offsets slice there is an
+  error. `o` is a writable grow-only or grow-shrink array (`T[>..]`,
+  `T[>..<]`), or a reference to one, with one root the compiler knows
+  exactly and fixed-size flat elements that hold no index type. Each task
+  starts with an empty `T[>..]` of its own, on its worker's data stacks,
+  which it may grow and shrink as any other, and no task touches `o`. Once
+  every task has returned, the apply appends to `o`, after what `o` holds,
+  the elements each task left in its array, in the order of `idx`,
+  whatever order the tasks ran in. That growth is the apply's own, after
+  its other arguments have run, as a member operation's growth of its
+  receiver is (§1.3(4)).
+* **Contained tasks.** `p.apply_contained(chunks(…), msg, fn, args…) ->
+  bool` applies the pool as `apply` does, with contained tasks: an abort in
+  one (§9.3) ends that task alone, which releases what a return would, as
+  an abort in a worker that `thread_spawn_contained` starts does. Once a
+  task has aborted, the apply's tasks that no worker has started are
+  skipped. The result, once every task has ended or been skipped, is `true`
+  if every task returned and `false` if one aborted. `msg` is optional: a
+  growable `u8` array, or a writable reference to one, as
+  `thread_wait(id, msg)` takes, written between the chunks and `fn` (an
+  argument there that names a top-level function is `fn`), which may not
+  share a root with `a`. The first abort's message, what it would print
+  after `goose runtime error: ` including its location, is appended to
+  `msg` once the tasks have ended, and later aborts' messages are dropped.
+  A task's output (above) is appended only if every task returned; else
+  `o` is left as it was. The pool runs on, and its next apply has the same
+  workers. The apply's own aborts (a chunk size or task count of zero or
+  less, offsets out of bounds, a closed pool) are not a task's, and a
+  plain `apply` in a contained task is not contained. While a contained
+  thread program, a worker or a task, has tasks out on any pool, an abort
+  of its own ends the program, since those tasks may still be writing into
+  its storage. Guard-page hits, native stack exhaustion and `exit(code)` in
+  a task still end the program.
+
 ### 11.3 Dynamic stacks (future)
 
 This future feature is a resizable-of-resizables local in which each
@@ -4593,6 +4751,8 @@ The language's own functions:
 | `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_spawn_contained(worker, args…) -> i64`, `thread_wait(id) -> bool`, `thread_wait(id, msg) -> bool` | workers (§11.2) |
 | `qput(v) -> bool`, `qget<T>() -> T`, `qget<T>(ms) -> T, bool`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
 | `qlimit<T>(n)` | a queue's limit of messages (§11.2) |
+| `thread_pool(n: i64) -> thread_pool`, `thread_pool()`, `close(p)` | a pool of `n` workers, or of `hardware_threads()`, and its end (§11.2) |
+| `p.apply(chunks(a, size_or_offsets), fn, args…)`, `p.apply_contained(chunks(…), msg, fn, args…) -> bool` | `fn` run over the chunks of `a` at once, returning once every task has; contained, whether every task returned (§11.2) |
 | `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | an array's image (a varint byte count, then its element region), either fresh or appended to a growable `u8` array (§3.9, `design/serialization.md`) |
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
@@ -5197,7 +5357,15 @@ compiler's own description, pass by pass and analysis by analysis, is
   (`--standalone` writes a file that holds the whole runtime, as the
   in-process build does). TinyCC does not optimize and cannot place
   thread-local storage in an in-memory run, so a program that uses workers
-  (§11.2) is refused there (docs/design/jit_backend.md).
+  or thread pools (§11.2) is refused there (docs/design/jit_backend.md).
+* **Thread pools** (§11.2). Each of a pool's workers keeps the data stack
+  regions its tasks reserve, and rewinds them for each next task rather
+  than releasing them, so a task maps a region only where it needs more
+  than every earlier task on that worker did. The thread
+  applying a pool runs its share of the tasks on regions the pool keeps for
+  it, apart from its own, which hold its program's live storage. All of
+  them are released when the pool is closed. `implementation.md` §7 has
+  the details.
 * **Fat references.** A callee that grows a resizable through a reference
   (`push` through a `f64[>..]&`) must know which data stack to bump. The
   compiler does not pin that stack per call site (§10.2): every reference

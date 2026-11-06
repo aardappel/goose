@@ -79,7 +79,10 @@ inline void ResolveTypeNames(Ast &ast) {
             t->kind = TY_ENUM;
             t->enu = d;
         } else if (!ast.LookupAlias(nm->name, nm->ns)) {
-            if (SplitName(nm->name, nm->ns).qualified) {
+            if (nm->name == "thread_pool" && nm->ns.empty() && nm->args.empty() && !nm->varmode) {
+                t->kind = TY_POOL;
+                t->named = nullptr;
+            } else if (SplitName(nm->name, nm->ns).qualified) {
                 ErrorAt(t, nm, cat("unknown type: ", nm->name), nm->name);
                 MakeUnknown(t, nm, nm->name);
             } else {

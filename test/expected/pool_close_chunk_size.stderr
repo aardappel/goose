@@ -1,0 +1,2 @@
+cannot apply on a closed thread_pool
+pool_close_chunk_size.goose:18)
