@@ -132,6 +132,16 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return { tv };
         }
         case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
+        case B_FILE: {
+            string path = c->line.fileidx >= 0 && c->line.fileidx < (int)ast.sources.size()
+                              ? ast.sources[c->line.fileidx].first : "?";
+            auto slash = path.find_last_of("/\\");
+            auto name = slash == string::npos ? path : path.substr(slash + 1);
+            auto t = T();
+            L(CT(c->rettypes[0]), " ", t, " = { ", StrRaw(name), ", ", name.size(), " };");
+            return { t };
+        }
+        case B_LINE: return { cat((int64_t)c->line.line) };
         case B_EMBED_SHADER:
         case B_EMBED_FILE: {
             auto &blob = *c->shaderblob;

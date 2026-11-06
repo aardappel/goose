@@ -287,6 +287,21 @@ void TypeCheck::InParamDefault(Call *c, const MatchInfo &mi, FnSpec *env, size_t
     f();
 }
 
+// file() and line() name the call they are written on. A default is parsed
+// in the function's file, and the clone would keep that. Stamp those calls
+// with the call that left the argument out, before the clone is checked.
+inline void StampLocBuiltins(Node *n, Line site) {
+    if (!n) return;
+    if (auto call = Is<Call>(n)) {
+        if (auto id = Is<Ident>(call->callee))
+            if (call->args.empty() && !call->trailing &&
+                (id->name == "file" || id->name == "line" ||
+                 id->name == "::file" || id->name == "::line"))
+                call->line = site;
+    }
+    n->Children([&](Node *ch) { StampLocBuiltins(ch, site); });
+}
+
 // Each parameter the call leaves out takes its default (§7.1): a fresh clone
 // of the declaration's expression, among the arguments where the missing one
 // would be, checked as they are -- for the specialization's key here, and
@@ -304,6 +319,7 @@ inline void TypeCheck::AddParamDefaults(Call *c, MatchInfo &best, vector<Node *>
         auto &p = best.sf->params[i];
         auto pt = best.paramtypes[i];
         auto d = p.defaultval->Clone(ast);
+        StampLocBuiltins(d, c->line);
         c->args.insert(c->args.begin() + (int)(i - shift), d);
         argnodes.insert(argnodes.begin() + (int)i, d);
         Val v;
