@@ -841,7 +841,8 @@ inline void WriteFnSymbol(JsonOut &j, const Analysis &an, const FileIndex &f, co
     auto sf = fd->sf;
     WriteDocumentSymbol(j, f, sf->name, SK_FUNCTION, ExtentOf(f, fd), PlaceOfFn(an, sf), [&] {
         function<void(const Node *)> nested = [&](const Node *n) {
-            if (!n) return;
+            // A body nested deeper than the stack holds lists what fits.
+            if (!n || StackLow()) return;
             if (auto inner = Is<FnDecl>(n)) {
                 WriteFnSymbol(j, an, f, inner);
                 return;
@@ -1330,7 +1331,7 @@ struct FnExtent {
 inline vector<FnExtent> FnExtents(const Analysis &an) {
     vector<FnExtent> fns;
     function<void(const Node *)> walk = [&](const Node *n) {
-        if (!n) return;
+        if (!n || StackLow()) return;
         if (auto fd = Is<FnDecl>(n)) {
             auto fileidx = fd->line.fileidx;
             if (fileidx >= 0 && fileidx < (int)an.files.size()) {
@@ -1520,7 +1521,7 @@ enum InlayHintKind { IH_TYPE = 1, IH_PARAMETER = 2 };
 inline int64_t StartOf(const FileIndex &f, const Node *n) {
     int64_t start = -1;
     function<void(const Node *)> walk = [&](const Node *c) {
-        if (!c || c->origin || c->line.fileidx != f.fileidx || c->line.line <= 0) return;
+        if (!c || c->origin || c->line.fileidx != f.fileidx || c->line.line <= 0 || StackLow()) return;
         auto s = f.text.OffsetOf(c->line.line, c->line.col);
         if (s >= 0 && (start < 0 || s < start)) start = s;
         c->Children([&](Node *ch) { walk(ch); });
@@ -1794,7 +1795,7 @@ inline void ScopeCompletions(const Located &loc, size_t offset, Completions &out
     };
     auto enclosing = FunctionsAround(an, f, offset);
     function<void(Node *)> walk = [&](Node *n) {
-        if (!n || !contains(n)) return;
+        if (!n || !contains(n) || StackLow()) return;
         if (auto b = Is<Block>(n)) {
             for (auto s : b->stmts) {
                 if (endsbefore(s)) {

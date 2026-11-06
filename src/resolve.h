@@ -97,6 +97,9 @@ inline void ResolveTypeNames(Ast &ast) {
     function<void(TypeExpr *, const vector<GenericParam> *)> unknownin =
         [&](TypeExpr *t, const vector<GenericParam> *generics) {
             if (!t) return;
+            // As deep as the type nests, which a long `T[:][:]...` makes in a
+            // loop.
+            if (StackLow()) ast.StackError(t->line);
             auto each = [&](const vector<TypeExpr *> &ts) {
                 for (auto child : ts) unknownin(child, generics);
             };
@@ -138,6 +141,7 @@ inline void ResolveTypeNames(Ast &ast) {
     // the declaration legally, and are checked by the layout/lifetime passes.
     unordered_map<SAlias *, int> aliasstate;  // 1 visiting, 2 complete.
     function<void(TypeExpr *)> checkaliases = [&](TypeExpr *t) {
+        if (StackLow()) ast.StackError(t->line);
         auto each = [&](const vector<TypeExpr *> &ts) {
             for (auto child : ts) checkaliases(child);
         };

@@ -404,6 +404,9 @@ inline int TypeCheck::OperandIndex(Node *parent, Node *child, int next) {
 // on the way, as a path is by its node's Check, stays one entry.
 inline bool TypeCheck::Descend(Node *n) {
     if (!cur.nodepath.empty() && cur.nodepath.back().node == n) return false;
+    // The checker's recursion goes through here once per node, as deep as
+    // the body nests.
+    if (StackLow()) StackError(n->line);
     auto idx = cur.nodepath.empty() ? -1 : OperandIndex(cur.nodepath.back().node, n,
                                                         cur.nodepath.back().pos);
     if (idx >= 0) cur.nodepath.back().pos = idx;
@@ -2674,6 +2677,8 @@ inline int64_t TypeCheck::FillCount(Node *n) {
 // the name is an error (ConstName).
 inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
                                      set<VarDecl *> &visiting, ConstUse *use) {
+    // As deep as the expression nests, apart from Descend.
+    if (StackLow()) StackError(n->line);
     if (auto i = Is<IntLit>(n)) {
         v.type = i->fixedtype ? i->fixedtype : ast.inttypes[i->uns ? IS_U64 : IS_I64];
         v.ck = CK_INT;

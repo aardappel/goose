@@ -101,6 +101,15 @@ inline bool IsBranchConstruct(const Node *n) {
 
 struct TypeCheck {
     Ast &ast;
+    // A clone's stack error (Ast::StackError) is the checker's while it
+    // runs, a throw from its constructor included.
+    struct StackErrors {
+        Ast &ast;
+        StackErrors(Ast &a, TypeCheck *tc) : ast(a) {
+            ast.stackerror = [tc](Line l) { tc->StackError(l); };
+        }
+        ~StackErrors() { ast.stackerror = nullptr; }
+    } stackerrors { ast, this };
     StableTypeGraph stabletypes;
     unordered_map<const void *, vector<TypeExpr *>> arrayelements;
     // CanContain's and ReachesThroughRefs' answers for complete type graphs:
@@ -580,6 +589,24 @@ struct TypeCheck {
         ErrorIn(LocOf(l), msg, Chain(ActiveExpansionTrace()));
     }
 
+    // The native stack is down to its floor (StackLow): the check stops
+    // here, at a line rather than a node, whose place LocOf would look for
+    // in all of its subtree. What took the stack is the compile-time call
+    // path, from the root to where the body being checked began
+    // (BodyState::stackat), or what that body nests below it: expressions,
+    // a type, a clone. The error names the larger.
+    [[noreturn]] void StackError(Line at) {
+        auto here = StackPointer();
+        if (rootstack > cur.stackat && cur.stackat > here &&
+            rootstack - cur.stackat > cur.stackat - here) {
+            auto calls = 0;
+            for (auto &f : frames) calls += f.sf && !f.isfunval;
+            Error(at, cat("compile-time call path too deep for the compiler's stack (", calls,
+                          " nested calls)"));
+        }
+        Error(at, "nested too deep for the compiler's stack");
+    }
+
     bool StdlibLocation(DiagLoc at) const { return ast.StdlibFile(at.fileidx); }
 
     void LibraryCallLocation(Diagnostic &d) {
@@ -900,6 +927,7 @@ struct TypeCheck {
     // Calls f(id, what) for each name constant expression n takes, where
     // ConstIntValue would look it up: as an operand of the arithmetic it folds.
     template<typename F> void ConstExprNames(Node *n, const char *what, F f) {
+        if (StackLow()) StackError(n->line);
         if (auto id = Is<Ident>(n)) {
             f(id, what);
         } else if (auto u = Is<Unary>(n)) {
@@ -1051,6 +1079,9 @@ struct TypeCheck {
     }
 
     TypeExpr *SubstRaw(TypeExpr *t) {
+        // As deep as the type nests, which a long `T[:][:]...` makes in a
+        // loop.
+        if (StackLow()) StackError(t->line);
         switch (t->kind) {
             case TY_GENERIC: {
                 // An exemplar's binding is the type it stands for wherever it
@@ -2778,6 +2809,8 @@ struct TypeCheck {
     struct BodyState {
         // The node being checked and every node it is nested in (PathEntry).
         vector<PathEntry> nodepath;
+        // Where the native stack was as the body's check began (BodyScope).
+        uintptr_t stackat = 0;
         // The argument print, str or format is rendering, and as which
         // builtin: its views stay live while its parts' format overloads run,
         // and so does where it lies (`renderwhere`) unless an overload takes
@@ -2835,6 +2868,7 @@ struct TypeCheck {
         BodyScope(TypeCheck &t) : tc(t) {
             std::swap(tc.cur, saved);
             tc.outerbodies.push_back(&saved);
+            tc.cur.stackat = StackPointer();
         }
         ~BodyScope() {
             tc.outerbodies.pop_back();
@@ -2979,7 +3013,10 @@ struct TypeCheck {
     // reported (Ast::Report) unless `report` is off, an Abandoned is a
     // consequence of one reported before, and either returns the checker
     // to the root's entry (Checkpoint). Returns whether the root completed.
+    // Where the native stack was as the root being checked began.
+    uintptr_t rootstack = 0;
     template<typename F> bool CheckRoot(F f, bool report = true) {
+        Saved<uintptr_t> rs(rootstack, StackPointer());
         Checkpoint cp(*this);
         try {
             f();

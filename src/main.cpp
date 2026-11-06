@@ -1356,8 +1356,13 @@ int Main(int argc, char **argv) {
         printf("goose %s (runtime %s)\n", CompilerVersion(), RuntimeVersion().c_str());
         return 0;
     }
-    if (verb == "lsp") return RunLsp(exe, vector<string>(argv + firstarg, argv + argc));
-    if (verb == "format") return RunFormat(vector<string>(argv + firstarg, argv + argc));
+    // The language server and the formatter parse, and walk what they parse,
+    // as deep as a file nests: on the compile's stack, which has the same
+    // size everywhere and a floor (utils.h), not on the main thread's, whose
+    // size on Linux is whatever `ulimit -s` gave the process.
+    vector<string> verbargs(argv + firstarg, argv + argc);
+    if (verb == "lsp") return RunOnCompilerStack([&] { return RunLsp(exe, verbargs); });
+    if (verb == "format") return RunOnCompilerStack([&] { return RunFormat(verbargs); });
     string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, dumpdocs = false, tokens = false, parseonly = false, specs = false;
     auto nocgen = false;

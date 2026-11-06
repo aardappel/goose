@@ -5,6 +5,7 @@
 namespace goose {
 
 struct ExpansionBinder {
+    const Ast &ast;
     struct Binding { string_view name; int id; bool accessor; bool type; };
     vector<Binding> bindings;
     int next = 0;
@@ -24,8 +25,11 @@ struct ExpansionBinder {
         ~Scope() { b.bindings.resize(base); }
     };
 
+    // The first walk of every declaration, as deep as it nests, which a
+    // parse makes in a loop for a long `a + b + ...` or `x.f().g()...`.
     void Type(TypeExpr *t) {
         if (!t) return;
+        if (StackLow()) ast.StackError(t->line);
         switch (t->kind) {
             case TY_UNRESOLVED: case TY_GENERIC: {
                 auto b = Find(t->named->name, true);
@@ -77,6 +81,7 @@ struct ExpansionBinder {
     }
     void Walk(Node *n) {
         if (!n) return;
+        if (StackLow()) ast.StackError(n->line);
         if (auto cf = Is<ConstFor>(n)) {
             for (auto t : cf->types) Type(t);
             for (auto c : cf->constants) Walk(c);
@@ -165,7 +170,7 @@ struct ExpansionBinder {
 };
 
 inline void BindExpansionNames(Ast &ast) {
-    ExpansionBinder binder;
+    ExpansionBinder binder { ast };
     for (auto n : ast.topdecls) binder.Walk(n);
 }
 
