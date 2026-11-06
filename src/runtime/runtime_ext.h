@@ -124,12 +124,15 @@ static float gs_mul_addf(float x, float y, float z) {
    out or kept in registers. Goose has no errno, so gcc and clang are told
    that each depends on its arguments alone. Under clang each is libm's own
    function declared under a name of its own with an asm label, which clang
-   still knows as that libm function. gcc knows a function only by the name
-   it is declared under, so there each name forwards to libm's, redeclared
-   const: gcc then still combines sin and cos of one value into sincos,
-   turns pow(x, 2.0) into x * x and folds constant arguments. Elsewhere the
-   name forwards to libm. */
-#if defined(__clang__) && !defined(__TINYC__)
+   still knows as that libm function where symbols take no prefix. Where
+   they do (Apple's leading underscore), clang marks the label as a literal
+   symbol name, "\01_pow", and no longer knows it as libm's. gcc knows a
+   function only by the name it is declared under, so there, and under
+   clang on Apple, each name forwards to libm's, redeclared const: the
+   compiler then still combines sin and cos of one value into sincos, turns
+   pow(x, 2.0) into x * x and folds constant arguments. Elsewhere the name
+   forwards to libm. */
+#if defined(__clang__) && !defined(__APPLE__) && !defined(__TINYC__)
 #define GS_LIBM_SYM2(p, f) #p #f
 #define GS_LIBM_SYM(p, f) GS_LIBM_SYM2(p, f)
 #define GS_LIBM
