@@ -1649,6 +1649,7 @@ fn check()                  // abort if the program has misused gfx
 fn driver() -> u8[>..]      // "direct3d12", "vulkan" or "metal"
 fn set_title(title: const u8[:])
 fn screen() -> Texture      fn screen_depth() -> Texture      fn screen_size() -> int2
+fn pixel_density() -> f32   fn display_scale() -> f32
 fn time() -> f64            fn delta_time() -> f64            fn frame_count() -> i64
 ```
 
@@ -1662,6 +1663,16 @@ the display's own coordinates, and it has every pixel the display has in
 that area. On a high-density display, that is more pixels than its width
 and height; `screen_size()` counts these pixels, and the mouse position is
 reported in them.
+
+`pixel_density()` is the screen's pixels per unit of those coordinates: 2 on
+most high-density displays, 1 elsewhere, including Windows at any scale
+setting. `display_scale()` is that times the system's content scale, what the
+system draws its own text and controls at: 2 on a high-density Mac, 1.5 on
+Windows set to 150%. Both are SDL's values for the window, 1 when headless or
+with no window open, and they change as the window moves between displays, so
+a program that follows them reads them each frame. They only report: gfx and
+ui apply neither, and how big to draw is the program's choice. For a ui the
+size of the system's own, pass `display_scale()` to `ui::set_scale`.
 
 ```goose
 guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
