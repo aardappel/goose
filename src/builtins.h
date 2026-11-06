@@ -73,6 +73,7 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_STR,              "str",              0, 99,   "",   "",  0,              "",            0) \
     F(B_FORMAT,           "format",           1, 99,   "",   "",  BR_GROWABLE,    "format into", BF_MEMBER | BF_WRITE) \
     F(B_ASSERT,           "assert",           1,  1,   "",   "",  0,              "",            0) \
+    F(B_CONTRACT,         "contract check",   2,  2,   "",   "",  0,              "",            0) \
     F(B_ABORT,            "abort",            1,  1,   "",   "",  0,              "",            0) \
     F(B_EXIT,             "exit",             1,  1,   "",   "",  0,              "",            0) \
     F(B_HARDWARE_THREADS, "hardware_threads", 0,  0,   "",   "i", 0,              "",            0) \

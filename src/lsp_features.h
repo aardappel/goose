@@ -1839,8 +1839,10 @@ inline void ScopeCompletions(const Located &loc, size_t offset, Completions &out
     auto filens = enclosing.empty() ? NamespaceOfFile(ast, f.fileidx) : enclosing[0]->ns;
     for (auto &[nsname, ns] : ast.namespaces)
         NamespaceCompletions(nsname, ns, !nsname.empty() && nsname != filens, out);
+    // A contract's check (contracts.h) is no name a program can write.
     for (auto &b : builtindefs)
-        if (!(b.flags & BF_PROPERTY)) out.Add(b.name, CK_FUNCTION, 2, "builtin");
+        if (!(b.flags & BF_PROPERTY) && b.kind != B_CONTRACT)
+            out.Add(b.name, CK_FUNCTION, 2, "builtin");
     for (int t = T_IMPORT; t <= T_TF64; t++) out.Add(TName((TType)t), CK_KEYWORD, 3);
 }
 

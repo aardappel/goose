@@ -38,6 +38,7 @@ add_executable(goose
     src/ast.h
     src/dump.h
     src/clone.h
+    src/contracts.h
     src/parser.h
     src/resolve.h
     src/expansion_bind.h

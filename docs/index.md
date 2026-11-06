@@ -58,6 +58,9 @@ and the reference describe what was built; these say why.
 * [Index types and `checkfree` functions](design/index_types.md): bounds
   checks moved to where data enters the program, and functions the
   compiler proves check-free.
+* [Proofs](design/proofs.md): contracts, `abortfree` and `proven`
+  functions, and external provers. A proposal, with its first phase,
+  executable contracts, implemented in part.
 * [`const for`](design/const_for.md): specialization-time expansion over
   a struct's fields, an enum's variants, a list of types or a list of
   constants.

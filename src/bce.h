@@ -2783,6 +2783,46 @@ struct BCE {
     // have changed tracked state (the caller checks HasKillEffects), since
     // the comparisons ran against pre-kill values otherwise.
 
+    // Whether the facts settle a checked condition (an assert's, a contract
+    // clause's), so its check cannot fire and codegen may drop it with its
+    // evaluation. Only comparisons of plain operands, joined by &&, are
+    // judged: no operand may itself abort or have effects.
+    static bool PlainOperand(Node *n) {
+        if (Is<IntLit>(n) || Is<Ident>(n)) return true;
+        if (auto d = Is<Dot>(n); d && d->member == B_LEN) {
+            auto o = d->obj;
+            while (auto od = Is<Dot>(o)) o = od->obj;
+            return Is<Ident>(o) != nullptr;
+        }
+        if (auto b = Is<Binary>(n); b && (b->op == T_PLUS || b->op == T_MINUS))
+            return PlainOperand(b->left) && PlainOperand(b->right);
+        return false;
+    }
+
+    bool CondHolds(Node *c) {
+        if (mode != M_JUDGE || probing) return false;
+        if (auto bl = Is<BoolLit>(c)) return bl->val;
+        auto b = Is<Binary>(c);
+        if (!b) return false;
+        if (b->op == T_ANDAND) return CondHolds(b->left) && CondHolds(b->right);
+        auto op = b->op;
+        if (op != T_LT && op != T_GT && op != T_LTEQ && op != T_GTEQ && op != T_EQ) return false;
+        if (!MachineInt(b->left->exprtype) || !MachineInt(b->right->exprtype)) return false;
+        if (!PlainOperand(b->left) || !PlainOperand(b->right)) return false;
+        auto lt = TermOf(b->left), rt = TermOf(b->right);
+        if (!lt.ok || !rt.ok || !CmpAdmissible(lt) || !CmpAdmissible(rt)) return false;
+        auto le = [&](const Term &x, const Term &y, int64_t d) {   // x <= y + d.
+            return Query(x.b, y.b, SatAdd(SatSub(y.off, x.off), d));
+        };
+        switch (op) {
+            case T_LT:   return le(lt, rt, -1);
+            case T_LTEQ: return le(lt, rt, 0);
+            case T_GT:   return le(rt, lt, -1);
+            case T_GTEQ: return le(rt, lt, 0);
+            default:     return le(lt, rt, 0) && le(rt, lt, 0);
+        }
+    }
+
     void CondFacts(Node *c, bool truth) {
         if (mode == M_KILLS) return;
         if (auto u = Is<Unary>(c); u && u->op == T_NOT) { CondFacts(u->child, !truth); return; }
@@ -3927,8 +3967,11 @@ inline bool Call::BceWalk(BCE &b) {
                 if (pid >= 0) b.ExactLenIs(pid, nt);
                 break;
             }
-            case B_ASSERT: {
+            case B_ASSERT: case B_CONTRACT: {
+                // A contract clause's check is an assert with a message
+                // (contracts.h). One the facts already settle is dropped.
                 auto cond = FirstArg();
+                if (b.CondHolds(cond)) nobc = true;
                 if (b.mode != BCE::M_KILLS && !b.HasKillEffects(cond)) b.CondFacts(cond, true);
                 // A statically false assertion ends the path.
                 if (auto bl = Is<BoolLit>(cond); bl && !bl->val) return false;
