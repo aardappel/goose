@@ -364,3 +364,7 @@ GS_API void gs_slice_pool_free(gs_rref nodes, void *tree, int64_t idx, int64_t c
                                const gs_loc *at);
 GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int64_t idx,
                                     int64_t ol, int64_t cnt, const gs_loc *at);
+/* slice_pool's trim: discards the complete pages inside every free span of
+   `items`, elements of `elem` bytes; 0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at);

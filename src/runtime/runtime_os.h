@@ -1243,3 +1243,60 @@ GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int6
     gs_spc_release(&p, &s, idx, ol);
     return gs_slice_pool_place(nodes, tree, len, cnt, at);
 }
+
+/* slice_pool's trim: returns the complete pages inside every free span to
+   the OS (gs_discard_pages), which reads them back as zeros. `items` is the
+   pool's array viewed as bytes and `elem` its element size, so the span
+   (idx, cnt) covers bytes [idx * elem, (idx + cnt) * elem). Free spans never
+   touch, since a free merges with its neighbours, so each span is whole: a
+   page is kept only where it also holds a live element, at either end.
+
+   The walk visits each node once, so a tree whose children lead back to
+   nodes already seen is corrupt, as is a span outside the array; both abort
+   before anything is discarded past them. Pages are discarded below the
+   array's stack top only, so gs_trim_memory's commit mark is not moved.
+   0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at) {
+    gs_spcpath p;
+    uintptr_t page = (uintptr_t)gs_page_size;
+    int64_t count, visits = 0, l = 0;
+    int ok = 1;
+    if (nodes.hdr->len == 0 || items.len <= 0 || elem <= 0 || page == 0) return 1;
+    count = items.len / elem;
+    GS_SPSTART(&p, tree, nodes, at);
+    p.h = GS_SPCHEAD(&p)->height;
+    if (GS_SPBADH(p.h)) gs_spc_corrupt(&p);
+    p.node[0] = GS_SPCHEAD(&p)->root;
+    p.pos[0] = 0;
+    if (p.h ? GS_SPBADIN(&p, p.node[0]) : GS_SPBADLEAF(&p, p.node[0])) gs_spc_corrupt(&p);
+    while (l >= 0) {
+        if (l == p.h) {
+            gs_spleaf *lf = GS_SPLEAF(&p, p.node[l]);
+            if (++visits >= *p.n) gs_spc_corrupt(&p);
+            for (int64_t k = 0; k < lf->n; k++) {
+                int64_t idx = lf->idx[k], cnt = lf->cnt[k];
+                if (idx < 0 || cnt <= 0 || idx > count || cnt > count - idx) gs_spc_corrupt(&p);
+                uintptr_t lo = (uintptr_t)items.data + (uintptr_t)(idx * elem);
+                uintptr_t hi = (uintptr_t)items.data + (uintptr_t)((idx + cnt) * elem);
+                uintptr_t start = (lo + page - 1) / page * page;
+                uintptr_t end = hi / page * page;
+                if (start < end && !gs_discard_pages(start, (size_t)(end - start))) ok = 0;
+            }
+            l--;
+            continue;
+        }
+        gs_spinner *in = GS_SPINNER(&p, p.node[l]);
+        if (p.pos[l] == 0 && ++visits >= *p.n) gs_spc_corrupt(&p);
+        if (p.pos[l] >= in->n) {
+            l--;
+            continue;
+        }
+        int64_t c = in->child[p.pos[l]++];
+        if (l + 1 < p.h ? GS_SPBADIN(&p, c) : GS_SPBADLEAF(&p, c)) gs_spc_corrupt(&p);
+        l++;
+        p.node[l] = c;
+        p.pos[l] = 0;
+    }
+    return (uint8_t)ok;
+}

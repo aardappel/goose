@@ -91,3 +91,14 @@ fn recycle_all<T>(p: slice_pool<T>&) {
         p.tree.chain = i;
     }
 }
+
+// Return the memory of every free run to the OS, as os::trim_memory does for
+// stack tops: the complete pages inside each free span are discarded and read
+// back as zeros, the value alloc_slice gives them anyway. Live runs, views,
+// items.len and the address space are kept; an allocation that reuses a span
+// takes its pages again. u8 pools only for now, whose all-zero bytes are a
+// valid value. False means an OS request failed.
+fn trim(p: slice_pool<u8>&) -> bool {
+    if p.nodes.len == 0 { return true; }
+    return slice_pool_detail::trim_pages(p.nodes, p.tree, p.items[..], 1);
+}
