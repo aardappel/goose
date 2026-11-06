@@ -71,6 +71,84 @@ extern fn popcount(x: u64) -> i64 = "gs_popcount";
 extern fn clz(x: u64) -> i64 = "gs_clz";
 extern fn ctz(x: u64) -> i64 = "gs_ctz";
 
+// x's bits rotated by n, an integer of any type taken modulo the width: a
+// negative n turns the other way. Masking n first makes its conversion to
+// i64 exact at every count type. These and byte_swap are the runtime's, so
+// that each is one instruction where the C compiler has one.
+extern fn bits_detail::rotl32(x: u32, n: i64) -> u32 = "gs_rotl32";
+extern fn bits_detail::rotl64(x: u64, n: i64) -> u64 = "gs_rotl64";
+extern fn bits_detail::rotr32(x: u32, n: i64) -> u32 = "gs_rotr32";
+extern fn bits_detail::rotr64(x: u64, n: i64) -> u64 = "gs_rotr64";
+fn rotl<N>(x: u32, n: N) -> u32 { bits_detail::rotl32(x, (n & 31) as i64) }
+fn rotl<N>(x: u64, n: N) -> u64 { bits_detail::rotl64(x, (n & 63) as i64) }
+fn rotr<N>(x: u32, n: N) -> u32 { bits_detail::rotr32(x, (n & 31) as i64) }
+fn rotr<N>(x: u64, n: N) -> u64 { bits_detail::rotr64(x, (n & 63) as i64) }
+
+// x with its bytes in the opposite order.
+extern fn bits_detail::byte_swap16(x: u16) -> u16 = "gs_byte_swap16";
+extern fn bits_detail::byte_swap32(x: u32) -> u32 = "gs_byte_swap32";
+extern fn bits_detail::byte_swap64(x: u64) -> u64 = "gs_byte_swap64";
+fn byte_swap(x: u16) -> u16 { bits_detail::byte_swap16(x) }
+fn byte_swap(x: u32) -> u32 { bits_detail::byte_swap32(x) }
+fn byte_swap(x: u64) -> u64 { bits_detail::byte_swap64(x) }
+
+// Integers of any type. ilog2 is floor(log2(x)), -1 where there is none
+// (x <= 0); isqrt is floor(sqrt(x)) and aborts on a negative x.
+fn is_pow2<T>(x: T) -> bool { x > 0 && (x & (x - 1)) == 0 }
+fn ilog2<T>(x: T) -> i64 {
+    if x <= 0 { return -1; }
+    return 63 - clz(x as! u64);
+}
+fn isqrt<T>(x: T) -> T {
+    assert(x >= 0);
+    let v = x as! u64;
+    if v < 2 { return x; }
+    // Newton's steps from a power of two above the root fall to its floor.
+    var r: u64 = 1 << ((63 - clz(v)) / 2 + 1);
+    loop {
+        let next = (r + v / r) >> 1;
+        if next >= r { return r as! T; }
+        r = next;
+    }
+}
+
+// The greatest common divisor and least common multiple, never negative:
+// gcd(0, 0) == 0 and lcm(x, 0) == 0. They work on the magnitudes as u64,
+// so MIN is no special case, and assert that the result fits in T
+// (gcd(MIN, 0) and an lcm past MAX do not), as no wrapped value is either
+// one.
+fn gcd<T>(a: T, b: T) -> T { gcd_fit<T>(gcd_u64(gcd_magnitude(a), gcd_magnitude(b))) }
+fn lcm<T>(a: T, b: T) -> T {
+    let x = gcd_magnitude(a);
+    let y = gcd_magnitude(b);
+    if x == 0 || y == 0 { return 0; }
+    let q = x / gcd_u64(x, y);
+    assert(q <= 0xFFFFFFFFFFFFFFFF / y);
+    return gcd_fit<T>(q * y);
+}
+fn gcd_magnitude<T>(x: T) -> u64 {
+    if x < 0 { return 0 - (x as! u64); }
+    return x as! u64;
+}
+fn gcd_fit<T>(r: u64) -> T {
+    let t = r as! T;
+    assert(t >= 0 && t as! u64 == r);
+    return t;
+}
+// Stein's binary algorithm: shifts and subtractions in place of division.
+fn gcd_u64(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { return a | b; }
+    let shift = ctz(a | b);
+    var x = a >> ctz(a);
+    var y = b;
+    loop {
+        y = y >> ctz(y);
+        if x > y { swap(x, y); }
+        y -= x;
+        if y == 0 { return x << shift; }
+    }
+}
+
 // The values a and b refer to. `T&` of a reference type is that reference
 // (spec §3.8), so for two elements of an array of references this swaps
 // what they point to; swap_at swaps the elements themselves.
@@ -142,7 +220,7 @@ fn hash(s: u8[:]) -> u64 {
         var i = 0;
         while i < n - 8 {
             h = (h ^ hash_le64(s, i)) * 11400714819323198485;
-            h = (h << 29) | (h >> 35);
+            h = rotl(h, 29);
             i += 8;
         }
         w = hash_le64(s, n - 8);
@@ -167,15 +245,15 @@ fn hash_lanes(s: u8[:]) -> u64 {
     var i = 0;
     while i < n - 24 {
         h = (h ^ hash_le64(s, i)) * 11400714819323198485;
-        h = (h << 29) | (h >> 35);
+        h = rotl(h, 29);
         g = (g ^ hash_le64(s, i + 8)) * 11400714819323198485;
-        g = (g << 29) | (g >> 35);
+        g = rotl(g, 29);
         i += 16;
     }
-    h = h ^ ((g << 31) | (g >> 33));
+    h = h ^ rotl(g, 31);
     while i < n - 8 {
         h = (h ^ hash_le64(s, i)) * 11400714819323198485;
-        h = (h << 29) | (h >> 35);
+        h = rotl(h, 29);
         i += 8;
     }
     h = (h ^ hash_le64(s, n - 8)) * 11400714819323198485;

@@ -133,6 +133,13 @@ fn next_pow2(x: i64) -> i64         // smallest power of two >= max(x, 1)
 fn popcount(x: u64) -> i64
 fn clz(x: u64) -> i64               // 64 for 0
 fn ctz(x: u64) -> i64               // 64 for 0
+fn rotl<N>(x: u32, n: N) -> u32     // and u64; rotr rotates right
+fn byte_swap(x: u32) -> u32         // and u16, u64
+fn is_pow2<T>(x: T) -> bool         // integers; false for x <= 0
+fn ilog2<T>(x: T) -> i64            // floor(log2(x)); -1 for x <= 0
+fn isqrt<T>(x: T) -> T              // floor(sqrt(x)); aborts for x < 0
+fn gcd<T>(a: T, b: T) -> T          // never negative; gcd(0, 0) == 0
+fn lcm<T>(a: T, b: T) -> T          // never negative; 0 if either is 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
@@ -141,7 +148,25 @@ function (spec §7.14) can call them.
 
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
-`/arch:AVX` or higher for that), and a loop under TinyCC.
+`/arch:AVX` or higher for that), and a loop under TinyCC. `rotl`, `rotr`
+and `byte_swap` are the runtime's as well, and one instruction each under
+GCC, clang and MSVC; the rest are Goose.
+
+`rotl` and `rotr` take a count of any integer type modulo the width, so
+every count is defined and a negative one rotates the other way:
+`rotl(x, -1) == rotr(x, 1)` and `rotl(x, 32) == x` for a `u32`. A
+narrower value widens to both overloads equally, so it names the width to
+rotate at, as `rotl(b as u32, 4)`; `byte_swap` likewise takes a `u16`,
+`u32` or `u64` by its exact type. `ilog2` returns -1 where there is no
+logarithm, as a search returns -1 where there is no position, so
+`ilog2(x) + 1` is the number of bits a positive `x` needs.
+
+`gcd` and `lcm` take any integer type and work on the magnitudes:
+`gcd(-12, 18) == 6` and `lcm(-4, 6) == 12`. Where the result does not fit
+in the type, as `gcd(i64.min, 0)` (2^63) or `lcm` of the `u8`s 16 and 17,
+they fail an `assert`, unsigned types included; a wrapped value is no
+divisor or multiple. `isqrt` is exact at every `u64`, without going
+through a float.
 
 `rem` is the remainder of truncating division: `rem(-7, 3) == -1`, paired
 with `-7 / 3 == -2`. `div_euclid` is the quotient paired with Euclidean `%`:

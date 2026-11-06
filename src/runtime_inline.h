@@ -4117,6 +4117,72 @@ static int64_t gs_ctz(uint64_t x) {
 }
 
 )GSRT"
+R"GSRT(/* std's rotl, rotr and byte_swap, so each is one instruction rather than an
+   idiom the C compiler may or may not recognize: MSVC's intrinsics, GCC's
+   and clang's byte-swap builtins, and the rotate idiom both GCC and clang
+   turn into rol/ror. Under TinyCC they are plain shifts. The count is taken
+   modulo the width, so a negative one turns the other way. */
+static uint32_t gs_rotl32(uint32_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotl(x, (int)(n & 31));
+#else
+    uint32_t s = (uint32_t)n & 31;
+    return (x << s) | (x >> (-s & 31));
+#endif
+}
+static uint64_t gs_rotl64(uint64_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotl64(x, (int)(n & 63));
+#else
+    uint32_t s = (uint32_t)n & 63;
+    return (x << s) | (x >> (-s & 63));
+#endif
+}
+static uint32_t gs_rotr32(uint32_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotr(x, (int)(n & 31));
+#else
+    uint32_t s = (uint32_t)n & 31;
+    return (x >> s) | (x << (-s & 31));
+#endif
+}
+static uint64_t gs_rotr64(uint64_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotr64(x, (int)(n & 63));
+#else
+    uint32_t s = (uint32_t)n & 63;
+    return (x >> s) | (x << (-s & 63));
+#endif
+}
+static uint16_t gs_byte_swap16(uint16_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap16(x);
+#elif defined(_MSC_VER)
+    return _byteswap_ushort(x);
+#else
+    return (uint16_t)((x << 8) | (x >> 8));
+#endif
+}
+static uint32_t gs_byte_swap32(uint32_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap32(x);
+#elif defined(_MSC_VER)
+    return _byteswap_ulong(x);
+#else
+    return (x << 24) | ((x & 0xFF00) << 8) | ((x >> 8) & 0xFF00) | (x >> 24);
+#endif
+}
+static uint64_t gs_byte_swap64(uint64_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap64(x);
+#elif defined(_MSC_VER)
+    return _byteswap_uint64(x);
+#else
+    return ((uint64_t)gs_byte_swap32((uint32_t)x) << 32) | gs_byte_swap32((uint32_t)(x >> 32));
+#endif
+}
+
+)GSRT"
 R"GSRT(GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);

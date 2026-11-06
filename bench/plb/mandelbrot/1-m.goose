@@ -95,28 +95,28 @@ fn md5_block(h: u32[4]&, blk: u8[:]) {
         a = d;
         d = c;
         c = b;
-        b = b + ((t << MD5_S[i]) | (t >> (32 - MD5_S[i])));
+        b = b + rotl(t, MD5_S[i]);
     }
     for i in 16..32 {
         let t = a + ((d & b) | (~d & c)) + MD5_K[i] + w[(5 * i + 1) % 16];
         a = d;
         d = c;
         c = b;
-        b = b + ((t << MD5_S[i]) | (t >> (32 - MD5_S[i])));
+        b = b + rotl(t, MD5_S[i]);
     }
     for i in 32..48 {
         let t = a + (b ^ c ^ d) + MD5_K[i] + w[(3 * i + 5) % 16];
         a = d;
         d = c;
         c = b;
-        b = b + ((t << MD5_S[i]) | (t >> (32 - MD5_S[i])));
+        b = b + rotl(t, MD5_S[i]);
     }
     for i in 48..64 {
         let t = a + (c ^ (b | ~d)) + MD5_K[i] + w[(7 * i) % 16];
         a = d;
         d = c;
         c = b;
-        b = b + ((t << MD5_S[i]) | (t >> (32 - MD5_S[i])));
+        b = b + rotl(t, MD5_S[i]);
     }
     h[0] += a;
     h[1] += b;
