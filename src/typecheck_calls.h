@@ -2864,7 +2864,7 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
     for (size_t i = 0; i < a.retroots.size(); i++) {
         auto &p = a.retroots[i], &q = b.retroots[i];
         if (!sameroots(p.alts, q.alts) || p.writable != q.writable || p.byteview != q.byteview ||
-            p.freshview != q.freshview || p.set != q.set)
+            p.freshview != q.freshview || p.set != q.set || p.heldparam != q.heldparam)
             return why("return roots");
     }
     if (a.shrinkexternals != b.shrinkexternals || a.shrinkparams != b.shrinkparams)
@@ -3097,8 +3097,10 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             // bounded by the class root, as an event of its own.
             Roots held;
             held.Set(cr, ra.heldexact, nullptr, ra.slotread);
+            auto stored = vd->storedinto;
             auto first = storeevents.size();
             RecordStore(vd, held, ra.byteview, nullptr);
+            vd->storedinto = stored;
             if (!ra.heldexact)
                 for (auto k = first; k < storeevents.size(); k++) storeevents[k].incoming = true;
         }
@@ -3337,6 +3339,11 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     RecordEnvExits(spec);
     spec->inprogress = false;
     spec->record.eventend = storeevents.size();
+    spec->record.bodyevents.clear();
+    for (auto i = spec->record.eventstart; i < storeevents.size(); i++) {
+        auto &e = storeevents[i];
+        spec->record.bodyevents.push_back({ e.container, e.root, e.src, e.exact, e.classread });
+    }
     spec->rounds++;
 }
 
@@ -3353,6 +3360,16 @@ inline void TypeCheck::NamedResultCopyWarning(FnSpec *spec) {
         Warn(ns.at, cat("`", ns.local->name, "` is copied on return rather than built where the ",
                         "result goes: ", ns.why, " (§7.3)"));
     }
+}
+
+// The by-value holder parameter a returned holder value is, read as it was
+// passed: nothing but its binding stored into it, in this round or an
+// earlier one, whose checks a later round may reuse. -1 for anything else.
+inline int TypeCheck::HeldParam(FnSpec *spec, const Val &v) {
+    auto x = v.holderfrom;
+    if (!x || !x->type || IsRefOrSlice(x->type) || x->storedinto) return -1;
+    auto p = find(spec->params.begin(), spec->params.end(), x) - spec->params.begin();
+    return p < (ptrdiff_t)spec->params.size() ? (int)p : -1;
 }
 
 // Shared by `return` statements and body tails: agree the values with
@@ -3417,6 +3434,8 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         }
         // A result may come from any return: every root one gives is kept,
         // with the guarantees that hold on all paths to it.
+        auto held = holder ? HeldParam(tspec, vals[i]) : -1;
+        rr.heldparam = !rr.set || rr.heldparam == held ? held : -1;
         rr.alts.Add(roots);
         rr.writable = rr.writable && vals[i].writable;
         rr.byteview = rr.byteview || vals[i].byteview;
@@ -3511,6 +3530,12 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 t->ownerspec = CurRealFrame().spec;
                 t->growshrink = true;
                 v.Set(t, false);
+            } else if (holder && !backedge && ri.heldparam >= 0 &&
+                       ri.heldparam < (int)argvals.size()) {
+                // The holder argument handed back: what it held, each where it
+                // came from, rather than what the parameter's class bounds.
+                v.TakeAlts(ContentsOf(argvals[(size_t)ri.heldparam]));
+                v.writable = ri.writable;
             } else {
                 // Each root a return gives, merged as branches are (§9.2).
                 auto first = true;

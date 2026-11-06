@@ -578,6 +578,7 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     auto slotref = previous->slotref;
     auto constuse = previous->constuse;
     auto constwhat = previous->constwhat;
+    auto storedinto = previous->storedinto;
     auto components = std::move(previous->components);
     for (auto c : components) if (c) ResetLocal(c);
     *previous = VarDef {};
@@ -589,6 +590,7 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     previous->slotref = slotref;
     previous->constuse = constuse;
     previous->constwhat = constwhat;
+    previous->storedinto = storedinto;
     return previous;
 }
 
