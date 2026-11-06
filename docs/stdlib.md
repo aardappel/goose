@@ -1648,7 +1648,9 @@ fn error() -> u8[>..]       // why the last failing call failed
 fn check()                  // abort if the program has misused gfx
 fn driver() -> u8[>..]      // "direct3d12", "vulkan" or "metal"
 fn set_title(title: const u8[:])
+fn set_fullscreen(on: bool) -> bool   fn fullscreen() -> bool   fn maximize()
 fn screen() -> Texture      fn screen_depth() -> Texture      fn screen_size() -> int2
+fn pixel_density() -> f32   fn display_scale() -> f32
 fn time() -> f64            fn delta_time() -> f64            fn frame_count() -> i64
 ```
 
@@ -1662,6 +1664,21 @@ the display's own coordinates, and it has every pixel the display has in
 that area. On a high-density display, that is more pixels than its width
 and height; `screen_size()` counts these pixels, and the mouse position is
 reported in them.
+
+`pixel_density()` is the screen's pixels per unit of those coordinates: 2 on
+most high-density displays, 1 elsewhere, including Windows at any scale
+setting. `display_scale()` is that times the system's content scale, what the
+system draws its own text and controls at: 2 on a high-density Mac, 1.5 on
+Windows set to 150%. Both are SDL's values for the window, 1 when headless or
+with no window open, and they change as the window moves between displays, so
+a program that follows them reads them each frame. They only report: gfx and
+ui apply neither, and how big to draw is the program's choice. For a ui the
+size of the system's own, pass `display_scale()` to `ui::set_scale`.
+
+`set_fullscreen` makes the window borderless fullscreen at the desktop's
+resolution, or a window again. It returns false if the window can't change,
+and when headless. SDL changes it asynchronously, so `fullscreen()` can lag a
+frame or two behind. `maximize` fills the desktop as a window.
 
 ```goose
 guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
@@ -1692,6 +1709,7 @@ fn mouse_pos() -> float2    fn mouse_delta() -> float2      // in the screen's p
 fn mouse_wheel() -> f32     fn mouse_in_window() -> bool    // over the window, or dragging from it
 fn focused() -> bool                                      // keyboard focus at the last frame()
 fn set_mouse_relative(on: bool) -> bool    fn mouse_relative() -> bool
+fn set_cursor(shape: i64) -> bool                         // a system cursor, CURSOR_*
 fn set_cursor_visible(visible: bool) -> bool    fn cursor_visible() -> bool
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
 fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // to pixel x, y; button 0 only moves
@@ -1739,6 +1757,28 @@ cursor, and `cursor_visible()` reports that effective state inside the window.
 The preference is restored when relative mode is disabled. Hiding a cursor
 without focus fails; showing one always works while gfx is open.
 
+`set_cursor` selects one of the system's cursors, to show what a click on the
+thing under the mouse would do:
+
+| Constant | Cursor |
+|---|---|
+| `CURSOR_DEFAULT` | the arrow |
+| `CURSOR_TEXT` | a text caret |
+| `CURSOR_POINTER` | a hand, over a link or button |
+| `CURSOR_CROSSHAIR` | a crosshair |
+| `CURSOR_WAIT`, `CURSOR_PROGRESS` | busy, and busy but still clickable |
+| `CURSOR_MOVE` | moves in four directions |
+| `CURSOR_NOT_ALLOWED` | no action here |
+| `CURSOR_EW_RESIZE`, `CURSOR_NS_RESIZE` | resizes a side, both ways |
+| `CURSOR_NWSE_RESIZE`, `CURSOR_NESW_RESIZE` | resizes a corner, both ways |
+| `CURSOR_N_RESIZE`, `CURSOR_E_RESIZE`, `CURSOR_S_RESIZE`, `CURSOR_W_RESIZE` | resizes from that side |
+| `CURSOR_NW_RESIZE`, `CURSOR_NE_RESIZE`, `CURSOR_SE_RESIZE`, `CURSOR_SW_RESIZE` | resizes from that corner |
+
+It returns false for any other value or on failure; `error()` gives the
+reason. The shape persists until changed, and visibility and relative mode
+are left as they are. When headless, it checks the shape and changes nothing
+on the desktop. `close()` restores the default cursor.
+
 `focused()` reports keyboard focus, which differs from `mouse_in_window()`.
 `events()` includes `EVENT_FOCUS_GAINED` and `EVENT_FOCUS_LOST` in order with
 other input; these kinds have no payload. Losing focus clears held keys and
@@ -1754,6 +1794,35 @@ Headless gfx starts focused, with a visible cursor and relative mode disabled.
 The setters simulate their state without touching the system mouse.
 `inject_focus` queues the same transitions for testing; it does not change
 operating-system focus. Closing and reopening resets all these states.
+
+### Gamepads
+
+```goose
+fn gamepad_connected(slot: i64) -> bool
+fn gamepad_changes() -> i64                     // counts connects and disconnects
+fn gamepad_type(slot: i64) -> i64               // SDL's SDL_GamepadType, 0 for an empty slot
+fn gamepad_down(slot: i64, button: i64) -> bool
+fn gamepad_pressed(slot: i64, button: i64) -> bool      // went down since the last frame()
+fn gamepad_released(slot: i64, button: i64) -> bool
+fn gamepad_axis(slot: i64, axis: i64) -> f32    // sticks -1..1, triggers 0..1, no deadzone
+fn gamepad_rumble(slot: i64, low: f32, high: f32, ms: i64) -> bool   // strengths 0..1
+```
+
+Pads take the slots `0` to `MAX_GAMEPADS - 1` as they connect, and a slot
+frees when its pad disconnects, reporting any buttons it held as released.
+Watch `gamepad_changes` to notice either. Buttons follow SDL's standard layout,
+named by position: `GAMEPAD_SOUTH` is A on Xbox and Cross on PlayStation, then
+`GAMEPAD_EAST`, `GAMEPAD_WEST`, `GAMEPAD_NORTH`, `GAMEPAD_BACK`, `GAMEPAD_GUIDE`,
+`GAMEPAD_START`, `GAMEPAD_LEFT_STICK`, `GAMEPAD_RIGHT_STICK`,
+`GAMEPAD_LEFT_SHOULDER`, `GAMEPAD_RIGHT_SHOULDER`, `GAMEPAD_DPAD_UP`,
+`GAMEPAD_DPAD_DOWN`, `GAMEPAD_DPAD_LEFT`, `GAMEPAD_DPAD_RIGHT`. Axes are
+`AXIS_LEFT_X`, `AXIS_LEFT_Y`, `AXIS_RIGHT_X`, `AXIS_RIGHT_Y`,
+`AXIS_LEFT_TRIGGER`, `AXIS_RIGHT_TRIGGER`.
+
+An empty slot reads as nothing held, an axis of 0, and a rumble that returns
+false, as does a pad that cannot rumble. A slot, button or axis outside these
+ranges is a misuse. A machine without gamepad support has no gamepads, which
+is not an error.
 
 ### Buffers
 
@@ -1923,6 +1992,8 @@ compiler with `-DGOOSE_BUILTIN_LIBS=all` and otherwise built on first use;
 | `playing(voice) -> bool` | Whether the voice is still mixing. Stale/zero handles return false. |
 | `stop(voice)`, `stop_all()` | Stop one or every voice. Completed/stale/zero voices are harmless. |
 | `set_voice(voice, volume, pan, pitch) -> bool` | Change a live voice without restarting. |
+| `voice_position(voice) -> f64` | Seconds into a playing voice's sound; -1 when it is not playing. |
+| `seek(voice, seconds: f64) -> bool` | Move a playing voice to that many seconds into its sound. |
 | `render(out: f32[:]) -> bool` | Offline only: write interleaved stereo output and advance playback. |
 | `error() -> u8[>..]` | Most recent failure; successful calls do not clear it. |
 | `error_into(out: u8[:]) -> i64` | Copy as much error text as fits, returning its full length. |
@@ -1947,8 +2018,12 @@ querying a completed voice is normal; updating it returns false. Offline
 `render` needs an even sample count, allows empty output, and advances exactly
 `out.len / 2` frames. Device mode advances automatically; `playing()` describes
 the mixer, so a little audio already buffered by the device can remain after
-completion or stop. The module has no file decoding, streaming input,
-recording, or effects.
+completion or stop. `voice_position` allows for that buffering: with a device
+it reports what the listener is hearing, smoothed between the device's
+callbacks, so it can keep something in time with a sound. Offline it is the
+mixer's own place. `seek` past the end wraps a looping voice and moves any
+other to its last frame; a negative position fails. The module has no file
+decoding, streaming input, recording, or effects.
 
 ```goose
 import audio;
