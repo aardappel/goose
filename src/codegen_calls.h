@@ -29,7 +29,7 @@ inline void CodeGen::EmitSlidePrefix(const string &base, IntStorage ls, const st
     auto ms = T();
     L("int64_t ", ms, " = ", metasz, ";");
     L(lenlv, " = ", count, ";");
-    L("memmove(", base, ", ", base, " + ", ms, ", (size_t)(", Top(stk), " - ", base,
+    L("GS_MEMMOVE(", base, ", ", base, " + ", ms, ", (size_t)(", Top(stk), " - ", base,
       " - ", ms, "));");
     L(TopW(stk), " -= ", ms, ";");
 }
@@ -435,7 +435,7 @@ inline void CodeGen::EmitReprefix(FnSpec *sp, const Dst &dd, const string &base,
         L("int64_t ", ms, " = ", IntSize(ls), ";");
         writepref = cat("*(", IntCT(ls), " *)", base, " = (", IntCT(ls), ")", count, ";");
     }
-    L("memmove(", base, " + ", ms, ", ", base, " + ", oms, ", (size_t)(", Top(dd.s), " - ",
+    L("GS_MEMMOVE(", base, " + ", ms, ", ", base, " + ", oms, ", (size_t)(", Top(dd.s), " - ",
       base, " - ", oms, "));");
     L(writepref);
     L(TopW(dd.s), " += ", ms, " - ", oms, ";");
