@@ -4215,6 +4215,12 @@ GS_API uint64_t gs_os_random_u64(void);
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);
+/* The shortest digits of a finite double, by magnitude: the ones print
+   writes (runtime_impl.h's gs_float_digits), into dig, which holds at least
+   17. Their count, and in *point the power of ten they are a fraction of:
+   they spell 0.d1 d2 ... * 10^*point. 0 for zero, NaN and the infinities.
+   Behind std's float_text::shortest_digits, for json's format_number. */
+GS_API int64_t gs_f64_digits(double x, sl_u8 dig, int64_t *point);
 /* std's slice_pool (stdlib/slice_pool_internal.goose) keeps its freelist in
    a checked copy of the runtime's span tree (runtime_os.h): `nodes` is a
    node[>..] of GS_SPAN_NODE-byte nodes, and `tree` its header, a field
@@ -4798,6 +4804,24 @@ GS_API uint8_t gs_os_resource_dir(gs_rref out) {
     gs_bld_append(out, path, (int64_t)n);
     return 1;
 #endif
+}
+
+)GSRT"
+R"GSRT(/* The shortest digits of a finite double (runtime_ext.h). */
+GS_API int64_t gs_f64_digits(double x, sl_u8 dig, int64_t *point) {
+    uint64_t b, frac;
+    char buf[20];
+    int k, n, bexp;
+    if (x != x || isinf(x) || x == 0) return 0;
+    memcpy(&b, &x, sizeof b);
+    bexp = (int)(b >> 52) & 0x7FF;
+    frac = b & (((uint64_t)1 << 52) - 1);
+    n = gs_float_digits(bexp ? frac | (uint64_t)1 << 52 : frac, (bexp ? bexp - 1 : 0) - 1074,
+                        53, -1074, buf, &k);
+    if (n > dig.len) n = (int)dig.len;
+    memcpy(dig.data, buf, (size_t)n);
+    *point = k;
+    return n;
 }
 
 )GSRT"

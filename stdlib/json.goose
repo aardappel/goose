@@ -77,14 +77,16 @@ fn format_number(out: u8[>..]&, v: f64) {
     lay_out(out, text, len, point);
 }
 
-// format_number for v outside ryu_digits' range. It is called from a
-// guard's else only, which keeps its fallbacks, big and seldom taken, out
-// of line instead of in format_number's fast path.
+// format_number for v outside ryu_digits' range: the runtime's shortest
+// digits, found exactly in big integers, laid out as the others. It is
+// called from a guard's else only, which keeps it out of line, off
+// format_number's fast path.
 fn format_other(out: u8[>..]&, v: f64) {
     if v != v || v - v != 0.0 { out.append("null"); return; }
     if v == 0.0 { out.append(if 1.0 / v < 0.0 { "-0.0" } else { "0.0" }); return; }
     var text: u8[21] = [0; 21];
-    let len, point = general_digits(abs(v), text[1..18]);
+    var point = 0;
+    let len = float_text::shortest_digits(abs(v), text[1..18], point);
     if v < 0.0 { out.push('-'); }
     lay_out(out, text, len, point);
 }
@@ -233,35 +235,6 @@ inline fn ryu_digits(x: f64, out: u8[:]) -> i64, i64 {
     return len, len + removed - k;
 }
 
-// The digits of the shortest form of x > 0 outside ryu_digits' range, as
-// it gives them. A double whose shortest form has at most 15 significant
-// digits, as most have, is x rounded to 15 digits: above the subnormals the
-// 15-digit decimals are further apart than x's neighbours, so at most one
-// of them reads back as x, the nearest. With x * 10^s scaled into [10^14,
-// 10^15) by an exact power of ten, that decimal is the nearest integer n,
-// and it reads back as x exactly when n / 10^s, one correctly rounded
-// division, is x. shortest_digits handles the rest.
-fn general_digits(x: f64, out: u8[:]) -> i64, i64 {
-    var s = 15;
-    var p = x * 1e15;
-    while p < 1e14 && s < 22 { s++; p = x * float_text::POW10[s]; }
-    while p >= 1e15 && s > -22 { s--; p = if s >= 0 { x * float_text::POW10[s] } else { x / float_text::POW10[-s] }; }
-    if p >= 1e14 && p < 1e15 {
-        // n may round up to 10^15, one digit too many. It is checked at
-        // this s, still within POW10, and only then written as 10^14 one
-        // power of ten higher: at s = -22 that power is 10^23, past the
-        // table's end.
-        var n = (p + 0.5) as! u64;
-        let back = if s >= 0 { n / float_text::POW10[s] } else { n * float_text::POW10[-s] };
-        if back == x {
-            if n == 1000000000000000 { n = 100000000000000; s--; }
-            put_digits(out[..15], n);
-            return 15, 15 - s;
-        }
-    }
-    return shortest_digits(x, out);
-}
-
 // The decimal digits of v, below 10^out.len, zero-padded to fill out: eight
 // at a time from the right, and what is left above them two at a time.
 inline fn put_digits(out: u8[:], v: u64) {
@@ -294,84 +267,6 @@ fn put8(out: u8[:], at: i64, v: u64) {
     let w = tens | 0x3030303030303030;
     let o = out[at..at + 8];
     for j in 8 { o[j] = (w >> (8 * j)) as! u8; }
-}
-
-// The rest of general_digits: the digits of the shortest form of x > 0, into
-// `out`, with their count and the power of ten they are a fraction of. The
-// builtin text of a double has 15 significant digits if those read back,
-// which above the subnormals makes it the shortest form once its trailing
-// zeros are dropped, and the correctly rounded 17 otherwise. Here 17 digits
-// are tried at 16, and a subnormal's at every length below its own, since
-// its neighbours lie further apart: at each length the two decimals around
-// the digits held, the nearer first, through the exact parser.
-fn shortest_digits(x: f64, out: u8[:]) -> i64, i64 {
-    var text: u8[..32] = [];
-    format(text, x);
-    var len = 0;
-    var point = 0;
-    var frac = false;           // past the point
-    var lead = true;            // before the first digit other than 0
-    var i = 0;
-    while i < text.len && text[i] != 'e' {
-        let c = text[i];
-        i++;
-        if c == '.' { frac = true; continue; }
-        if lead && c == '0' {
-            if frac { point--; }
-            continue;
-        }
-        lead = false;
-        if len < out.len {
-            out[len] = c;
-            len++;
-        }
-        if !frac { point++; }
-    }
-    if i < text.len {
-        let e, end = scan_exponent(text, i + 1);
-        point += e;
-    }
-    while len > 1 && out[len - 1] == '0' { len--; }
-    let subnormal = x < 2.2250738585072014e-308;
-    guard len == 17 || subnormal else { return len, point; }
-    var try: u8[17] = [0; 17];
-    for k in (if subnormal { 1 } else { len - 1 })..len {
-        // The decimal of k digits below the digits held, and the one above.
-        copy_into(try[..k], out[..k]);
-        let up = out[k] >= '5';
-        for side in 2 {
-            var n = k;
-            var p = point;
-            if (side == 0) == up {
-                // one more in the last place, carried
-                var j = k;
-                while j > 0 && try[j - 1] == '9' { j--; }
-                if j == 0 {
-                    try[0] = '1';
-                    n = 1;
-                    p++;
-                } else {
-                    try[j - 1]++;
-                    n = j;
-                }
-            }
-            if reads_back(try[..n], p, x) {
-                copy_into(out[..n], try[..n]);
-                return n, p;
-            }
-            copy_into(try[..k], out[..k]);
-        }
-    }
-    return len, point;
-}
-
-// Whether 0.d1 d2 ... dn * 10^point reads back as x.
-fn reads_back(digits: u8[:], point: i64, x: f64) -> bool {
-    var text: u8[..40] = [];
-    text.append(digits);
-    text.push('e');
-    format(text, point - digits.len);
-    return scan_number_general(text, 0).value == x;
 }
 
 // --- scanning -------------------------------------------------------------------

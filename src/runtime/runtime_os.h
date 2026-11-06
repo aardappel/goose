@@ -535,6 +535,23 @@ GS_API uint8_t gs_os_resource_dir(gs_rref out) {
 #endif
 }
 
+/* The shortest digits of a finite double (runtime_ext.h). */
+GS_API int64_t gs_f64_digits(double x, sl_u8 dig, int64_t *point) {
+    uint64_t b, frac;
+    char buf[20];
+    int k, n, bexp;
+    if (x != x || isinf(x) || x == 0) return 0;
+    memcpy(&b, &x, sizeof b);
+    bexp = (int)(b >> 52) & 0x7FF;
+    frac = b & (((uint64_t)1 << 52) - 1);
+    n = gs_float_digits(bexp ? frac | (uint64_t)1 << 52 : frac, (bexp ? bexp - 1 : 0) - 1074,
+                        53, -1074, buf, &k);
+    if (n > dig.len) n = (int)dig.len;
+    memcpy(dig.data, buf, (size_t)n);
+    *point = k;
+    return n;
+}
+
 /* ---- Dynamic externs: the libraries the program's extern blocks name ---- */
 
 /* The spelling this platform opens for a library, UTF-8 in buf (GS_OS_PATH_MAX

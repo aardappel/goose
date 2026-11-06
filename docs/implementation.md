@@ -5802,7 +5802,10 @@ which C float literals and dumps use, is the same text, with its digits
 from `std::to_chars`. Infinities and NaNs are written by the runtime
 (`inf`, `-inf`, `nan`) rather than by the C library, which differs between
 backends: msvcrt writes `1.#INF` and `-1.#IND`, and others print a NaN's
-sign.
+sign. The same digits, without the layout, are what `gs_f64_digits` hands
+`std`'s `float_text::shortest_digits`: `json::format_number` finds the
+digits of doubles from about 1e-10 to 2^51 with ryu's loop on exact 128-bit
+values in Goose, and takes the runtime's for the rest.
 
 **Output.** `print` renders its whole line, including the newline, into a
 statement-stack builder and hands it to one `fwrite` (`gs_out_bytes`) on an

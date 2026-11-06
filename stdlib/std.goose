@@ -1903,6 +1903,12 @@ fn float_text::eisel_lemire(mant: u64, exp10: i64) -> f64, bool {
 extern fn float_text::frexp(x: f64, e: i32&) -> f64;
 extern fn float_text::ldexp(x: f64, e: i32) -> f64;
 
+// The digits of the shortest form of x, finite and not zero, by magnitude:
+// the runtime's own, what print writes, into out, which holds at least 17.
+// Their count, and in `point` the power of ten they are a fraction of:
+// 0.d1 d2 ... dn * 10^point.
+extern fn float_text::shortest_digits(x: f64, out: u8[:], point: i64&) -> i64 = "gs_f64_digits";
+
 // The double nearest to D * 10^e10, D the decimal digits text[from..to]
 // (a point among them is passed over), given an estimate v within a few
 // ulps of it. With v = m * 2^k, v steps an ulp at a time until the exact
