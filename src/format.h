@@ -422,6 +422,10 @@ inline vector<OutLine> Lines(const vector<Item> &items, const unordered_map<int,
                 c.anew = indent;
             }
         }
+        // Deeply nested line-per-bracket input otherwise emits O(depth^2)
+        // spaces. Keep formatting the same tokens, but stop moving lines
+        // farther right after this display indentation.
+        indent = min(indent, 256);
         // The cells, where the line starts a statement or an element that
         // declares a name with its type.
         auto prefix = i;
