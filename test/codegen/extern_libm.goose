@@ -3,8 +3,9 @@
 // libm functions the compiler registers (src/jit_runtime.c) and declares
 // (src/runtime/jit_c.h), so each must link there and return the right
 // value, which C's implicit int return for an undeclared function would
-// not. The arguments give results exact in every libm, but for tgamma,
-// which is compared within a tolerance. lrint and its kin are left out:
+// not. The arguments give results exact in every libm, but for tgamma and
+// cbrt, which are compared within a tolerance: glibc's cbrt(27.0) is one
+// ulp above 3.0. lrint and its kin are left out:
 // they return long or long long, and no one Goose type is the same C type
 // as both on every platform, which a prototype beside <math.h>'s must be.
 
@@ -73,7 +74,7 @@ fn main() {
     var q: i32 = 0;
     let r = remquo(10.0, 3.0, q);
     print(frac, " ", ip, " ", r, " ", q);
-    print(cbrt(27.0), " ", hypot(3.0, 4.0), " ", expm1(0.0));
+    print(fabs(cbrt(27.0) - 3.0) < 1e-12, " ", hypot(3.0, 4.0), " ", expm1(0.0));
 
     let one: f32 = 1.0;
     let zero: f32 = 0.0;
@@ -91,5 +92,5 @@ fn main() {
     var qf: i32 = 0;
     let rf = remquof(10.0, 3.0, qf);
     print(fracf, " ", ipf, " ", rf, " ", qf);
-    print(cbrtf(27.0), " ", hypotf(3.0, 4.0), " ", expm1f(zero));
+    print(fabsf(cbrtf(27.0) - 3.0) < 1e-5, " ", hypotf(3.0, 4.0), " ", expm1f(zero));
 }
