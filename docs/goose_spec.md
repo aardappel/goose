@@ -3169,7 +3169,7 @@ call are inside the cycle too. Rebinding one of the activation's own
 reference variables (`cur .= cur.next`) is not such a store: the variable
 dies with the activation, and what it is bound to came from an activation
 that outlives it.
-References rooted outside the cycle are unrestricted. In particular, this
+References rooted outside the cycle may be stored. In particular, this
 covers a pool handed to the cycle by reference: a parameter whose pointee
 is resizable-class (no cycle function can hand such a value on to the
 cycle, since it holds none across a call into the cycle). So a recursive
@@ -3181,7 +3181,11 @@ keeps its pool, its key table and its input as locals of a non-recursive
 references rooted at them. Because the cycle's functions are checked
 against the entry call's roots, every recursive call must pass such a pool
 by the same reference the entry call did: swapping two pools, or passing a
-different one, at a back edge is a compile error.
+different one, at a back edge is a compile error. For the same reason a call
+into the cycle is checked against the stores its callee's body makes: a back
+edge that gives a parameter storage outliving what the body stores through
+it (a global, where the entry call gave a node of the caller's pool) is
+rejected as a store there would be (§9.2).
 
 A reference or slice parameter that the cycle passes on is rooted outside
 the cycle in the same way, whatever the size of its pointee. Suppose that:

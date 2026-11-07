@@ -3118,7 +3118,12 @@ annotated body stay in `FnSpec`. Wherever a call applies its callee's
 record while the callee is in progress, `RecordOf` reads the previous
 record: `CallResult`, `ApplyCalleeShrinks`, `ApplyCalleeStores`,
 `ApplyCalleeGrows`, `ApplyCalleeLiveShrinks`, `ApplyCalleeRebinds`,
-`NamedOutside`.
+`NamedOutside`. Since the body was checked against the first call's
+arguments, a call into the cycle that maps a store through an argument
+checks the store's depth there even where the argument is exact, which
+elsewhere only an inexact one needs: a back edge may hand a parameter a
+global where the entry call gave it a local that outlives what the body
+stores there.
 
 The round marks the members `stale` and checks the head's body again on
 the same clone. A stale member is checked again when a call reaches it

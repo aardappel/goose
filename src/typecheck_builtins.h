@@ -2023,17 +2023,29 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         // every storage there may be behind it.
         auto widen = e.bound || !cr.Exact();
         if (e.bound) cr.Weaken();
+        // A call into a cycle reuses a body checked for the arguments the
+        // cycle's first call gave it, so what it passes here is new to that
+        // body's §9.2 checks as well (§7.8). A local of a cycle member is
+        // left to the cycle store rule, which rejects its store at the
+        // store itself (FitsAt).
+        auto cyclecall = spec->inprogress || spec->incycle;
+        auto cyclelocal = [](VarDef *x) {
+            auto o = x ? x->ownerspec : nullptr;
+            return o && (o->incycle || (o->sf && o->sf->isrec));
+        };
         auto pname = spec->sf->params[(size_t)p].name;
         for (auto &t : ShrinkTargets(cr, e.reached, e.slot)) {
             for (auto &a : r.alts) {
-                if (widen && Depth(a.root) > Depth(t.root)) {
+                if ((widen || (cyclecall && !cyclelocal(a.root))) &&
+                    Depth(a.root) > Depth(t.root)) {
                     auto rname = a.root ? a.root->name : string_view("static data");
                     Error(at, cat("call ", spec->sf->name, " stores a reference rooted at ",
                                   rname,
                                   e.bound ? cat(" into what its parameter ", pname,
                                                 " leads to, which may be ")
                                           : cat(" through its parameter ", pname,
-                                                ", whose argument may point into "),
+                                                ", whose argument ",
+                                                cr.Exact() ? "points" : "may point", " into "),
                                   TargetStr(t), ", which ", rname, " does not outlive (§9.2)"));
                 }
                 if (once(t.root, a.root))
