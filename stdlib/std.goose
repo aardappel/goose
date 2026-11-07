@@ -60,9 +60,9 @@ checkfree fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
 
 // The smallest power of two that is at least max(x, 1).
 checkfree fn next_pow2(x: i64) -> i64 {
-    var p = 1;
-    while p < x { p = p * 2; }
-    return p;
+    if x <= 1 { return 1; }
+    assert(x <= 1 << 62);
+    return 1 << (64 - clz((x - 1) as! u64));
 }
 
 // The bits set, and the leading / trailing zero bits, 64 for zero: the
