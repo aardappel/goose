@@ -313,8 +313,11 @@ costs above:
   valid value, such as `u8`; a type holding a non-optional reference has none.
   `trim(pool: slice_pool<u8>&)` does this for `u8` pools, when the program
   asks, as `trim_memory` does for stack tops. Other element types whose zero
-  bytes are valid (fixed-size, no non-optional reference, no index or bound
-  type) could follow.
+  bytes are valid could follow: fixed-size, with no index or bound type, and
+  with no non-optional reference, self-relative ones included. An optional
+  relative reference reads offset 0 as null, but a non-optional self-relative
+  one has no null sentinel: offset 0 is the address of its own field (spec
+  §3.9), so a zeroed one would refer to its own offset field as a `T`.
 * **Per-pool reservations:** a pool on a stack of its own size, or on a stack
   from option A.
 * **Relocating self-relative references:** tracking the region a relative
