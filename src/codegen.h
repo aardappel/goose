@@ -172,6 +172,7 @@ struct CodeGen {
     string exportprotos;
     bool usesthreads = false;
     bool library = false;
+    bool sharedlibrary = false;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
     // that never takes a long-distance return still prints the right answer
@@ -1518,8 +1519,10 @@ struct CodeGen {
     // process state that the driver must install before constructing us.
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
-            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0)
-        : ast(_ast), library(_library), norfcheck(_norfcheck), maxstacks(_maxstacks) {
+            bool _norfcheck = false, bool _library = false, bool _sharedlibrary = false,
+            int64_t _maxstacks = 0)
+        : ast(_ast), library(_library), sharedlibrary(_sharedlibrary),
+          norfcheck(_norfcheck), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();

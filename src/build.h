@@ -17,7 +17,8 @@ struct BuildOptions {
     bool verbose = false;     // -v: print every command and what it prints
     bool dryrun = false;      // --dry-run: print the commands and run nothing
     bool standalone = false;  // --standalone: no runtime object
-    string exe;               // -o: the executable; "" puts it beside the root source
+    bool shared = false;      // --shared: build a self-contained shared library
+    string exe;               // -o: the executable/library; "" puts it beside the root source
 };
 
 inline string AbsolutePath(const string &path) {
@@ -146,6 +147,32 @@ struct Builder {
         return Run(argv, what, logfile);
     }
 
+    // Compiles the program C and links it with package response files into a
+    // shared library. Shared Goose builds are standalone so the generated C
+    // contains its runtime; package objects are already PIC (native.h).
+    bool LinkSharedProgram(const string &src, const vector<string> &rsps, const string &out,
+                           const string &builddir, const string &logfile) const {
+        vector<string> argv = { tc.cc };
+        for (auto &f : CFlags()) argv.push_back(f);
+        if (tc.style == "msvc") {
+            argv.push_back("/LD");
+            argv.push_back(cat("/Fe:", out));
+            argv.push_back(cat("/Fo:", builddir, "\\"));
+            if (opts.debug) argv.push_back(cat("/Fd:", builddir, "\\", PathStem(out), ".pdb"));
+            argv.push_back(src);
+            for (auto &r : rsps) argv.push_back(cat("@", r));
+        } else {
+            argv.push_back("-fPIC");
+            argv.push_back("-shared");
+            argv.push_back(src);
+            argv.push_back("-o");
+            argv.push_back(out);
+            for (auto &r : rsps) argv.push_back(cat("@", r));
+            for (auto &l : SystemLibs()) argv.push_back(l);
+        }
+        return Run(argv, cat("building ", out), logfile);
+    }
+
     // Compiles `src` and links it with `objects` and the response files
     // `rsps` into `exe`, with `builddir` taking the intermediates.
     bool Link(const string &src, const vector<string> &objects, const vector<string> &rsps,
@@ -205,6 +232,36 @@ inline string RuntimeObject(const Builder &b) {
     ec = RenamePath(tmp, obj);
     if (ec) throw CompileError { cat("cannot publish ", obj, ": ", ec.message()) };
     return obj;
+}
+
+inline string SharedLibraryPath(const string &rootfile, const string &requested) {
+    if (!requested.empty()) return requested;
+    #ifdef _WIN32
+        return cat(DirOf(rootfile), PathStem(rootfile), ".dll");
+    #elif defined(__APPLE__)
+        return cat(DirOf(rootfile), "lib", PathStem(rootfile), ".dylib");
+    #else
+        return cat(DirOf(rootfile), "lib", PathStem(rootfile), ".so");
+    #endif
+}
+
+// What `goose build --shared` does after code generation. Its C is emitted in
+// library mode (no C main, but goose_init/goose_exit and export fn wrappers)
+// and standalone mode so the .so/.dylib/.dll owns its Goose runtime.
+inline int BuildSharedLibrary(const string &rootfile, const string &cfile, const string &builddir,
+                              const Toolchain &tc, const BuildOptions &opts, FILE *msgs,
+                              const vector<string> &nativersps) {
+    Builder b { tc, opts, msgs };
+    auto out = SharedLibraryPath(rootfile, opts.exe);
+    if (!opts.dryrun) {
+        std::error_code ec;
+        auto outdir = filesystem::path(out).parent_path();
+        if (!outdir.empty()) filesystem::create_directories(outdir, ec);
+    }
+    if (!b.LinkSharedProgram(cfile, nativersps, out, builddir, cat(builddir, "/cc.log")))
+        return 1;
+    if (!opts.dryrun) fprintf(msgs, "built %s\n", out.c_str());
+    return 0;
 }
 
 // What `goose build` does once the compiler has written the program's C to

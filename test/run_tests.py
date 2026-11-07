@@ -73,6 +73,7 @@ to a process.
 """
 
 import argparse
+import ctypes
 import json
 import concurrent.futures
 import os
@@ -2487,6 +2488,39 @@ def main():
                 good = code == 0 and out2.strip() == "verbs"
                 out, err = out + out2, err + err2
             checks.append(("build", good, out + err))
+
+            shared_src = gendir / "verbs_shared.goose"
+            tc.write_text(shared_src,
+                          'export "goose_add" fn add(a: i32, b: i32) -> i32 { a + b }\n')
+            shared_suffix = ".dll" if tc.IS_WINDOWS else ".dylib" if tc.IS_MACOS else ".so"
+            shared_out = gendir / ("verbs_shared" + shared_suffix)
+            code, out, err = tc.run_capture(
+                [exe, "build", "--shared", "-o", str(shared_out), shared_src])
+            good = code == 0 and shared_out.exists()
+            detail = out + err
+            if good:
+                try:
+                    lib = ctypes.CDLL(str(shared_out.resolve()))
+                    lib.goose_init.argtypes = [ctypes.c_int,
+                                               ctypes.POINTER(ctypes.c_char_p)]
+                    lib.goose_init.restype = None
+                    lib.goose_add.argtypes = [ctypes.c_int32, ctypes.c_int32]
+                    lib.goose_add.restype = ctypes.c_int32
+                    lib.goose_exit.argtypes = []
+                    lib.goose_exit.restype = None
+                    lib.goose_init(0, None)
+                    good = lib.goose_add(20, 22) == 42
+                    lib.goose_exit()
+                except (AttributeError, OSError) as e:
+                    good = False
+                    detail += str(e)
+            checks.append(("build --shared", good, detail))
+
+            code, out, err = tc.run_capture([exe, "check", "--shared", probe])
+            checks.append(("check --shared (refused)",
+                           code == 1 and "--shared is an option of goose build" in err,
+                           out + err))
+
             dry = gendir / ("verbs_dry" + tc.EXE_SUFFIX)
             code, out, err = tc.run_capture([exe, "build", "--dry-run", "-o", str(dry), probe])
             checks.append(("build --dry-run", code == 0 and not dry.exists() and
