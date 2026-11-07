@@ -4325,6 +4325,20 @@ blocks codegen opens around runtime work, which are not counted. Ordinary
 programs stay far below the limit: the deepest inline in the tests,
 samples and benchmarks is 18 blocks deep.
 
+Expressions are bounded in codegen. The 256 brackets of clang count the
+expression in a statement together with the blocks around it, and MSVC
+(around 1,200 brackets), clang-cl (around 750, where its stack runs out)
+and TinyCC run out of parser stack. A scalar value whose expression nests
+`SPILLDEPTH` (32) levels deep or more, counting a control expression as a
+leaf (`NestsDeep`), is read into a temporary where `GenX` produces it
+(`Spills`), so a sum of 20,000 terms becomes a statement per term past the
+first 32. A level costs at most about 4 brackets once runtime.h's
+arithmetic macros are expanded, so an expression stays near 130 of them,
+which leaves clang room for the 64 blocks of `MAXNEST` around it. `HasStmts` reports such a node as one
+with statements, so operands to its left are read into temporaries
+first, as for a call (§3.15). No program in the tests, samples or
+benchmarks nests that deep; the deepest nests between 16 and 31 levels.
+
 **Base-case inlining** (`BaseCaseInliner`, `optimize_basecase.h`) applies
 to a `recursive fn` whose body *starts* with `if c { return e; }`
 (`SetupLeading`; or the negated `if c { … } else { return e; }` that

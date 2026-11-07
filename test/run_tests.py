@@ -2534,6 +2534,16 @@ def main():
             r.fail("emit order", str(e))
     r.show_task(emit_order)
 
+    def deep_expressions():
+        from deep_expressions import check_deep_expressions
+        try:
+            check_deep_expressions(exe, cc, gendir)
+            r.ok("deep expressions: sums thousands of terms long, written as C a compiler "
+                 "takes, run" + (" and built" if cc else "") + ", operands still in order")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("deep expressions", str(e))
+    r.show_task(deep_expressions)
+
     def diagnostics_json():
         from diagnostics_json import check_diagnostics_json
         try:
