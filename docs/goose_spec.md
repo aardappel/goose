@@ -3202,17 +3202,54 @@ the cycle passes a different value. For example, a recursive walk over a context
 of borrowed tables (A.6) can store views read through the context into tables
 reached through that context.
 
-A parameter whose argument on every call is a reference or slice read
-through one such parameter, or through a pool, also points outside the
-cycle in every activation, though not at the same storage. So what is
-rooted at that parameter may be stored in the same way, but the parameter
-is not itself storage to store into. For example, a builder hands the node
-read through the context to the function that links it under a new node
-(`rest(c, c.nodes.push(…))`). Nothing requires a recursive call to pass
-such a parameter on, so the parameter is restricted only once a store
-relies on it. A later call into the cycle that passes it anything else is a
-compile error reported at the store, and such a call before any store makes
-the store the error. (Further refinements are future work, TODO.)
+A parameter can also point outside the cycle in every activation, though
+not at the same storage in each. That holds when the call that first
+reached the function passed it a reference or slice rooted outside every
+recursive cycle, or read out of storage there, or read through such a
+parameter or a pool. Every call back into the cycle must then pass it one
+of these:
+
+* the parameter itself, or what was read through it;
+* a reference or slice rooted in storage the cycle may store into, or read
+  out of such storage. That is a global, a pool, a local of an enclosing
+  function outside the cycle, or storage reached through a parameter that
+  points outside the cycle. The cycle store rule keeps references to the
+  cycle's locals out of all of these, so whatever is read out of them points
+  outside the cycle too.
+
+Each such argument must also outlive what the first call passed, since it
+may be stored wherever that argument may be (§9.2). What is rooted at
+such a parameter, or read through it, may then be stored in the same way,
+but the parameter is not itself storage to store into. For example, a
+builder hands the node read through the context to the function that links
+it under a new node (`rest(c, c.nodes.push(…))`). A tree walk gives the node
+the entry call passed, and then each node it collected into a caller's
+array:
+
+```goose
+struct Node { first: Node&?, next: Node&?, n: i64 }
+
+fn collect(root: Node&) -> i64 {
+    var out: Node&[>..<] = [];
+    recursive fn walk(node: Node&, depth: i64) {
+        var k = node.first;
+        while k != null { out.push(k); k .= k.next; }
+        if depth > 0 {
+            let end = out.len;
+            for i in 0..end { walk(out[i], depth - 1); }
+        }
+    }
+    walk(root, 2);
+    return out.len;
+}
+```
+
+A parameter of a type that holds references by value, such as an enum
+whose payload holds one, is judged by where those references point, in the
+same way. Nothing requires a recursive call to pass such a parameter on, so
+the parameter is restricted only once a store relies on it. A later call
+into the cycle that passes it anything else is a compile error reported at
+the store, and such a call before any store makes the store the error.
 
 **Cycle return roots.** A back edge reaches a function whose own returns may
 not have been checked yet, so the roots of its result cannot be taken from
@@ -4793,8 +4830,9 @@ its resolution is described.
     frame.
     Second, the recursive-cycle store rule (§7.8) admits as roots of stored
     references only globals, free variables, pool parameters and parameters
-    that every call back into the cycle passes on. A reference to a
-    caller's fixed-size local that such a call replaces is still
+    that every call back into the cycle passes on or gives storage outside
+    the cycle. A reference to a caller's fixed-size local that such a call
+    replaces is still
     pass-down-only inside a cycle, and so is a merged value that may be one
     rooted at a parameter the cycle passes on.
     (One-root-per-reference-variable is a language rule, §9.2; a function's
@@ -4808,10 +4846,13 @@ its resolution is described.
    empty, as the only sanctioned "move".
 5. **Cycle store rule refinement** (§7.8) — the pass-down-only rule is
    conservative. Parameters that the cycle passes on as they were given
-   are exempt. A parameter that a recursive call gives other storage stays
-   pass-down-only, even where every activation's store would outlive what
-   it is given. So does a parameter whose first argument is a local of a
-   recursive function outside the cycle. Explore per-activation reasoning.
+   are exempt, and so are parameters that every recursive call gives
+   storage outside the cycle, such as what it reads out of a caller's
+   array. A parameter that a recursive call gives other storage of the
+   cycle's own stays pass-down-only, even where every activation's store
+   would outlive what it is given. So does a parameter whose first
+   argument is a local of a recursive function outside the cycle. Explore
+   per-activation reasoning.
 6. **"Current pool" implicit destinations** — allocation without naming the
    array, bound at compile time to the in-scope array of the right type.
 7. **Mixed-type pools & pool GC** — internal vs external references, inline

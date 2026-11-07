@@ -1486,7 +1486,9 @@ references in a pool class are exempt from the cycle store rule.
 `classpool` is the global pool every member is rooted in, when all agree
 (§3.13). Any other class whose members are all exactly rooted references or
 slices is a **threaded** candidate (`TypeCheck::ThreadedClass`), exempt in
-the same way while every call back into its cycle passes it on (§3.11). A
+the same way while every call back into its cycle passes it on or gives it
+storage outside the cycle, and so is one whose arguments were each read
+out of such storage (`bounded`, §3.11). A
 synthetic class root is told apart from a variable by its `classfrom`,
 since a variable whose declaration is being checked has no type yet
 either.
@@ -1544,9 +1546,12 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    activation's own reference variable is exempt, §7.8):
    * a reference into a global, a pool-class parameter or a local of an
      enclosing non-cycle function (`CycleStorable`);
-   * a reference into a threaded parameter class, where every class among
-     the destination's storages is threaded too (`ThreadStorable`,
-     `ThreadedChain`, §3.11);
+   * a reference into a threaded parameter class whose ultimate root lies
+     outside every cycle (`ThreadStorable`), bounded or not, where every
+     class among the destination's storages is a pool or threaded and not
+     bounded (`ThreadedChain`, §3.11). A holder parameter's class is what
+     its references point at, so a holder whose contents are rooted at a
+     threaded class counts as such a reference;
 5. the store is **recorded** on each of those storages, with one event per
    alternative of the value.
 
@@ -3028,12 +3033,14 @@ cycle member.
 
 **Threaded parameters.** A parameter class other than a pool is threaded
 (`ThreadedClass`, noted by `NoteThreadedClass`) when the call that created
-it rooted all of its members exactly, as references or slices. It stays
-threaded until a call into its cycle passes one of its parameters
-something other than an exact root at the same ultimate root, reached
-through classes that are themselves pools or threaded
-(`ValidateThreadArgs`, `ThreadedChain`). While the class is threaded, it
-points in every activation to where its creating call's argument did.
+it rooted all of its members exactly, as references or slices. A call into
+its cycle that passes one of its parameters the parameter itself, or an
+exact root at the same ultimate root reached through classes that are
+themselves pools or threaded, keeps it so (`ValidateThreadArgs`,
+`ThreadedChain`). One that passes anything else bounds it (below) where
+what it passes points outside the cycle (`PointsOutside`), and breaks it
+otherwise. While the class is threaded and not bounded, it points in every
+activation to where its creating call's argument did.
 Both back edges and calls that reach a finished member of a cycle still
 being checked are checked this way: the member's body's calls back into
 the cycle were checked with what the member was first given, and they pass
@@ -3061,14 +3068,34 @@ at a threaded class relies on it like any other value: every one of its
 roots must be storable.
 
 A class is also threaded, but `bounded` (`ThreadedClass::bounded`), when
-each of its members' arguments was read through one pool class or one
-class threaded exactly (the argument has one alternative, inexact, rooted
-there). What a bounded class points at lies in storage that the pool or
-threaded class leads to, outside the cycle, which makes it storable. But
-that may be different storage in each activation, so `ThreadedChain`
-accepts it for no destination, and a class created from a bounded class
-is bounded as well. A call into the cycle keeps a bounded class threaded
-if it passes one alternative at the same ultimate root, exact or not.
+each of its members' arguments has one alternative, inexact, rooted at a
+pool class or a class threaded exactly (read through it), or at a
+variable (read out of it, or a reference it holds). A holder parameter's
+class (§3.5) is judged by its argument's contents, exact or not, and is
+threaded only this way. What a bounded class points at lies outside the
+cycle in every activation as long as `ThreadStorable` finds its ultimate
+root there, which makes it storable. But that may be different storage in
+each activation, so `ThreadedChain` accepts it for no destination, and a
+class created from a bounded class is bounded as well.
+
+A call into the cycle keeps a bounded class threaded if it passes one
+alternative at the same ultimate root, exact or not, reached through a
+class `ThreadedChain` accepts. A call that passes a threaded class
+anything else bounds it, and its heirs with it (`BoundThread`, which also
+fills `ThreadedClass::why`), when every alternative of the argument (of
+its contents, for a holder) points outside the cycle and outlives the
+class (`PointsOutside`): the class itself, exactly or as a bound, which is
+what was read through it or out of storage holding only what it points at;
+a root `CycleStorable` accepts, which is what was read out of a global, a
+pool or a free variable; or a class `ThreadStorable` accepts, whose heir
+the class becomes. The cycle store rule is what keeps references to a
+cycle's locals out of all of these, so what is read out of them points
+outside the cycle as well. The depth check (no alternative deeper than the
+class) keeps the argument alive as long as the creating call's, against
+which the body checked its stores, and a store such a call makes in a
+deeper activation reaches its callers through the back edge's mapping of
+the record (`ApplyCalleeStores`), so their shrink scans see where it went.
+Any other argument breaks the class (`Unthread`).
 
 A recursion whose types never repeat has no back edge: each level of the
 recursion is a new specialization, checked inside the one before, until
@@ -3120,7 +3147,8 @@ it:
 * changed no member's record (`SameRecord`: normal completion, return
   roots, shrinks and their balances, growths, stores through classes,
   pairs, rebinds);
-* broke no threaded class; and
+* broke or bounded no threaded class (`threadbounds` counts the latter);
+  and
 * noted no fact about a variable declared outside the cycle's activations
   (`CycleRound`, marked by `NoteFact`). Such a variable is one variable at
   every level of a nested function's recursion, which a round may have
@@ -7098,8 +7126,9 @@ refuses outright:
   rooted at globals or static data (TODO 0d); a long-distance return out of
   a function value's body is mapped through the calls it leaves (§3.12).
 * Inside a recursive cycle, a reference rooted at a caller's fixed-size local
-  is pass-down only unless the parameter it came through is threaded (§3.11).
-  The spec's cycle store rule is stated the same way and is marked for
+  is pass-down only unless the parameter it came through is threaded (§3.11):
+  every call into the cycle passes it on or gives it storage outside the
+  cycle. The spec's cycle store rule is stated the same way and is marked for
   refinement (TODO 5). Beyond the spec's rule, a merged value or a rebound
   variable that may be rooted at a threaded class is pass-down only; the
   spec stores such a value where each of its roots could be.

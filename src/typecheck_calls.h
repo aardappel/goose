@@ -2427,36 +2427,68 @@ inline void TypeCheck::ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node
 }
 
 // A call back into a recursive cycle that passes a threaded class
-// (ThreadedClass) other storage than the call that created it breaks it;
-// one that passes it a class of the calling activation keeps it threaded
-// only while that class stays so. A call to a finished member of a cycle
-// still being checked counts as well, not only a back edge: the body's
-// calls back into the cycle were checked with what the member was first
-// given, so they pass on whatever this call gives it.
+// (ThreadedClass) other storage than the call that created it keeps it
+// threaded, but bounded, where what it passes points outside the cycle
+// (PointsOutside), and breaks it otherwise; one that passes it a class of
+// the calling activation keeps it threaded only while that class stays so.
+// A call to a finished member of a cycle still being checked counts as
+// well, not only a back edge: the body's calls back into the cycle were
+// checked with what the member was first given, so they pass on whatever
+// this call gives it.
 inline void TypeCheck::ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
     for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
         auto pr = spec->params[i]->ref.Root();
         auto it = pr ? threadedclasses.find(pr) : threadedclasses.end();
         if (it == threadedclasses.end() || it->second.broken) continue;
-        if (argvals[i].None()) continue;   // Nowhere yet: the next round knows.
-        auto ar = argvals[i].Root();
+        // A holder's class is what its references point at.
+        auto holder = !IsRefOrSlice(spec->argtypes[i]);
+        auto av = holder ? ContentsOf(argvals[i]) : argvals[i].AsRoots();
+        if (av.None()) continue;   // Nowhere yet, or nothing: the next round knows.
+        auto ar = av.Root();
+        if (av.Exact() && ar == pr) continue;
         // A class read through a threaded one takes what is read through it
         // or rooted at it.
-        auto rooted = argvals[i].Exact() || (it->second.bounded && argvals[i].alts.size() == 1);
-        if (!rooted || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
-            Unthread(pr, cat(spec->inprogress ? "the recursive call at " : "the call at ",
-                             Where(callnode->line), " passes ", spec->params[i]->name,
-                             " rooted differently from ",
-                             spec->inprogress ? "the cycle's entry call"
-                                              : cat("the first call of ", spec->sf->name)));
-            continue;
-        }
-        if (ar == pr) continue;
-        if (auto at = threadedclasses.find(ar); at != threadedclasses.end()) {
-            auto &heirs = at->second.heirs;
-            if (find(heirs.begin(), heirs.end(), pr) == heirs.end()) heirs.push_back(pr);
+        auto rooted = !holder && (av.Exact() || (it->second.bounded && av.alts.size() == 1));
+        auto why = cat(spec->inprogress ? "the recursive call at " : "the call at ",
+                       Where(callnode->line), " passes ", spec->params[i]->name,
+                       " rooted differently from ",
+                       spec->inprogress ? "the cycle's entry call"
+                                        : cat("the first call of ", spec->sf->name));
+        if (rooted && UltimateRoot(pr) == UltimateRoot(ar) && ThreadedChain(ar)) {
+            if (auto at = threadedclasses.find(ar); at != threadedclasses.end()) {
+                auto &heirs = at->second.heirs;
+                if (find(heirs.begin(), heirs.end(), pr) == heirs.end()) heirs.push_back(pr);
+            }
+        } else if (vector<VarDef *> through; PointsOutside(pr, av, through)) {
+            for (auto r : through) {
+                auto &heirs = threadedclasses[r].heirs;
+                if (find(heirs.begin(), heirs.end(), pr) == heirs.end()) heirs.push_back(pr);
+            }
+            BoundThread(pr, why);
+        } else {
+            Unthread(pr, why);
         }
     }
+}
+
+// Whether each place v may point is outside the recursive cycle, and
+// outlives what threaded class pr stands for, so that pr points outside the
+// cycle in every activation when given v: storage pr leads to (pr itself, or
+// a bound at it, as what was read through it or out of storage only ever
+// given what pr points at is), storage the cycle may store into (a global, a
+// pool, a local of an enclosing function outside the cycle, or a bound at
+// one, as what was read out of it is: the cycle store rule keeps references
+// into the cycle out of it), or a threaded class that points outside the
+// cycle, which `through` collects.
+inline bool TypeCheck::PointsOutside(VarDef *pr, const Roots &v, vector<VarDef *> &through) {
+    return !v.unknown && v.All([&](const RootAlt &a) {
+        if (a.root == pr) return true;
+        if (Depth(a.root) > Depth(pr)) return false;
+        if (CycleStorable(a.root)) return true;
+        if (!ThreadStorable(a.root)) return false;
+        through.push_back(a.root);
+        return true;
+    });
 }
 
 // Whether what is rooted at r is the same storage in every activation, as
@@ -2518,12 +2550,28 @@ inline void TypeCheck::Unthread(VarDef *cls, const string &why) {
     for (size_t k = 0; k < tc.heirs.size(); k++) Unthread(tc.heirs[k], why);
 }
 
-// The cycle store rule's diagnostic (§7.8), with what broke the threaded
-// class the stored reference is rooted at, where it is one, and `more`.
+// A threaded class still points outside its cycle in every activation, but
+// no longer at the same storage, as `why` says: a store relying on what it
+// leads to being that storage is an error there, as is every one to come.
+// The classes resting on it are bounded with it.
+inline void TypeCheck::BoundThread(VarDef *cls, const string &why) {
+    auto it = threadedclasses.find(cls);
+    if (it == threadedclasses.end() || it->second.broken || it->second.bounded) return;
+    auto &tc = it->second;
+    tc.bounded = true;
+    tc.why = why;
+    threadbounds++;
+    for (size_t k = 0; k < tc.heirs.size(); k++) BoundThread(tc.heirs[k], why);
+}
+
+// The cycle store rule's diagnostic (§7.8), with what broke or bounded the
+// threaded class the stored reference is rooted at, where it is one, and
+// `more`.
 inline string TypeCheck::CycleStoreError(VarDef *root, const string &more) {
     string s = "references may only be passed down, not stored, inside a recursive cycle (§7.8)";
     auto sep = ": ";
-    if (auto it = threadedclasses.find(root); it != threadedclasses.end() && it->second.broken) {
+    if (auto it = threadedclasses.find(root);
+        it != threadedclasses.end() && !it->second.why.empty()) {
         Append(s, sep, it->second.why);
         sep = "; ";
     }
@@ -2810,8 +2858,8 @@ inline int TypeCheck::EnvReach(const MatchInfo &mi) {
 // A specialization's body, checked once -- or, for the head of a recursive
 // cycle, as many times as it takes for what the cycle's members record (the
 // normal completion, return roots, shrinks, growths, stores and rebinds, and
-// the threaded classes that broke) to settle, and the facts about the
-// variables outside the cycle's activations (CycleRound). Each round reads
+// the threaded classes that broke or were bounded) to settle, and the facts
+// about the variables outside the cycle's activations (CycleRound). Each round reads
 // the round before's records at its back edges (RecordOf), and the first
 // reads none: a back edge may return, has no other effects and a result that
 // points nowhere yet, which every rule passes by. Every member is checked again in
@@ -2838,6 +2886,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                                 " does not settle (internal limit of 8 rounds)"));
         auto broken = 0;
         for (auto &[cls, tc] : threadedclasses) broken += tc.broken;
+        auto bounds = threadbounds;
         auto members = spec->cyclemembers;
         if (getenv("GOOSE_ROUNDS"))
             fprintf(stderr, "round %d of %.*s begins (%d members)\n", spec->rounds + 1,
@@ -2853,7 +2902,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         if (outer && getenv("GOOSE_ROUNDS"))
             fprintf(stderr, "round %d of %.*s: a variable outside it changed\n", spec->rounds,
                     (int)spec->sf->name.size(), spec->sf->name.data());
-        auto settled = broken == 0 && !outer;
+        auto settled = broken == 0 && bounds == threadbounds && !outer;
         for (auto m : members)
             if (!m->stale) settled = settled && SameRecord(m->record, *m->prev, m);
         for (auto m : members) m->prev = nullptr;
@@ -3201,19 +3250,25 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     }
     // A class whose arguments were each read through one parameter class,
     // a pool class or one threaded exactly, points into the storage that
-    // class leads to, outside the cycle, as long as it stays so (§7.8).
+    // class leads to, outside the cycle, as long as it stays so (§7.8). So
+    // does one whose arguments each point at or into a variable, which
+    // ThreadStorable asks whether it is outside every cycle; a holder
+    // parameter's class is what its argument's references point at.
     auto readthrough = [&](size_t k) {
         if (!argvals) return false;
         auto any = false;
         for (size_t i = 0; i < sf->params.size() && i < argvals->size(); i++) {
             if (i < spec->views.size() && spec->views[i].cls == (int)k) return false;
             if (spec->roots[i].cls != (int)k) continue;
-            if (!IsRefOrSlice(spec->argtypes[i])) return false;
-            auto &av = (*argvals)[i];
-            if (av.alts.size() != 1 || av.alts[0].exact) return false;
+            auto holder = !IsRefOrSlice(spec->argtypes[i]);
+            auto av = holder ? ContentsOf((*argvals)[i]) : (*argvals)[i].AsRoots();
+            if (av.unknown || av.alts.size() != 1 || (av.alts[0].exact && !holder))
+                return false;
             auto r = av.alts[0].root;
-            if (!r || !r->classfrom) return false;
-            if (!r->poolclass) {
+            if (!r) return false;
+            if (!r->classfrom) {
+                if (IsClassRoot(r)) return false;
+            } else if (!r->poolclass) {
                 auto it = threadedclasses.find(r);
                 if (it == threadedclasses.end() || it->second.broken || it->second.bounded)
                     return false;
