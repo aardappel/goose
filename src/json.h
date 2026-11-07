@@ -133,10 +133,17 @@ struct JsonReader {
                 case 't': s += '\t'; break;
                 case 'u': {
                     auto cp = Hex4();
+                    // A high surrogate pairs only with a low one; unpaired,
+                    // either is kept as its own code point, one UTF-16 unit
+                    // as the client counts it.
                     if (cp >= 0xD800 && cp < 0xDC00 && p[0] == '\\' && p[1] == 'u') {
+                        auto next = p;
                         p += 2;
                         auto lo = Hex4();
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        if (lo >= 0xDC00 && lo < 0xE000)
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else
+                            p = next;
                     }
                     Utf8(s, cp);
                     break;

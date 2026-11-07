@@ -573,6 +573,16 @@ def check_lsp_protocol(exe, base):
     if fmt() is not None:
         fail("formatting a document that is not open", fmt())
 
+    # A lone surrogate is one UTF-16 unit, as is the escape after it, which
+    # json.dumps writes as é and which is no low surrogate to pair with.
+    surrogates = fixtures / "lone_surrogate.goose"
+    line = '    let s = "\ud800é"; let y: i64 = true;'
+    diags = open_fixture(surrogates, "fn main() {\n" + line + "\n}\n")
+    col = len(line[:line.index("true")].encode("utf-16-le", "surrogatepass")) // 2
+    if [d["range"]["start"]["character"] for d in diags] != [col]:
+        fail(f"a diagnostic after a lone surrogate is not at column {col}", diags)
+    close_doc(surrogates)
+
     client.request("shutdown", None)
     client.send("exit", request=False)
     code = client.p.wait(timeout=30)
