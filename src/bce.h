@@ -1893,11 +1893,22 @@ struct BCE {
         return { UK_OPAQUE, nullptr };
     }
 
+    // What a.chunk(k, n) or a.chunk_at(bounds, k) views the elements of,
+    // through chunks of chunks: its receiver, as a slice expression views its
+    // object's. n itself where it is no chunk.
+    static Node *ChunkedOf(Node *n) {
+        for (;;) {
+            auto c = Is<Call>(n);
+            if (!c || (c->builtin != B_CHUNK && c->builtin != B_CHUNK_AT)) return n;
+            n = c->FirstArg();
+        }
+    }
+
     // A slice argument, or a reference to one, other than a slice
     // expression. The callee resizes neither: it may store another slice
     // into the slot a reference names, and write the elements the slice
     // views, where only references to elements measure a length or read the
-    // references the elements hold.
+    // references the elements hold. A chunk's elements are its receiver's.
     bool KillSliceArg(Node *a, Node *lv) {
         auto t = a->exprtype;
         auto st = IsSliceRef(t) ? t->ref->sub : t;
@@ -1909,7 +1920,7 @@ struct BCE {
         }
         auto lens = HoldsLen(st->sub), refs = HoldsRef(st->sub);
         if (lens || refs) {
-            auto [k, u] = ChainUlt(lv);
+            auto [k, u] = ChainUlt(ChunkedOf(lv));
             if (lens) ElementWriteKill(k, u);
             if (refs) RefSlotWriteKill(k, u, nullptr);
         }
@@ -3941,6 +3952,12 @@ inline bool Call::BceWalk(BCE &b) {
             }
             case B_ABORT: case B_EXIT:
                 return false;   // The program ends here (§9.3).
+            case B_CHUNK: case B_CHUNK_AT:
+                // A view of the receiver's elements, as a slice expression
+                // is, which changes nothing: what a callee writes through it
+                // is charged to the receiver (KillSliceArg), and its own
+                // checks always run.
+                break;
             case B_APPLY: case B_APPLY_CONTAINED: {
                 // The tasks write the array chunks() names, or, where the
                 // worker grows an output of its own (Call::pool_growable),

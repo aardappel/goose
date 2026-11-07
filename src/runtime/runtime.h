@@ -211,6 +211,7 @@ enum {
     GS_E_CHUNKSIZE,    /* a chunks() size of zero or less */
     GS_E_CHUNKBOUNDS,  /* chunk offsets out of bounds or not monotonically increasing */
     GS_E_POOLCLOSED,   /* pool.apply on a thread_pool that close() ended */
+    GS_E_CHUNKCOUNT,   /* a.chunk(k, n) of a count n of zero or less */
 };
 
 /* A place in the program's source: where a standard library function
@@ -231,6 +232,12 @@ GS_API GS_NORETURN void gs_exit(int64_t code);
    reported as the fault handler reports an overrun into the guard gap. */
 GS_API GS_NORETURN void gs_stack_overflow(const void *at);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
+/* The `n` offsets of a par for's chunk_at(bounds, k) runs, `bounds` the
+   elements of an i64 array or slice, against an array of `len` elements:
+   none below zero, none falling, none past the end (GS_E_CHUNKBOUNDS), as
+   each chunk_at checks its own two, but once, before any iteration runs. */
+GS_API void gs_check_chunk_offsets(const void *bounds, int64_t n, int64_t len, const char *file,
+                                   int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
 GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
@@ -1057,6 +1064,28 @@ GS_API uint8_t gs_pool_wait_contained(gs_pool p, gs_pool_batch *batch, uint8_t *
    program. */
 GS_API void gs_pool_guard(gs_pool_batch *batch, void (*run)(void (*)(uint8_t *), uint8_t *),
                           void (*entry)(uint8_t *), uint8_t *args);
+
+/* par for (docs/design/child_threads.md §4.9). The process has one pool for
+   them, of GOOSE_THREADS workers where that is a count, else
+   hardware_threads(), read and made at the first fork (gs_par_pool): NULL
+   where it would have one worker, which is the thread forking. A fork claims
+   it for its iterations, `n` of them (gs_par_claim), which is NULL where the
+   loop runs on its own thread instead: one iteration or none, no pool, a
+   thread already running a pool's task (a par for in a par for's body, or
+   in a task of pool.apply), or the pool claimed by a fork on another
+   thread. A claimed fork hands the pool at most gs_par_chunks(p, n) chunks,
+   each a task (gs_par_submit), and waits for them (gs_par_join), which
+   gives the claim back. In a contained thread program, an abort in a
+   chunk ends that program as an abort of its own would, at the join, once
+   every chunk has ended; anywhere else it ends the process where it
+   happens (§4.7). */
+#define GS_PAR_MAXCHUNKS 256
+GS_API gs_pool gs_par_pool(void);
+GS_API gs_pool gs_par_claim(int64_t n);
+GS_API int64_t gs_par_chunks(gs_pool p, int64_t n);
+GS_API void gs_par_submit(gs_pool p, void (*run)(void (*)(uint8_t *), uint8_t *, gs_pool_batch *),
+                          void (*entry)(uint8_t *), const void *args, int64_t argsize);
+GS_API void gs_par_join(gs_pool p);
 /* What one task of pool.apply(chunks(out, n), fn, ...) left in the T[>..]&
    of its own that its fn grows (docs/design/parallel_blocks.md §3.4): a
    copy of its `len` elements, `bytes` bytes at `data`, taken as the task
@@ -1177,6 +1206,28 @@ static void gs_pool_run(void (*entry)(uint8_t *), uint8_t *args, gs_pool_batch *
 
 static void gs_pool_spawn(gs_pool p, void (*entry)(uint8_t *), const void *args, int64_t argsize) {
     gs_pool_submit(p, gs_pool_run, entry, args, argsize, NULL);
+}
+
+static void gs_par_task(void (*entry)(uint8_t *), uint8_t *args) {
+    entry(args);
+}
+
+/* A par for's chunk, on whichever worker of the pool takes it, the thread
+   forking among them: in the forking program instance, whose globals its
+   entry thunk installs, and on a block of stacks of its own where its body
+   needs any, which the thunk opens and the task's end releases. The thread
+   gets its own back after it, as after a pool.apply task (gs_pool_run). */
+static void gs_par_run(void (*entry)(uint8_t *), uint8_t *args, gs_pool_batch *batch) {
+    gs_stack *stks = gs_stks;
+    int64_t nstks = gs_nstks;
+    void *gl = gs_gl;
+    gs_stks = NULL;
+    gs_nstks = 0;
+    gs_pool_guard(batch, gs_par_task, entry, args);
+    free(gs_stks);
+    gs_stks = stks;
+    gs_nstks = nstks;
+    gs_gl = gl;
 }
 
 /* A task of pool.apply_contained, one of the apply's batch at *batch, which

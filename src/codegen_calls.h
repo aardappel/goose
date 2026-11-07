@@ -35,17 +35,23 @@ inline void CodeGen::EmitSlidePrefix(const string &base, IntStorage ls, const st
 }
 
 inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
+    // A par for, outlined: its fork (OutlineParLoops).
+    if (c->parfor) return EmitParFor(c);
     // An element-run destination for a variable-array result: builtins
     // and tag dispatch have no element-run form, so take the value form
     // and slide its length prefix out -- a builtin builds the value in the
     // receiver's layout, a dispatch's arms in their own. The arms of a
     // dispatch of resizable results emit the run themselves (EmitDispatch).
+    // A builtin with a fixed-size result (a slice such as a chunk's or
+    // bytes_of's, a fixed array) builds nothing there: its C value comes
+    // back, and the caller constructs the run from it (ConstructCall).
     // Specialization calls route to an element-run twin (or the same
     // fallback) inside EmitSpecCall, and a function value's tail
     // construction honors the destination as-is.
     if (d0.k == DK_STACK && !d0.lenlv.empty() && d0.t && d0.t->kind == TY_ARRAY &&
         d0.t->arr->akind == A_VAR) {
-        auto vt = c->builtin >= 0 ? d0.t : nullptr;
+        auto builds = c->builtin >= 0 && (c->rettypes.empty() || !IsFix(c->rettypes[0]));
+        auto vt = builds ? d0.t : nullptr;
         if (!c->dispatch.empty() && !c->dispatch[0]->rets.empty()) {
             auto rt = c->dispatch[0]->rets[0];
             if (rt->kind == TY_ARRAY && rt->arr->akind == A_VAR) vt = rt;

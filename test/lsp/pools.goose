@@ -128,6 +128,12 @@ fn try_parallel(pool: thread_pool&, xs: i64[:], why: u8[>..]&) -> bool {
 // lsp: complete 59:41 lacks close
 // lsp: complete 59:41 has len
 // lsp: complete 59:41 lacks apply
+// lsp: complete 59:41 has chunk
+// lsp: complete 59:41 has chunk_at
+// lsp: complete 31:57 has chunk
+// lsp: complete 31:57 has chunk_at
+// lsp: complete 31:13 lacks chunk
+// lsp: complete 57:10 lacks chunk_at
 // lsp: hint 54:13 ": thread_pool"
 // lsp: hints 57 1
 // lsp: hint 57:44 "by:"

@@ -1,0 +1,2 @@
+goose runtime error: chunk offsets out of bounds or not monotonically increasing
+par_for_chunk_at_global_block.goose:8)

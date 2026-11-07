@@ -15,6 +15,9 @@ print none. A first-line `runtime-debug` marker adds a targeted
 GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
 A first-line `dump-runtime` marker also executes the parser's dump, checking
 that stable roundtripping preserved the original program's behavior.
+A first-line `goose-threads` marker runs each build of the program twice
+more, with GOOSE_THREADS=1, where every par for runs in place, and with
+GOOSE_THREADS=4, and both runs must print what the expected output says.
 
 A compiler built with the TinyCC backend runs the same programs a second way,
 in JIT mode: no C file and no external compiler, the generated C built and run
@@ -119,6 +122,11 @@ def debug_fixture(f, line):
     """Whether a fixture also runs with GS_DEBUG: codegen_exec.goose and
     those whose first line asks for it."""
     return f.stem == "codegen_exec" or "runtime-debug" in line
+
+
+# The pool sizes a `goose-threads` fixture's builds run again with: one
+# worker, where every par for runs on the thread that reaches it, and four.
+THREAD_COUNTS = ("1", "4")
 
 
 def fixture_levels(levels, line):
@@ -885,6 +893,22 @@ class Runner:
                         bad = True
                         continue
                     runs[ol] = out
+                    # The same build with the par for pool at each size.
+                    if "goose-threads" in first_line(f):
+                        for n in THREAD_COUNTS:
+                            label = f"-O{ol} GOOSE_THREADS={n} {f.name}"
+                            code, tout, err = tc.run_capture(
+                                argv, env=dict(os.environ, GOOSE_THREADS=n))
+                            tout = self.check_run(name, label, code, tout, err)
+                            if tout is None:
+                                bad = True
+                            elif tout != out:
+                                self.fail(f"output-differs-by-GOOSE_THREADS {label}",
+                                          f"--- GOOSE_THREADS={n}:\n{tout}\n--- by default:\n"
+                                          f"{out}")
+                                bad = True
+                            else:
+                                self.ok(label)
                 if not bad:
                     if len(set(runs.values())) != 1:
                         self.fail(f"cgen-output-differs-by-O {f.name}")

@@ -567,8 +567,15 @@ static gs_pool_task *gs_pool_take(struct gs_pool_state *pool, int *skip) {
 /* A task a worker took, run whole (gs_pool_submit) unless it is skipped,
    and its record freed. A contained task is handed its batch, which keeps
    what an abort in it says (gs_pool_guard). */
+/* The pools' tasks this thread is running, one inside the other where a
+   task waits for a pool of its own: a par for in one runs on its own thread
+   (gs_par_claim). */
+static GS_TLS int gs_pool_tasking;
+
 static void gs_pool_run_task(gs_pool_task *t, int skip) {
+    gs_pool_tasking++;
     if (!skip) t->run(t->entry, t->args, t->batch);
+    gs_pool_tasking--;
     free(t->args);
     free(t);
 }
@@ -926,6 +933,95 @@ GS_API void gs_pool_destroy(gs_pool pool) {
     free(pool);
 }
 
+/* ---------------------------------------------------------------------------
+   par for (docs/design/child_threads.md §4.9, runtime.h): the process's
+   pool, made at the first fork that could use it, which one fork at a time
+   claims, under gs_par_mutex. A fork in a contained thread program hands its
+   chunks out as one batch of contained tasks (gs_par_batch), whose first
+   abort the join raises as the program's own. */
+
+static gs_mutex gs_par_mutex = GS_MUTEX_INIT;
+static struct gs_pool_state *gs_par_default;
+static int gs_par_made, gs_par_busy, gs_par_contained;
+static gs_pool_batch *gs_par_batch;
+
+GS_API gs_pool gs_par_pool(void) {
+    gs_mutex_lock(&gs_par_mutex);
+    if (!gs_par_made) {
+        gs_par_made = 1;
+        int64_t n = 0;
+        const char *s = getenv("GOOSE_THREADS");
+        if (s && *s) {
+            char *end;
+            long long v = strtoll(s, &end, 10);
+            if (*end == 0 && v > 0) n = (int64_t)v;
+        }
+        /* No more workers than the data stack budget holds beside the main
+           program (gs_rt_start), as hardware_threads() reports. */
+        if (n <= 0) n = gs_hardware_threads();
+        else if (n > gs_thread_cap) n = gs_thread_cap;
+        if (n > 1) gs_par_default = gs_pool_create(n, NULL, 0);
+    }
+    gs_pool p = gs_par_default;
+    gs_mutex_unlock(&gs_par_mutex);
+    return p;
+}
+
+GS_API gs_pool gs_par_claim(int64_t n) {
+    if (n <= 1 || gs_pool_tasking) return NULL;
+    gs_pool p = gs_par_pool();
+    if (!p) return NULL;
+    gs_mutex_lock(&gs_par_mutex);
+    int busy = gs_par_busy;
+    if (!busy) {
+        gs_par_busy = 1;
+        gs_par_batch = NULL;
+        gs_par_contained = gs_contain != NULL;
+    }
+    gs_mutex_unlock(&gs_par_mutex);
+    return busy ? NULL : p;
+}
+
+/* As many chunks as the pool has workers, its threads and the one forking,
+   which runs the chunks no thread has taken while it waits (gs_pool_wait). */
+GS_API int64_t gs_par_chunks(gs_pool p, int64_t n) {
+    int64_t w = p->nthreads + 1;
+    if (w > GS_PAR_MAXCHUNKS) w = GS_PAR_MAXCHUNKS;
+    return w < n ? w : n;
+}
+
+GS_API void gs_par_submit(gs_pool p, void (*run)(void (*)(uint8_t *), uint8_t *, gs_pool_batch *),
+                          void (*entry)(uint8_t *), const void *args, int64_t argsize) {
+    gs_pool_submit(p, run, entry, args, argsize, gs_par_contained ? &gs_par_batch : NULL);
+}
+
+GS_API void gs_par_join(gs_pool p) {
+    uint8_t *msg = NULL;
+    int64_t len = 0;
+    uint8_t returned = 1;
+    if (gs_par_contained) returned = gs_pool_wait_contained(p, gs_par_batch, &msg, &len);
+    else gs_pool_wait(p);
+    gs_mutex_lock(&gs_par_mutex);
+    gs_par_busy = 0;
+    gs_par_batch = NULL;
+    gs_mutex_unlock(&gs_par_mutex);
+    if (returned) return;
+    /* A chunk aborted: the thread program forking ends as an abort of its
+       own would (gs_fail), its message the chunk's, now that no chunk runs
+       on its storage. */
+    gs_contained *c = gs_contain && !gs_contain->handing ? gs_contain : NULL;
+    if (c) {
+        c->msg = msg;
+        c->len = len;
+        gs_longjmp(c->jump, 1);
+    }
+    fputs("goose runtime error: ", stderr);
+    if (msg) fwrite(msg, 1, (size_t)len, stderr);
+    fputc('\n', stderr);
+    free(msg);
+    gs_end(1);
+}
+
 /* Whether a thread program still runs, under gs_threads_mutex: a worker
    thread_spawn started, or a task a pool was handed and has not finished,
    queued or running. An idle pool's workers run none. */
@@ -963,6 +1059,9 @@ GS_API void gs_rt_stop(void) {
         gs_pool_destroy(p);
         gs_mutex_lock(&gs_threads_mutex);
     }
+    /* The par for pool went with the others: the next program makes its own. */
+    gs_par_default = NULL;
+    gs_par_made = gs_par_busy = 0;
     for (int64_t i = 0; i < gs_naborted; i++) free(gs_aborted[i].msg);
     free(gs_aborted);
     gs_aborted = NULL;

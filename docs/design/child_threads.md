@@ -40,8 +40,21 @@
 
 </details>
 
-Research note, November 2026. Nothing here is implemented, and every piece
-of syntax is a placeholder. The question, from
+Research note, November 2026. The chunking builtins `chunk` and
+`chunk_at` of [4.4](#44-disjoint-writes-structural-first-proven-second)
+are implemented, as ordinary slicing (step 1 of
+[section 7](#7-recommendation-and-order); spec §3.10), and so is
+`par for` with structural disjointness, R1 to R5, integer reductions and
+the pool of [4.9](#49-the-runtime) (step 3, option A; spec §11.2), the
+query engine's phases of [section 5](#5-the-query-engines-phases-written-out)
+running as written there but for the blur's row slice, which needs the
+proven rule and is written with `dst.chunk(y, H)` instead
+(`test/threads/par_for.goose`). A body with growable locals runs on the
+data stacks of the pool's workers, which keep their regions from one task
+to the next, rather than as a child program of its own (4.5). `simd for`,
+`par simd for`, the effect summary of 2.7 beyond the builtins and the
+standard library's `os` and `ffi` functions, and proven disjointness are
+not implemented, and their syntax is a placeholder. The question, from
 [goose#234](https://github.com/aardappel/goose/issues/234), is how a Goose
 program can split work over a large array across cores *without copying
 the array*: threads that read the parent's data in place and each write a

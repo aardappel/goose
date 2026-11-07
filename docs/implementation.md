@@ -4166,6 +4166,174 @@ before the `defer` and be reused there, so what such a callee names is read
 from its record of the variables outside its activation
 (`FnSpec::envreads`), which every call site fills, reused or not.
 
+### 3.17 `par for`
+
+`par for` (spec §11.2; `docs/design/child_threads.md` §4) is a `for` with
+`ForLoop::ispar`: `par` is contextual, a name unless the next token is
+`for` (`Parser::AtPar`), so the dump writes `par for` back and the clones
+(`Clone1`, the inliner's `Cp1`) keep the flag. `CheckFor` checks the header
+as a `for`'s, then the body's passes in a record of their own (`ParCtx`,
+`typecheck_par.h`), which `ParScope` pushes on `parctx` while each pass
+runs and `FinishParFor` judges once they have settled.
+
+* **The view (R1).** A variable is outside the body (`ParCaptured`) where it
+  is a global or its depth is no more than the loop's scope's: every
+  variable the body, or a function checked for it, declares is deeper,
+  since depth counts the scopes on the compile-time call path. Such a
+  variable reads read-only (`ParView`): `CheckLValue` and `Ident::Check`
+  clear the writability of its storage, `RefProvOf` of what it points at,
+  and `PointeeWritable` of a reference variable's pointee. The writability
+  rule of §9.5 then rejects every write, through any path and in any
+  callee, which takes its arguments' writability in its key; `LVal::parfrom`
+  names the variable, so the diagnostic says `par for`. A whole-variable
+  write is `ParAssign`'s: an integer reduction, recorded with its operation
+  class, or an error. In a par for's body nothing launders writability
+  through storage either: a reference or slice read out of storage the
+  body cannot write, or that may point at storage the body sees read-only,
+  is read-only (`ReadBackLVal`, and `PointeeWritable`, which reads a slot's
+  reference back as `ReadBackLVal` does, so a copy of a holder from outside
+  the body holds what the original does; `SlotView`, the slice a reference
+  to a slot loads; and `CheckRenderable`, the parts it hands a format
+  overload). Where a read-back may point is
+  `ParReadOnlyAlt`'s: a variable from outside the body or a global; any
+  bound, which may be anything outside its scope; a class of the loop's
+  function or of one around it; and a class of a specialization checked
+  for the body, unless every call reaching it passed storage of the body's
+  own (`VarDef::parlocal`, from `RootArg::parlocal`, part of the key, which
+  `ParLocalReach` sets where everything the argument leads to, through the
+  references held there too, is exact and the body's; never for a
+  recursive function, as `heldexact`). So a callee handed a holder, an
+  array of references, or a reference to either, from outside the body or
+  copied from there, writes through what it reads out of it no more than
+  the body may.
+* **Specializations.** A call made while `parctx` holds a loop makes or
+  reuses a specialization with `FnSpec::inpar`, and for a nested function,
+  whose body may name the loop's variables, `FnSpec::parloop` too, both part
+  of the key. `parloop` is the loop of the text (`ForLoop::parorigin`, which
+  `Clone1` sets on every copy), not a specialization's copy of it, so a
+  nested recursive function called from its own loop reuses the
+  specialization that call is in rather than making one per copy. A
+  function handed a function value that names variables of its own -- a
+  nested function, or a block -- is keyed by the loop too, since what the
+  value may write, and where it may return to, depends on which loop the
+  call is in. A case function a dispatch reuses is held to the loop's exits
+  as an ordinary call's callee is (`ParCallNeeds`, from `TryDispatch`); such a body is checked under the loop's rules, so it writes no
+  global and none of the loop's enclosing functions' variables, whichever
+  call first reached it. A body checked for no par for pushes a barrier
+  (a null `parctx` entry) for its check.
+* **Parts (R2).** `ParIndexPart` (an `a[k]`, from `CheckLValue`) and
+  `ParChunkPart` (an `a.chunk(k, n)` or `a.chunk_at(b, k)`, from
+  `CheckChunk`) recognize the forms an iteration owns before the receiver
+  is checked, by the names they are written with: `a` outside the body,
+  `k` one of the binders that tell the iterations apart (`ParCtx::ordinal`
+  and `ordinal2` count from 0, `shifted` is a range's binder from another
+  start), and `n` or `b` written as the loop's count or bounds
+  (`SameParExpr`). `parowned` names `a` while its path is checked, which
+  the view then leaves writable; the part is kept (`ParPart`) with the one
+  root the path has, where it is exact, flat and no global's, and refused
+  otherwise. The binders that tell the iterations apart read read-only in
+  the body and every function checked for it (`ParBinder`, part of
+  `ParView`), so no reference to one writes it. The element `par for &x` binds is a part of the sequence's
+  root, made by `CheckFor` from the header's provenance.
+* **Nesting.** A `par for` in another's body is part of that body: a name,
+  a part or a reduction in the inner body counts for every loop on
+  `parctx` that sees the variable from outside (`EachParSeeing`, up to a
+  barrier), so a reduction of the inner loop is one of the outer loop too,
+  and no inner iteration owns a part of what an outer loop sees from
+  outside (`ParCapturedAround`), which every outer iteration's run of the
+  inner loop would write.
+* **Uses.** Every name of a variable outside the body is recorded with its
+  node (`NoteParUse`), in the body, its function values and the functions
+  checked for it, and so is every reference or slice read out of storage in
+  the body and its function values (`ParReadBack`, from `ReadBackLVal` and a
+  `for`'s element binding). `FinishParFor` requires the parts of one root
+  to be taken through one variable and cut one way (`ParPart::var`, `form`,
+  `key`, `by`), and parts whose roots may be one storage
+  (`ParMayAlias`) not to be of one element type; every use but a part's own
+  name and a builtin `.len` or `.cap` (`partuses`, `ParLengthUse`, of a
+  variable's own header or a fixed-size array's static length alone,
+  `ParLengthExempt`: the header of an array a reference leads to may lie in
+  an element an iteration owns and resizes) to reach
+  no part's storage (`ParRootsOf`: the variable's storage and what it holds,
+  or where it points -- for a global `var` reference or slice, which any
+  function may bind, all it can be given (`GlobalVarRead`), not the
+  bindings checked so far, as a reused check must stand on every later
+  call -- and where the references and slices held there lead
+  -- a slice variable a reference names, a holder's contents, a class's
+  view of its caller's slot or holder, the pool a reference `in` one points
+  into (`ParRelPools`) -- closed transitively, since a callee handed it
+  may follow them), and no read-back
+  either; and a reduction's variable to be used only by its updates
+  (`redtargets`), and reached through no other use or read-back that may
+  lead to it (`ParReachesVar`: a plain reference to its type, or what
+  holds or points at references). Whether a root may be a part's storage,
+  or a reduction, is `ParMayAlias`'s, which follows `MayAliasRoots`: the
+  root itself; anything where the alternative is inexact and outside the
+  root's scope (`WithinDepth`); and, where either is a parameter's class,
+  which stands for storage the activation's callers handed it, any global,
+  variable of a function around it or other class. Two classes of one
+  specialization are `AL_DEFER` while every call so far gave both arrays
+  apart (`ClassSpecOf`: `RootArg::exact` and `parconcrete`, of the
+  parameter or of its view). `parconcrete` is `concrete` taken over every
+  argument and view of a call rather than its fat references alone, since
+  a slice beside a class may be the array that class stands for: a class
+  of P is apart beside only variables inside P's activation, temporaries
+  and other classes of P, and a global or a function's variable beside
+  no class but those of one P it lies inside. Neither it nor exactness is
+  part of the key, so a later call reusing the specialization may still
+  weaken them; `SettleParamRootExactness` settles it through `via`, as
+  `concrete`. The conflict goes on `parconflicts` (deduplicated by
+  `pardeferred`), and `ResolveParConflicts` reports it unless both classes
+  are still exact and `parconcrete` once every call has been seen. A use or
+  read-back counts only where what it reaches may hold a run of the
+  part's elements (`ParUseReaches`, `ParPointeeReaches`, `ParHoldsRun`),
+  which a `u8` pointee, a byte view of any array, always may, and so does
+  a value holding a reference into a pool (`ParHoldsPoolRef`).
+* **The sequence.** A loop over an array or a slice reads its sequence's
+  elements, each iteration its own: `ParCtx::seqroots` keeps where they lie
+  (with `seqvar` and `seqelem`), and `FinishParFor` takes any part but the
+  element `par for &x` binds and `a[k]` of the sequence's own variable by
+  the loop's index as one that may be another iteration's element, where
+  its root may be the sequence's. A reference or slice binder is read out
+  of the sequence before the body's `ParScope` is pushed, so `CheckFor`
+  makes it read-only and records it as one of the loop's read-backs
+  itself, which its parts and reductions are judged against.
+* **Element types.** Two parts, or a part and the sequence's elements, of
+  types neither of which holds the other by value lie apart in any one
+  storage, as two fields' arrays do (`ParElemsOverlap`); where one holds
+  the other -- the rows of an array and the cells of a row -- or either is
+  bytes, they may overlap.
+* **Root structs.** A root struct's owner holds its components' storage
+  (§3.9), so `ParMayAlias` takes an owner and a component of it, either
+  way around, as one storage; but `s.field`, the owner's name with a path
+  to one component alone, uses only that component (`NoteParComponent`
+  records it in `parcomponents`, which `FinishParFor` reads in the owner's
+  place), but for a component that holds a reference, which leads where
+  the owner's contents say, and `s.field.len` is a length (`ParLengthUse`)
+  where `ParLengthExempt` takes the component's as one.
+* **Replay.** What a check does that a par for judges -- a use, a
+  reduction's update, a part, a part's own name, a length -- goes to the
+  par fors on the stack through `ParApply`, which also records it with
+  every specialization being checked for them (`ParRecord`, `parnotes`).
+  A call that reuses a specialization in a par for's body replays its
+  record there (`ParReplay`, from `GetOrCreateSpec`), so a generic
+  function checked in one par for and called again from another, a nested
+  function's reduction it is handed included, counts for both. What
+  concerns a variable of the specialization's own (declared in its frame or
+  above, `VarDef::depth` past the frame's `scopebase`) is not recorded: no
+  caller's loop sees it from outside, whatever its depth then, and the
+  callee's own loops are checked again with its body. It adds the reductions and the `chunk_at` pairs to what
+  the loop holds for codegen, which an earlier check of the same loop (a
+  recursive cycle's round) may have found through a function this one
+  reused.
+* **Effects and exits (R3, R4).** `ParEffect` rejects the builtins of R3 in
+  `CheckBuiltin`, and the `os` and `ffi` modules' externs at a resolved
+  call; `ParExit` a `return` whose target frame is the loop's or below
+  (`CheckReturn`), `CheckBreak` a `break` of the loop's scope or one
+  outside it, `CheckContinue` a `continue` outside it, and `ParCallNeeds`
+  a call to a reused specialization whose `FnSpec::needs` returns from a
+  function around the loop.
+
 ---
 
 ## 4. The optimizer
@@ -5376,7 +5544,10 @@ results: `EnsureEr` compiles a second, `_er` twin of the callee that emits
 raw elements plus a count, so that `v.append(f())` is contiguous. A callee
 without a twin (a builtin, a dispatch, a `return from` target) delivers the
 value form, and the receiver slides the length prefix out with one
-`memmove` (`EmitSlidePrefix`). A `T[]` result that ends up in a slot of
+`memmove` (`EmitSlidePrefix`). A builtin whose result is fixed-size (the
+slice of `chunk` or `bytes_of`, a fixed array) builds nothing at the
+destination: the run is built from the C value it returns
+(`ConstructCall`). A `T[]` result that ends up in a slot of
 another length storage is re-prefixed afterwards (`EmitReprefix`). A
 runtime-capacity limited result (`T[..]`) has no run form: `EmitAppend`
 builds its image on the destination stack, then compacts its live elements
@@ -5803,6 +5974,60 @@ task order, at its stack top as an append writes them, if every task
 returned (`AppendPoolOuts`, which frees the slots), and last the message
 is appended to the buffer and freed (`AppendMessage`, as
 `thread_wait(id, msg)` appends its message).
+
+**`par for`.** Before anything is named, `OutlineParLoops`
+(`codegen_par.h`) makes each `par for` of a live body -- a statement of a
+block, a match's arm or an if's else, which the optimizer may have folded
+a block of one statement into -- a function of its own: a synthesized `SFunction` nested in the body's, whose one
+specialization takes the chunk's first index and the one past its last at
+the counter's type (and, for a range's index binder, the iterations before
+the chunk; `ForLoop::parix`), or for a loop over an array or slice
+`gs_par_lo`, `gs_par_hi` and a slice of the whole sequence. The loop, its
+body unchanged, is that function's body, walking the chunk: a range's
+header becomes the range of the two parameters, and an array loop walks the
+slice from `ForLoop::parlo` to `parhi`. What the loop declares is the new
+function's (`VarDef::ownerspec`), so `CollectSpecs` finds its free
+variables as a nested function's, which pass as such a function's do
+(§6.4). The optimizer inlines no body holding a `par for`
+(`Optimizer::Scan`), so a global initializer's call of one stays a call;
+one written in a global initializer itself, which no function holds, runs
+as a plain loop, after the checks its fork would make
+(`EmitChunkAtChecks`, from `ForLoop::CgStmt`). Those checks are of every
+`chunk_at` of the loop's bounds by its index (`ForLoop::chunkats`), owned
+or only read (`ParChunkCheck`), against the array's length where it is a
+variable from outside the body; and the arrays and bounds they read are
+free variables of the function the fork stands in (`CollectSpecs`), where
+the optimizer may have taken every other name of them out. Where the body's function is a member of a recursive cycle, the
+new one is too (`FnSpec::incycle`, its `cyclelink` the member): the body
+was checked as the member's, so its large fixed locals stay native
+(`LargeFixedOnStack`) and it holds no data stack across a call into the
+cycle (`NoStackAcrossCycleCall`, `BoundStacks`). The function is outlined
+again from, so a `par for` in its body is outlined in turn; its own loop
+is a plain one. Where the loop stood, a
+call to the function with `Call::parfor` set stands, which `EmitParFor`
+emits as the fork: the range's ends, or the sequence's view, evaluated once;
+the offsets of each `chunk_at` part checked whole
+(`gs_check_chunk_offsets`, `ForLoop::chunkats`); every cached stack top
+flushed (§6.10); then, under `#if GS_NEED_THREADS`, `gs_par_claim`, and
+where it gives the pool, one task per chunk (`gs_par_chunks`), each packet
+an environment struct (`gs_parenv_*`) of the function's arguments for the
+chunk, the free variables' as a call passes them (`EmitFvArg`), handed to
+`gs_par_submit` with the thunk (`EnsureParThunk`), and `gs_par_join`. A
+reduction's argument is the address of the chunk's own accumulator, in a
+local array of `GS_PAR_MAXCHUNKS`, starting at the operation's identity,
+which the fork combines into the variable in chunk order after the join.
+Without the pool -- under TinyCC, where `GS_NEED_THREADS` is 0, at
+`GOOSE_THREADS=1`, in a pool's task, with the pool busy or one iteration --
+it calls the function once over the whole range, as a nested function's
+call, with `gs_sp`. A program whose only threads are a `par for`'s defines
+`GS_NEED_THREADS` for every C compiler but TinyCC (`usespar`), so its
+in-process run needs no thread-local storage. The thunks
+(`EmitParThunks`, from `EmitProgramInit`) install the forking instance's
+globals (`gs_gl`), open a block of the stacks the function needs
+(`ProgramStacks`), which count among a worker's regions, and call it with
+`gs_sp` 0; `gs_par_run` (runtime.h) runs one on any of the pool's workers,
+the forking thread among them, keeping the thread's own stack block and
+globals aside, as `gs_pool_run` does for an apply's task.
 
 ### 6.9 Generated walkers
 
@@ -6725,6 +6950,29 @@ that a long-distance return out of an argument left. `gs_rt_stop`
 a thread program still runs, a task a pool has yet to finish among them
 (`gs_threads_any_live`).
 
+**`par for`** (spec §11.2, `runtime_threads.h`). The process has one pool
+for its `par for`s, a `gs_pool` like any (`gs_par_pool`), which the first
+fork that can use one makes, of `GOOSE_THREADS` workers where that is a
+positive count (capped as `hardware_threads()` is) and of
+`gs_hardware_threads()` otherwise, read once; none where that is one
+worker. It is listed among the live pools, so `gs_rt_stop` destroys it with
+the others, after which the next program makes its own. A fork claims the
+pool for its thread (`gs_par_claim`, under `gs_par_mutex`), which fails --
+and the fork runs its loop in place -- for an iteration count of one or
+less, without a pool, on a thread running a pool's task
+(`gs_pool_tasking`, which `gs_pool_run_task` counts, so a `par for` in a
+`par for`'s body or in a task of `pool.apply` never forks), and while
+another thread's fork has the claim, since a pool waits for one thread at a
+time. `gs_par_chunks` caps the chunks at the pool's workers, its threads and
+the forking one, and at `GS_PAR_MAXCHUNKS`. `gs_par_submit` hands a chunk
+over as a task, as a contained one of the claim's batch where the forking
+thread program is contained (`gs_contain`); `gs_par_join` waits for them,
+gives the claim back, and, where a contained chunk aborted, ends the
+forking thread program as an abort of its own would, with the chunk's
+message, now that no chunk runs on its storage (spec §4.7 of the design
+note). `gs_check_chunk_offsets` (`runtime_impl.h`) checks a `chunk_at`
+part's offsets once, before the fork.
+
 **Integer semantics** (§6.2): every operation runs at its type through
 `gs_add_i32`-style helpers. Under `GS_DEBUG` these are functions that check
 the wide result; otherwise they are macros equal to the release expression
@@ -7272,6 +7520,18 @@ kernel is bound by its reads of `b`.
 This section lists the rules the current implementation applies beyond, or
 in place of, what the specification allows, and the shapes the C backend
 refuses outright:
+
+* In a `par for`'s body (§3.17), `a[k]` and `a.chunk(k, n)` of a writable
+  `a` from outside the body are parts the iteration owns whether or not the
+  body writes them, so the body reaches `a` no other way, a read of
+  another iteration's element included: an array the body only reads is
+  passed in as a `const` view, or read through one. A reference or slice
+  read out of storage in the body is writable only where neither the
+  storage nor what it may point at lies outside the body, whatever the type
+  of its slot. Disjointness is structural only: a place indexed by another
+  expression of the iteration's binder (`out[i * 4 + b]`, a row slice
+  `dst[y * W..(y + 1) * W]`), which the design note's two-iteration proof
+  would admit, is read-only.
 
 * A long-distance return from a named function may carry only references
   rooted at globals or static data (TODO 0d); a long-distance return out of

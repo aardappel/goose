@@ -39,7 +39,8 @@
       <item>embed_file</item> <item>embed_shader</item>
       <item>len</item> <item>cap</item> <item>push</item> <item>append</item>
       <item>pop</item> <item>pop_n</item> <item>resize</item> <item>clear</item>
-      <item>index_of</item> <item>alloc_index</item> <item>alloc_ref</item> <item>free</item>
+      <item>index_of</item> <item>chunk</item> <item>chunk_at</item>
+      <item>alloc_index</item> <item>alloc_ref</item> <item>free</item>
       <item>alloc_slice</item> <item>realloc_slice</item> <item>free_slice</item>
     </list>
     <contexts>
@@ -51,6 +52,7 @@
         <DetectChar char="&quot;" attribute="String" context="String"/>
         <DetectChar char="'" attribute="Char" context="Char"/>
         <RegExpr String="\broot\b(?=\s+struct\b)" attribute="Keyword"/>
+        <RegExpr String="\bpar\b(?=\s+for\b)" attribute="Keyword"/>
         <keyword String="keywords" attribute="Keyword"/>
         <keyword String="types" attribute="DataType"/>
         <keyword String="constants" attribute="Constant"/>

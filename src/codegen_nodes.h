@@ -359,6 +359,7 @@ inline string AsCast::CgX(CodeGen &cg) {
 }
 
 inline string Call::CgX(CodeGen &cg) {
+    if (parfor) cg.Fail(line, "internal: par for as a value");
     // A result adapted to an ADT converts into a temporary (CgAny).
     if (cg.AdtFrom(this)) return cg.CtlValX(this);
     auto rets = cg.EmitCall(this, Dst {});
@@ -985,6 +986,9 @@ inline void While::CgStmt(CodeGen &cg) {
 }
 
 inline void ForLoop::CgStmt(CodeGen &cg) {
+    // A par for no function holds, which runs here as a plain loop, makes
+    // the checks its fork would first (CodeGen::OutlineParLoops).
+    if (ispar) cg.EmitChunkAtChecks(this, line);
     if (cg.BulkDefaultLoop(this)) return;
     auto d = Dst {};
     CodeGen::ViewScope vs(cg, hoistrefs, hoistfields);
@@ -1007,7 +1011,9 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         auto hi = cg.GenX(r ? r->hi : iter);
         auto hiv = cg.T();
         cg.L(ict, " ", hiv, " = ", hi, ";");
-        if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
+        // A par for's chunk counts its iterations from those before it
+        // (CodeGen::OutlineParLoops).
+        if (!ix.empty()) cg.L("int64_t ", ix, " = ", parix ? cg.VName(parix) : string("0"), ";");
         auto wide = ct->intstorage != vdef->type->intstorage;
         auto ctr = wide ? cg.T() : iv;
         auto bind = [&]() {
@@ -1079,9 +1085,13 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     // constant there only changes how it vectorizes, not always for the
     // better, so such a loop stays as it is.
     auto bound = cat("(", v.len, ")");
+    // A par for's chunk walks the elements from parlo to parhi
+    // (CodeGen::OutlineParLoops), which the fork cut from this length.
+    auto from = parlo ? cg.VName(parlo) : string("0");
+    if (parhi) bound = cg.VName(parhi);
     auto exitlen = false;
     auto setbound = [&]() {
-        if (fixedarr || lenbound < 0 || lenexact || lenbound > CodeGen::MAXTRIPBOUND ||
+        if (parlo || fixedarr || lenbound < 0 || lenexact || lenbound > CodeGen::MAXTRIPBOUND ||
             CountNodes(body) > CodeGen::MAXTRIPBODY)
             return;
         bound = cat(lenbound);
@@ -1095,6 +1105,8 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         cg.cscopes[si].usedbrk = true;
     };
     if (!cg.IsFix(v.elem)) {
+        // A par for walks fixed-size elements only (TypeCheck::CheckFor).
+        assert(!parlo);
         // Sequential walk, &-binding only; the cursor advances in the
         // increment clause so `continue` behaves.
         auto p = cg.T();
@@ -1179,7 +1191,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     // Blocks of iterations need the count fixed at entry: a length the body
     // cannot change, of elements that stay where they are. A loop known to
     // be shorter than two blocks is better off without them.
-    if (!moves && (fixedlen || fixedarr)) {
+    if (!moves && !parlo && (fixedlen || fixedarr)) {
         if (auto k = cg.BlockSize(this); k && (lenbound < 0 || lenbound >= 2 * k)) {
             cg.L("int64_t ", gi, " = 0;");
             cg.GenBlocked(this, k, cat("(", v.len, ") - ", gi, " >= ", k), cat(gi, "++"), bind,
@@ -1202,7 +1214,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     // NULL, and NULL + 0 is undefined in C, so the end is only computed for a
     // sequence that has some. The test is `<`: with `!=`, clang loses the
     // bound it knows on a short loop's trip count and no longer unrolls it.
-    if (!idxdef && fixedlen && !fixedarr && !exitlen && CodeGen::CallsRecursive(body)) {
+    if (!idxdef && !parlo && fixedlen && !fixedarr && !exitlen && CodeGen::CallsRecursive(body)) {
         if (!memlen) hoist();
         at = v.elems;
         auto endp = cg.T();
@@ -1222,7 +1234,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     cg.GenLoopBody([&]() {
         testlen();
         bind();
-    }, body, d, cat("for (int64_t ", gi, " = 0; ", gi, " < ", bound, "; ", gi, "++) {"),
+    }, body, d, cat("for (int64_t ", gi, " = ", from, "; ", gi, " < ", bound, "; ", gi, "++) {"),
        nullptr, 0, { vdef, idxdef });
 }
 

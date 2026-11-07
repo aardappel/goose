@@ -1,0 +1,2 @@
+goose runtime error: index -1 out of bounds (length 2)
+chunk_at_index_negative.goose:9)

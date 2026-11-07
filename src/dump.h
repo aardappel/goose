@@ -553,7 +553,7 @@ inline void LoopExpr::Dump(string &s, int ind) const {
 }
 
 inline void ForLoop::Dump(string &s, int ind) const {
-    s += "for ";
+    s += ispar ? "par for " : "for ";
     if (byref) s += "&";
     s += var;
     // The loop's own `in` follows a binder's type, so an index type there

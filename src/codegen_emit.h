@@ -993,6 +993,9 @@ inline void CodeGen::EmitProgramInit() {
         EmitThreadThunk(sp, stacks);
         workerregions = std::max(workerregions, stacks + thunkregions[sp]);
     }
+    // A par for's chunk runs on a pool worker, on a block of the stacks its
+    // body needs (EmitParThunks).
+    workerregions = std::max(workerregions, EmitParThunks());
     Append(code, "static void gs_program_init(int argc, char **argv) {\n"
                  "    if (gs_program_initialized) return;\n"
                  "    gs_rt_init(argc, argv, ", mainstacks, ", ", mainstacks + globalregions,

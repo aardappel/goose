@@ -240,6 +240,7 @@ R"GSRT(enum {
     GS_E_CHUNKSIZE,    /* a chunks() size of zero or less */
     GS_E_CHUNKBOUNDS,  /* chunk offsets out of bounds or not monotonically increasing */
     GS_E_POOLCLOSED,   /* pool.apply on a thread_pool that close() ended */
+    GS_E_CHUNKCOUNT,   /* a.chunk(k, n) of a count n of zero or less */
 };
 
 )GSRT"
@@ -262,6 +263,12 @@ GS_API GS_NORETURN void gs_exit(int64_t code);
    reported as the fault handler reports an overrun into the guard gap. */
 GS_API GS_NORETURN void gs_stack_overflow(const void *at);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
+/* The `n` offsets of a par for's chunk_at(bounds, k) runs, `bounds` the
+   elements of an i64 array or slice, against an array of `len` elements:
+   none below zero, none falling, none past the end (GS_E_CHUNKBOUNDS), as
+   each chunk_at checks its own two, but once, before any iteration runs. */
+GS_API void gs_check_chunk_offsets(const void *bounds, int64_t n, int64_t len, const char *file,
+                                   int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
 GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
@@ -1149,6 +1156,29 @@ GS_API uint8_t gs_pool_wait_contained(gs_pool p, gs_pool_batch *batch, uint8_t *
    program. */
 GS_API void gs_pool_guard(gs_pool_batch *batch, void (*run)(void (*)(uint8_t *), uint8_t *),
                           void (*entry)(uint8_t *), uint8_t *args);
+
+)GSRT"
+R"GSRT(/* par for (docs/design/child_threads.md §4.9). The process has one pool for
+   them, of GOOSE_THREADS workers where that is a count, else
+   hardware_threads(), read and made at the first fork (gs_par_pool): NULL
+   where it would have one worker, which is the thread forking. A fork claims
+   it for its iterations, `n` of them (gs_par_claim), which is NULL where the
+   loop runs on its own thread instead: one iteration or none, no pool, a
+   thread already running a pool's task (a par for in a par for's body, or
+   in a task of pool.apply), or the pool claimed by a fork on another
+   thread. A claimed fork hands the pool at most gs_par_chunks(p, n) chunks,
+   each a task (gs_par_submit), and waits for them (gs_par_join), which
+   gives the claim back. In a contained thread program, an abort in a
+   chunk ends that program as an abort of its own would, at the join, once
+   every chunk has ended; anywhere else it ends the process where it
+   happens (§4.7). */
+#define GS_PAR_MAXCHUNKS 256
+GS_API gs_pool gs_par_pool(void);
+GS_API gs_pool gs_par_claim(int64_t n);
+GS_API int64_t gs_par_chunks(gs_pool p, int64_t n);
+GS_API void gs_par_submit(gs_pool p, void (*run)(void (*)(uint8_t *), uint8_t *, gs_pool_batch *),
+                          void (*entry)(uint8_t *), const void *args, int64_t argsize);
+GS_API void gs_par_join(gs_pool p);
 /* What one task of pool.apply(chunks(out, n), fn, ...) left in the T[>..]&
    of its own that its fn grows (docs/design/parallel_blocks.md §3.4): a
    copy of its `len` elements, `bytes` bytes at `data`, taken as the task
@@ -1282,6 +1312,30 @@ static void gs_pool_run(void (*entry)(uint8_t *), uint8_t *args, gs_pool_batch *
 )GSRT"
 R"GSRT(static void gs_pool_spawn(gs_pool p, void (*entry)(uint8_t *), const void *args, int64_t argsize) {
     gs_pool_submit(p, gs_pool_run, entry, args, argsize, NULL);
+}
+
+)GSRT"
+R"GSRT(static void gs_par_task(void (*entry)(uint8_t *), uint8_t *args) {
+    entry(args);
+}
+
+)GSRT"
+R"GSRT(/* A par for's chunk, on whichever worker of the pool takes it, the thread
+   forking among them: in the forking program instance, whose globals its
+   entry thunk installs, and on a block of stacks of its own where its body
+   needs any, which the thunk opens and the task's end releases. The thread
+   gets its own back after it, as after a pool.apply task (gs_pool_run). */
+static void gs_par_run(void (*entry)(uint8_t *), uint8_t *args, gs_pool_batch *batch) {
+    gs_stack *stks = gs_stks;
+    int64_t nstks = gs_nstks;
+    void *gl = gs_gl;
+    gs_stks = NULL;
+    gs_nstks = 0;
+    gs_pool_guard(batch, gs_par_task, entry, args);
+    free(gs_stks);
+    gs_stks = stks;
+    gs_nstks = nstks;
+    gs_gl = gl;
 }
 
 )GSRT"
@@ -1518,6 +1572,7 @@ R"GSRT(static const char *gs_errmsgs[] = {
     "chunk size of zero or less",
     "chunk offsets out of bounds or not monotonically increasing",
     "cannot apply on a closed thread_pool",
+    "chunk count of zero or less",
 };
 
 )GSRT"
@@ -1632,6 +1687,18 @@ R"GSRT(GS_API GS_NORETURN void gs_exit(int64_t code) {
 )GSRT"
 R"GSRT(GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
     gs_failf(file, line, "index %lld out of bounds (length %lld)", (long long)i, (long long)n);
+}
+
+)GSRT"
+R"GSRT(GS_API void gs_check_chunk_offsets(const void *bounds, int64_t n, int64_t len, const char *file,
+                                   int line) {
+    int64_t prev = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t b;
+        memcpy(&b, (const uint8_t *)bounds + i * 8, 8);
+        if (b < prev || b > len) gs_abort(GS_E_CHUNKBOUNDS, file, line);
+        prev = b;
+    }
 }
 
 )GSRT"
@@ -4088,8 +4155,16 @@ static gs_pool_task *gs_pool_take(struct gs_pool_state *pool, int *skip) {
 R"GSRT(/* A task a worker took, run whole (gs_pool_submit) unless it is skipped,
    and its record freed. A contained task is handed its batch, which keeps
    what an abort in it says (gs_pool_guard). */
-static void gs_pool_run_task(gs_pool_task *t, int skip) {
+/* The pools' tasks this thread is running, one inside the other where a
+   task waits for a pool of its own: a par for in one runs on its own thread
+   (gs_par_claim). */
+static GS_TLS int gs_pool_tasking;
+
+)GSRT"
+R"GSRT(static void gs_pool_run_task(gs_pool_task *t, int skip) {
+    gs_pool_tasking++;
     if (!skip) t->run(t->entry, t->args, t->batch);
+    gs_pool_tasking--;
     free(t->args);
     free(t);
 }
@@ -4466,6 +4541,102 @@ R"GSRT(GS_API void gs_pool_destroy(gs_pool pool) {
 }
 
 )GSRT"
+R"GSRT(/* ---------------------------------------------------------------------------
+   par for (docs/design/child_threads.md §4.9, runtime.h): the process's
+   pool, made at the first fork that could use it, which one fork at a time
+   claims, under gs_par_mutex. A fork in a contained thread program hands its
+   chunks out as one batch of contained tasks (gs_par_batch), whose first
+   abort the join raises as the program's own. */
+
+)GSRT"
+R"GSRT(static gs_mutex gs_par_mutex = GS_MUTEX_INIT;
+static struct gs_pool_state *gs_par_default;
+static int gs_par_made, gs_par_busy, gs_par_contained;
+static gs_pool_batch *gs_par_batch;
+
+)GSRT"
+R"GSRT(GS_API gs_pool gs_par_pool(void) {
+    gs_mutex_lock(&gs_par_mutex);
+    if (!gs_par_made) {
+        gs_par_made = 1;
+        int64_t n = 0;
+        const char *s = getenv("GOOSE_THREADS");
+        if (s && *s) {
+            char *end;
+            long long v = strtoll(s, &end, 10);
+            if (*end == 0 && v > 0) n = (int64_t)v;
+        }
+        /* No more workers than the data stack budget holds beside the main
+           program (gs_rt_start), as hardware_threads() reports. */
+        if (n <= 0) n = gs_hardware_threads();
+        else if (n > gs_thread_cap) n = gs_thread_cap;
+        if (n > 1) gs_par_default = gs_pool_create(n, NULL, 0);
+    }
+    gs_pool p = gs_par_default;
+    gs_mutex_unlock(&gs_par_mutex);
+    return p;
+}
+
+)GSRT"
+R"GSRT(GS_API gs_pool gs_par_claim(int64_t n) {
+    if (n <= 1 || gs_pool_tasking) return NULL;
+    gs_pool p = gs_par_pool();
+    if (!p) return NULL;
+    gs_mutex_lock(&gs_par_mutex);
+    int busy = gs_par_busy;
+    if (!busy) {
+        gs_par_busy = 1;
+        gs_par_batch = NULL;
+        gs_par_contained = gs_contain != NULL;
+    }
+    gs_mutex_unlock(&gs_par_mutex);
+    return busy ? NULL : p;
+}
+
+)GSRT"
+R"GSRT(/* As many chunks as the pool has workers, its threads and the one forking,
+   which runs the chunks no thread has taken while it waits (gs_pool_wait). */
+GS_API int64_t gs_par_chunks(gs_pool p, int64_t n) {
+    int64_t w = p->nthreads + 1;
+    if (w > GS_PAR_MAXCHUNKS) w = GS_PAR_MAXCHUNKS;
+    return w < n ? w : n;
+}
+
+)GSRT"
+R"GSRT(GS_API void gs_par_submit(gs_pool p, void (*run)(void (*)(uint8_t *), uint8_t *, gs_pool_batch *),
+                          void (*entry)(uint8_t *), const void *args, int64_t argsize) {
+    gs_pool_submit(p, run, entry, args, argsize, gs_par_contained ? &gs_par_batch : NULL);
+}
+
+)GSRT"
+R"GSRT(GS_API void gs_par_join(gs_pool p) {
+    uint8_t *msg = NULL;
+    int64_t len = 0;
+    uint8_t returned = 1;
+    if (gs_par_contained) returned = gs_pool_wait_contained(p, gs_par_batch, &msg, &len);
+    else gs_pool_wait(p);
+    gs_mutex_lock(&gs_par_mutex);
+    gs_par_busy = 0;
+    gs_par_batch = NULL;
+    gs_mutex_unlock(&gs_par_mutex);
+    if (returned) return;
+    /* A chunk aborted: the thread program forking ends as an abort of its
+       own would (gs_fail), its message the chunk's, now that no chunk runs
+       on its storage. */
+    gs_contained *c = gs_contain && !gs_contain->handing ? gs_contain : NULL;
+    if (c) {
+        c->msg = msg;
+        c->len = len;
+        gs_longjmp(c->jump, 1);
+    }
+    fputs("goose runtime error: ", stderr);
+    if (msg) fwrite(msg, 1, (size_t)len, stderr);
+    fputc('\n', stderr);
+    free(msg);
+    gs_end(1);
+}
+
+)GSRT"
 R"GSRT(/* Whether a thread program still runs, under gs_threads_mutex: a worker
    thread_spawn started, or a task a pool was handed and has not finished,
    queued or running. An idle pool's workers run none. */
@@ -4505,6 +4676,9 @@ GS_API void gs_rt_stop(void) {
         gs_pool_destroy(p);
         gs_mutex_lock(&gs_threads_mutex);
     }
+    /* The par for pool went with the others: the next program makes its own. */
+    gs_par_default = NULL;
+    gs_par_made = gs_par_busy = 0;
     for (int64_t i = 0; i < gs_naborted; i++) free(gs_aborted[i].msg);
     free(gs_aborted);
     gs_aborted = NULL;

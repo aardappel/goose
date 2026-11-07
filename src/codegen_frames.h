@@ -365,6 +365,17 @@ inline void CodeGen::CollectSpecs() {
             NodeNamedArrays(n, namedtypes, [&](VarDef *a, bool length) {
                 if (length) si.globals.insert(a);
             });
+            // The arrays and bounds a par for's fork checks whole
+            // (ForLoop::chunkats) are named there, where the optimizer may
+            // have taken every other name of them out of the body.
+            auto checked = [&](ForLoop *fl) {
+                for (auto &[a, b] : fl->chunkats)
+                    for (auto v : { a, b })
+                        if (v && v->ownerspec != sp && !v->isglobal && seen.insert(v).second)
+                            si.freevars.push_back(v);
+            };
+            if (auto c = Is<Call>(n); c && c->parfor) checked(c->parfor);
+            if (auto fl = Is<ForLoop>(n); fl && fl->ispar) checked(fl);
             if (auto id = Is<Ident>(n)) {
                 auto v = id->vdef;
                 // A global initializer's locals have no ownerspec: every spec

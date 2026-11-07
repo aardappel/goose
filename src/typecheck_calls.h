@@ -472,6 +472,10 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     // Arguments the re-check rebound by reference replace the originals.
     c->SetArgNodes(argnodes);
     c->spec = spec;
+    if (InPar()) {
+        ParEffect(c, -1, best.sf);
+        ParCallNeeds(c, spec);
+    }
     CheckCalleeRelative(c, spec, argvals);
     CalleesReturn(c, { spec }, argsreach);
     return CallResult(c, spec, argvals);
@@ -1265,6 +1269,12 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
             first = spec;
         }
         c->dispatch.push_back(spec);
+        // As an ordinary call's in a par for's body (CheckCall): a reused case
+        // may return out of the functions around the loop (§4.3 R4).
+        if (InPar()) {
+            ParEffect(c, -1, mi.sf);
+            ParCallNeeds(c, spec);
+        }
     }
     // A case taking a non-fixed-size variant by value gets a copy of the
     // argument, taken before the tag is read and held to the end of the call
@@ -1475,6 +1485,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         ra.reusable = CarriesPool(pt) ? argvals[i].reusable : 0;
         ra.exact = ar.Exact();
         ra.heldexact = holder && ra.exact && !sf->isrec;
+        ra.parlocal = !sf->isrec && ParLocalReach(ar);
         // Any root the argument may have that holds a grow-shrink array, or
         // for a reference to a slice one that slice may point into. A root
         // that only bounds a reference or slice argument stands for what it
@@ -1542,6 +1553,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         va.reusable = CarriesPool(pt->ref->sub) ? hp.reusable : 0;
         va.exact = hp.Exact();
         va.heldexact = pt->ref->sub->kind != TY_SLICE && hp.Exact();
+        va.parlocal = !sf->isrec && ParLocalReach(hp);
         auto contents = pt->ref->sub;
         auto gsroot = hp.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); });
         auto holder = contents->kind != TY_SLICE;
@@ -1641,11 +1653,73 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                                 (!owner || (!external && r->ownerspec && within(r->ownerspec, owner)));
         }
     }
+    // The same, over every argument and view, for a par for's judgement of
+    // two classes apart (RootArg::parconcrete): a slice beside a class may
+    // be the array that class stands for, whatever its kind.
+    {
+        auto callerclass = [&](VarDef *r) -> FnSpec * {
+            for (auto fi = (int)frames.size() - 1; r && fi >= 0; fi--)
+                for (size_t j = 0; frames[fi].spec && j < frames[fi].spec->params.size(); j++)
+                    if (ProjectedFrom(r, frames[fi].spec->params[j]->ref.Root()))
+                        return frames[fi].spec;
+            return nullptr;
+        };
+        vector<VarDef *> vroots(views.size(), nullptr);
+        vector<FnSpec *> vclasses(views.size(), nullptr);
+        for (size_t i = 0; i < views.size(); i++) {
+            if (views[i].cls <= 0) continue;
+            vroots[i] = argvals[i].held.Root();
+            vclasses[i] = callerclass(vroots[i]);
+        }
+        FnSpec *powner = nullptr;
+        auto pexternal = false;
+        auto noteclass = [&](FnSpec *cs) {
+            if (!cs) return;
+            pexternal = pexternal || (powner && cs != powner);
+            powner = cs;
+        };
+        for (size_t i = 0; i < roots.size(); i++) if (argroots[i]) noteclass(classes[i].first);
+        for (size_t i = 0; i < views.size(); i++) if (vroots[i]) noteclass(vclasses[i]);
+        // A global's, a function's variable's, or a class of another kind
+        // (a view's): any of them may be what a class beside it stands for,
+        // but for a variable inside that class's activation.
+        auto apart = [&](VarDef *r) {
+            if (IsTemp(r)) return true;
+            if (IsClassRoot(r) || (!r->isglobal && !r->ownerspec)) return false;
+            return !powner || (!pexternal && r->ownerspec && within(r->ownerspec, powner));
+        };
+        auto others = true;
+        for (size_t i = 0; i < roots.size(); i++)
+            if (argroots[i] && !classes[i].first && !apart(argroots[i])) others = false;
+        for (size_t i = 0; i < views.size(); i++)
+            if (vroots[i] && !vclasses[i] && !apart(vroots[i])) others = false;
+        for (size_t i = 0; i < roots.size(); i++)
+            if (auto r = argroots[i])
+                roots[i].parconcrete = classes[i].first ? !pexternal && others : apart(r);
+        // A view's class keeps no `via`: one standing for a class is never
+        // known apart.
+        for (size_t i = 0; i < views.size(); i++)
+            if (auto r = vroots[i]) views[i].parconcrete = !vclasses[i] && apart(r);
+    }
+    // A call in a par for's body is checked under its rules (FnSpec::inpar),
+    // for a nested function as the loop's body sees what it names, which is
+    // where the loop lies in the text: every specialization's copy of one
+    // loop is the same one there (ForLoop::parorigin), so a nested recursive
+    // function's call from its own loop reuses what that call checks. So is
+    // one handed a function value that names variables of its own -- a nested
+    // function, or a block -- which the function calls: what the value may
+    // write, and where it may return to, depend on the loop too.
+    auto inpar = InPar();
+    auto closure = false;
+    for (auto &fv : mi.fnvals) closure = closure || fv.second.fv || fv.second.env;
+    auto parloop = inpar && (sf->isnested || closure) ? Par().loop : nullptr;
+    if (parloop && parloop->parorigin) parloop = parloop->parorigin;
     for (auto spec : sf->specs) {
         // A reuse would merge an exemplar's call into what the real calls
         // agreed on (CheckExemplars).
         if (spec->id < exemplarbase) continue;
         if (spec->lexparent != mi.env) continue;
+        if (spec->inpar != inpar || spec->parloop != parloop) continue;
         if (!spec->inprogress && spec->narrowedenv != narrowedenv) continue;
         // A cycle's member due for its next round is checked again below
         // with what it reads then. A failed one read what it read before
@@ -1717,9 +1791,12 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             auto &sr = spec->roots[i];
             sr.exact = sr.exact && roots[i].exact;
             sr.concrete = sr.concrete && roots[i].concrete && rootsok;
+            sr.parconcrete = sr.parconcrete && roots[i].parconcrete && rootsok;
             for (auto &v : roots[i].via)
                 if (find(sr.via.begin(), sr.via.end(), v) == sr.via.end()) sr.via.push_back(v);
             if (rootsok) spec->views[i].exact = spec->views[i].exact && views[i].exact;
+            auto &sv = spec->views[i];
+            sv.parconcrete = sv.parconcrete && views[i].parconcrete && rootsok;
         }
         if (spec->inprogress) {
             for (auto v : spec->narrowedenv)
@@ -1747,6 +1824,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         } else if (!spec->inprogress) {
             ReplayOuterExits(spec);
             ReplayEnvExits(spec);
+            // What the check of it did that a par for's body judges, for this
+            // call's par fors, which that check may not have been made for.
+            if (InPar()) ParReplay(spec);
         }
         NoteCalleeEnvReads(spec);
         return spec;
@@ -1765,6 +1845,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     auto spec = ast.NewFnSpec();
     spec->sf = sf;
     spec->lexparent = mi.env;
+    spec->inpar = inpar;
+    spec->parloop = parloop;
     spec->narrowedenv = narrowedenv;
     spec->argtypes = mi.paramtypes;
     spec->roots = roots;
@@ -2919,6 +3001,12 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     // In progress from here, so that an error before the body's check, an
     // extern's included, leaves it failed (Checkpoint).
     spec->inprogress = true;
+    // A body checked for no par for's call is held to no par for's rules,
+    // whichever body is being checked as it is reached (FnSpec::inpar).
+    std::optional<ParScope> nopar;
+    if (!spec->inpar && InPar()) nopar.emplace(*this, nullptr);
+    // What it does for a par for's body is recorded afresh (ParRecord).
+    if (spec->inpar) parnotes.erase(spec);
     // A body is checked inside the call that first reaches it, so the native
     // stack holds one of these per call on the compile-time call path.
     if (StackLow()) {
@@ -3173,6 +3261,18 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         h->ref.reusable = va.reusable;
         h->ref.byteview = va.byteview;
         h->ref.freshview = va.byteview;
+    }
+    // A par for's body writes through what it reads out of a class only
+    // where every call reaching this specialization passed storage of the
+    // body's own there (RootArg::parlocal, ParReadOnlyAlt).
+    {
+        vector<char> local(classroots.size(), 1);
+        for (auto &ra : spec->roots)
+            if (ra.cls > 0) local[ra.cls] = local[ra.cls] && ra.parlocal;
+        for (auto &va : spec->views)
+            if (va.cls > 0) local[va.cls] = local[va.cls] && va.parlocal;
+        for (size_t k = 1; k < classroots.size(); k++)
+            if (classroots[k]) classroots[k]->parlocal = local[k];
     }
     // A class whose arguments were each read through one parameter class,
     // a pool class or one threaded exactly, points into the storage that
@@ -3689,6 +3789,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
     // A return written in a defer body, or in a function value written in
     // one, would leave the body (§6.6), whichever function it exits.
     if (deferbodies && InDeferBody()) Error(r, "return cannot leave a defer body (§6.6)");
+    ParExit(r, tf, r->from.empty() ? "return" : "return ... from");
     auto tspec = frames[tf].spec;
     r->target = frames[tf].sf;
     r->targetspec = tspec;

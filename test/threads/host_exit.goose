@@ -1,9 +1,9 @@
 // A library for the C host test/threads/host_exit.c (run_tests.py's
 // host_exit task): the host starts it with goose_init, calls its exports,
 // ends it with goose_exit and starts it again, each start running main over
-// fresh globals, a fresh thread pool and an empty queue; and once ends it
-// while a worker still runs, which is a runtime error. As a fixture, main
-// runs once.
+// fresh globals, a fresh thread pool, a fresh pool for its par fors and an
+// empty queue; and once ends it while a worker still runs, which is a
+// runtime error. As a fixture, main runs once.
 
 struct Note { n: i64 }
 struct Stop { n: i64 }
@@ -33,6 +33,14 @@ export fn bump() -> i64 {
     var mine = thread_pool(1);  // left open, for goose_exit to destroy
     mine.apply(chunks(seen, 1), number);
     qput(Note { n: calls });    // left in the queue, for goose_exit to free
+    // Forks on the program's pool for par fors, made at its first fork and
+    // destroyed by goose_exit with the others.
+    var marks: i64[>..] = [];
+    marks.resize(seen.len + 1, 0);
+    par for &m, i in marks { m = i + 1; }
+    var sum = 0;
+    for m in marks { sum += m; }
+    assert(sum == marks.len * (marks.len + 1) / 2);
     return seen[seen.len - 1];
 }
 

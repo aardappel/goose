@@ -781,8 +781,11 @@ module.exports = grammar({
 
     loop_expression: $ => seq('loop', field('body', $.block)),
 
+    // `par for` (docs/design/child_threads.md §4.1): `par` is a keyword only
+    // before `for`, and a name everywhere else, so the two words are one
+    // token, which an identifier `par` followed by anything else is not.
     for_expression: $ => seq(
-      'for',
+      choice('for', alias(token(seq('par', /\s+/, 'for')), 'par for')),
       optional('&'),
       field('name', $.identifier),
       optional(seq(':', field('type', $._type_no_index))),

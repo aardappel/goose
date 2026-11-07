@@ -360,6 +360,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             }
             return { i };
         }
+        case B_CHUNK: case B_CHUNK_AT: return EmitChunk(c, an, ln);
         case B_POP: {
             auto lv = RecvLoc(an[0]);
             auto v = ArrayView(lv);
@@ -530,6 +531,55 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         default:
             Fail(ln, cat("builtin not implemented: ", builtindefs[c->builtin].name));
     }
+}
+
+// a.chunk(k, n) and a.chunk_at(bounds, k) (docs/design/child_threads.md
+// §4.4): the slice a[lo..hi] of the bounds its arguments give. The
+// receiver's elements and length are read first, as a slice's object's are
+// (GenSlice), then the arguments, which the checker keeps from shrinking it
+// (TypeCheck::ForOperands). A count of zero or less, a chunk index outside
+// the chunks, and bounds that fall or leave the array abort, in every build.
+inline vector<string> CodeGen::EmitChunk(Call *c, vector<Node *> &an, Line ln) {
+    auto lv = GenLoc(an[0]);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    auto v = ArrayView(lv);
+    auto ect = CT(v.elem);
+    auto elems = T(), len = T();
+    L(ect, " *", elems, " = (", ect, " *)(", v.elems, ");");
+    L("int64_t ", len, " = ", v.len, ";");
+    auto k = T(), lo = T(), sz = T();
+    if (c->builtin == B_CHUNK) {
+        // The k-th of n runs, of which the first len % n are one longer.
+        auto kx = GenX(an[1]);
+        L("int64_t ", k, " = ", kx, ";");
+        auto n = T();
+        auto nx = GenX(an[2]);
+        L("int64_t ", n, " = ", nx, ";");
+        L("if (", n, " <= 0) gs_abort(GS_E_CHUNKCOUNT, ", LocArgs(ln), ");");
+        L("(void)GS_IDX(", k, ", ", n, ", ", LocArgs(ln), ");");
+        auto q = T(), r = T();
+        L("int64_t ", q, " = ", len, " / ", n, ", ", r, " = ", len, " % ", n, ";");
+        L("int64_t ", lo, " = ", k, " * ", q, " + (", k, " < ", r, " ? ", k, " : ", r, ");");
+        L("int64_t ", sz, " = ", q, " + (", k, " < ", r, ");");
+    } else {
+        // The run from bounds[k] to bounds[k + 1], one of bounds.len - 1.
+        auto bt = an[1]->exprtype;
+        auto bx = GenXD(an[1], bt);
+        auto b = T();
+        L(CT(bt), " ", b, " = ", bx, ";");
+        auto kx = GenX(an[2]);
+        L("int64_t ", k, " = ", kx, ";");
+        auto runs = T(), hi = T();
+        L("int64_t ", runs, " = ", b, ".len > 0 ? ", b, ".len - 1 : 0;");
+        L("(void)GS_IDX(", k, ", ", runs, ", ", LocArgs(ln), ");");
+        L("int64_t ", lo, " = ", b, ".data[", k, "], ", hi, " = ", b, ".data[", k, " + 1];");
+        L("if (", lo, " < 0 || ", hi, " < ", lo, " || ", hi, " > ", len,
+          ") gs_abort(GS_E_CHUNKBOUNDS, ", LocArgs(ln), ");");
+        L("int64_t ", sz, " = ", hi, " - ", lo, ";");
+    }
+    auto s = T();
+    L(CT(c->rettypes[0]), " ", s, " = { ", elems, " + ", lo, ", ", sz, " };");
+    return { s };
 }
 
 // The bytes a literal of fixed type t stores, value-bearing ones only (pads

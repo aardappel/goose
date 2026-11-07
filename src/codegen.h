@@ -171,6 +171,10 @@ struct CodeGen {
     string code;        // Function bodies, size/eq helpers, thunks, main.
     string exportprotos;
     bool usesthreads = false;
+    // A par for is outlined (OutlineParLoops): the program forks on the
+    // runtime's pool where the C compiler gives it threads, which TinyCC does
+    // not, and runs every par for in place there.
+    bool usespar = false;
     bool library = false;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
@@ -1362,6 +1366,7 @@ struct CodeGen {
     Loc RecvLoc(Node *n);
     string LenCast(const Loc &lv);
     vector<string> EmitBuiltin(Call *c, Dst d0);
+    vector<string> EmitChunk(Call *c, vector<Node *> &an, Line ln);
 
     // ------------------------------------------------------------------
     // Text forms (§3.7): print, str and format share them. A scalar's text
@@ -1448,6 +1453,24 @@ struct CodeGen {
     // a scratch stack, hand them to the runtime, unpack in a per-worker thunk.
     unordered_map<FnSpec *, string> thunks;
 
+    // `par for` (codegen_par.h): each outlined into a nested function of
+    // its own (OutlineParLoops) and forked where it stood (EmitParFor), its
+    // chunks entering on the pool's workers through a thunk, by name, whose
+    // packet is the function's arguments for one chunk (`env`).
+    struct ParThunk {
+        FnSpec *spec = nullptr;
+        string env;
+    };
+    map<string, ParThunk> parthunks;
+    static void ParDeclared(Node *n, set<VarDef *> &out);
+    void OutlineParLoops();
+    void EmitChunkAtChecks(ForLoop *fl, Line line);
+    Node *OutlineParLoop(FnSpec *sp, ForLoop *fl, vector<FnSpec *> &work);
+    vector<string> ParParamTypes(FnSpec *sp);
+    vector<string> EmitParFor(Call *c);
+    string EnsureParThunk(FnSpec *sp);
+    int64_t EmitParThunks();
+
     vector<string> EmitThreadSpawn(Call *c, vector<Node *> &an);
     vector<string> EmitPoolApply(Call *c, vector<Node *> &an);
     void AppendPoolOuts(const Loc &lv, const string &outs, const string &n, const string &ok);
@@ -1528,6 +1551,9 @@ struct CodeGen {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
+        // Before any specialization is summarized or named: the outlined
+        // bodies of the par fors are specializations too.
+        OutlineParLoops();
         CollectSpecs();
         for (auto sp : livespecs)
             for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);
@@ -1553,6 +1579,10 @@ struct CodeGen {
         EmitExports();
         if (!library) EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
+        // A program whose only threads are a par for's runs its loops in place
+        // under TinyCC, which builds it without them (§2.6 of
+        // docs/design/child_threads.md).
+        else if (usespar) predefs = "#ifndef __TINYC__\n#define GS_NEED_THREADS 1\n#endif\n";
         // The instance block: with workers each thread reaches its own
         // through gs_gl; without them there is only main's.
         Append(data, "typedef struct {\n", gblock.empty() ? "    uint8_t gs_none;\n" : gblock,

@@ -1,0 +1,2 @@
+goose runtime error: chunk count of zero or less
+chunk_count_negative.goose:8)

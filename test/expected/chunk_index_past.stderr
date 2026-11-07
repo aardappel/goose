@@ -1,0 +1,2 @@
+goose runtime error: index 3 out of bounds (length 3)
+chunk_index_past.goose:6)

@@ -106,6 +106,7 @@
 [
   "while"
   "for"
+  "par for"
   "loop"
   "break"
   (continue_expression)

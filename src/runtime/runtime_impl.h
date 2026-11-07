@@ -30,6 +30,7 @@ static const char *gs_errmsgs[] = {
     "chunk size of zero or less",
     "chunk offsets out of bounds or not monotonically increasing",
     "cannot apply on a closed thread_pool",
+    "chunk count of zero or less",
 };
 
 /* Ends the process with `code`, its streams flushed: exit() and every
@@ -134,6 +135,17 @@ GS_API GS_NORETURN void gs_exit(int64_t code) {
 
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
     gs_failf(file, line, "index %lld out of bounds (length %lld)", (long long)i, (long long)n);
+}
+
+GS_API void gs_check_chunk_offsets(const void *bounds, int64_t n, int64_t len, const char *file,
+                                   int line) {
+    int64_t prev = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t b;
+        memcpy(&b, (const uint8_t *)bounds + i * 8, 8);
+        if (b < prev || b > len) gs_abort(GS_E_CHUNKBOUNDS, file, line);
+        prev = b;
+    }
 }
 
 GS_API GS_NORETURN void gs_divfail(const char *file, int line) {

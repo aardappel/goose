@@ -118,7 +118,9 @@ and the reference describe what was built; these say why.
   inside one program, with the parent dormant: `par for` as one claim with
   a thread level and a lane level, what a body may touch, structural and
   proven disjointness, a pool measured against today's spawn, and what
-  ISPC, Halide, OpenMP, rayon and the rest built; a research note.
+  ISPC, Halide, OpenMP, rayon and the rest built; a research note, of which
+  the chunking builtins and `par for` with structural disjointness are
+  implemented.
 * [Thread pools and `pool.apply`](design/parallel_blocks.md): reusable
   pools of worker threads that run an ordinary function over the disjoint
   chunks of an array, cut by a size, by prefix-sum offsets or into output

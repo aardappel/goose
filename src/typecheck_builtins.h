@@ -15,6 +15,7 @@ namespace goose {
 // growths and shrinks; what it cannot express gets dedicated code below.
 inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv) {
     c->builtin = d.kind;
+    if (InPar()) ParEffect(c, d.kind, nullptr);
     if (c->trailing) Error(c, cat(d.name, " takes no function value"));
     if (!(d.flags & BF_TYARGS) && !c->tyargs.empty())
         Error(c, cat(d.name, " takes no type arguments"));
@@ -485,6 +486,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (!IsRefOrSlice(vt)) v = TempCopy(v);
             return v;
         }
+        case B_CHUNK: case B_CHUNK_AT: return CheckChunk(c, d, args);
         default: break;
     }
     // Member receiver validation, from the table.
@@ -523,9 +525,13 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         }
         if (!(RecvKindOf(rt) & d.recv))
             Error(c, cat(".", d.name, " is not available on ", TypeStr(rv.type)));
-        if ((d.flags & BF_WRITE) && !rv.writable)
+        if ((d.flags & BF_WRITE) && !rv.writable) {
+            // A variable from outside a par for's body, which it sees read-only.
+            if (auto id = Is<Ident>(args[0]); id && id->vdef && ParView(id->vdef))
+                ParWriteError(c, id->vdef, cat("cannot .", d.name).c_str());
             Error(c, cat("cannot .", d.name, " through a non-writable value "
                          "(let, const, or a read-only instantiation, §9.5)"));
+        }
         // A reference that may point at such a pool, but is not a pool
         // reference, says so.
         auto notpoolref = [&](int ru) -> string {
@@ -867,6 +873,64 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     return v;
 }
 
+// a.chunk(k, n) and a.chunk_at(bounds, k) (docs/design/child_threads.md
+// §4.4): a run of a's elements whose bounds the call computes, and checks,
+// when it runs. It is the slice a[lo..hi] would be (SliceExpr::Check), taken
+// of the receiver's path as that takes its object's: rooted where a's
+// elements lie, writable where they are and `const` where they are
+// read-only (§9.5), so that the rules of §9 judge it as they judge that
+// slice. The receiver's elements are held while the arguments after it run,
+// as a slice's object is while its bounds do (ForOperands, HK_ELEMS).
+inline Val TypeCheck::CheckChunk(Call *c, const BuiltinDef &d, vector<Node *> &args) {
+    // a.chunk(k, n) or a.chunk_at(bounds, k) in a par for's body, of the
+    // loop's index, count or bounds: the run the iteration owns, of an array
+    // from outside the body (§4.4).
+    VarDef *owned = nullptr;
+    auto part = ParChunkPart(c, d, args, owned);
+    LVal lv;
+    {
+        Saved<VarDef *> po(parowned, part ? owned : parowned);
+        lv = SlicedPath(args[0]);
+    }
+    TypeExpr *elem = nullptr;
+    if (lv.type->kind == TY_SLICE) {
+        elem = lv.type->sub;
+    } else if (lv.type->kind == TY_ARRAY) {
+        RequireComplete(lv.type, c->line);
+        elem = lv.type->arr->sub;
+    } else {
+        Error(c, cat(".", d.name, " is not available on ", TypeStr(lv.type)));
+    }
+    if (ClassOf(elem) != SC_FIXED)
+        Error(c, cat(".", d.name, " needs fixed-size elements: ", TypeStr(lv.type),
+                     " is sequential (§3.3)"));
+    if (lv.intemp) NoRelRefTempRead(args[0], lv.type, elem);
+    auto i64 = ast.inttypes[IS_I64];
+    // chunk(k, n): the k-th of n runs; chunk_at(bounds, k): the k-th run
+    // between the offsets of any i64 array or slice.
+    if (d.kind == B_CHUNK) CheckArg(args[1], i64);
+    else CheckArg(args[1], ast.ConstOf(ast.SliceOf(i64, c->line)));
+    CheckArg(args[2], i64);
+    if (part && lv.writable) {
+        // Owned where it is a run of flat elements of one known storage,
+        // which the rest of the body then reaches no other way (FinishParFor),
+        // and read-only as anything else from outside the body otherwise.
+        auto root = lv.Exact() ? lv.Root() : nullptr;
+        if (root && !root->isglobal && IsFlat(elem))
+            AddParPart(owned, root, d.kind == B_CHUNK ? PF_CHUNK : PF_CHUNK_AT,
+                       d.kind == B_CHUNK ? args[2] : args[1], c, args[0], elem);
+        else
+            lv.writable = false;
+    }
+    // Owned or only read, chunk_at of the loop's own bounds has them checked
+    // whole at the fork, before any iteration runs (§4.4).
+    if (d.kind == B_CHUNK_AT) ParChunkCheck(args);
+    auto v = SliceVal(lv, elem, c->line);
+    // What an adapting receiver (a limited array) constructs from.
+    c->rettypes.push_back(v.type);
+    return v;
+}
+
 // The growable u8 array a builtin's `out` argument appends to (BF_OUTARG),
 // as `form` names the call: to_bytes(a, out), thread_wait(id, msg),
 // apply_contained(chunks(...), msg, fn, ...). Its checked value.
@@ -1053,6 +1117,16 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
             auto hascontents = TempContents(value, contents);
             v.TakeAlts(ReadBackRoot(ft, v, value.byteview, hascontents ? &contents : nullptr));
             v.writable = SlotLoadWritable(ft, value.writable);
+            // In a par for's body nothing launders writability (§4.3 R1), as
+            // ReadBackLVal reads it: a reference or slice read out of storage
+            // the body cannot write, or that may point at storage it sees
+            // read-only, is read-only for the format overload it is handed.
+            if (InPar()) {
+                if (!value.writable || v.Any([&](const RootAlt &a) { return ParReadOnlyAlt(a); }))
+                    v.writable = false;
+                if ((int)frames.size() - 1 == Par().frame || frames.back().isfunval)
+                    ParReadBack(v, ft);
+            }
         }
         CheckRenderable(c, what, ft, at, seen, v, out);
     };

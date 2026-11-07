@@ -910,6 +910,8 @@ read the same way.
 | `.index_of(r) -> i64` | arrays of fixed-size elements | the index of the element `r` refers to |
 | `.range_index(s, msg?) -> i64` | the same | the start of a wholly contained slice; checked when provenance does not prove it |
 | `.check_length(n, msg?) -> i64` | grow-only, grow-shrink, fixed-size elements | validates a count against the data-stack reservation; returns it without changing the array |
+| `.chunk(k, n) -> T[:]` | every array kind and slices, fixed-size elements | the `k`-th of `n` contiguous runs that cover the array, as a slice ([section 7](#7-slices)) |
+| `.chunk_at(bounds, k) -> T[:]` | the same | the run `a[bounds[k]..bounds[k + 1]]`, as a slice ([section 7](#7-slices)) |
 
 Growth always supplies element values: there is no operation that exposes
 an uninitialized slot. Exceeding a limited array's capacity aborts; so does
@@ -1114,6 +1116,32 @@ fn main() {
 ```
 10 150 90 90 1 2
 [20, 30] true
+```
+
+**Chunks** are slices whose bounds the member that takes them computes.
+`a.chunk(k, n)` is the `k`-th of `n` contiguous runs of `a`, for `k` in
+`0..n`: together they cover `a`, and their lengths differ by at most one,
+the longer ones first. `a.chunk_at(bounds, k)` is
+`a[bounds[k]..bounds[k + 1]]`, for `bounds` any `i64` array or slice. Each
+is the slice `a[lo..hi]` would be, writable where `a` is and checked like
+it; a count of zero or less, a `k` with no run, and bounds that fall or
+leave `a` abort. Spec §3.10.
+
+```goose
+fn main() {
+    var xs: i64[>..] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    for k in 3 { print(xs.chunk(k, 3)); }  // 10 in 3 runs: 4, 3 and 3 long
+    let bounds: i64[4] = [0, 2, 2, 10];
+    for &x in xs.chunk_at(bounds, 2) { x *= 10; }
+    print(xs.chunk_at(bounds, 0), " ", xs.chunk_at(bounds, 1), " ", xs);
+}
+```
+
+```
+[0, 1, 2, 3]
+[4, 5, 6]
+[7, 8, 9]
+[0, 1] [] [0, 1, 20, 30, 40, 50, 60, 70, 80, 90]
 ```
 
 A slice is **checked**. It carries a static root, the variable that bounds
@@ -2866,6 +2894,9 @@ loop { if done { break; } }
   shrink there.
 * `continue` goes to the next element; `break` leaves the innermost loop
   or `block`. There are no labels.
+* `par for` in front of any of these forms lets the iterations run on
+  several threads at once, under rules the compiler checks
+  ([`par for`](#par-for)).
 
 ```goose
 fn main() {
@@ -3830,9 +3861,10 @@ with its own data stacks and its own copies of the globals it uses. Those
 copies are taken from the spawning program at the moment of the spawn. A
 worker that increments a global increments its own copy, and main's copy
 keeps its value. So there are no data races, and the language has no
-locks, atomics or memory orderings. The one exception,
-[thread pools](#thread-pools), hands each task a disjoint part of one
-array to write in place, which the compiler checks cannot race either.
+locks, atomics or memory orderings. The two exceptions,
+[thread pools](#thread-pools) and [`par for`](#par-for), hand each task,
+or each iteration, a disjoint part of the caller's storage to write in
+place, which the compiler checks cannot race either.
 
 | Builtin | Meaning |
 |---|---|
@@ -3852,6 +3884,7 @@ array to write in place, which the compiler checks cannot race either.
 | `pool.apply(chunks(out, n), fn, args…)` | `n` tasks, each growing an array of its own, appended to `out` in task order |
 | `pool.apply_contained(chunks(…), msg, fn, args…) -> bool` | as `apply`, but an abort ends only its task; `false` if one did. `msg` is optional |
 | `pool.close()` | ends the pool: joins its workers and releases their storage |
+| `par for i in n { … }` | a [`for`](#loops) whose iterations may run on several threads at once |
 
 Values cross between programs through **typed queues**, one per type.
 Whatever crosses, including a worker's arguments, must be **flat**: it
@@ -4069,6 +4102,108 @@ fn main() {
 Programs with pools need `goose build`, as programs with workers do. The
 [design note](design/parallel_blocks.md) has the reasoning behind pools and
 a parallel hash join. Spec §11.2.
+
+### `par for`
+
+`par for` is a `for` loop whose iterations the program declares
+independent, so that they may run on several threads at once, with no
+copies: the body reads the caller's arrays where they are and writes the
+parts that each iteration owns. It takes every form `for` takes, and it
+computes what the plain `for` computes: the program prints the same
+whichever way the iterations run.
+
+```goose
+fn scale(xs: i64[:], f: i64) {
+    par for &x, i in xs { x = x * f + i; }     // iteration i owns xs[i]
+}
+
+fn main() {
+    let vals = [3, 8, 1, 9, 4, 7, 2, 6];
+    var keep: i64[8] = [0, 0, 0, 0, 0, 0, 0, 0];
+    var counts: i64[4] = [0, 0, 0, 0];
+    var kept = 0;
+    par for k in 4 {
+        let src = vals.chunk(k, 4);            // a run of vals, read-only here
+        let dst = keep.chunk(k, 4);            // the same run of keep, this iteration's
+        var n = 0;
+        for v in src { if v > 3 { dst[n] = v; n++; } }
+        counts[k] = n;                         // one element per iteration
+        kept += n;                             // an integer reduction
+    }
+    var xs = [1, 2, 3, 4];
+    scale(xs, 10);
+    print(counts, " ", kept, " ", keep, " ", xs);
+}
+```
+
+```
+[1, 1, 2, 1] 5 [8, 0, 9, 0, 4, 7, 6, 0] [10, 21, 32, 43]
+```
+
+What the body may touch:
+
+* **Read-only from outside.** Every variable declared outside the body, and
+  every global, is read-only inside it: no assignment, push, resize or
+  other write, and no write through a reference or slice read out of it.
+  A function the body calls is checked again for the body, under the same
+  rules, so it writes no global either. A copy of a holder or an array of
+  references from outside the body is no way around this: the references
+  read out of it point where the original's do, and are as read-only.
+* **What an iteration owns.** The element `par for &x in a` binds;
+  `a[k]`, where `k` is the loop's binder or index; and `a.chunk(k, n)` in
+  `par for k in n`, or `a.chunk_at(bounds, k)` in
+  `par for k in bounds.len - 1`, with any slice bound to one. These are
+  writable where `a` is, its elements are fixed-size and flat, and it is
+  one array the compiler knows. An array is cut one way, through one
+  variable, and the body reaches it no other way but for its `.len`:
+  `c[0] = a[0]` beside `let c = a.chunk(k, 4)` is an error, since `a[0]` is
+  another iteration's, and so is `a[k]` beside `b[k]` for two slices of one
+  array, which may start at different elements. A byte view (`bytes_of`)
+  may be of any array, so it counts as a view of `a` too. Where `a` is a
+  parameter, which may be any array its callers pass, a global or another
+  array that may be the same one is not read in the body either. Whether
+  two parameters are two arrays depends on every call of the function, so
+  the check waits for the whole program. A root struct's owner reaches all
+  of its components, and `s.first` only that one.
+  A `par for` in another's body is held to the outer one's rules too: it
+  writes only what the outer iteration owns.
+* **Reductions.** An integer of the caller's accumulated by one operation,
+  `+=` (with `-=`, `++` and `--`), `|=`, `&=` or `^=`, and used no other way
+  in the body (not even read through a reference to it), is kept per chunk
+  of iterations and added up in order once they all end. A float sum is not a reduction, since its rounding would
+  depend on how the iterations are cut; write `partial[k] = acc` and add
+  the parts up after the loop.
+* **No other effects.** No `print`, `exit`, queue, worker or pool, and none
+  of the `os` module's input, output, clock or environment functions, in
+  the body or anything it calls: their order would show the schedule.
+* **No early exit.** No `return` or `break` leaves the body; `continue`
+  ends the iteration, and a `defer` in the body runs as each one ends.
+* **Locals.** What the body declares is each iteration's own, growable
+  arrays included.
+
+<!-- fragment -->
+```goose
+var total = 0.0;
+par for x in xs { total += x; }   // error: a float is no reduction
+par for k in n { print(k); }      // error: print in a par for
+par for k in n { if k == 3 { break; } }   // error: break out of a par for
+```
+
+An abort in an iteration ends the program, wherever it runs, and where
+several iterations would abort, which message is reported is not
+specified; in a [contained worker](#contained-workers) it ends the worker,
+whose `thread_wait(id, msg)` takes the message. The loop cuts its
+iterations into contiguous runs, one per worker of one pool the program
+keeps for its `par for`s, made at the first loop that can use one, of
+`GOOSE_THREADS` workers where that environment variable says how many, and
+of `hardware_threads()` otherwise. A `par for` runs on the thread reaching
+it, iteration by iteration, in-process (`goose run`), at
+`GOOSE_THREADS=1`, inside another `par for`'s iteration or a pool's task,
+and while another thread's `par for` has the pool: the output is the same,
+which makes `GOOSE_THREADS=1` the way to debug one. `par` is a keyword only
+directly before `for`. The
+[design note](design/child_threads.md) has the reasoning and the query
+engine's phases written as `par for`s. Spec §11.2.
 
 ---
 
@@ -4343,8 +4478,9 @@ standard library, written in Goose under `stdlib/` and documented in
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |
 
 The array members, `.len`, `.cap`, `.push`, `.append`, `.pop`, `.pop_n`,
-`.resize`, `.clear`, `.index_of`, `.range_index`, `.check_length`, `.move_from` are in
-[section 5](#members). The stdlib pool APIs and deprecated builtin operations
+`.resize`, `.clear`, `.index_of`, `.range_index`, `.check_length`, `.move_from`,
+`.chunk`, `.chunk_at` are in [section 5](#members), the last two also in
+[section 7](#7-slices). The stdlib pool APIs and deprecated builtin operations
 `.alloc_index`, `.alloc_ref`, `.free`, `.alloc_slice`, `.realloc_slice`,
 `.free_slice` are in [section 14](#14-reusable-pools).
 Spec §12.
@@ -4361,8 +4497,8 @@ varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`.
 **Contextual keywords**, which are ordinary names everywhere else: `from`
 (after a `return` value), `upto` (after an unsigned type in a type),
 `inline` and `checkfree` (before `fn`, `recursive`, `simd` or
-`thread_fn`), `fields`, `variants` and `types` (in a `const for` header),
-`has_default` and `same` (in a `const if` condition).
+`thread_fn`), `par` (before `for`), `fields`, `variants` and `types` (in a
+`const for` header), `has_default` and `same` (in a `const if` condition).
 
 **Operators**, tightest first; the precedence is Rust's:
 
