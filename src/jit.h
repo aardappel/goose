@@ -38,14 +38,12 @@ inline void JitDiag(void *opaque, const char *msg) {
     Append(*(string *)opaque, msg, "\n");
 }
 
-// Compiles `csrc` in memory and calls its main, returning what the program
-// returned or exited with. `progargs` become the program's argv after argv[0].
-// `symbols` holds the C functions of the packages' native parts the program
-// reaches, by name (native.h, builtin.h): from the tables compiled in with
-// builtin packages, or loaded from the libraries built for the others.
-inline int RunJit(const string &csrc, const string &libpath, const string &progname,
-                  const vector<string> &progargs,
-                  const vector<pair<string, const void *>> &symbols) {
+// Compiles `csrc` into this process's memory, ready for RunJit. `symbols`
+// holds the C functions of the packages' native parts the program reaches, by
+// name (native.h, builtin.h): from the tables compiled in with builtin
+// packages, or loaded from the libraries built for the others.
+inline TCCState *CompileJit(const string &csrc, const string &libpath,
+                            const vector<pair<string, const void *>> &symbols) {
     string diags;
     auto s = tcc_new();
     if (!s) throw CompileError { "libtcc: out of memory" };
@@ -74,6 +72,18 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
     if (tcc_add_file(s, support.c_str()) < 0) fail("loading compiler support failed");
     if (tcc_relocate(s) < 0) fail("relocating the generated C failed");
+    tcc_set_error_func(s, nullptr, nullptr);   // diags goes out of scope.
+    return s;
+}
+
+// Calls the main of a program CompileJit compiled, returning what it returned
+// or exited with, and frees it. `progargs` become the program's argv after
+// argv[0].
+inline int RunJit(TCCState *s, const string &progname, const vector<string> &progargs) {
+    auto fail = [&](const char *what) {
+        tcc_delete(s);
+        throw CompileError { cat("libtcc: ", what) };
+    };
     auto entry = (int (*)(int, char **))tcc_get_symbol(s, "main");
     auto cleanup = (void (*)(void))tcc_get_symbol(s, "gs_jit_cleanup");
     if (!entry || !cleanup) fail("cannot find the program entry points");

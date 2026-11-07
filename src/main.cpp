@@ -1877,10 +1877,18 @@ int Main(int argc, char **argv) {
                     return 1;
                 }
             }
+            // TinyCC's parser recurses as deep as the C nests, so TinyCC
+            // compiles on a compile thread's stack as well: a Linux main
+            // thread has only `ulimit -s`.
+            TCCState *jit = nullptr;
+            RunOnCompilerStack([&]() -> int {
+                jit = CompileJit(program, JitLibPath(DirOf(exe)), symbols);
+                return 0;
+            });
             // The program shares this process, so its exit code becomes ours
             // and whatever it wrote is already on the same streams.
             fflush(msgs);
-            return RunJit(program, JitLibPath(DirOf(exe)), filename, progargs, symbols);
+            return RunJit(jit, filename, progargs);
         };
         auto code = 0;
         try {

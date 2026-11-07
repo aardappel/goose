@@ -41,8 +41,10 @@ arguments to the program.
 The program shares the process: its exit status becomes the compiler's, its
 output goes to the same streams, and the compiler's own progress lines move
 to stderr so that stdout carries only the program's output. It does not
-share the compiler's stack: the compile runs on a thread of its own, and the
-program on the main thread. On Windows and macOS the compiler is linked to
+share the compiler's stack: the compile runs on a thread of its own with a
+64 MB stack, and so does TinyCC's compile of the C, whose parser recurses as
+deep as the C nests; the program runs on the main thread. On Windows and
+macOS the compiler is linked to
 reserve 64 MB for the main thread's stack, as much as the compile gets,
 whereas an executable built from the same C starts with 1 MB on Windows and
 8 MB on macOS. On Linux both have the stack limit the process started with

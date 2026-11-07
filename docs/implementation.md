@@ -100,7 +100,9 @@ in `main.cpp`). The typechecker recurses as deep as the program's
 compile-time call path (§3.1 below), and the platforms' main threads get
 anything from 1 MB (Windows) to 8 MB (Linux and macOS by default). The stack
 is reserved address space, committed only as deep as a compile goes. A JIT
-run starts the program back on the main thread, because macOS only lets a
+run has TinyCC compile the C on such a thread as well (`CompileJit` in
+`jit.h`), since TinyCC's parser recurses as deep as the C nests, and starts
+the program back on the main thread (`RunJit`), because macOS only lets a
 window be created on the main thread. On Windows and macOS the link also
 reserves 64 MB for the main thread's stack (`CMakeLists.txt`). On Linux the
 main thread has the stack limit the process started with (`ulimit -s`),
