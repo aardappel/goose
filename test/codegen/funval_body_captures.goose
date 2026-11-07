@@ -7,7 +7,7 @@ enum M { A { n: i64 }, B }
 fn apply<F>(n: i64) -> i64 { F(n) }
 fn id(n: i64) -> i64 { n }
 // F(n) is an argument, checked for resolution and again against id's
-// parameter: twice, and in reapply2 four times.
+// parameter: twice, and in reapply2 three times.
 fn reapply<F>(n: i64) -> i64 { id(F(n)) }
 fn reapply2<F>(n: i64) -> i64 { id(id(F(n))) }
 fn both<F>(a: i64, b: i64) -> i64 { F(a) * 100 + F(b) }

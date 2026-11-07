@@ -21,6 +21,7 @@ inline Val TypeCheck::CheckCall(Call *c, TypeExpr *expected) {
     c->fmtspecs.clear();
     c->fmtcontexts.clear();
     contextualfloats.erase(c);
+    phase2waits.erase(c);
     lastcallrets.clear();
     c->args.erase(c->args.begin() + c->firstdefault,
                   c->args.begin() + c->firstdefault + c->ndefaults);
@@ -173,6 +174,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
     Val ov;
     {
         PathScope ps(*this, d->obj);
+        Discovering discovering(*this, c);
         ov = CheckV(d->obj, nullptr);
     }
     d->obj->exprtype = ov.type;
@@ -186,6 +188,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
     auto bd = LookupBuiltin(d->name);
     if (bd && (bd->flags & BF_MEMBER) && !(bd->flags & BF_PROPERTY) &&
         rt->kind == TY_ARRAY) {
+        CheckWaitingArg(c, d->obj, entryreach);
         if (optional) Error(c, "optional value must be narrowed (if/guard/assert) before use");
         // A member works on the receiver's value, which for a control
         // construct is a copy of the branch taken.
@@ -221,6 +224,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
     }
     if (!cands.empty())
         return ResolveCall(c, cands, env, d->name, &ov, d->obj, entryreach, nullptr, expected);
+    CheckWaitingArg(c, d->obj, entryreach);
     // A member builtin taking any receiver (bytes_of) takes it as checked.
     NoArrayJoin(ov);
     if (bd && !(bd->flags & BF_PROPERTY)) {
@@ -406,6 +410,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             // (CheckExemplars), which only a real binding could resolve.
             for (auto &av : argvals)
                 if (HasOpaque(av.type)) {
+                    for (auto a : argnodes) CheckWaitingArg(c, a, entryreach);
                     Val v;
                     v.type = OpaqueMember();
                     return v;
@@ -455,8 +460,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     // diverged during discovery, but earlier arguments still execute before
     // it.
     auto argsreach = reachable;
-    reachable = entryreach;
-    RecheckArgs(c, cands, best, denv, argnodes, -1, {});
+    RecheckArgs(c, cands, best, denv, argnodes, -1, {}, entryreach);
     // A C function's parameters are what they say (§7.10): a read-only
     // reference or slice needs the parameter declared const.
     if (best.sf->isextern) {
@@ -482,10 +486,14 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
 // constructing into a fresh parameter slot rather than curdst; a parameter
 // from mi.nwritten on takes its default (AddParamDefaults), checked in the
 // default's frame. `skip` is a dispatch position, whose value the cases
-// take as it is, where `atskip` runs instead.
+// take as it is, where `atskip` runs instead. Phase 2 starts where the call
+// does, at `entryreach`, unless it waits (Phase2Waits), checking no argument.
 inline void TypeCheck::RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInfo &mi,
                                    FnSpec *denv, vector<Node *> &argnodes, int skip,
-                                   const function<void()> &atskip) {
+                                   const function<void()> &atskip, bool entryreach) {
+    auto waits = Phase2Waits(c);
+    if (waits) phase2waits.insert(c);
+    else reachable = entryreach;
     DestScope ds(*this, Dest {});
     for (size_t i = 0; i < mi.paramtypes.size(); i++) {
         if ((int)i == skip) {
@@ -503,8 +511,11 @@ inline void TypeCheck::RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInf
             ClassOf(LoadType(p.type->ref->sub)) == SC_FIXED)
             Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
                                   " is passed by reference without it (§4.1)"));
-        if (i < mi.nwritten) CheckArg(argnodes[i], mi.paramtypes[i]);
-        else InParamDefault(c, mi, denv, i, [&]() { CheckArg(argnodes[i], mi.paramtypes[i]); });
+        if (!waits) {
+            if (i < mi.nwritten) CheckArg(argnodes[i], mi.paramtypes[i]);
+            else InParamDefault(c, mi, denv, i,
+                                [&]() { CheckArg(argnodes[i], mi.paramtypes[i]); });
+        }
         // A by-value non-fixed-size parameter takes a copy of its
         // argument (§4.1), a temporary of the statement whatever the
         // argument names (NoteTemp).
@@ -513,6 +524,20 @@ inline void TypeCheck::RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInf
         // held (HeldOperands), so a rebound one replaces its original now.
         c->SetArgNode(i, argnodes[i]);
     }
+}
+
+// An argument of c checked while c resolved its overload, which c then takes
+// as checked rather than checking it again in its phase 2: at a dispatch
+// position, as a builtin's receiver, beside an exemplar's opaque value. A
+// call there whose phase 2 waited (Phase2Waits) is checked again in full, as
+// it was first.
+inline void TypeCheck::CheckWaitingArg(Call *c, Node *a, bool entryreach) {
+    if (!phase2waits.count(a)) return;
+    Discovering discovering(*this, c);
+    Saved<Node *> full(nowait, a);
+    FlagScope rs(reachable, entryreach);
+    PathScope ps(*this, a);
+    CheckV(a, nullptr);
 }
 
 // What a call's callees do once its arguments are checked again: one, or a
@@ -1178,6 +1203,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
                          "written: a dispatched call passes no case's defaults (§8.2)"));
         return Val {};
     }
+    CheckWaitingArg(c, argnodes[found], entryreach);
     // Without a cast, the call resolves as it does where no overload takes
     // it (ResolveCall) and it dispatches at the same position, each variant
     // to the same case.
@@ -1288,14 +1314,13 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     // Phase 2 for the non-dispatch args (before CallResult, so nested
     // calls cannot clobber lastcallrets); the dispatch arg keeps its type.
     auto argsreach = reachable;
-    reachable = entryreach;
     RecheckArgs(c, cands, matches[0], nullptr, argnodes, found, [&]() {
         // Value cases receive an enum snapshot before later arguments.
         // A reference case retains the original storage instead.
         auto byreference = false;
         for (auto sp : c->dispatch) byreference |= sp->argtypes[found]->kind == TY_REF;
         RecordVal(argnodes[found], byreference ? argvals[found] : DecayRef(argvals[found]));
-    });
+    }, entryreach);
     // Like an ordinary call's, the cases' rebinds follow the argument checks.
     for (auto spec : c->dispatch) CheckCalleeRelative(c, spec, argvals);
     CalleesReturn(c, c->dispatch, argsreach);

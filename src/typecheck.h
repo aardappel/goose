@@ -2285,7 +2285,20 @@ struct TypeCheck {
     void JudgeCallCasts(vector<SFunction *> &cands, MatchInfo &best, vector<Node *> &argnodes,
                         vector<Val> &argvals, const function<bool(vector<Val> &)> &resolves);
     void RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInfo &mi, FnSpec *denv,
-                     vector<Node *> &argnodes, int skip, const function<void()> &atskip);
+                     vector<Node *> &argnodes, int skip, const function<void()> &atskip,
+                     bool entryreach);
+    // A call checked as an operand of a call that is `discovering` is checked
+    // again, in full, in that call's phase 2, so its own phase 2 waits for
+    // that check: run at every level of a nesting, it would double the
+    // checks per level. `phase2waits` holds the calls whose last check
+    // waited, `nowait` the one CheckWaitingArg checks again in full.
+    unordered_set<Node *> phase2waits;
+    Node *nowait = nullptr;
+    bool Phase2Waits(Call *c) {
+        auto &p = cur.nodepath;
+        return c != nowait && p.size() > 1 && p.back().node == c && p[p.size() - 2].discovering;
+    }
+    void CheckWaitingArg(Call *c, Node *a, bool entryreach);
     void CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach);
     // `defaults`: the call may leave out parameters that have a default
     // (§7.1), which ResolveCall then passes. Tag dispatch and rendering

@@ -3238,6 +3238,21 @@ specialization. But every clone of a node names that node
 (`Node::origin`), and a warning prints once for the node as the source has
 it, at the first check that gives the warning (`PrintWarning`).
 
+A call checked as an argument of a call that is resolving its overload,
+a UFCS receiver included, leaves its own phase 2 to the outer call's, which
+checks it again in full (`Phase2Waits`). Resolution needs only its result,
+and a phase 2 at every level would double the checks per level of nesting:
+`g(g(...g(x)))` and `x.g().g()...` would take time exponential in their
+depth. The waiting call still does the parts of phase 2 that check nothing:
+it undoes the reference rewrite, marks the copies its parameters take as
+temporaries, and warns about a redundant `&`. Where the outer call takes
+the argument as checked instead (the argument it dispatches on, a member
+builtin's receiver, an argument beside an exemplar's opaque value), it
+checks the argument again in full first (`CheckWaitingArg`). An error that
+only the waiting phase 2 finds is reported when the outer call checks the
+argument again. So another error in that call, in a later argument, its
+resolution or its callee's body, can be reported first.
+
 The tier is the worst match of any argument, not a sum of conversion
 costs. Concrete exact matches beat generic exact matches, which beat any
 candidate requiring adaptation; two candidates at the same best tier are
