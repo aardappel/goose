@@ -611,6 +611,9 @@ inline void TypeCheck::RequireComplete(TypeExpr *t, Line l) {
 }
 
 inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
+    // As deep as the type nests, which a long `T[:][:]...` makes in a loop
+    // (ValidatePointee comes back here).
+    if (StackLow()) StackError(l);
     switch (t->kind) {
         case TY_GENERIC:
             if (t->named->opaque) return;

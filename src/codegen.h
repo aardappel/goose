@@ -1039,18 +1039,25 @@ struct CodeGen {
     bool SpeculatablePlace(Node *n, bool idxok, int &budget);
 
     // The three per-node passes dispatch virtually (ast.h); the bodies live
-    // together in codegen_nodes.h, delegating into the machinery here.
+    // together in codegen_nodes.h, delegating into the machinery here. Each
+    // recurses as deep as the code nests, with frames that can be larger
+    // than the checker's.
     string GenX(Node *n) {
+        if (StackLow()) ast.StackError(n->line);
         if (!substs.empty())
             if (auto s = substs.find(n); s != substs.end()) return s->second;
         auto it = fillvalues.find(n);
         return it == fillvalues.end() ? n->CgX(*this) : LoadLoc(it->second, it->second.t, n->line);
     }
     void GenAny(Node *n, Dst d) {
+        if (StackLow()) ast.StackError(n->line);
         if (fillvalues.count(n)) LeafAny(n, d);
         else n->CgAny(*this, d);
     }
-    void GenStmt2(Node *n) { n->CgStmt(*this); }
+    void GenStmt2(Node *n) {
+        if (StackLow()) ast.StackError(n->line);
+        n->CgStmt(*this);
+    }
 
     string CtlValX(Node *n);
     void LeafAny(Node *n, const Dst &d);

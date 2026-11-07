@@ -4,6 +4,12 @@
 
 namespace goose {
 
+// Set where a dump stops at the stack's floor (StackLow), writing "..." for
+// what nests deeper: a diagnostic quotes code with it, and may do so from
+// past the floor, reporting that very error. A dump that has to be whole
+// (ParseForCheck) fails instead.
+inline thread_local bool dumpcut = false;
+
 inline void Indent(string &s, int ind) { s.append((size_t)ind * 4, ' '); }
 inline void NL(string &s, int ind) { s += '\n'; Indent(s, ind); }
 
@@ -49,6 +55,12 @@ inline void TypeExpr::Dump(string &s, size_t limit) const {
     // the type itself: each round of a runaway polymorphic recursion (§7.8)
     // may double it.
     if (s.size() >= limit) return;
+    // A long `T[:][:]...` parses in a loop (dumpcut).
+    if (StackLow()) {
+        dumpcut = true;
+        s += "...";
+        return;
+    }
     // `const` binds to the first reference or slice of the chain, else to
     // the whole type, so a base needs parens when it is const itself or when
     // this node is const and the base has a reference or slice the `const`
@@ -212,6 +224,13 @@ inline const Node *Written(const Node *n) {
 // float, and a constant the optimizer folds for --specs can be negative.
 // Struct literals need grouping in scrutinee contexts.
 inline void DumpOperand(string &s, const Node *n, int ind, bool postfix = false) {
+    // A long `a + b + ...` or `x.f().g()...` parses in a loop, and dumps
+    // here, an operand at a time (dumpcut).
+    if (StackLow()) {
+        dumpcut = true;
+        s += "...";
+        return;
+    }
     n = Written(n);
     auto parens = EndsInBlock(n) || Is<StructLit>(n) ||
                   Is<Return>(n) || Is<Break>(n) || Is<Continue>(n) ||

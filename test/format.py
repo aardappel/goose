@@ -263,6 +263,18 @@ def check_cli(exe, root):
     expect("--verify", code == 0 and b"1 file(s) verified" in out and v.read_text() == messy,
            f"exit {code}: {out}{err}")
 
+    # A file nested deeper than the compiler's stack holds is an error, not a
+    # crash: the parse stops at the stack's floor for a million parentheses,
+    # and the check of the result for a sum of a million terms, which the
+    # parse makes in a loop and the check dumps.
+    for name, body in (("parens", "(\n" * 1_000_000 + "1\n" + ")\n" * 1_000_000),
+                       ("sum", "1\n" + "+ 1\n" * 1_000_000)):
+        d = write(f"deep_{name}.goose", "fn f() -> i64 {\n" + body + "}\n")
+        code, out, err = run(exe, ["--check", d])
+        expect(f"a file nested too deep ({name}) is an error",
+               code == 2 and "nested too deep for the compiler's stack" in err,
+               f"exit {code}: {err[-2000:]}")
+
     # The help.
     for argv in ([str(exe), "help", "format"], [str(exe), "format", "--help"]):
         r = subprocess.run(argv, capture_output=True, timeout=60)
