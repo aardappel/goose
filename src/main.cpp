@@ -782,6 +782,8 @@ R"(  --cc name|path        The C compiler: msvc, clang-cl, clang, gcc, cc or a
   --shared              Build a self-contained shared library (.dll, .dylib or
                         .so). Its export fns and goose_init/goose_exit are the
                         host entry points; implies --standalone.
+  --header out.h        With --shared: also write the host's header, declaring
+                        the export fns and goose_init/goose_exit.
   -v                    Print each command the build runs and what it prints.
   --dry-run             Print the commands the build would run, and run none.
 )");
@@ -1536,18 +1538,13 @@ int Main(int argc, char **argv) {
         // fetched as its entry is reached.
         parseonly = true;
     } else if (verb == "build") {
-        if (multitest || !headername.empty()) {
-            fprintf(stderr, "goose build takes one program and no --header; the flag form "
-                            "(-o out.c) writes the C for a C host\n");
+        if (multitest || (!headername.empty() && !shared)) {
+            fprintf(stderr, "goose build takes one program, and --header only with --shared; "
+                            "the flag form (-o out.c) writes the C for a C host\n");
             return 1;
         }
         if (shared) standalone = true;
-        buildopts.debug = debug;
-        buildopts.verbose = verbose;
-        buildopts.dryrun = dryrun;
-        buildopts.standalone = standalone;
-        buildopts.shared = shared;
-        buildopts.exe = outname;
+        buildopts = BuildOptions { debug, verbose, dryrun, standalone, shared, outname };
         outname.clear();
     }
     if (files.size() > 1 && !multitest) {
@@ -1865,8 +1862,6 @@ int Main(int argc, char **argv) {
                     if (!BuildNativePart(*astp, pkg, filename, b, false, nb)) return 1;
                     rsps.push_back(nb.rsp);
                 }
-                if (buildopts.shared)
-                    return BuildSharedLibrary(filename, outfile, builddir, tc, buildopts, msgs, rsps);
                 return BuildExecutable(filename, outfile, builddir, tc, buildopts, msgs, rsps,
                                        astp->packages[0].output);
             }

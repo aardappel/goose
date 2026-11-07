@@ -2516,6 +2516,48 @@ def main():
                     detail += str(e)
             checks.append(("build --shared", good, detail))
 
+            # A shared build can also emit the C host header. Exercise the
+            # documented host surface and make sure the declarations are there.
+            shared_header = gendir / "verbs_shared.h"
+            shared_header_out = gendir / ("verbs_shared_header" + shared_suffix)
+            code, out, err = tc.run_capture(
+                [exe, "build", "--shared", "--header", str(shared_header),
+                 "-o", str(shared_header_out), shared_src])
+            good = code == 0 and shared_header_out.exists() and shared_header.exists()
+            detail = out + err
+            if good:
+                header_text = shared_header.read_text(encoding="utf-8", errors="replace")
+                good = all(name in header_text
+                           for name in ("goose_init", "goose_exit", "goose_add"))
+            checks.append(("build --shared --header", good, detail))
+
+            # Without -o, the platform's normal shared-library spelling is used.
+            default_src = gendir / "verbs_shared_default.goose"
+            tc.write_text(default_src,
+                          'export "goose_add" fn add(a: i32, b: i32) -> i32 { a + b }\n')
+            default_out = gendir / (
+                "verbs_shared_default.dll" if tc.IS_WINDOWS else
+                "libverbs_shared_default.dylib" if tc.IS_MACOS else
+                "libverbs_shared_default.so")
+            if default_out.exists():
+                default_out.unlink()
+            code, out, err = tc.run_capture([exe, "build", "--shared", default_src])
+            checks.append(("build --shared default output",
+                           code == 0 and default_out.exists(), out + err))
+
+            # Shared-library mode, like --header, requires something for the
+            # host to call.
+            no_export = gendir / "verbs_shared_no_export.goose"
+            tc.write_text(no_export, "fn helper() -> i32 { 1 }\n")
+            no_export_out = gendir / ("verbs_shared_no_export" + shared_suffix)
+            code, out, err = tc.run_capture(
+                [exe, "build", "--shared", "-o", str(no_export_out), no_export])
+            checks.append(("build --shared without export (refused)",
+                           code == 1 and
+                           "--header and --shared require at least one export fn"
+                           in out + err,
+                           out + err))
+
             code, out, err = tc.run_capture([exe, "check", "--shared", probe])
             checks.append(("check --shared (refused)",
                            code == 1 and "--shared is an option of goose build" in err,

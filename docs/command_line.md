@@ -126,7 +126,7 @@ goose build hello.goose && ./hello
 goose build -o out/hello hello.goose     # the executable elsewhere
 goose build --debug hello.goose          # checked, with debug information
 goose build --dry-run hello.goose        # print the commands and run none
-goose build --shared hello.goose           # libhello.so/.dylib, or hello.dll
+goose build --shared hello.goose         # libhello.so/.dylib, or hello.dll
 ```
 
 `goose build` writes the program's C, compiles it with a C compiler on the
@@ -163,7 +163,7 @@ beyond those in [§5](#5-options-for-run-build-and-check):
 | `--debug` | Turn on the overflow, range and tag checks (`GS_DEBUG=1`), and build the C without optimization and with debug information (`/Od /Zi`, or `-O0 -g`), for a debugger. |
 | `--cc name\|path` | The C compiler, as above. |
 | `--standalone` | Compile the runtime into the program, rather than linking the runtime object built once per C compiler. |
-| `--shared` | Build a self-contained shared library (`.dll`, `.dylib` or `.so`) instead of an executable. The library has no C `main`; `goose_init`, `goose_exit` and the program's `export fn` symbols are its host API. This implies `--standalone`. |
+| `--shared` | Build a self-contained shared library (`lib<stem>.so`, `lib<stem>.dylib` or `<stem>.dll`) instead of an executable. The library has no C `main`; `goose_init`, `goose_exit` and the program's `export fn` symbols are its host API ([reference §24](reference.md#24-calling-c-and-being-called-from-c)). This implies `--standalone`; `--header out.h` ([§8](#8-writing-the-c-yourself)) writes the host's header too. |
 | `-v` | Print each command the build runs, and what it prints. |
 | `--dry-run` | Print the commands the build would run, with their paths, and run none of them. A Makefile or CMake project can take them from here. |
 
