@@ -879,7 +879,8 @@ struct Parser {
                 sf->readsalltops = sf->cname == "gs_trim_memory";
                 sf->takesloc = sf->cname == "gs_slice_pool_place" ||
                                sf->cname == "gs_slice_pool_free" ||
-                               sf->cname == "gs_slice_pool_regrow";
+                               sf->cname == "gs_slice_pool_regrow" ||
+                               sf->cname == "gs_slice_pool_trim";
                 Expect(T_SEMI, "extern declaration");
             } else if (lex.tok == T_ASSIGN) {
                 Error("only an extern fn takes a symbol after its signature: = \"symbol\" (§7.10)");

@@ -134,8 +134,10 @@ invalid pool assignment earlier.
   reservation (`GS_STACK_RESERVE`, 2 GB by default; spec 10.4 allows up to
   2^48 bytes). Exceeding it aborts at the guard region: there is no recoverable
   allocation failure.
-* **The array never shrinks.** Closed documents' runs are reused, but the
-  array's high-water length stays committed and is never returned to the OS.
+* **The array never shrinks.** Closed documents' runs are reused, and the
+  array's high-water length stays reserved. For a `u8` pool, `trim` returns
+  the pages of free runs to the OS (see "Extending slice pools" below);
+  otherwise they stay committed.
 * **A move copies.** Growth that cannot happen in place is O(current length),
   and a document grown in small steps while another follows it can be copied
   at each step. Whether to grow by a factor is up to the caller.
@@ -184,8 +186,9 @@ The following approaches remain useful:
 ## Future option A: bounded independent dynamic stacks
 
 A slice pool has several limits: element addresses can change during growth,
-growth can copy data, and closing a document does not return its memory to the
-OS. Documents also share fragmentation and are limited to one reservation's
+growth can copy data, and closing a document returns its memory to the OS
+only through `trim`, for `u8` pools, a page at a time and without shrinking the
+array. Documents also share fragmentation and are limited to one reservation's
 total storage.
 
 This option extends the dynamic stacks idea in spec 11.3. It proposes a
@@ -304,10 +307,17 @@ costs above:
 * **Recoverable allocation:** a form of `alloc_slice` and `realloc_slice` that
   reports a run the reservation cannot hold instead of aborting, leaving the
   original run intact.
-* **Returning free memory:** whole pages inside free spans could be decommitted
+* **Returning free memory:** whole pages inside free spans can be decommitted
   and recommitted zeroed on the next touch. Stale views can still read those
   pages, so this is sound only for element types whose all-zero bytes are a
   valid value, such as `u8`; a type holding a non-optional reference has none.
+  `trim(pool: slice_pool<u8>&)` does this for `u8` pools, when the program
+  asks, as `trim_memory` does for stack tops. Other element types whose zero
+  bytes are valid could follow: fixed-size, with no index or bound type, and
+  with no non-optional reference, self-relative ones included. An optional
+  relative reference reads offset 0 as null, but a non-optional self-relative
+  one has no null sentinel: offset 0 is the address of its own field (spec
+  §3.9), so a zeroed one would refer to its own offset field as a `T`.
 * **Per-pool reservations:** a pool on a stack of its own size, or on a stack
   from option A.
 * **Relocating self-relative references:** tracking the region a relative

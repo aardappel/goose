@@ -2091,6 +2091,27 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
 }
 
 )GSRT"
+R"GSRT(/* Returns the pages [start, start + len) of one region to the OS, which
+   reads them back as zeros; start and len are page-aligned. Windows
+   decommits, and the access-fault handler commits the pages again on the
+   next touch, anywhere in a region's usable part. Linux drops them from the
+   resident set at once. macOS replaces them with fresh anonymous memory
+   (gs_trim_memory says why). gs_trim_memory and slice_pool's trim
+   (gs_slice_pool_trim) share it. 0 means the OS refused. */
+static int gs_discard_pages(uintptr_t start, size_t len) {
+#ifdef _WIN32
+    return VirtualFree((void *)start, len, MEM_DECOMMIT) != 0;
+#elif defined(__APPLE__)
+    return mmap((void *)start, len, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED;
+#else
+    /* Linux walks only the page tables that were ever populated, so the
+       untouched rest of a reservation costs it little. */
+    return madvise((void *)start, len, MADV_DONTNEED) == 0;
+#endif
+}
+
+)GSRT"
 R"GSRT(/* Explicit rather than on every rewind: short-lived scratch can reuse its
    pages cheaply, while a long-running application can give them back after
    replacing a large document. Keep the virtual reservation and the partly
@@ -2131,21 +2152,13 @@ GS_API uint8_t gs_trim_memory(void) {
         if ((uintptr_t)r->committed < end) end = (uintptr_t)r->committed;
 #endif
         if (start >= end) continue;
-        size_t len = (size_t)(end - start);
+        if (!gs_discard_pages(start, (size_t)(end - start))) {
+            ok = 0;
+            continue;
+        }
 #ifdef _WIN32
-        /* The access-fault handler commits the pages again on growth. */
-        if (VirtualFree((void *)start, len, MEM_DECOMMIT))
-            r->committed = (uint8_t *)start;
-        else
-            ok = 0;
-#elif defined(__APPLE__)
-        if (mmap((void *)start, len, PROT_READ | PROT_WRITE,
-                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
-            ok = 0;
-#else
-        /* Linux walks only the page tables that were ever populated, so the
-           untouched rest of the reservation costs it little. */
-        if (madvise((void *)start, len, MADV_DONTNEED)) ok = 0;
+        /* Everything from start up is decommitted now. */
+        r->committed = (uint8_t *)start;
 #endif
     }
     return (uint8_t)ok;
@@ -4232,6 +4245,10 @@ GS_API void gs_slice_pool_free(gs_rref nodes, void *tree, int64_t idx, int64_t c
                                const gs_loc *at);
 GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int64_t idx,
                                     int64_t ol, int64_t cnt, const gs_loc *at);
+/* slice_pool's trim: discards the complete pages inside every free span of
+   `items`, elements of `elem` bytes; 0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at);
 )GSRT"
     ) },
     { "runtime_os.h", string_view(
@@ -5568,6 +5585,65 @@ R"GSRT(GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t le
     }
     gs_spc_release(&p, &s, idx, ol);
     return gs_slice_pool_place(nodes, tree, len, cnt, at);
+}
+
+)GSRT"
+R"GSRT(/* slice_pool's trim: returns the complete pages inside every free span to
+   the OS (gs_discard_pages), which reads them back as zeros. `items` is the
+   pool's array viewed as bytes and `elem` its element size, so the span
+   (idx, cnt) covers bytes [idx * elem, (idx + cnt) * elem). Free spans never
+   touch, since a free merges with its neighbours, so each span is whole: a
+   page is kept only where it also holds a live element, at either end.
+
+)GSRT"
+R"GSRT(   The walk visits each node once, so a tree whose children lead back to
+   nodes already seen is corrupt, as is a span outside the array; both abort
+   before anything is discarded past them. Pages are discarded below the
+   array's stack top only, so gs_trim_memory's commit mark is not moved.
+   0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at) {
+    gs_spcpath p;
+    uintptr_t page = (uintptr_t)gs_page_size;
+    int64_t count, visits = 0, l = 0;
+    int ok = 1;
+    if (nodes.hdr->len == 0 || items.len <= 0 || elem <= 0 || page == 0) return 1;
+    count = items.len / elem;
+    GS_SPSTART(&p, tree, nodes, at);
+    p.h = GS_SPCHEAD(&p)->height;
+    if (GS_SPBADH(p.h)) gs_spc_corrupt(&p);
+    p.node[0] = GS_SPCHEAD(&p)->root;
+    p.pos[0] = 0;
+    if (p.h ? GS_SPBADIN(&p, p.node[0]) : GS_SPBADLEAF(&p, p.node[0])) gs_spc_corrupt(&p);
+    while (l >= 0) {
+        if (l == p.h) {
+            gs_spleaf *lf = GS_SPLEAF(&p, p.node[l]);
+            if (++visits >= *p.n) gs_spc_corrupt(&p);
+            for (int64_t k = 0; k < lf->n; k++) {
+                int64_t idx = lf->idx[k], cnt = lf->cnt[k];
+                if (idx < 0 || cnt <= 0 || idx > count || cnt > count - idx) gs_spc_corrupt(&p);
+                uintptr_t lo = (uintptr_t)items.data + (uintptr_t)(idx * elem);
+                uintptr_t hi = (uintptr_t)items.data + (uintptr_t)((idx + cnt) * elem);
+                uintptr_t start = (lo + page - 1) / page * page;
+                uintptr_t end = hi / page * page;
+                if (start < end && !gs_discard_pages(start, (size_t)(end - start))) ok = 0;
+            }
+            l--;
+            continue;
+        }
+        gs_spinner *in = GS_SPINNER(&p, p.node[l]);
+        if (p.pos[l] == 0 && ++visits >= *p.n) gs_spc_corrupt(&p);
+        if (p.pos[l] >= in->n) {
+            l--;
+            continue;
+        }
+        int64_t c = in->child[p.pos[l]++];
+        if (l + 1 < p.h ? GS_SPBADIN(&p, c) : GS_SPBADLEAF(&p, c)) gs_spc_corrupt(&p);
+        l++;
+        p.node[l] = c;
+        p.pos[l] = 0;
+    }
+    return (uint8_t)ok;
 }
 )GSRT"
     ) },

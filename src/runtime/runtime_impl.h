@@ -662,6 +662,26 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     return p;
 }
 
+/* Returns the pages [start, start + len) of one region to the OS, which
+   reads them back as zeros; start and len are page-aligned. Windows
+   decommits, and the access-fault handler commits the pages again on the
+   next touch, anywhere in a region's usable part. Linux drops them from the
+   resident set at once. macOS replaces them with fresh anonymous memory
+   (gs_trim_memory says why). gs_trim_memory and slice_pool's trim
+   (gs_slice_pool_trim) share it. 0 means the OS refused. */
+static int gs_discard_pages(uintptr_t start, size_t len) {
+#ifdef _WIN32
+    return VirtualFree((void *)start, len, MEM_DECOMMIT) != 0;
+#elif defined(__APPLE__)
+    return mmap((void *)start, len, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED;
+#else
+    /* Linux walks only the page tables that were ever populated, so the
+       untouched rest of a reservation costs it little. */
+    return madvise((void *)start, len, MADV_DONTNEED) == 0;
+#endif
+}
+
 /* Explicit rather than on every rewind: short-lived scratch can reuse its
    pages cheaply, while a long-running application can give them back after
    replacing a large document. Keep the virtual reservation and the partly
@@ -700,21 +720,13 @@ GS_API uint8_t gs_trim_memory(void) {
         if ((uintptr_t)r->committed < end) end = (uintptr_t)r->committed;
 #endif
         if (start >= end) continue;
-        size_t len = (size_t)(end - start);
+        if (!gs_discard_pages(start, (size_t)(end - start))) {
+            ok = 0;
+            continue;
+        }
 #ifdef _WIN32
-        /* The access-fault handler commits the pages again on growth. */
-        if (VirtualFree((void *)start, len, MEM_DECOMMIT))
-            r->committed = (uint8_t *)start;
-        else
-            ok = 0;
-#elif defined(__APPLE__)
-        if (mmap((void *)start, len, PROT_READ | PROT_WRITE,
-                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
-            ok = 0;
-#else
-        /* Linux walks only the page tables that were ever populated, so the
-           untouched rest of the reservation costs it little. */
-        if (madvise((void *)start, len, MADV_DONTNEED)) ok = 0;
+        /* Everything from start up is decommitted now. */
+        r->committed = (uint8_t *)start;
 #endif
     }
     return (uint8_t)ok;

@@ -801,6 +801,7 @@ fn alloc_copy<T>(pool: slice_pool<T>&, src: T[:]) -> T[:]
 fn free_slice<T>(pool: slice_pool<T>&, s: T[:])
 fn realloc_slice<T>(pool: slice_pool<T>&, s: T[:], n: i64) -> T[:]
 fn recycle_all<T>(pool: slice_pool<T>&)
+fn trim(pool: slice_pool<u8>&) -> bool
 ```
 
 ```goose
@@ -857,6 +858,24 @@ double free can.
 `recycle_all` makes the entire high-water range one free run and recycles all
 metadata nodes. It retains initialized values, backing storage and existing
 views; the next allocation starts at index zero.
+
+`trim` returns the physical memory of a `u8` pool's free runs to the OS (and
+on Windows their commit charge), as `os::trim_memory` does above stack tops:
+it discards the complete pages inside every free span, and they read back as
+zeros, the value `alloc_slice` gives them anyway. Free spans have merged with
+their neighbors, so only a page that also holds a live element is kept. Live
+runs, views and `items.len` stay as they are, and the address range stays
+reserved, so the process's virtual size does not drop. An allocation that
+reuses a span takes its pages again. Like `trim_memory`, it is explicit:
+freeing stays as cheap as before, and a long-running program calls `trim`
+after closing large buffers, not after every free. Reading a freed run is an
+application error, but without `trim` such a read sees the run's old bytes
+until the pool reuses it; after `trim` it sees zeros, so adding a `trim` call
+can change what a program that still reads freed runs does. On Windows a
+stale view that reads a discarded page commits it again, so reading freed
+runs undoes the trim for those pages. It is limited to `u8` because a
+discarded page must read back as a valid element. `false` means an OS
+request failed.
 
 The owner follows the same placement, serialization and worker restrictions as
 `slot_pool`: serialize eligible `items` separately, and construct worker-local
