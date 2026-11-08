@@ -133,6 +133,9 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         }
         case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
         case B_FILE: {
+            // The last path segment, not the path FileRef stores for aborts.
+            // A log line must not embed the directory the compiler loaded.
+            // StrRaw keeps one static per distinct name.
             string path = c->line.fileidx >= 0 && c->line.fileidx < (int)ast.sources.size()
                               ? ast.sources[c->line.fileidx].first : "?";
             auto slash = path.find_last_of("/\\");
