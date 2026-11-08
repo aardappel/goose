@@ -1297,6 +1297,26 @@ inline bool Rename(Workspace &ws, const Json &params, JsonOut &j, string &error)
         file = &f;
         places.insert({ o.start + (o.name.size() - LeafOf(o.name).size()), o.start + o.len });
     });
+    auto declaration = tf.At(target.start);
+    auto local = declaration && (declaration->kind == Occurrence::LOCAL ||
+        declaration->kind == Occurrence::PARAM || declaration->kind == Occurrence::BINDER);
+    // File-wide checks conservatively catch shadowing and capture.
+    if (newname != leaf) for (auto &root : ws.roots) {
+        if (!root->analysis) continue;
+        for (auto &f : root->analysis->files) {
+            if (local && f.uri != tf.uri) continue;
+            for (auto &o : f.occs)
+                if (LeafOf(o.name) == newname &&
+                    (edits.count(f.uri) || (o.IsDeclaration() && o.kind != Occurrence::LOCAL &&
+                        o.kind != Occurrence::PARAM && o.kind != Occurrence::BINDER &&
+                        o.kind != Occurrence::GENERIC))) {
+                    error = cat("'", newname, "' is already used at ", f.uri, ":",
+                                f.text.LineOf(o.start) + 1,
+                                "; renaming could change what it refers to");
+                    return false;
+                }
+        }
+    }
     j.BeginObject();
     j.Key("changes");
     j.BeginObject();
