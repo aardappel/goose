@@ -258,7 +258,7 @@ fn min_by<T, F>(xs: T[:]) -> i64               // index of the smallest F(x); -1
 fn max_by<T, F>(xs: T[:]) -> i64
 fn last<T>(xs: T[:]) -> T&                     // asserts xs.len > 0
 fn lower_bound<T, F>(xs: T[:]) -> i64          // first i with !F(xs[i]); F true on a prefix
-fn binary_search<T>(xs: T[:], v: T) -> i64, bool   // sorted by <: position (or insertion point), found
+fn binary_search<T>(xs: T[:], v: T) -> i64, bool   // sorted by < (or { a, b => ... }): position, found
 fn find<T>(xs: T[:], sub: T[:]) -> i64         // first occurrence of a subsequence, -1 if none
 fn rfind<T>(xs: T[:], sub: T[:]) -> i64
 fn starts_with<T>(xs: T[:], p: T[:]) -> bool   fn ends_with<T>(xs: T[:], p: T[:]) -> bool

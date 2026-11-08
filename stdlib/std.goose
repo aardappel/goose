@@ -475,15 +475,19 @@ fn lower_bound<T, F>(xs: T[:]) -> i64 {
     return lo;
 }
 
-// xs sorted by <: the position of v (or where it would go), and whether it is there.
+// xs sorted by < (or by F(a, b), "a goes before b"): the position of v (or
+// where it would go), and whether it is there.
 fn binary_search<T>(xs: T[:], v: T) -> i64, bool {
+    return binary_search(xs, v) { a, b => a < b };
+}
+fn binary_search<T, F>(xs: T[:], v: T) -> i64, bool {
     var lo = 0;
     var hi = xs.len;
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        if xs[mid] < v { lo = mid + 1; } else { hi = mid; }
+        if F(xs[mid], v) { lo = mid + 1; } else { hi = mid; }
     }
-    return lo, lo < xs.len && xs[lo] == v;
+    return lo, lo < xs.len && !F(v, xs[lo]);
 }
 
 // The first / last occurrence of a subsequence, -1 if none.

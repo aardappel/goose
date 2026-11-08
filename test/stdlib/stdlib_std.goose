@@ -239,6 +239,10 @@ fn searching() {
     print(p, " ", found);                                                      // 3 true
     let q, found2 = binary_search(sorted, 4);
     print(q, " ", found2);                                                     // 2 false
+    let desc = [10, 8, 6, 4, 2];
+    let r, found3 = binary_search(desc, 8) {a, b => b < a};
+    let s, found4 = binary_search(desc, 5) { a, b => b < a };
+    print(r, " ", found3, " ", s, " ", found4);                                // 1 true 3 false
     print(find("hello world", "o w"), " ", rfind("hello world", "o"), " ", find("abc", "x"));   // 4 7 -1
     print(find("aab", "ab"), " ", rfind("abab", "ab"), " ", find("ab", ""), " ", rfind("ab", ""),
           " ", find("a", "ab"));                                               // 1 2 0 2 -1
