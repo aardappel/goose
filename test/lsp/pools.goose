@@ -29,6 +29,49 @@ fn main() {
     var bytes = slice_pool<u8> {};
     let s = bytes.alloc_slice(4);
     print(b.get_v() + a.first_of() + mine(pool) + i + s.len);
+    run_parallel();
+}
+
+// A thread_pool, whose apply and close are builtin members, and the builtins
+// that run a worker function on the arguments after its name: pool.apply,
+// whose worker takes its chunk (and its index) first, and thread_spawn.
+
+fn scale_chunk(chunk: i64[:], idx: i64, by: i64, offset: i64) {
+    for &x in chunk { x = x * by + idx + offset; }
+}
+
+fn shift_chunk(chunk: i64[:], by: i64) {
+    for &x in chunk { x += by; }
+}
+
+thread_fn report(n: i64, total: i64) { print(n + total); }
+
+fn shift_all(pool: thread_pool&, xs: i64[:], step: i64) {
+    pool.apply(chunks(xs, 2), shift_chunk, step);
+}
+
+fn run_parallel() {
+    var pool = thread_pool(2);
+    var xs: i64[>..] = [1, 2, 3, 4];
+    let offset = 1;
+    pool.apply(chunks(xs, 2), scale_chunk, 3, offset);
+    shift_all(pool, xs, 4);
+    let first = thread_spawn(report, xs.len, 10);
+    let second = thread_spawn_contained(report, 2, offset);
+    thread_wait(first);
+    thread_wait(second);
+    print(xs);
+    pool.close();
+}
+
+// pool.apply_contained, which may take a message buffer ahead of the name.
+fn check_chunk(chunk: i64[:], idx: i64, limit: i64, scale: i64) {
+    for &x in chunk { assert(x < limit); x = x * scale + idx; }
+}
+
+fn try_parallel(pool: thread_pool&, xs: i64[:], why: u8[>..]&) -> bool {
+    let ok = pool.apply_contained(chunks(xs, 2), why, check_chunk, 100, 2);
+    ok && pool.apply_contained(chunks(xs, 1), shift_chunk, 3)
 }
 
 // lsp: hover 14:13 "root struct Arena<T>"
@@ -72,3 +115,65 @@ fn main() {
 // lsp: complete 30:19 lacks mine
 // lsp: complete 30:19 lacks defaults
 // lsp: complete 30:19 lacks finish
+// lsp: complete 28:18 lacks apply
+// lsp: complete 57:10 has apply "apply(chunks(array, size_or_offsets), fn, args...)"
+// lsp: complete 57:10 has shift_all
+// lsp: complete 57:10 lacks push
+// lsp: complete 57:10 lacks alloc_index
+// lsp: complete 50:10 has apply "apply(chunks(array, size_or_offsets), fn, args...)"
+// lsp: complete 57:10 has close "close()"
+// lsp: complete 50:10 has close "close()"
+// lsp: complete 64:10 has close "close()"
+// lsp: complete 28:18 lacks close
+// lsp: complete 59:41 lacks close
+// lsp: complete 59:41 has len
+// lsp: complete 59:41 lacks apply
+// lsp: complete 59:41 has chunk
+// lsp: complete 59:41 has chunk_at
+// lsp: complete 31:57 has chunk
+// lsp: complete 31:57 has chunk_at
+// lsp: complete 31:13 lacks chunk
+// lsp: complete 57:10 lacks chunk_at
+// lsp: hint 54:13 ": thread_pool"
+// lsp: hints 57 1
+// lsp: hint 57:44 "by:"
+// lsp: hints 50 1
+// lsp: hint 50:44 "by:"
+// lsp: hints 59 3
+// lsp: hint 59:38 "n:"
+// lsp: hint 59:46 "total:"
+// lsp: hints 60 3
+// lsp: hint 60:49 "n:"
+// lsp: hint 60:52 "total:"
+// lsp: hover 54:9 "var pool: thread_pool"
+// lsp: hover 49:14 "parameter pool: thread_pool&"
+// lsp: hover 57:10 "builtin .apply"
+// lsp: hover 50:10 "builtin .apply"
+// lsp: hover 64:10 "builtin .close"
+// lsp: hover 59:17 "builtin thread_spawn"
+// lsp: hover 60:18 "builtin thread_spawn_contained"
+// lsp: hover 57:31 "fn scale_chunk(chunk: i64[:], idx: i64, by: i64, offset: i64)"
+// lsp: definition 57:31 -> 39:4
+// lsp: definition 57:10 -> none
+// lsp: definition 64:10 -> none
+// lsp: definition 59:17 -> none
+// lsp: references 39:4 2
+// lsp: references 47:11 3
+// lsp: rename 47:11 reporter -> 3
+// lsp: rename 57:10 renamed -> error
+// lsp: complete 73:19 has apply_contained "apply_contained(chunks(array, size_or_offsets), [msg, ]fn, args...) -> bool"
+// lsp: complete 57:10 has apply_contained
+// lsp: complete 73:19 has apply
+// lsp: complete 28:18 lacks apply_contained
+// lsp: complete 59:41 lacks apply_contained
+// lsp: hover 73:19 "builtin .apply_contained -> bool"
+// lsp: hover 74:16 "builtin .apply_contained -> bool"
+// lsp: definition 73:19 -> none
+// lsp: hover 73:55 "fn check_chunk(chunk: i64[:], idx: i64, limit: i64, scale: i64)"
+// lsp: definition 73:55 -> 68:4
+// lsp: hint 73:11 ": bool"
+// lsp: hint 73:68 "limit:"
+// lsp: hint 73:73 "scale:"
+// lsp: hints 73 3
+// lsp: hint 74:60 "by:"
+// lsp: hints 74 1

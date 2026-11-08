@@ -26,6 +26,11 @@ static const char *gs_errmsgs[] = {
     "invalid array length",
     "slice not within this array",
     "slice pool span tree is corrupt",
+    "thread_pool count of zero or less",
+    "chunk size of zero or less",
+    "chunk offsets out of bounds or not monotonically increasing",
+    "cannot apply on a closed thread_pool",
+    "chunk count of zero or less",
 };
 
 /* Ends the process with `code`, its streams flushed: exit() and every
@@ -54,28 +59,36 @@ GS_API GS_NORETURN void gs_panic(const char *msg) {
     gs_end(1);
 }
 
-/* Where an abort in a contained worker returns to (gs_run_contained), and
-   the message it leaves there for thread_wait; NULL on every other thread. */
+/* Where an abort in a contained thread program, a worker or a pool's task,
+   returns to (gs_run_contained), and the message it leaves there for
+   thread_wait or the apply; NULL on every other thread. `handing` counts
+   the pools with tasks out that the thread program handed out
+   (gs_pool_submit, runtime_threads.h), on every pool at once: while there
+   are any, an abort ends the program rather than the thread program, whose
+   storage those tasks may still be writing into. */
 typedef struct {
     jmp_buf jump;
     uint8_t *msg;
     int64_t len;
+    int handing;
 } gs_contained;
 static GS_TLS gs_contained *gs_contain;
 
 /* The end of a failed check or abort(msg) (§9.3), whose message is `len`
-   bytes at `msg` and the location after it. A contained worker's keeps the
-   message, without the "goose runtime error: " every printed one starts
-   with, and ends that worker; anything else's prints it and ends the
-   process. A NULL file is a check the runtime makes on its own, which has
-   no Goose location to print. */
+   bytes at `msg` and the location after it. A contained thread program's
+   keeps the message, without the "goose runtime error: " every printed one
+   starts with, and ends that thread program, unless it has tasks out
+   (gs_contained::handing); anything else's prints it and ends the process.
+   A NULL file is a check the runtime makes on its own, which has no Goose
+   location to print. */
 static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, int line) {
     static const char lead[] = "goose runtime error: ";
     int64_t pre = sizeof lead - 1;
     int64_t loc = file ? snprintf(NULL, 0, " (%s:%d)\n", file, line) : 1;
+    gs_contained *contain = gs_contain && !gs_contain->handing ? gs_contain : NULL;
     uint8_t *text = (uint8_t *)malloc((size_t)(pre + len + loc + 1));
     if (!text) {
-        if (gs_contain) gs_panic("out of memory recording an aborted thread");
+        if (contain) gs_panic("out of memory recording an aborted thread");
         fputs(lead, stderr);
         fwrite(msg, 1, (size_t)len, stderr);
         if (file) fprintf(stderr, " (%s:%d)\n", file, line);
@@ -86,11 +99,11 @@ static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, 
     if (len) memcpy(text + pre, msg, (size_t)len);
     if (file) snprintf((char *)text + pre + len, (size_t)loc + 1, " (%s:%d)\n", file, line);
     else memcpy(text + pre + len, "\n", 2);
-    if (gs_contain) {
+    if (contain) {
         memmove(text, text + pre, (size_t)(len + loc - 1));
-        gs_contain->msg = text;
-        gs_contain->len = len + loc - 1;
-        gs_longjmp(gs_contain->jump, 1);
+        contain->msg = text;
+        contain->len = len + loc - 1;
+        gs_longjmp(contain->jump, 1);
     }
     fwrite(text, 1, (size_t)(pre + len + loc), stderr);
     free(text);
@@ -122,6 +135,17 @@ GS_API GS_NORETURN void gs_exit(int64_t code) {
 
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
     gs_failf(file, line, "index %lld out of bounds (length %lld)", (long long)i, (long long)n);
+}
+
+GS_API void gs_check_chunk_offsets(const void *bounds, int64_t n, int64_t len, const char *file,
+                                   int line) {
+    int64_t prev = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t b;
+        memcpy(&b, (const uint8_t *)bounds + i * 8, 8);
+        if (b < prev || b > len) gs_abort(GS_E_CHUNKBOUNDS, file, line);
+        prev = b;
+    }
 }
 
 GS_API GS_NORETURN void gs_divfail(const char *file, int line) {
@@ -211,6 +235,7 @@ typedef struct {
 } gs_region;
 static GS_TLS gs_region *gs_regions;
 static GS_TLS volatile long gs_nregions;
+static GS_TLS long gs_regions_mapped;
 /* The registry's size: the thread program's region count, as the compiler
    worked it out, so a reservation past it is a compiler bug. */
 static GS_TLS long gs_regions_cap;
@@ -288,6 +313,7 @@ static void gs_regions_begin(int64_t capacity) {
     gs_regions = (gs_region *)calloc((size_t)(capacity > 0 ? capacity : 1), sizeof(gs_region));
     if (!gs_regions) gs_panic("out of memory allocating the data stack registry");
     gs_nregions = 0;
+    gs_regions_mapped = 0;
 }
 
 static void gs_release_region(const gs_region *r);
@@ -295,6 +321,7 @@ static void gs_native_stack_free(void);
 
 /* Unregister before unmapping, then drop the registry. */
 GS_API void gs_release_regions(void) {
+    if (gs_regions_mapped > gs_nregions) gs_nregions = gs_regions_mapped;
     while (gs_nregions) {
         long i = gs_nregions - 1;
         gs_region r = gs_regions[i];
@@ -302,6 +329,7 @@ GS_API void gs_release_regions(void) {
         gs_regions[i].base = NULL;
         gs_release_region(&r);
     }
+    gs_regions_mapped = 0;
     free(gs_regions);
     gs_regions = NULL;
     gs_native_stack_free();
@@ -642,6 +670,12 @@ static GS_NORETURN void gs_end(int code) {
 GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     if (gs_nregions >= gs_regions_cap)
         gs_panic("too many data stack regions");
+    long i = gs_nregions;
+    if (i < gs_regions_mapped) {
+        gs_regions[i].stack = stack;
+        gs_nregions = i + 1;
+        return gs_regions[i].base;
+    }
     size_t usable = gs_region_usable;
     uint8_t *p;
     for (;;) {
@@ -652,13 +686,13 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
         usable -= usable % gs_region_page;
         gs_region_usable = usable;
     }
-    long i = gs_nregions;
     gs_regions[i].base = p;
     gs_regions[i].usable = usable;
     gs_regions[i].size = usable + gs_region_gap;
     gs_regions[i].stack = stack;
     gs_regions[i].committed = p;
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
+    gs_regions_mapped = i + 1;
     return p;
 }
 

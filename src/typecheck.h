@@ -149,6 +149,10 @@ struct TypeCheck {
         // holder root says (TempContents), not into the temporary.
         bool intemp = false;
         ReadBack contents;
+        // The variable outside a `par for`'s body the path starts at, which
+        // the body sees read-only (§4.3 R1, ParView): what a write through
+        // the path is rejected for.
+        VarDef *parfrom = nullptr;
     };
 
     // What a nested function's body can name outside its own scopes (§7.5),
@@ -943,7 +947,7 @@ struct TypeCheck {
         switch (a->kind) {
             case TY_INT:  return a->intstorage == b->intstorage && SameIndex(a, b);
             case TY_FLT:  return a->fltstorage == b->fltstorage;
-            case TY_BOOL: case TY_VOID: case TY_FN: return true;
+            case TY_BOOL: case TY_POOL: case TY_VOID: case TY_FN: return true;
             case TY_STRUCT: {
                 if (a->struc->st != b->struc->st) return false;
                 return TypeArgsEq(a->struc->args, b->struc->args);
@@ -1783,6 +1787,8 @@ struct TypeCheck {
     void RequireAssigned(VarDef *vd, Node *at, string_view use = {});
     void RequireIndexArray(TypeExpr *t, Node *at, string_view what);
     void SliceProvenance(LVal &lv, Node *at);
+    LVal SlicedPath(Node *obj, bool cmpview = false);
+    Val SliceVal(const LVal &lv, TypeExpr *elem, Line line);
     void ReadBackLVal(LVal &lv);
     bool SlotLoadWritable(TypeExpr *t, bool path);
     Val ContainerRead(LVal lv);
@@ -1967,10 +1973,12 @@ struct TypeCheck {
     bool UserRefOf(Node *n);
     bool IsOwnLocal(Node *n);
     bool ImplicitCopy(const Val &v, Node *n, TypeExpr *dt);
-    [[noreturn]] void ImplicitCopyError(Node *n);
+    [[noreturn]] void ImplicitCopyError(Node *n, TypeExpr *t = nullptr);
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
         if (ClassOf(dt) == SC_ROOT && (v.lvalue || IsPlainRef(v.type)))
             Error(n, "root owners cannot be copied; bind a reference instead");
+        if (dt && dt->kind == TY_POOL && (v.lvalue || IsPlainRef(v.type)))
+            Error(n, "thread_pool cannot be copied; pass it by reference (thread_pool&) instead");
         if (ImplicitCopy(v, n, dt)) ImplicitCopyError(n);
     }
     void CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out);
@@ -2215,6 +2223,160 @@ struct TypeCheck {
     Val CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue);
     void CheckWhile(While *x);
     void CheckFor(ForLoop *x);
+
+    // ------------------------------------------------------------------
+    // `par for` (docs/design/child_threads.md §4.3-§4.6; typecheck_par.h):
+    // what the body, and every function it calls, may touch.
+
+    // A part of a variable of the enclosing function that one iteration
+    // owns, by the way it is cut (§4.4): the element of the iteration's
+    // index (`for &x`, a[k]), the chunk(k, n) of n equal runs, or the
+    // chunk_at(bounds, k) run between two offsets.
+    enum ParForm { PF_ELEMENT, PF_CHUNK, PF_CHUNK_AT };
+    struct ParPart {
+        VarDef *var = nullptr;      // The variable the part is taken of.
+        VarDef *root = nullptr;     // The one storage it lies in, which iterations write.
+        ParForm form = PF_ELEMENT;
+        Node *key = nullptr;        // chunk's n, or chunk_at's bounds.
+        Node *at = nullptr;         // Where the part is taken.
+        // An element's index: null for the iteration's ordinal, else the
+        // binder of a range that does not start at 0 (ParCtx::shifted).
+        VarDef *by = nullptr;
+        TypeExpr *elem = nullptr;   // The type of the elements it is a run of.
+    };
+    // A `par for` whose body is being checked: what it allows, and what the
+    // body did, which the loop is judged by once the body is checked
+    // (FinishParFor). Its passes (CheckLoopPasses) add to one record, the
+    // functions checked for the body included.
+    struct ParCtx {
+        ForLoop *loop = nullptr;
+        int depth = 0;               // The loop's scope: a variable no deeper is outside the body.
+        int frame = 0;               // The frame checking the loop.
+        int scope = 0;               // The loop's own scope (SK_LOOP).
+        // The binders that tell the iterations apart: `ordinal` and
+        // `ordinal2` count them from 0 (a count's binder, a 0-based range's,
+        // an index binder), `shifted` is the binder of a range from another
+        // start. Null where the loop names none.
+        VarDef *ordinal = nullptr, *ordinal2 = nullptr, *shifted = nullptr;
+        Node *count = nullptr;       // n of `par for k in n` or `0..n`: what chunk(k, n) takes.
+        Node *bounds = nullptr;      // b of `par for k in b.len - 1`: what chunk_at(b, k) takes.
+        vector<ParPart> parts;
+        // Every use the body makes of a variable outside it, which may not
+        // reach storage a part is of, but for the uses that take a part or
+        // read a length (`partuses`).
+        vector<pair<Node *, VarDef *>> uses;
+        set<Node *> partuses;
+        // The integer reductions (§4.6): each variable with its operation
+        // and the first update of it, and the names those updates write.
+        vector<tuple<VarDef *, TType, Node *>> reductions;
+        set<Node *> redtargets;
+        // The references and slices read out of storage in the body, where
+        // they may point, their type, and where they were read: none may
+        // lead to storage a part is of, nor to a reduction (FinishParFor).
+        struct ParRead {
+            Roots roots;
+            TypeExpr *type = nullptr;
+            Node *at = nullptr;
+        };
+        vector<ParRead> readbacks;
+        // A loop over an array or a slice: where the sequence's elements lie,
+        // of what type, and the variable that names it, if one does. Each
+        // iteration reads its own element, the element `par for &x` binds
+        // being its part, and another view of that storage may be another
+        // iteration's element (FinishParFor).
+        bool hasseq = false;
+        Roots seqroots;
+        VarDef *seqvar = nullptr;
+        TypeExpr *seqelem = nullptr;
+        // a.chunk_at(bounds, k) of the loop's bounds by its index, the
+        // iterations' own runs or only read: the array, where it is a
+        // variable from outside the body (else null), and the bounds, which
+        // the fork checks whole (ForLoop::chunkats, ParChunkCheck).
+        vector<pair<VarDef *, VarDef *>> chunkchecks;
+    };
+    // The par fors whose bodies are being checked, innermost last. A null
+    // entry is a body that is checked for no par for, between them.
+    vector<ParCtx *> parctx;
+    // What the check of a specialization made for a par for's body did,
+    // its callees' included, which a call reusing it in a par for's body
+    // does again (ParReplay): a name of a variable from outside the body,
+    // an update of a reduction, a part an iteration owns, a part's own name
+    // or a length's, which the par for judges as it judges its own (ParNote).
+    enum ParNoteKind { PN_USE, PN_REDUCE, PN_PART, PN_PARTUSE, PN_LENGTH };
+    struct ParNote {
+        ParNoteKind kind = PN_USE;
+        Node *at = nullptr;          // The name, or the update.
+        VarDef *var = nullptr;
+        TType op = T_EOF;            // PN_REDUCE: the reduction's operation class.
+        Node *name = nullptr;        // PN_REDUCE: the name the update writes.
+        ParPart part;                // PN_PART.
+        ForLoop *loop = nullptr;     // PN_PART, PN_PARTUSE: the loop whose iteration owns it.
+    };
+    unordered_map<FnSpec *, vector<ParNote>> parnotes;
+    // The variable a part is being taken of while its path is checked
+    // (ParIndexPart, ParChunkPart): it is as writable there as outside the
+    // body.
+    VarDef *parowned = nullptr;
+    bool InPar() const { return !parctx.empty() && parctx.back(); }
+    ParCtx &Par() { return *parctx.back(); }
+    struct ParScope {
+        TypeCheck &tc;
+        size_t depth;
+        ParScope(TypeCheck &t, ParCtx *c) : tc(t), depth(t.parctx.size()) {
+            tc.parctx.push_back(c);
+        }
+        ~ParScope() { tc.parctx.resize(depth); }
+    };
+    bool ParCaptured(const VarDef *vd);
+    template<typename F> void EachParSeeing(const VarDef *vd, F f);
+    bool ParCapturedAround(const VarDef *vd);
+    bool ParView(const VarDef *vd) {
+        return (ParCaptured(vd) || ParBinder(vd)) && vd != parowned;
+    }
+    bool ParBinder(const VarDef *vd);
+    void NoteParUse(Node *at, VarDef *vd);
+    void StartParFor(ForLoop *x, ParCtx &ctx);
+    void ParPass(ForLoop *x, ParCtx &ctx);
+    void FinishParFor(ForLoop *x, ParCtx &ctx);
+    void AddParPart(VarDef *vd, VarDef *root, ParForm form, Node *key, Node *at, Node *name,
+                    TypeExpr *elem, VarDef *by = nullptr);
+    void ParRecord(const ParNote &n);
+    void ParApply(const ParNote &n);
+    void ParReplay(FnSpec *spec);
+    void ParReadBack(const Roots &r, TypeExpr *t);
+    FnSpec *ClassSpecOf(VarDef *r, bool &distinct);
+    int ParClassFrame(VarDef *x);
+    [[noreturn]] void ParLoadedWriteError(Node *at, const char *what);
+    void NoteParComponent(Dot *d, const LVal &lv);
+    // Names of a root struct's owner, in par for bodies, whose paths reach
+    // one component alone (owner.field): FinishParFor judges each as a use
+    // of the component, in the owner's place (NoteParComponent).
+    unordered_map<Node *, VarDef *> parcomponents;
+    bool ParReadOnlyAlt(const RootAlt &a);
+    bool ParLocalReach(const Roots &r);
+    void ParReduce(Node *at, VarDef *vd, TType cls, Node *name);
+    void ParLengthUse(Node *at, VarDef *vd);
+    bool ParLengthExempt(VarDef *vd);
+    bool ParHoldsRun(TypeExpr *t, TypeExpr *e);
+    void ParRelPools(TypeExpr *t, vector<VarDef *> &out, vector<TypeExpr *> &seen);
+    bool ParHoldsPoolRef(TypeExpr *t);
+    bool ParElemsOverlap(TypeExpr *a, TypeExpr *b);
+    bool ParPointeeReaches(TypeExpr *p, TypeExpr *e);
+    bool ParUseReaches(VarDef *vd, TypeExpr *e);
+    bool ParReachesVar(TypeExpr *t, VarDef *rv);
+    bool ParIndexPart(Index *ix, VarDef *&owned, VarDef *&by);
+    bool ParOrdinal(VarDef *vd) {
+        return vd && (vd == Par().ordinal || vd == Par().ordinal2);
+    }
+    bool ParChunkPart(Call *c, const BuiltinDef &d, vector<Node *> &args, VarDef *&owned);
+    void ParChunkCheck(vector<Node *> &args);
+    bool SameParExpr(Node *a, Node *b);
+    Roots ParRootsOf(VarDef *vd);
+    [[noreturn]] void ParWriteError(Node *at, VarDef *vd, const char *what);
+    void ParAssign(Node *at, LVal &lv, TType op);
+    void ParEffect(Call *c, int builtin, SFunction *callee);
+    void ParExit(Node *at, int targetframe, const char *what);
+    void ParCallNeeds(Node *at, FnSpec *callee);
     int RealFrameIndex();
     Frame &CurRealFrame() { return frames[RealFrameIndex()]; }
     int FindBreakScope(bool forcontinue);
@@ -2429,6 +2591,9 @@ struct TypeCheck {
     void ReturnThroughCalls(Val &v, int tf, Return *r);
     void CheckReturn(Return *r);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
+    FnSpec *EnsurePoolSpec(SFunction *sf, TypeExpr *chunktype, bool &has_idx,
+                           size_t nextra, Line l);
+    static bool PoolGrowableParam(SFunction *sf);
 
     // ------------------------------------------------------------------
     // Struct and variant literals (§4.2). The per-node entry is
@@ -2498,7 +2663,8 @@ struct TypeCheck {
     // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
-    void CheckByteOut(Call *c, Node *out, const string &form);
+    Val CheckChunk(Call *c, const BuiltinDef &d, vector<Node *> &args);
+    Val CheckByteOut(Call *c, Node *out, const string &form);
     void CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
                         const Val *out = nullptr);
     // The types on the path from an argument to the part being checked
@@ -2903,6 +3069,15 @@ struct TypeCheck {
         string msg;
     };
     vector<GrowConflict> growconflicts;
+    // A use in a par for's body of a root the call sites have to tell apart
+    // from a part's, or from a reduction's (FinishParFor, ResolveParConflicts).
+    vector<GrowConflict> parconflicts;
+    // Whether a value with alternative `a` may lead to `root`, a part's
+    // storage or a reduction, in the par for of ctx: AL_DEFER for two
+    // classes of `defer`, which only its call sites can tell apart.
+    Alias ParMayAlias(const RootAlt &a, VarDef *root, ParCtx &ctx, FnSpec *&defer);
+    // The par for conflicts left to ResolveParConflicts, once each.
+    set<tuple<Node *, FnSpec *, VarDef *, VarDef *>> pardeferred;
     // The right-hand side of a whole assignment runs while the array's new
     // contents are built over its old ones (§4.4), so nothing it runs may
     // use the array: name it, or a reference to it, directly or in a
@@ -3158,6 +3333,12 @@ struct TypeCheck {
             auto sf = ast.functions[i];
             CheckRoot([&] { CheckUnreached(sf); });
         }
+        // A pool.apply worker is specialized where its apply is checked, which
+        // for an export or other code no call reaches is the loop above, so
+        // the workers' programs are checked for globals once all of them exist.
+        for (auto sp : ast.fnspecs)
+            if (sp->poolentry && !sp->failed)
+                CheckRoot([&] { CheckThreadGlobals(sp); });
         auto exportcount = 0;
         for (auto sf : ast.functions) {
             if (!sf->isexport) continue;
@@ -3169,6 +3350,7 @@ struct TypeCheck {
         CheckRoot([&] { CheckGlobalShrinks(); });
         CheckRoot([&] { SettleParamRootExactness(); });
         CheckRoot([&] { ResolveGrowConflicts(); });
+        CheckRoot([&] { ResolveParConflicts(); });
         CheckRoot([&] { VerifyLiterals(); });
         CheckRoot([&] { ReportRedundantCasts(); });
         CheckRoot([&] { CheckDefers(); });
@@ -3218,13 +3400,46 @@ struct TypeCheck {
             changed = false;
             for (auto spec : ast.fnspecs)
                 for (auto &ra : spec->roots)
-                    for (auto [p, j] : ra.via)
+                    for (auto [p, j] : ra.via) {
                         if (ra.concrete && (j >= (int)p->roots.size() || !p->roots[j].concrete ||
                                             !p->roots[j].exact)) {
                             ra.concrete = false;
                             changed = true;
                         }
+                        // And as a par for asks it (RootArg::parconcrete).
+                        if (ra.parconcrete &&
+                            (j >= (int)p->roots.size() || !p->roots[j].parconcrete ||
+                             !p->roots[j].exact)) {
+                            ra.parconcrete = false;
+                            changed = true;
+                        }
+                    }
         }
+    }
+
+    // A par for's body's use of storage beside a part, both in classes of one
+    // specialization that every call so far gave arrays apart (ParMayAlias):
+    // an error unless every call that reached it did, now that all are seen
+    // (SettleParamRootExactness). A view's class counts as its parameter's
+    // view says.
+    void ResolveParConflicts() {
+        auto distinct = [&](FnSpec *sp, VarDef *cr) {
+            auto found = false;
+            for (size_t i = 0; sp && i < sp->params.size(); i++) {
+                if (i < sp->roots.size() && ProjectedFrom(cr, sp->params[i]->ref.Root())) {
+                    if (!sp->roots[i].parconcrete || !sp->roots[i].exact) return false;
+                    found = true;
+                }
+                if (auto v = ViewClassOf(sp, i); v && ProjectedFrom(cr, v)) {
+                    if (!sp->views[i].parconcrete || !sp->views[i].exact) return false;
+                    found = true;
+                }
+            }
+            return found;
+        };
+        for (auto &pc : parconflicts)
+            if (!distinct(pc.spec, pc.grown) || !distinct(pc.spec, pc.built))
+                CheckItem([&] { Error(pc.at, pc.msg); });
     }
 
     void CheckUnreached(SFunction *sf) {
@@ -3431,6 +3646,14 @@ struct TypeCheck {
                         Error(n, cat("thread programs cannot copy root global ", id->name,
                                      " (reached from thread_fn ", entry->sf->name,
                                      "); construct worker-local state instead"));
+                    // A thread_pool, `let` or `var`, is a handle to the threads
+                    // of the program that made it, which a worker's copy would
+                    // share: applying it there can wait on the worker's task.
+                    if (g && g->isglobal && g->type && g->type->kind == TY_POOL)
+                        Error(n, cat("cannot use global thread_pool ", id->name,
+                                     " inside a worker (reached from ",
+                                     entry->poolentry ? "pool.apply worker fn " : "thread_fn ",
+                                     entry->sf->name, ")"));
                     if (g && g->isglobal && g->type && !IsFlat(g->type) && !StaticViewsOnly(g))
                         Error(n, cat("thread programs may access only flat globals, and `let` "
                                      "globals whose references lead only to static data "

@@ -15,6 +15,9 @@ print none. A first-line `runtime-debug` marker adds a targeted
 GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
 A first-line `dump-runtime` marker also executes the parser's dump, checking
 that stable roundtripping preserved the original program's behavior.
+A first-line `goose-threads` marker runs each build of the program twice
+more, with GOOSE_THREADS=1, where every par for runs in place, and with
+GOOSE_THREADS=4, and both runs must print what the expected output says.
 
 A compiler built with the TinyCC backend runs the same programs a second way,
 in JIT mode: no C file and no external compiler, the generated C built and run
@@ -26,7 +29,9 @@ The language reference's examples (docs/reference.md) are checked by
 scripts/check_doc_examples.py, a process of its own like the samples' runner:
 every code block of the document compiles, the blocks marked `// error` fail,
 and where the JIT runs, each complete program's output is the one the
-document shows after it.
+document shows after it. test/doc_builtins.py checks that the builtins
+sections of the reference and of the specification name every builtin of
+src/builtins.h.
 
 The audio/ tests use the SDL3 PCM mixer without a device, the gfx/ tests
 use the SDL3 graphics module, the physics/ tests the Box3D
@@ -118,6 +123,11 @@ def debug_fixture(f, line):
     """Whether a fixture also runs with GS_DEBUG: codegen_exec.goose and
     those whose first line asks for it."""
     return f.stem == "codegen_exec" or "runtime-debug" in line
+
+
+# The pool sizes a `goose-threads` fixture's builds run again with: one
+# worker, where every par for runs on the thread that reaches it, and four.
+THREAD_COUNTS = ("1", "4")
 
 
 def fixture_levels(levels, line):
@@ -884,6 +894,22 @@ class Runner:
                         bad = True
                         continue
                     runs[ol] = out
+                    # The same build with the par for pool at each size.
+                    if "goose-threads" in first_line(f):
+                        for n in THREAD_COUNTS:
+                            label = f"-O{ol} GOOSE_THREADS={n} {f.name}"
+                            code, tout, err = tc.run_capture(
+                                argv, env=dict(os.environ, GOOSE_THREADS=n))
+                            tout = self.check_run(name, label, code, tout, err)
+                            if tout is None:
+                                bad = True
+                            elif tout != out:
+                                self.fail(f"output-differs-by-GOOSE_THREADS {label}",
+                                          f"--- GOOSE_THREADS={n}:\n{tout}\n--- by default:\n"
+                                          f"{out}")
+                                bad = True
+                            else:
+                                self.ok(label)
                 if not bad:
                     if len(set(runs.values())) != 1:
                         self.fail(f"cgen-output-differs-by-O {f.name}")
@@ -1507,6 +1533,17 @@ def main():
             r.local.out.failures += max(1, sum(line.startswith("FAIL ") for line in lines))
     doc_examples_future = r.task(doc_examples, alone=True)
 
+    # Every builtin the compiler knows, named in the builtins sections of the
+    # reference (section 25) and of the specification (§12).
+    def doc_builtins():
+        from doc_builtins import check_doc_builtins
+        try:
+            n = check_doc_builtins(tc.REPO_ROOT)
+            r.ok(f"documented builtins: all {n} of src/builtins.h, in the reference's "
+                 "and the specification's builtins sections")
+        except (RuntimeError, OSError) as e:
+            r.fail("documented builtins", str(e))
+
     # One level of category directories; nested syntax helpers and the modules
     # of the goose_in_goose bootstrap are exercised through their entry points.
     # The lsp/ fixtures are the language server's, driven by lsp_protocol.py.
@@ -1793,6 +1830,33 @@ def main():
         else:
             r.ok(f"member parameters {f.name}")
     r.show_task(member_params)
+    # No code runs at a scope exit that the program did not write
+    # (docs/design/ownership.md): a thread_pool is destroyed where the
+    # program closes it, and nowhere else. kept and main leave a pool open,
+    # deferred closes its pool on both of its exits and end_pool the one it
+    # is given; main's only close is the global's.
+    def pool_scope_exits():
+        f = HERE / "threads" / "pool_close.goose"
+        cfile = gendir / "pool_close-exits.c"
+        code, out, err = r.goose("-O0", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"pool scope exits {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        def body(name):
+            match = re.search(rf"^static [^\n;]*\b{name}_g\w*\([^\n]*\) \{{\n(.*?)^\}}\n",
+                              text, re.MULTILINE | re.DOTALL)
+            return match[1] if match else ""
+        bodies = {name: body(name) for name in ("kept", "deferred", "end_pool", "main")}
+        destroys = {name: b.count("gs_pool_destroy(") for name, b in bodies.items()}
+        if ("gs_pool_create(" not in bodies["kept"] or "gs_pool_create(" not in bodies["main"]
+                or destroys != {"kept": 0, "deferred": 2, "end_pool": 1, "main": 1}
+                or not re.search(r"gs_pool_destroy\([^;]*\bshared_g\w*\);", bodies["main"])):
+            r.fail(f"pool scope exits {f.name}", f"gs_pool_destroy calls: {destroys}\n" +
+                   "\n".join(bodies.values()))
+        else:
+            r.ok(f"pool scope exits {f.name}")
+    r.show_task(pool_scope_exits)
     # Root descriptors expose ordinary component metadata to top caching and
     # loop-view hoisting, even when Goose leaves the helper out of line.
     def root_owner_caches():
@@ -2599,6 +2663,16 @@ def main():
             r.fail("command line paths", str(e))
     r.show_task(cli_paths)
 
+    def runtime_header():
+        from runtime_header import check_runtime_header
+        try:
+            n = check_runtime_header(exe, gendir)
+            r.ok(f"runtime header: src/runtime_inline.h ({n} bytes) is what "
+                 "--gen-runtime-header writes from src/runtime/")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("runtime header", str(e))
+    r.show_task(runtime_header)
+
     def emit_order():
         from emit_order import check_emit_order
         try:
@@ -2951,8 +3025,9 @@ def main():
     for future in deep:
         r.show(future)
 
-    r.section("language reference examples (docs/reference.md)")
+    r.section("documentation (docs/reference.md, docs/goose_spec.md)")
     r.show(doc_examples_future)
+    r.show_task(doc_builtins)
 
     r.section("samples")
     r.show(samples_future)

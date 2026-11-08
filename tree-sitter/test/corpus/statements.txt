@@ -323,6 +323,38 @@ fn f() {
           (identifier))))))
 
 ========================================
+Par for, and par as a name
+========================================
+
+fn f() {
+    par for k in n { }
+    par for &x, i in xs { }
+    par(par);
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (for_expression
+        (identifier)
+        (identifier)
+        (block))
+      (for_expression
+        (identifier)
+        (identifier)
+        (identifier)
+        (block))
+      (expression_statement
+        (call_expression
+          (identifier)
+          (argument_list
+            (identifier)))))))
+
+========================================
 Block-ended statements need no semicolon
 ========================================
 

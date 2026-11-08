@@ -158,6 +158,7 @@ inline void TypeExpr::Dump(string &s, size_t limit) const {
             s += ".";
             s += var->name;
             break;
+        case TY_POOL: s += "thread_pool"; break;
         case TY_VOID: s += "void"; break;
     }
 }
@@ -552,7 +553,7 @@ inline void LoopExpr::Dump(string &s, int ind) const {
 }
 
 inline void ForLoop::Dump(string &s, int ind) const {
-    s += "for ";
+    s += ispar ? "par for " : "for ";
     if (byref) s += "&";
     s += var;
     // The loop's own `in` follows a binder's type, so an index type there

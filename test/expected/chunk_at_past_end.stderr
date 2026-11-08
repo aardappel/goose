@@ -1,0 +1,2 @@
+goose runtime error: chunk offsets out of bounds or not monotonically increasing
+chunk_at_past_end.goose:6)

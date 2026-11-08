@@ -51,6 +51,7 @@ add_executable(goose
     src/typecheck_calls.h
     src/typecheck_builtins.h
     src/typecheck_nodes.h
+    src/typecheck_par.h
     src/optimize.h
     src/optimize_basecase.h
     src/optimize_tre.h
@@ -65,6 +66,7 @@ add_executable(goose
     src/codegen_stmts.h
     src/codegen_calls.h
     src/codegen_builtins.h
+    src/codegen_par.h
     src/codegen_render.h
     src/codegen_emit.h
     src/codegen_stacks.h

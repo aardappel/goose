@@ -207,6 +207,11 @@ enum {
     GS_E_ARRAYLEN,     /* array element count negative or beyond a data stack */
     GS_E_ARRAYSLICE,   /* a nonempty slice is not wholly inside the array */
     GS_E_SPANTREE,     /* a stdlib slice_pool's nodes and tree are no span tree */
+    GS_E_POOLTHREADS,  /* a thread_pool count of zero or less */
+    GS_E_CHUNKSIZE,    /* a chunks() size of zero or less */
+    GS_E_CHUNKBOUNDS,  /* chunk offsets out of bounds or not monotonically increasing */
+    GS_E_POOLCLOSED,   /* pool.apply on a thread_pool that close() ended */
+    GS_E_CHUNKCOUNT,   /* a.chunk(k, n) of a count n of zero or less */
 };
 
 /* A place in the program's source: where a standard library function
@@ -227,6 +232,12 @@ GS_API GS_NORETURN void gs_exit(int64_t code);
    reported as the fault handler reports an overrun into the guard gap. */
 GS_API GS_NORETURN void gs_stack_overflow(const void *at);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
+/* The `n` offsets of a par for's chunk_at(bounds, k) runs, `bounds` the
+   elements of an i64 array or slice, against an array of `len` elements:
+   none below zero, none falling, none past the end (GS_E_CHUNKBOUNDS), as
+   each chunk_at checks its own two, but once, before any iteration runs. */
+GS_API void gs_check_chunk_offsets(const void *bounds, int64_t n, int64_t len, const char *file,
+                                   int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
 GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
@@ -930,9 +941,10 @@ GS_API void gs_stack_stats(int64_t stacks);
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
 /* Ends the main program, gs_rt_start's inverse, for a host that may start
-   a program again in this process (goose_exit): releases its regions, and
-   what handled faults before the runtime started does again. A thread
-   program still running is a runtime error. */
+   a program again in this process (goose_exit): destroys the thread pools
+   it leaves open, releases its regions, and what handled faults
+   before the runtime started does again. A thread program still running,
+   a task a pool has yet to finish among them, is a runtime error. */
 GS_API void gs_rt_stop(void);
 
 /* ---------------------------------------------------------------------------
@@ -992,6 +1004,10 @@ typedef struct gs_qnode {
 typedef struct gs_qstate *gs_queue;
 #define GS_QUEUE_INIT NULL
 
+typedef struct gs_pool_state *gs_pool;
+/* What one pool.apply_contained knows of its tasks (gs_pool_submit). */
+typedef struct gs_pool_batch gs_pool_batch;
+
 GS_API void gs_qinit(gs_queue *q);
 GS_API uint8_t gs_qput(gs_queue *q, const void *data, int64_t size);
 GS_API gs_qnode *gs_qget(gs_queue *q);
@@ -1001,6 +1017,100 @@ GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
 /* Frees a queue and the messages left in it, once no thread program can
    use it (goose_exit); gs_qinit makes it again. */
 GS_API void gs_qfree(gs_queue *q);
+
+/* A thread pool's workers live from gs_pool_create to gs_pool_destroy,
+   which pool.close() calls, leaving the variable a closed pool: NULL, which
+   destroys as nothing. No scope's exit destroys a pool. A process's exit
+   takes the threads and regions of the pools left open with it, and
+   gs_rt_stop destroys them, for a host that starts a program again. A pool
+   of nthreads workers has a thread fewer of its own: the thread waiting
+   for it in gs_pool_wait is the last, running tasks there on stacks the
+   pool keeps for it, as is the thread that destroys it, for any task the
+   pool has yet to run. */
+GS_API gs_pool gs_pool_create(int64_t nthreads, const char *file, int line);
+GS_API void gs_pool_destroy(gs_pool p);
+/* What pool.apply checks of the pool it reads from its variable once its
+   arguments have run, any of which may have closed it, and before it hands
+   the pool a chunk: a closed pool aborts, at the apply. */
+GS_API void gs_pool_check_open(gs_pool p, const char *file, int line);
+/* Hands the pool a task: run(entry, args, batch), args a copy of argsize
+   bytes, on whichever of its workers takes it. run runs the task whole,
+   releasing what it holds, and leaves the program state that is the
+   thread's own as it found it, for the thread waiting for the pool runs
+   tasks too. A contained task (pool.apply_contained) is one of the batch
+   at *batch, which the apply's first task makes (*batch is NULL until
+   then) and its gs_pool_wait_contained frees, and run is handed the batch,
+   for gs_pool_guard. Any other task passes NULL for batch, and run is
+   handed NULL. */
+GS_API void gs_pool_submit(gs_pool p,
+                           void (*run)(void (*)(uint8_t *), uint8_t *, gs_pool_batch *),
+                           void (*entry)(uint8_t *), const void *args, int64_t argsize,
+                           gs_pool_batch **batch);
+GS_API void gs_pool_wait(gs_pool p);
+/* pool.apply_contained's wait for its batch, NULL where it handed out no
+   task: as gs_pool_wait, then whether none of the batch's tasks aborted.
+   Where one did, those of them no worker had started by then were skipped,
+   and where `msg` is not NULL, it and `len` are set to the first abort's
+   message, which the caller frees with gs_free_msg, or to NULL and no
+   bytes. The batch is freed. Each apply has a batch of its own, so that one
+   an argument of an apply makes on the same pool, between its tasks, keeps
+   to its own tasks' aborts. */
+GS_API uint8_t gs_pool_wait_contained(gs_pool p, gs_pool_batch *batch, uint8_t **msg,
+                                      int64_t *len);
+/* Runs run(entry, args), the task a pool's worker took, on the calling
+   thread: where batch is the task's, an abort in it returns here, ending
+   the task alone, and the batch keeps the first such message for
+   gs_pool_wait_contained. Where batch is NULL, an abort in it ends the
+   program. */
+GS_API void gs_pool_guard(gs_pool_batch *batch, void (*run)(void (*)(uint8_t *), uint8_t *),
+                          void (*entry)(uint8_t *), uint8_t *args);
+
+/* par for (docs/design/child_threads.md §4.9). The process has one pool for
+   them, of GOOSE_THREADS workers where that is a count, else
+   hardware_threads(), read and made at the first fork (gs_par_pool): NULL
+   where it would have one worker, which is the thread forking. A fork claims
+   it for its iterations, `n` of them (gs_par_claim), which is NULL where the
+   loop runs on its own thread instead: one iteration or none, no pool, a
+   thread already running a pool's task (a par for in a par for's body, or
+   in a task of pool.apply), or the pool claimed by a fork on another
+   thread. A claimed fork hands the pool at most gs_par_chunks(p, n) chunks,
+   each a task (gs_par_submit), and waits for them (gs_par_join), which
+   gives the claim back. In a contained thread program, an abort in a
+   chunk ends that program as an abort of its own would, at the join, once
+   every chunk has ended; anywhere else it ends the process where it
+   happens (§4.7). */
+#define GS_PAR_MAXCHUNKS 256
+GS_API gs_pool gs_par_pool(void);
+GS_API gs_pool gs_par_claim(int64_t n);
+GS_API int64_t gs_par_chunks(gs_pool p, int64_t n);
+GS_API void gs_par_submit(gs_pool p, void (*run)(void (*)(uint8_t *), uint8_t *, gs_pool_batch *),
+                          void (*entry)(uint8_t *), const void *args, int64_t argsize);
+GS_API void gs_par_join(gs_pool p);
+/* What one task of pool.apply(chunks(out, n), fn, ...) left in the T[>..]&
+   of its own that its fn grows (docs/design/parallel_blocks.md §3.4): a
+   copy of its `len` elements, `bytes` bytes at `data`, taken as the task
+   returned (gs_pool_keep), which the apply appends to out once every task
+   has ended. Empty, `data` NULL, where the task left none or never
+   returned. */
+typedef struct {
+    uint8_t *data;
+    int64_t len;
+    int64_t bytes;
+} gs_pool_out;
+/* One apply's n outputs, a slot for each task, all empty, which the pool
+   lists until the apply frees them (gs_pool_outs_free). Those of an apply
+   that never gets to free them, as where one of its arguments closes the
+   pool or a long-distance return leaves one, go with the pool
+   (gs_pool_destroy). Only the thread holding the pool makes and frees them;
+   each task writes its own slot, which the apply reads once its wait for
+   the tasks has ended. */
+GS_API gs_pool_out *gs_pool_outs_new(gs_pool p, int64_t n);
+/* A task's output, `len` elements of `size` bytes at `data`, copied into its
+   slot as the task returns, before its worker rewinds the stacks they are
+   on for its next task. */
+GS_API void gs_pool_keep(gs_pool_out *slot, const uint8_t *data, int64_t len, int64_t size);
+/* Frees an apply's outputs, and what its tasks kept in them. */
+GS_API void gs_pool_outs_free(gs_pool_out *outs);
 
 #ifndef GS_RUNTIME_OBJECT
 
@@ -1070,6 +1180,61 @@ static void gs_thread_release(void) {
 static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize,
                                int contained) {
     return gs_thread_start(gs_thread_run, gs_thread_release, entry, args, argsize, contained);
+}
+
+/* A pool's task, as a worker's thread program, on whichever of the pool's
+   workers takes it: the thread waiting for the pool among them, whose own
+   stack block and globals instance the task starts without, as on a thread
+   of its own, and gets back once the task's are released. A contained task
+   (gs_pool_spawn_contained) that aborts returns to gs_pool_guard, whose
+   caller this is, so that its storage is released here as on a return, and
+   the thread runs on with its own; nothing ends any other task early but
+   the end of the process. */
+static void gs_pool_run(void (*entry)(uint8_t *), uint8_t *args, gs_pool_batch *batch) {
+    gs_stack *stks = gs_stks;
+    int64_t nstks = gs_nstks;
+    void *gl = gs_gl;
+    gs_stks = NULL;
+    gs_nstks = 0;
+    gs_gl = NULL;
+    gs_pool_guard(batch, gs_thread_run, entry, args);
+    gs_thread_release();
+    gs_stks = stks;
+    gs_nstks = nstks;
+    gs_gl = gl;
+}
+
+static void gs_pool_spawn(gs_pool p, void (*entry)(uint8_t *), const void *args, int64_t argsize) {
+    gs_pool_submit(p, gs_pool_run, entry, args, argsize, NULL);
+}
+
+static void gs_par_task(void (*entry)(uint8_t *), uint8_t *args) {
+    entry(args);
+}
+
+/* A par for's chunk, on whichever worker of the pool takes it, the thread
+   forking among them: in the forking program instance, whose globals its
+   entry thunk installs, and on a block of stacks of its own where its body
+   needs any, which the thunk opens and the task's end releases. The thread
+   gets its own back after it, as after a pool.apply task (gs_pool_run). */
+static void gs_par_run(void (*entry)(uint8_t *), uint8_t *args, gs_pool_batch *batch) {
+    gs_stack *stks = gs_stks;
+    int64_t nstks = gs_nstks;
+    void *gl = gs_gl;
+    gs_stks = NULL;
+    gs_nstks = 0;
+    gs_pool_guard(batch, gs_par_task, entry, args);
+    free(gs_stks);
+    gs_stks = stks;
+    gs_nstks = nstks;
+    gs_gl = gl;
+}
+
+/* A task of pool.apply_contained, one of the apply's batch at *batch, which
+   its gs_pool_wait_contained waits for. */
+static void gs_pool_spawn_contained(gs_pool p, gs_pool_batch **batch, void (*entry)(uint8_t *),
+                                    const void *args, int64_t argsize) {
+    gs_pool_submit(p, gs_pool_run, entry, args, argsize, batch);
 }
 #endif
 

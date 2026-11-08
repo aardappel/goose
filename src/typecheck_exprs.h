@@ -44,6 +44,12 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         // is a copy (§9.5). Whether the variable itself is assigned is up
         // to its binding alone (`let`, a copy: WholeWritable, §4.4).
         lv.writable = !vd->copybind && !(vd->type && vd->type->cq);
+        // A par for's body sees what is outside it read-only (§4.3 R1).
+        NoteParUse(n, vd);
+        if (ParView(vd)) {
+            lv.writable = false;
+            lv.parfrom = vd;
+        }
         lv.letbound = !vd->isvar;
         lv.letname = vd->name;
         lv.copyof = vd->copybind ? vd : nullptr;
@@ -72,9 +78,17 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         return lv;
     }
     if (auto ix = Is<Index>(n)) {
-        auto lv = LValueBase(ix->obj);
-        DerefLValue(lv, ix->obj);
-        SliceProvenance(lv, ix->obj);
+        // a[k] in a par for's body, k the iteration's index: an element the
+        // iteration owns, of an array from outside the body (§4.3 R2).
+        VarDef *owned = nullptr, *by = nullptr;
+        auto part = ParIndexPart(ix, owned, by);
+        LVal lv;
+        {
+            Saved<VarDef *> po(parowned, part ? owned : parowned);
+            lv = LValueBase(ix->obj);
+            DerefLValue(lv, ix->obj);
+            SliceProvenance(lv, ix->obj);
+        }
         TypeExpr *elem;
         if (lv.type->kind == TY_SLICE) {
             elem = lv.type->sub;
@@ -91,6 +105,18 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         if (lv.intemp) NoRelRefTempRead(ix->obj, lv.type, elem);
         CheckIntAny(ix->idx);
         if (lv.type->cq) lv.writable = false;   // An element of a const value.
+        if (part) {
+            // Owned where it is a flat element of one known storage, which
+            // the rest of the body then reaches no other way (FinishParFor);
+            // read-only as anything else from outside the body otherwise.
+            auto root = lv.Exact() ? lv.Root() : nullptr;
+            if (lv.writable && root && !root->isglobal && IsFlat(elem)) {
+                AddParPart(owned, root, PF_ELEMENT, nullptr, n, ix->obj, elem, by);
+            } else if (lv.writable) {
+                lv.writable = false;
+                lv.parfrom = owned;
+            }
+        }
         lv.letbound = false;
         lv.type = elem;
         lv.var = nullptr;
@@ -212,6 +238,29 @@ inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
     lv.var = nullptr;
 }
 
+// The path a slice is taken of -- the object of obj[lo..hi], the receiver of
+// a.chunk(k, n) -- followed through a reference or slice to the elements it
+// leads to, which are what the slice views.
+inline TypeCheck::LVal TypeCheck::SlicedPath(Node *obj, bool cmpview) {
+    auto lv = LValueBase(obj, cmpview);
+    DerefLValue(lv, obj);
+    SliceProvenance(lv, obj);
+    return lv;
+}
+
+// A slice of the elements of type elem that the path lv leads to
+// (SlicedPath), whatever its bounds: rooted where they lie and as writable as
+// they are, and so a `const T[:]` where they are read-only (§9.5).
+inline Val TypeCheck::SliceVal(const LVal &lv, TypeExpr *elem, Line line) {
+    Val v;
+    v.type = ast.SliceOf(elem, line);
+    v.SetProv(lv);
+    v.reusable = false;   // A view of a pool is not the pool.
+    if (lv.type->cq) v.writable = false;   // A const field's or element's, as a variable's.
+    v.type->cq = !v.writable;   // A slice of read-only storage is a `const T[:]` (§9.5).
+    return v;
+}
+
 // A location whose own type is a reference or slice: the value loaded out
 // of it is a read-back, so its root is re-derived (§9.5). Out of a field or
 // an element it is as writable as the slot says (SlotLoadWritable); a slice
@@ -234,6 +283,7 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     auto slotread = lv.isslot && SlotReadable(lv.type);
     auto rb = ReadBackRoot(lv.type, lv, lv.byteview, lv.intemp ? &lv.contents : nullptr,
                            slotread, true);
+    auto pathwritable = lv.writable;
     lv.TakeAlts(rb);
     for (auto &a : lv.alts) a.slotread = slotread;
     lv.freshview = false;
@@ -241,6 +291,20 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     lv.intemp = false;
     lv.writable = lv.isslot ? SlotLoadWritable(lv.type, lv.writable)
                             : lv.writable && !lv.type->cq;
+    // In a par for's body nothing launders writability (§4.3 R1): what is
+    // read out of storage the body cannot write, or may point at storage
+    // the body sees read-only -- a copy of a holder from outside it holds
+    // what that holder does -- is read-only (ParReadOnlyAlt). And where it
+    // may point, the loop judges against the parts its iterations own
+    // (FinishParFor): read in the body itself, or in a function value of
+    // it, since what a callee reads out of storage it was handed is the
+    // caller's argument's.
+    if (InPar()) {
+        if (!pathwritable || lv.Any([&](const RootAlt &a) { return ParReadOnlyAlt(a); }))
+            lv.writable = false;
+        if ((int)frames.size() - 1 == Par().frame || frames.back().isfunval)
+            ParReadBack(lv, lv.type);
+    }
 }
 
 // How writable a reference or slice loaded out of a field or an element of
@@ -304,17 +368,24 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
 // A condition and a scrutinee are read before the construct's parts run, so
 // they hold nothing over them: a match binder is a variable in scope, which
 // the scans see. A `for` walks its sequence in place, so that is held while
-// the body runs (HoldForSequence).
+// the body runs (HoldForSequence). apply_contained's message buffer, after
+// the pool and the chunks, is appended to once its later operands have run,
+// so it is held as a member's receiver is. chunk and chunk_at slice their
+// receiver, whose elements and length they read before the arguments after
+// it run (EmitChunk): it is held as a slice expression's object is, as the
+// elements it leads to, through a reference to a slice too.
 template<typename F> void TypeCheck::ForOperands(Node *n, F f) {
     if (auto c = Is<Call>(n)) {
         auto builtin = c->builtin >= 0;
         auto member = builtin && (BuiltinByKind(c->builtin).flags & BF_MEMBER);
         auto render = builtin && (c->builtin == B_PRINT || c->builtin == B_STR ||
                                   c->builtin == B_FORMAT);
-        auto first = true;
+        auto out = c->builtin == B_APPLY_CONTAINED && c->pool_has_why ? 2 : -1;
+        auto recv = c->builtin == B_CHUNK || c->builtin == B_CHUNK_AT ? HK_ELEMS : HK_RECEIVER;
+        auto at = 0;
         auto kind = [&]() {
-            auto k = member && first ? HK_RECEIVER : render ? HK_NONE : HK_VALUE;
-            first = false;
+            auto k = member && !at ? recv : at == out ? HK_RECEIVER : render ? HK_NONE : HK_VALUE;
+            at++;
             return k;
         };
         if (auto d = Is<Dot>(c->callee)) f(d->obj, kind());
@@ -682,6 +753,7 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
             auto parent = lv.AsRoots();
             if (step(inst->st->fields, inst->ftypes, true)) {
                 lv.TakeAlts(ProjectRoots(parent, t, d->fieldidx));
+                if (InPar()) NoteParComponent(d, lv);
                 return;
             }
         } else if (step(inst->st->fields, inst->ftypes, FieldsInFrame(d))) return;
@@ -867,6 +939,10 @@ inline bool TypeCheck::UserRefOf(Node *n) {
 // final expression.
 inline bool TypeCheck::ImplicitCopy(const Val &v, Node *n, TypeExpr *dt) {
     if (!reachable) return false;
+    // A thread_pool is fixed-size, but a copy of one in storage is a second
+    // handle to the pool, which close() through either would leave dangling
+    // in the other (RequireCopyable).
+    if (dt->kind == TY_POOL) return v.lvalue || v.pointee || IsPlainRef(v.type);
     if (IsRefOrSlice(dt) || dt->kind == TY_VOID) return false;
     if (ClassOf(dt) == SC_FIXED) return false;
     auto src = IsPlainRef(v.type) ? v.type->ref->sub : v.type;
@@ -877,9 +953,13 @@ inline bool TypeCheck::ImplicitCopy(const Val &v, Node *n, TypeExpr *dt) {
     return true;
 }
 
-inline void TypeCheck::ImplicitCopyError(Node *n) {
+// The copied value's type is t where the caller knows it, else n's.
+inline void TypeCheck::ImplicitCopyError(Node *n, TypeExpr *t) {
     auto u = Is<Unary>(n);
     auto what = ExprStr(u && u->op == T_BITAND ? u->child : n);
+    if (!t) t = n->exprtype;
+    if (t && (IsPlainRef(t) ? LoadType(t->ref->sub) : t)->kind == TY_POOL)
+        Error(n, "thread_pool cannot be copied; pass it by reference (thread_pool&) instead");
     Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1): pass copy(",
                  what, ") for a copy, or bind it by reference"));
 }
@@ -905,7 +985,7 @@ inline void TypeCheck::CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val 
     out.implicitcopy = v.implicitcopy;
     out.refcopies = v.refcopies;
     if (!ImplicitCopy(v, n, dt)) return;
-    if (argpath != n && joinpath != n) ImplicitCopyError(n);
+    if (argpath != n && joinpath != n) ImplicitCopyError(n, dt);
     if (!out.implicitcopy) out.implicitcopy = n;
 }
 
@@ -938,6 +1018,12 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
     if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
+    // No result owns a thread_pool, declared (ValidateType) or inferred: one
+    // by value would be a second handle to a pool in storage, or to one a
+    // defer of the function closes as it returns.
+    if (v.type && v.type->kind == TY_POOL)
+        Error(n, "thread_pool can only be owned by a local or global variable; return a "
+                 "reference instead");
     NoRelRefCopy(n, v.type);
     if (reachable && IsNonFixedRef(v)) {
         auto dies = v.Any([&](const RootAlt &a) {

@@ -1,0 +1,24 @@
+four workers:
+by size: size i64 slice ref i64[..0] struct i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..]
+  [27, 27, 128, 128, 229, 229]
+no task: size i64 slice ref i64[..0] struct
+  []
+by offsets: offsets i64 slice ref i64[..0] struct i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..]
+  [28, 230, 230, 230, 230, 230]
+growable: count i64 i64[0] dot u8[>..] i64[0] dot u8[>..] i64[0] dot u8[>..]
+  [7, 2, 103, 204]
+contained: pool array size msg i64 slice ref i64[..0] struct i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..]
+  [29, 29, 29, 130, 130, 130]
+  returned true, with a message of 0 bytes
+one worker:
+by size: size i64 slice ref i64[..0] struct i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..]
+  [27, 27, 128, 128, 229, 229]
+no task: size i64 slice ref i64[..0] struct
+  []
+by offsets: offsets i64 slice ref i64[..0] struct i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..]
+  [28, 230, 230, 230, 230, 230]
+growable: count i64 i64[0] dot u8[>..] i64[0] dot u8[>..] i64[0] dot u8[>..]
+  [7, 2, 103, 204]
+contained: pool array size msg i64 slice ref i64[..0] struct i64[0] dot u8[] u8[>..] i64[0] dot u8[] u8[>..]
+  [29, 29, 29, 130, 130, 130]
+  returned true, with a message of 0 bytes

@@ -205,8 +205,11 @@ inline const Call *ResolvedCall(const Located &loc, const Occurrence &occ) {
     return c ? Is<Call>(c) : nullptr;
 }
 
+// The function a checked call calls. A builtin is none: its specialization,
+// where it has one, is the worker it runs (thread_spawn's thread_fn,
+// pool.apply's fn), which an argument names, not the call's callee.
 inline const SFunction *CalleeOf(const Call *c) {
-    if (!c) return nullptr;
+    if (!c || c->builtin >= 0) return nullptr;
     if (c->spec) return c->spec->sf;
     if (!c->dispatch.empty() && c->dispatch[0]) return c->dispatch[0]->sf;
     return nullptr;
@@ -1563,7 +1566,8 @@ inline void WriteInlayHint(JsonOut &j, const TextIndex &t, size_t offset, const 
 // The hints in the requested range: the type of each `let` or `var`
 // without one written, after its name, where the specializations agree on
 // it; and the parameter's name before each argument of a call resolved to
-// a function, but for an argument that is that name itself.
+// a function, or passed to the worker function a builtin runs, but for an
+// argument that is that name itself.
 inline bool InlayHints(Workspace &ws, const Json &params, JsonOut &j) {
     Located loc;
     if (!Locate(ws, params, loc, false)) return false;
@@ -1603,13 +1607,33 @@ inline bool InlayHints(Workspace &ws, const Json &params, JsonOut &j) {
         auto c = SpecializedCall(an, span.call);
         if (!c) continue;
         auto sf = c->spec->sf;
-        // A UFCS call's object is the first parameter's argument. A call
-        // checked in place, in a global's initializer, has the defaults of
-        // the parameters it leaves out after the arguments written.
-        size_t first = Is<Dot>(span.call->callee) ? 1 : 0;
+        // The arguments, a UFCS call's object first (Call::ArgNodes), are
+        // the parameters' in order. A builtin that runs a worker function
+        // (Call::spec) takes arguments of its own first, the worker's name
+        // last of them, and passes the worker the rest: thread_spawn's from
+        // its first parameter on, pool.apply(chunks(...), fn, args...)'s
+        // from the one after the chunk and its index, which apply passes
+        // itself, and so apply_contained's, whose own may include a message
+        // buffer ahead of the name. A call checked in place, in a global's
+        // initializer, has the defaults of the parameters it leaves out
+        // after the arguments written.
+        size_t own = 0, param = 0;
+        if (c->builtin == B_THREAD_SPAWN || c->builtin == B_THREAD_SPAWN_CONTAINED) {
+            own = 1;
+        } else if (c->builtin == B_APPLY || c->builtin == B_APPLY_CONTAINED) {
+            own = c->pool_has_why ? 4 : 3;
+            param = c->pool_has_idx ? 2 : 1;
+        } else if (c->builtin >= 0) {
+            continue;
+        }
+        size_t recv = Is<Dot>(span.call->callee) ? 1 : 0;
         auto written = span.call->args.size() - (size_t)span.call->ndefaults;
-        for (size_t i = 0; i < written && i + first < sf->params.size(); i++) {
-            auto &p = sf->params[i + first];
+        for (size_t i = 0; i < written; i++) {
+            auto at = i + recv;     // In Call::ArgNodes.
+            if (at < own) continue;
+            auto pidx = at - own + param;
+            if (pidx >= sf->params.size()) break;
+            auto &p = sf->params[pidx];
             auto arg = span.call->args[i];
             if (auto id = Is<Ident>(arg); id && LeafOf(id->name) == p.name) continue;
             auto start = StartOf(f, arg);
@@ -1963,6 +1987,19 @@ inline void MemberCompletions(const Located &loc, size_t dotpos, Completions &ou
             FirstParamTakes(sf->params[0].type, type))
             out.Add(sf->name, CK_METHOD, 1, FnHeader(sf), sf->doc);
     builtins(RecvKindOf(type));
+    // A thread_pool's members, which the builtins table cannot mark as
+    // such: no BR_ kind is a pool's, and no signature there spells apply's
+    // arguments (B_APPLY, B_APPLY_CONTAINED and B_POOL_CLOSE in
+    // TypeCheck::CheckBuiltin).
+    if (type->kind == TY_POOL) {
+        out.Add(builtindefs[B_APPLY].name, CK_METHOD, 2,
+                cat(builtindefs[B_APPLY].name, "(chunks(array, size_or_offsets), fn, args...)"));
+        out.Add(builtindefs[B_APPLY_CONTAINED].name, CK_METHOD, 2,
+                cat(builtindefs[B_APPLY_CONTAINED].name,
+                    "(chunks(array, size_or_offsets), [msg, ]fn, args...) -> bool"));
+        out.Add(builtindefs[B_POOL_CLOSE].name, CK_METHOD, 2,
+                cat(builtindefs[B_POOL_CLOSE].name, "()"));
+    }
 }
 
 inline bool Completion(Workspace &ws, const Json &params, JsonOut &j) {

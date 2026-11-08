@@ -110,9 +110,9 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `lifetimes/` | Reference roots, byte views, borrowed contents and shrinking while references are live. |
 | `codegen/` | C names, evaluation order, representations, frame/stack layout and aliasing. |
 | `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
-| `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks, and `runtime_trim_memory.c`, the native test of releasing unused data-stack memory. |
-| `storage/` | Relative references, pools and serialization. |
-| `threads/` | Workers, queues, shared globals, contained workers' aborts and `runtime_threads_lifecycle.c`, the native runtime lifecycle test; `host_exit.c` is the C host of `host_exit.goose`, a library build the host starts, ends with `goose_exit` and starts again (the `host_exit` task). Imported helpers live in `threads/spawn/`. |
+| `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks, the checks of `chunk` and `chunk_at` (below), and `runtime_trim_memory.c`, the native test of releasing unused data-stack memory. |
+| `storage/` | Relative references, pools, serialization, and the slices `chunk` and `chunk_at` cut (below). |
+| `threads/` | Workers, queues, shared globals, contained workers' aborts, thread pools (`parallel_scope.goose` and the `pool_*` and `chunk_*` fixtures, below), `par for` (the `par_for*` fixtures, below) and `runtime_threads_lifecycle.c`, the native runtime lifecycle test; `host_exit.c` is the C host of `host_exit.goose`, a library build the host starts, ends with `goose_exit` and starts again (the `host_exit` task). Imported helpers live in `threads/spawn/`. |
 | `stdlib/` | Standard-library modules. |
 | `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated self-checks of the stage-2 compiler, and compare JIT/native self-compilation. |
 | `audio/` | The `audio` module: the offline PCM mixer advanced by exact frame counts; the rejection of bad rates, PCM, parameters and output; voice and sound capacity and stale handles; and the threading rejection. |
@@ -122,7 +122,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `packages/` | Programs declaring packages from path sources under `pkgs/`, built by `goose build`: pure Goose packages (`pkg_basic`), one with plain C under its sidecar (`pkg_c_lib`), a CMake one (`pkg_cmake_lib`, which `native_toolchain.py` also uses), and programs with C of their own from a sidecar (`pkg_own_c`; `pkg_float_abi`, floating-point arguments on the stack between native C and TinyCC). `pkgs/col` is the package `errors/pkg_collision.goose` imports. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `errors_tc/recovery/` | Programs with several errors, which the parser, resolution and the checker continue past (`docs/design/language_server.md` §5 D). Taken in order, each `// error:` marker must be part of the message of the error at the same position in the order the compiler reports them, and there must be no other errors, both in text and under `--diagnostics json`. `imported/` holds a module that `imports.goose` imports, which is not a fixture of its own. |
-| `lsp/` | Language-server fixtures driven by `lsp_protocol.py` over the protocol, not compiled as programs. `basics.goose` declares queries and expected answers in `// lsp:` lines and imports `helper.goose`. `complete.goose` ends with `p.` to test completion. `recovery.goose` has errors in two functions; `// lsp: error` lines specify their locations, and queries use the code checked so far. `broken_decls.goose` has errors inside a struct, an enum, and functions, plus an unresolved import. `exemplar.goose` tests queries on uncalled generic functions using exemplar checks (`docs/design/language_server.md` §11). `roots_lib.goose` contains an error and is opened and closed alongside its importers, `roots_app.goose` and `roots_app2.goose`. `source_index.goose` tests globals whose initializers omit defaults or expand a `const for`, a generic function matching a `const for` arm list, and calls containing commas in literals and comments. `two_a.goose` and `two_b.goose` import `two_shared.goose`; only the second instantiates its generic function. `ufcs_ns.goose` makes UFCS calls on a namespaced type from the global namespace, one of which matches no overload. `pools.goose` declares a root struct and uses a `slot_pool` and a `slice_pool`, whose generic functions taking the pool first must be offered as members. |
+| `lsp/` | Language-server fixtures driven by `lsp_protocol.py` over the protocol, not compiled as programs. `basics.goose` declares queries and expected answers in `// lsp:` lines and imports `helper.goose`. `complete.goose` ends with `p.` to test completion. `recovery.goose` has errors in two functions; `// lsp: error` lines specify their locations, and queries use the code checked so far. `broken_decls.goose` has errors inside a struct, an enum, and functions, plus an unresolved import. `exemplar.goose` tests queries on uncalled generic functions using exemplar checks (`docs/design/language_server.md` §11). `roots_lib.goose` contains an error and is opened and closed alongside its importers, `roots_app.goose` and `roots_app2.goose`. `source_index.goose` tests globals whose initializers omit defaults or expand a `const for`, a generic function matching a `const for` arm list, and calls containing commas in literals and comments. `two_a.goose` and `two_b.goose` import `two_shared.goose`; only the second instantiates its generic function. `ufcs_ns.goose` makes UFCS calls on a namespaced type from the global namespace, one of which matches no overload. `pools.goose` declares a root struct and uses a `slot_pool` and a `slice_pool`, whose generic functions taking the pool first must be offered as members; it also applies a `thread_pool`, whose `apply`, `apply_contained` and `close` must be offered, and checks hover, definition, references and rename at those builtins and at the worker's name, and that the arguments `pool.apply` and `thread_spawn` pass on are hinted with the worker's parameters; an array's and a slice's members include `chunk` and `chunk_at`, which a struct's and a `thread_pool`'s lack. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
 | `toolchain_selection.py` | Which compiler the runners use (`find_goose` in `scripts/toolchain.py`). An `--exe` path is used as given, made absolute, even when there are other compilers in `build/`. Without `--exe`, the runners use the first of `build/Release/`, `build/RelWithDebInfo/`, `build/` itself (for a single-configuration generator) and `build/Debug/`, so that a routine run uses an optimized compiler and an assertion build has to be chosen with `--exe`. If there is no compiler in any of these, or the `--exe` path does not exist, the run stops rather than using another compiler. A unittest, run by the main runner. |
@@ -130,6 +130,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `compiler_containers.cpp` | The compiler's `small_vector` and `flat_map` against `std::vector` and `std::unordered_map` under random operations, across in-place/heap storage, growth and erasure, and `flat_map`'s reuse of an erased key's value cell; compiled and run in both native profiles. |
 | `resource_paths.py` | Unicode source and C output paths, JIT entry-source resource roots, native executable roots with separate and standalone runtimes, relocation, and unchanged working-directory file access. Called by the main runner. |
 | `cli_paths.py` | Tests command-line and import paths. `-o` may target a directory that does not yet exist, for generated C or a `goose build` executable. Package sources may be `"."` or `".."`, and an `--include` path may start with a separator. An unresolved import must report the searched locations. Other cases pass a directory as the source or to `embed_file`, and run a compiler without a source tree beside it, which must find the standard library it was configured with and report that `--gen-runtime-header` finds no runtime sources. Called by the main runner. |
+| `runtime_header.py` | `src/runtime_inline.h`, the runtime C the compiler is built with and writes into every program, is byte for byte what `--gen-runtime-header` writes from `src/runtime/`. The generator runs on a copy of that directory, named by `GOOSE_RUNTIME`, so nothing in the tree is written. A runtime file changed without the header regenerated fails the check, and so does a header that a merge took from one side when the other side changed the runtime too. Called by the main runner; run it by hand with `python test/runtime_header.py`. |
 | `extern_types.py` | One imported extern interface and C adapter with unused and partially used functions: slice, reference-pointee and return types are available to the header at O0/O2 through native C and TinyCC, with no implementation needed for an unused extern. Called by the main runner. |
 | `extern_dylib.py` | An extern block bound from a shared library that the test builds. Every parameter shape goes through the runtime's binding, with the library opened by a spelling relative to the resource directory and by a bare name on the loader's path, both under the JIT (with no C toolchain available) and in a built program. The generated C is the same across compiles and binds only the members that are called. A missing library or symbol is a runtime error naming the spelling tried, and unused members need neither. A package declaring both kinds of extern builds its native part only for a program that calls its static one. The sidecar's `dylibs` lists map a name to the spelling each platform opens, with the program's mapping taking precedence over a package's, and a malformed entry or a name that no extern block declares is refused. Called by the main runner. |
 | `runtime_cache.py`, `runtime_cache_cc.c` | Concurrent first builds share one completed runtime object; a failed compile cannot poison the cache, retry and reuse work, and dry runs leave the cache untouched. A controlled C compiler exercises both driver flag styles in debug and release configurations. Called by the main runner. |
@@ -148,6 +149,252 @@ bootstrap program, rather than discovering its modules as standalone fixtures.
 Keep fixture stems unique across categories,
 since expectations and generated build artifacts use those names. The runner
 rejects duplicate names.
+
+The thread pool fixtures (spec §11.2, `docs/design/parallel_blocks.md`) are
+in `threads/`. Like every program with threads, they run built from their C
+and are skipped by the TinyCC runs, which refuse threads. Most run
+everything on a pool of four workers and again on a pool of one, which has
+no thread of its own, so that the thread applying it runs every task, in
+order, and must find its own storage as it left it; both print the same.
+
+* `parallel_scope.goose`: `pool.apply` over chunks by size and by offsets,
+  with and without the chunk's index, shared `const` arguments read in
+  place and changed between applies, a pool passed by reference, the
+  worker called directly too, and a parallel hash join whose build and
+  probe both run on the pool: the probe counting into `chunks(counts, 1)`
+  and writing at prefix-sum offsets, and again in one pass with growable
+  output, beside a parallel filter.
+* `pool_growable.goose`: workers that grow a `T[>..]&` of their own
+  through `chunks(out, n)`, with output whose size depends on the data or
+  on scheduling, appended in task order, and `pool.apply_contained`, which
+  appends only where every task returned.
+* `pool_arg_evaluation.goose`: how often, and in what order, an apply
+  evaluates its arguments, by size, by offsets, into growable output,
+  contained, and with no task at all. The pool, the array, its chunk size,
+  offsets or task count, the message buffer and the extra arguments of a
+  fixed-size type that takes bytes are evaluated once, before any task is
+  out, and every other extra argument once per task, as the task is built:
+  a variable-size or resizable one, and a `T[0]` or a variant type with no
+  payload, which take no bytes. A `T[..0]` and an empty struct, which take
+  a byte, are evaluated once.
+* `pool_caller_worker.goose`: the thread applying a pool as its last
+  worker, on stacks the pool keeps for it, with the globals copied for
+  each task and an argument built for each, and a task's own pool.
+* `pool_chosen.goose`: the ways to pick or hand on a pool that make no
+  second handle to it, which the copies of `errors_tc/pool_copy*.goose`
+  would.
+* `pool_close.goose`: pools closed under `defer`, on every exit, and pools
+  left open; its C is read too (below).
+* `pool_contained.goose`: a failed assert, bounds check, `abort(msg)` and
+  division in a task of `pool.apply_contained`, with the message taken
+  into a builder, a limited array, a reference or nothing, and the pool
+  applied again after. `pool_contained_reentrant.goose` and
+  `pool_contained_interleaved.goose` apply pools from an apply's own
+  arguments, between its tasks: each apply keeps to its own tasks' aborts,
+  and a contained thread program is contained again once no pool it
+  applies has tasks out. `message_capacity_contained.goose` frees an
+  abort's message however its append to a buffer ends.
+* Expected aborts: `pool_size_zero.goose`, `chunk_size_zero.goose`,
+  `chunk_tasks_zero.goose` and `chunk_offsets_bounds.goose` (a pool's
+  count and the chunks' checks); `pool_closed_apply.goose`,
+  `pool_close_chunk_size.goose`, `pool_close_extra_arg.goose` and
+  `pool_close_built_arg.goose` (an apply on a pool closed before it, or by
+  one of its own arguments); and `pool_task_uncontained.goose`,
+  `pool_worker_applier.goose` and `pool_contained_applier.goose` (aborts
+  that end the program although a contained thread program is involved: a
+  plain apply's task, and a contained one's own while a pool it applies
+  has tasks out).
+
+Their rejections are the `errors_tc/pool_*.goose` fixtures, other than the
+`pool_ref_*` ones, which are about reusable pools: `pool_apply_*` (shared
+arguments or offsets that alias the array, a write through a `const`
+parameter, a reference parameter that is not `const`, a `thread_fn` as the
+worker, a global pool in a worker), `pool_copy*` and `pool_return_local`
+(every way of copying a pool), `pool_close_*`, `pool_contained_msg_*` (the
+message buffer) and `pool_growable_*` (growable output).
+
+`par for` (spec §11.2, `docs/design/child_threads.md` §4-§5) is tested by
+fixtures with the `goose-threads` marker (below), whose native builds run
+with the default pool, with `GOOSE_THREADS=1` and with `GOOSE_THREADS=4`,
+at `-O0` and `-O2`, and through TinyCC, which runs every `par for` in
+place, all printing the same:
+
+* `threads/par_for.goose`: the query engine's phases of the design note's
+  section 5 (a filter into chunks of an output with per-chunk counts, a
+  probe of a shared table, a partitioned build through `chunk_at`, a
+  distinct count with a growable table local to each iteration, and totals
+  with an integer reduction beside float partials), the blur a row per
+  iteration, `par for &x, i in arr`, `par for x in arr` with a `^=`
+  reduction, reductions by every operation over a range, a range's index
+  binder, a `par for` nested in another's body, with a reduction of both,
+  and one in a function a `par for`'s body calls (both run in place), a
+  `defer` in the body, and loops of no iteration and of one.
+* `syntax/par_for_syntax.goose`: `par` as a function's, a variable's and a
+  field's name beside every form of `par for`, with typed binders.
+* `threads/par_for_reused.goose`: a generic function handed a nested
+  function that reduces a variable, called from three `par for`s in turn,
+  each of which must add its own count exactly, and a helper reading a
+  global reused beside the parts of a local array; a kernel reading a
+  global `let` slice no function can bind again; a two-array kernel
+  called both ways around, directly and through another function, and
+  one reading through a reference to a slice of another array, which the
+  settled check of parameters apart must accept.
+* `threads/par_for_holders.goose`: holders and arrays of references to the
+  body's own variables, copies of them and references to those, written
+  through in the body and in functions it calls, the slice field of one
+  through a reference to its slot, and a format overload writing what one
+  refers to; a reference into a pool read beside the parts of an array that
+  is no pool; a reference to a slice of another array read beside the
+  parts of one; and a root struct's component owned by the iterations
+  while the body reads another, and the owned one's length.
+* `threads/par_for_recursive_nested.goose`: a nested recursive function
+  whose own `par for` calls it again, which must compile to a bounded
+  number of specializations and give the same result at every thread
+  count.
+* `threads/par_for_closure_loops.goose`: a generic function handed a
+  nested function of a `par for`'s body, called twice there, beside an
+  inner `par for` that reads what it writes.
+* `threads/par_for_reused_depth.goose`: a function with a `par for` over
+  an array of its own, reused from two `par for`s of a caller, the second
+  inside more blocks, where its array is no caller's.
+* `threads/par_for_recursive_scratch.goose`: a recursive function whose
+  `par for` keeps a large fixed local across its call back into the cycle,
+  which stays native in the outlined body as in a plain loop.
+* `threads/par_for_chunk_at_dead.goose`: `chunk_at` in a branch no
+  iteration takes, whose arrays the fork's check still reads, in a nested
+  function and in the function that declares them.
+* `runtime/par_for_chunk_at_readonly.goose`,
+  `par_for_chunk_at_readonly_param.goose` and
+  `par_for_chunk_at_readonly_expr.goose`: falling offsets checked at the
+  fork where the iterations only read the runs, of a const global, a const
+  slice parameter, and a slice the body takes.
+* `threads/par_for_arms.goose`: `par for`s standing as a match's arms,
+  braced or not, and as an if's branches in one, each forked.
+* `runtime/par_for_chunk_at_global.goose`,
+  `par_for_chunk_at_global_block.goose`, `par_for_chunk_at_arm.goose` and
+  `par_for_chunk_at_arm_braced.goose`: `chunk_at` offsets that fall,
+  checked before any iteration runs, at every optimization level and
+  thread count, natively and under TinyCC, where the `par for` is in a
+  function a global initializer calls, in a global initializer itself, and
+  a match's arm, unbraced and braced.
+* `threads/par_for_abort.goose`: an abort in one iteration ends the
+  program with its message, whichever thread runs it.
+* `threads/par_for_contained.goose`: in a contained worker, a `par for`
+  whose iterations abort ends the worker, whose `thread_wait` takes the
+  message, and one whose iterations return runs on.
+* `runtime/par_for_chunk_at_bounds.goose`: the offsets of a `chunk_at` part
+  are checked before any iteration runs, which then writes nothing.
+
+Their rejections are the `errors_tc/par_for_*.goose` fixtures, one or more
+per rule: R1 (`write_captured`, `push_captured`, `callee_write`,
+`global_callee`, `nested_write`, `launder`, `inner_for_refs` and
+`inner_for_slices`: a variable from outside the body written as a whole,
+by a member, through a reference a callee is given, as a global in a
+callee, by a nested function, through a reference loaded out of it, and
+through a reference or slice a plain `for` in the body binds out of an
+array from outside it; `holder_copy`, `holder_incdec`, `ref_array_copy`
+and `global_holder_copy`: through a reference read out of a copy the body
+makes of a holder, an array of references or a global holder;
+`closure_reuse`: a generic function handed a nested function, checked for
+an outer loop whose body the nested function's variable is in, called
+again in an inner loop that sees it from outside;
+`holder_callee`, `holder_copy_callee`, `holder_ref_callee` and
+`ref_array_callee`: in a function the body hands a holder, a copy of one,
+a reference to a copy, or an array of references; `holder_slice_ref` and
+`holder_slice_ref_param`: in a function handed a reference to the slice
+field of a copy of a holder, as the slice and as the reference;
+`format_hook` and `format_hook_copy`: in a format overload `str` hands
+what a holder from outside the body, or a copy of one, refers to), the
+reductions (`float_reduction`,
+`reduction_mixed`, `reduction_read`, and `reused_reduction_read`, through
+a generic function reused from another loop; `reduction_alias`,
+`reduction_alias_callee`, `reduction_alias_holder`,
+`reduction_alias_readback` and `reduction_binder`: a reduction read
+through a reference to it, an array of them handed to a callee, a holder,
+a reference read out of storage in the body, and the loop's own binder),
+R2 (`chunk_alias`,
+`chunk_whole_read`, `element_alias`, `bounds_alias`, `chunk_two_ways`,
+`field_named_len`, `len_through_ref`, `shifted_index`, `shifted_chunk`,
+`param_global_alias`
+and `reused_alias`: a partitioned array read another way, an element of
+it or the whole of it, or cut two ways; an element's field named `len`,
+which is no length, and the length of a row's cells read through a
+reference while the iterations own the rows; two views of one array from different starts, by
+index and by chunk; a parameter's elements owned beside a read of a global
+the parameter may be, directly and through a function reused from another
+loop; `reuse_inexact_after`, `reuse_inexact_before` and
+`reuse_inexact_via`: two parameters a later call, an earlier one, or the
+calls of a function passing its own parameters on, may give one array;
+`param_global_same` and `param_outer_same`: a function passing its own
+parameter beside a global, or beside a variable of the function it is
+nested in, which its caller makes the same array;
+`byte_view_alias` and `byte_view_readback`: a byte view that may be of the
+partitioned array, as a parameter and read out of a holder;
+`root_component`, `root_component_slice` and `root_owner_callee`: a root
+struct's component partitioned by element and through a slice, beside a
+read of it through the owner, and the whole owner handed to a callee;
+`root_ref_component` and `root_ref_component_len`: a root struct's
+reference component read by a nested function, leading to a reduction,
+and to a row's cells whose length the iterations change; `key_ref_index`,
+`key_ref_chunk` and `key_ref_direct`: the iteration's index written
+through a reference, by a callee, for an index and a chunk, and in the
+body;
+`slice_ref_alias`, `slice_ref_callee`, `slice_ref_nested` and
+`slice_ref_holder_callee`: a reference to a slice variable viewing the
+partitioned array, read in the body, by a function taking `i64[:]&`, by a
+nested function, and through a holder handed to a function;
+`global_view_rebound`: a global `var` slice a kernel reads, bound after
+the kernel's first call to the array its iterations own;
+`pool_ref_callee` and `pool_ref_reused`: a holder of a reference into the
+pool a parameter's parts lie in, read through by a function, its
+specialization made in the loop and before it;
+`binder_alias` and `seq_shifted`: the loop's own reference binder pointing
+at an element another iteration owns, and a part of another view of the
+sequence, one element on; `row_cells` and `row_cells_seq`: the cells of a
+row owned beside the rows, as parts and as the sequence; `nested_alias` and `nested_outer_write`: an outer loop's
+partitioned array read in an inner loop's body, and an inner loop's
+element of what the outer loop sees from outside, which every outer
+iteration writes), R3 (`print`, `qput` in a callee, `exit`, `thread_pool`),
+R4 (`break`, `return`, `return_from`, and `dispatch_return_reuse`: case
+functions checked where a block's return stays in the outer loop's body,
+dispatched again from an inner loop it would leave), and `sequential_elems`, a `par for`
+over elements of variable size.
+
+The slicing members `a.chunk(k, n)` and `a.chunk_at(bounds, k)` (spec
+§3.10, `docs/design/child_threads.md` §4.4) are tested by
+`storage/chunk_slices.goose`, which runs like any fixture at `-O0` and
+`-O2` and through TinyCC: runs of arrays whose length the count divides,
+does not divide, is below and is zero, each run starting where the one
+before it ended; `chunk_at` with bounds of every array kind and as a slice,
+an empty run among them; writes through the chunks of writable storage and
+reads through the `const` chunks of read-only storage, a string literal's
+among them; both spellings, and receivers that are fields, limited arrays,
+chunks and function results. Their expected aborts are in `runtime/`: a
+count of zero (`chunk_count_zero.goose`) and below it
+(`chunk_count_negative.goose`), an index past the runs and below them
+(`chunk_index_past.goose`, `chunk_index_negative.goose`,
+`chunk_at_index.goose`, `chunk_at_index_negative.goose`), and bounds that
+fall (`chunk_at_decreasing.goose`), run past the array
+(`chunk_at_past_end.goose`) or start below it (`chunk_at_negative.goose`).
+Their rejections are the `errors_tc/chunk_*.goose` fixtures: a sequential
+receiver, one that is no array, bounds that are not `i64`, writes through
+the chunks of a `const` array and of a read-only view, a chunk returned,
+stored or bound past the life of its array or temporary, shrinks while a
+chunk is live, and an argument that shrinks the receiver after its elements
+were read. `chunk_slice_ref_shrink.goose` and `chunk_slice_ref_pop.goose`
+hold that last one for a receiver reached through a reference to a slice,
+whose elements are the slice's, not the slot's: both builtins in both
+spellings, over a grow-only array shrunk through a reference or as a global,
+and over a grow-shrink one. `optimizer/bce_chunk_arguments.goose` pins what
+bounds-check elimination makes of a chunk handed to a callee that resizes
+the elements it views: the lengths measured in the receiver's elements are
+gone after the call, and those measured in another array's are kept.
+`codegen/fixed_builtin_results.goose` returns chunks of both builtins, and
+the fixed-size results of `bytes_of` and `default`, as variable arrays
+(`i64[]`), which an append, and a grow-only array's initialization and
+assignment, take as an element run, and a variable array's slot as a value
+with its length in front: a builtin with a fixed-size result builds nothing
+at the destination, which is built from its value.
 
 ## Configurations and backends
 
@@ -192,11 +439,18 @@ mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits, children outliving their parents and contained
 workers that abort; and that `gs_rt_stop` ends the main program with every
 allocation and mapping released and the fault handling restored, after
-which a program starts and ends again. The `host_exit` task builds
+which a program starts and ends again. It runs thread pools phase after
+phase across programs started and stopped in turn, both the pools a
+program destroys and those it leaves for the stop: a pool's tasks run on
+the regions its workers mapped first, the waiting thread runs tasks on a
+registry the pool keeps for it and finds its own as it left them, contained
+batches abort, alone and interleaved, and the outputs that tasks keep for
+their apply go with the apply, or else with the pool. Small limits make a
+region registry that leaks entries fail quickly. The `host_exit` task builds
 `test/threads/host_exit.goose` for its C host, `host_exit.c`, which starts,
-uses and ends the program three times over, each round over fresh globals
-and queues, and once ends it while a worker still runs, which is a runtime
-error. The direct `test/runtime/runtime_trim_memory.c` test
+uses and ends the program three times over, each round over fresh globals,
+thread pools and queues, and once ends it while a worker still runs, which
+is a runtime error. The direct `test/runtime/runtime_trim_memory.c` test
 checks that releasing unused data-stack memory decommits the pages on
 Windows and drops them from the resident set on Linux and macOS, while
 keeping live partial pages and other stacks. It also checks that discarded
@@ -356,6 +610,7 @@ The runner checks more than exit status and runtime output:
 | `lexer_tokens.goose` | Exact token stream, including keyword classification, decoded literals and longest-match punctuation. |
 | Every positive Goose fixture | Successful parse, successful initial dump, identical dump/reparse/dump, and typechecking with exactly the warnings it declares, unless its first line contains `parse-only`. Parsing also resolves type names; dumping alone does not. |
 | First-line `dump-runtime` | Compile and execute the dumped source against the original output. `control_expression_dump.goose` uses this to check grouping semantics, which a stable dump alone cannot establish. |
+| First-line `goose-threads` | Run each native build of the program again with `GOOSE_THREADS=1`, where every `par for` runs on the thread that reaches it, and with `GOOSE_THREADS=4`, which forks onto four workers; both runs must end and print as the default one does. The `par for` fixtures (below) use this. |
 | Every fixture with `// bce:elide` or `// bce:keep` | Run `-O1 --check --bce-test`, including expected-abort regressions. Native/JIT O0 and O2 runs independently check behavior. |
 | `gfx_err_shader_syntax.goose`, `gfx_err_shader_part.goose` | Besides their markers, the error is reported at the program's line holding the offending GLSL. |
 | `gfx/probe.frag`, `gfx/probe_badset.frag` | `goose --compile-shader`, the shader compiler that every compiler has, with or without the gfx layer. `probe.frag` compiles, including its `#include` of `probe_common.glsl`, and reports its one sampler and its 32-byte uniform block. `probe_badset.frag`, which has a sampler outside the set that SDL_GPU gives a fragment shader's textures, is rejected with the rule it broke. |
@@ -364,9 +619,11 @@ The runner checks more than exit status and runtime output:
 | `loop_shapes.goose` at O1 | Read the generated C: every `shape_` function has the restated loop it is named for, marked by codegen's `/* loop shape: ... */` comment, and no `keep_` function has one (`docs/implementation.md` §6.12). Its runs check that each restated loop computes what a reference loop does. |
 | `member_parameters.goose` at O1 | Read the generated C: `walk`, which takes two slices and a `T[>..]&`, has each as two scalar C parameters (data pointer and count, header pointer and stack; spec C.3, `ParamFields`). Its runs pass slices, builders and pool references through calls, a recursion, a case-function dispatch, nested functions' free variables, a `simd` function, a `format` overload and an exported wrapper. |
 | `member_stores.goose` at O1 | Read the generated C: `store_links` stores to fields reached through references that cannot be rebound, with no index on the way, as C member stores rather than through a pointer taken first (`StableDest`). Its runs check the stores, and check that when the right side rebinds the reference, the store still goes to the destination named before the right side ran (`evaluation_order.goose` has a right side writing the destination itself). |
+| `pool_close.goose` at O0, its C | Read the generated C (the `pool_scope_exits` task): a thread pool is destroyed (`gs_pool_destroy`) only where the program closes it, never at a scope's exit. `kept` and `main` make pools they leave open, `deferred` closes its pool on both of its exits, `end_pool` closes the pool it is given, and `main`'s one close is the global's (spec §11.2). |
 | `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator and plain recursion become loops, including a list walk that hands on a node read through its parameter. Modulo, floating-point reassociation, nonlocal-return frames, returns inside nested loops and a reference to a local passed down keep their self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. The `gb_` functions count the copies of their first statement: guarded base-case inlining copies the body once per self-call site where the test compares unassigned parameters, including self-calls written with UFCS, but not where the test reads a global or a node, does arithmetic, or reads an assigned parameter. A u64 above i64.max that the optimizer creates (here, the starting accumulator of a fold and of `tre_and`) dumps as that unsigned value. |
 | `optimize.goose` at O1, its C | `il_pair`, an `inline fn` returning two values, stays a call in Goose but is declared `GS_INLINE` in the C, for the C compiler to inline (spec §7.13). `il_plain`, a copy of `il_big` without the keyword, is not. |
 | `docs/reference.md` | Every ```` ```goose ```` block of the language reference compiles (as written, or wrapped in a `main`), a block marked `// error` fails, no block warns, and where the JIT runs, each complete program prints what the block after it shows. `scripts/check_doc_examples.py` does the work in a process of its own, as the samples' runner does, writing the blocks under `build/gen/<profile>/doc_examples/`; its docstring has the markers a document uses for a block that is only a fragment or is compiled without being run. Run it by hand on any document: `python scripts/check_doc_examples.py docs/reference.md --run -v`. |
+| `doc_builtins.py` | Every builtin in the table of `src/builtins.h`, the array members among them, is named in code in the builtins section of the language reference (section 25) and in that of the specification (spec §12), whose tables point on to where each one is described. A builtin the compiler gains that either section leaves out fails the check. Run it by hand with `python test/doc_builtins.py`. |
 | The command line (`driver_verbs` in `run_tests.py`) | The verbs against the flags they stand for: `goose run` (where the JIT runs) prints what the program does, `goose check` only checks it, and `goose run -o` is refused; `goose version` and `goose --version` print the compiler's version and the runtime's 12 hex digits; a word that is not a command, an option or a file is an unknown command, named with the command it is close to; `--color always` and `CLICOLOR_FORCE` color an error and its caret, and output that is not a terminal, or `NO_COLOR`, has none; `goose check` prints nothing on success, and with `--stats` its `typechecked ok` line; every shell's completion script names the commands and their options, bash's (where there is bash) completes a command, an option and a `.goose` file, and zsh's parses (where there is zsh); `goose help --man` holds every command's help, and groff (where there is one) reads it without a warning; a `--stack-reserve` under 64 KB is refused. For the help: `goose --help` names the commands but not the hidden flags; together, `goose <command> --help` for run, build, check, fetch, format, toolchain, version, lsp and completion, `goose help c` and `goose help internals` name every option that `src/main.cpp` reads except the hidden shader ones; `goose help build` names `--dry-run`; an unknown topic is refused; and no file, or `goose build` with none, prints the usage. `goose toolchain --json` finds a C compiler wherever the runner found one, escapes a tab in `GOOSE_HOME`, and does not mistake a directory named `git` on PATH for git; with no C compiler anywhere, `goose toolchain` names every one it looked for; and `goose build --cc` naming a file that is not a program says why it cannot start it. Where there is a C compiler, `goose build` builds an executable that runs, and `--dry-run` prints what it would run without building one. |
 | `doc_comments.py` | `goose --dump-docs` prints the documentation comments of a program's declarations, fields and variants: the run of `//` lines directly above each one, without its indentation. A blank line, a block comment or any token ends a run, a comment after code does not start one, and a banner followed by a blank line belongs to nothing. The program still checks and roundtrips. |
 | `format.py` | `goose format`: each golden case, formatted through standard input, prints the layout it expects and is a fixed point. The cases cover the spaces the parser's token roles decide (unary against binary operators, generic lists against comparisons, type suffixes, `as!`, `[>..<]`, ranges), trailing commas added where a list's closing bracket starts a line and not after an initializer list's `..`, an array's fill form, parentheses or a last match arm ending in `return` or a bare `break`, a run of declarations lined up in columns, indentation (tabs, continuations keeping their offset from the line they continue and going no further left than it, so that a chain broken after its operators stays lined up under its first operand, bracket-aligned lines moving with their bracket, the body of a wrapped header or condition, `})`), blank lines, `\r\n` and a byte order mark, trailing comments moved with their line and aligned runs kept aligned, block comments and a multi-line string moved with their line, and a table of statements after semicolons kept. The command line: a file rewritten in place, a formatted one left with its modification time, `--check` listing what is not formatted (exit 1) and writing nothing, the directory walk (`.goose` files, sorted, no dot-directories or build trees unless named), a file that does not parse left as it is while the others are formatted (exit 2, which wins over `--check`'s 1), a read-only file refused, standard input with no files or `-`, wrong arguments, `--verify` and the help. A file's documentation comments come through as `--dump-docs` printed them. A second task, `format_sweep`, runs `goose format --verify` over `samples/`, `stdlib/`, `bench/` and `test/`: every file must format, pass the formatter's own checks (the same tokens and comments, a comma added only before a closing bracket, a parse to the same dump and documentation) and come out the same when formatted again; the only files skipped as not parsing must be under `errors/` or `errors_tc/`, or be the four fixtures broken on purpose. |

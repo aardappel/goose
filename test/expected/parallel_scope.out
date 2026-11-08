@@ -1,0 +1,16 @@
+four workers:
+after pass 1: [21, 61, 151, 121, 251, 121, 351, 161, 271, 201]
+after pass 2: [83, 365, 1509, 1693, 1505, 1209, 4913, 643, 2709, 2813]
+direct call: [3, 11]
+join counts: [1, 2, 1]
+joined rows: [JoinedRow { 20, 200, 500 }, JoinedRow { 10, 100, 250 }, JoinedRow { 30, 300, 750 }, JoinedRow { 20, 200, 900 }]
+joined in one pass: [JoinedRow { 20, 200, 500 }, JoinedRow { 10, 100, 250 }, JoinedRow { 30, 300, 750 }, JoinedRow { 20, 200, 900 }]
+filtered: [0, 15, 9, 3, 18, 12, 6]
+one worker:
+after pass 1: [21, 61, 151, 121, 251, 121, 351, 161, 271, 201]
+after pass 2: [83, 365, 1509, 1693, 1505, 1209, 4913, 643, 2709, 2813]
+direct call: [3, 11]
+join counts: [1, 2, 1]
+joined rows: [JoinedRow { 20, 200, 500 }, JoinedRow { 10, 100, 250 }, JoinedRow { 30, 300, 750 }, JoinedRow { 20, 200, 900 }]
+joined in one pass: [JoinedRow { 20, 200, 500 }, JoinedRow { 10, 100, 250 }, JoinedRow { 30, 300, 750 }, JoinedRow { 20, 200, 900 }]
+filtered: [0, 15, 9, 3, 18, 12, 6]

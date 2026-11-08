@@ -8,6 +8,7 @@ namespace goose {
 struct Node;
 struct Block;
 struct Break;
+struct ForLoop;
 struct FunVal;
 struct TypeExpr;
 struct SFunction;
@@ -64,6 +65,7 @@ enum TypeKind {
     TY_SLICE,       // T[:] — a reference + count; kin of TY_REF, not TY_ARRAY.
     TY_REF,         // T& / T&<w> / T&<w in pool> (relative offset) / optional T?.
     TY_VARIANT,     // T.Name — variant type of an ADT.
+    TY_POOL,        // thread_pool — scoped parallel thread pool handle.
     TY_VOID,        // Typecheck-created: the "type" of statements and valueless blocks.
 };
 
@@ -1133,7 +1135,23 @@ NODE(Call)
     // pop: the array is provably non-empty here (bce.h); codegen omits the
     // emptiness check.
     bool nobc = false;
+    // apply: the worker fn takes `(chunk, idx, ...)` rather than `(chunk, ...)`.
+    bool pool_has_idx = false;
+    // apply_contained: a message buffer follows the chunks, ahead of the
+    // worker fn, `(chunks(...), why, fn, ...)`.
+    bool pool_has_why = false;
+    // apply: the worker fn's first parameter is a `T[>..]&` of its own,
+    // `chunks(out, n)` hands out n tasks, and the apply appends what each
+    // grew to out once all have returned (docs/design/parallel_blocks.md
+    // §3.4), rather than cutting out into chunks `T[:]`.
+    bool pool_growable = false;
     TypeExpr *qtype = nullptr;  // qlimit<T>: T, which names the queue (§11.2).
+    // Codegen's outlining of a `par for` (CodeGen::OutlineParLoops): this
+    // call to the function its body became stands where the loop did, and
+    // runs the loop's chunks on the pool, or the whole range itself where
+    // the program runs sequentially (CodeGen::EmitParFor). Its arguments are
+    // the range's ends, or the sequence the loop walks.
+    ForLoop *parfor = nullptr;
     const string *shaderblob = nullptr;  // embed_shader's compiled blob or embed_file's bytes, in Ast::shaders.
     Call(Line l, Node *_callee) : Node(l, NKind), callee(_callee) {}
     // What the call passes for the callee's free variable v (fvremap).
@@ -1342,6 +1360,30 @@ NODE(ForLoop)
     bool sumred = false;
     BCE_MARK
     bool byref;                 // for &x in ...
+    // `par for` (docs/design/child_threads.md §4): the iterations are
+    // independent, and the loop may run them in contiguous chunks on the
+    // threads of the program's pool (TypeCheck::FinishParFor,
+    // CodeGen::OutlineParLoops), or one after another as `for` does.
+    bool ispar = false;
+    // Filled by typecheck for a `par for`: the locals of the enclosing
+    // function it accumulates as integer reductions (§4.6), each with its
+    // operation (T_PLUSEQ for + and -, T_OREQ, T_ANDEQ or T_XOREQ), and the
+    // arrays it partitions with chunk_at, each with the bounds it takes,
+    // which the fork checks once before any iteration runs.
+    vector<pair<VarDef *, TType>> reductions;
+    vector<pair<VarDef *, VarDef *>> chunkats;
+    // Set by codegen's outlining (CodeGen::OutlineParLoops) on the loop the
+    // outlined body of a `par for` runs: the parameters of that function
+    // holding the chunk's first index and the one past its last, of an
+    // array or slice the loop walks (whose view is the function's parameter
+    // iter names), and the iteration count before the chunk, where a range's
+    // or count's index binder counts from it.
+    VarDef *parlo = nullptr, *parhi = nullptr, *parix = nullptr;
+    // The loop in the function's own text this one is a copy of (Clone1),
+    // null for that one: a specialization of a nested function called in a
+    // `par for`'s body is keyed by it (FnSpec::parloop), which every copy of
+    // a body -- each specialization's own -- shares.
+    ForLoop *parorigin = nullptr;
     string_view var;
     string_view idxvar;         // Optional second binding; empty if absent.
     // The integer types written for a range's or count's binder and for an
@@ -1779,6 +1821,12 @@ struct VarDef {
     // inexact root at the class stands for beside the class's own storage
     // (TypeCheck::BoundReach).
     vector<TypeExpr *> classreach;
+    // Synthetic class roots only, of a specialization checked for a par
+    // for's body (FnSpec::inpar): every call reaching it passed storage of
+    // that body's own here, and what references held there lead to is the
+    // body's too (RootArg::parlocal). Otherwise the class may be storage the
+    // body sees read-only (§4.3 R1), and so is what is read out of it.
+    bool parlocal = false;
     // Synthetic roots only (classes, a render's buffer): element types the
     // storage they stand for holds only as the elements of one array, so
     // that a reference to one rooted there is an element of that array
@@ -2040,6 +2088,13 @@ struct RootArg {
     // deepest of them. Never set for a recursive function, whose back edges
     // reuse its body whatever they pass (§7.8).
     bool heldexact = false;
+    // At a call in a par for's body (FnSpec::inpar): the argument leads only
+    // to storage of the body's own, each place named exactly, through the
+    // references it holds or points at too (TypeCheck::ParLocalReach). Part
+    // of the key: the body writes through what it reads out of the class only
+    // where every call says so (VarDef::parlocal). Never set for a recursive
+    // function, whose back edges reuse its body whatever they pass (§7.8).
+    bool parlocal = false;
     // The argument is a different array from every other concrete argument at
     // its call site: a global or a function's variable with no class of a
     // parameter beside it, a variable created inside the activation whose
@@ -2047,6 +2102,15 @@ struct RootArg {
     // them (GetOrCreateSpec). ANDed over call sites and not part of the key,
     // like `exact`.
     bool concrete = false;
+    // As `concrete`, over every argument and view at the call site rather
+    // than the fat references alone, for a par for's judgement of two classes
+    // as storage apart (TypeCheck::ParMayAlias): a class of a parameter of P
+    // beside only variables of P's activation, temporaries and other classes
+    // of P; a temporary; a global or a function's variable beside no class
+    // of a parameter, or only classes of one P it lies inside the activation
+    // of. ANDed over call sites, settled through `via` for a class, and not
+    // part of the key.
+    bool parconcrete = false;
     // For a class: the specialization and index of each parameter it stood
     // for at some call site. It stays concrete only while all of those are
     // concrete and exact, which SettleParamRootExactness settles.
@@ -2078,7 +2142,7 @@ struct RootArg {
                writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && gsvia == o.gsvia && slotread == o.slotread &&
                byteview == o.byteview && pool == o.pool && heldexact == o.heldexact &&
-               unknown == o.unknown;
+               unknown == o.unknown && parlocal == o.parlocal;
     }
 };
 
@@ -2350,6 +2414,13 @@ struct FnSpec {
     // assigned at any of them, where none could be when it began: a call
     // reusing it takes them again (TypeCheck::ReplayOuterExits).
     vector<OuterExit> outerexits;
+    // Checked for a call made in a `par for` body (docs/design/child_threads.md
+    // §4.3), under its rules: no global written, no queue, thread, output or
+    // exit. Part of the key, as is, for a nested function, the loop itself,
+    // whose variables from outside its body such a function may name
+    // (TypeCheck::GetOrCreateSpec).
+    bool inpar = false;
+    ForLoop *parloop = nullptr;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.
@@ -2419,10 +2490,8 @@ struct FnSpec {
     // branch's only callee (Optimizer::TryInline): the C compiler is told so
     // too, since it inlines a function with one caller whatever its size.
     bool outofline = false;
-    // Goose wanted to inline this function at some call but could not
-    // (Optimizer::TryInline), so it is declared GS_INLINE in C and the C
-    // compiler inlines it.
     bool cinline = false;
+    bool poolentry = false;        // Entry specialization dispatched by pool.apply.
 };
 
 // ---------------------------------------------------------------------------
@@ -2637,6 +2706,7 @@ struct Ast {
     TypeExpr *inttypes[IS_VARINT + 1];
     TypeExpr *flttypes[FS_F64 + 1];
     TypeExpr *booltype;
+    TypeExpr *pooltype;
     TypeExpr *voidtype;
 
     Ast() {
@@ -2649,6 +2719,7 @@ struct Ast {
             flttypes[s]->fltstorage = (FltStorage)s;
         }
         booltype = NewType(TY_BOOL, Line {});
+        pooltype = NewType(TY_POOL, Line {});
         voidtype = NewType(TY_VOID, Line {});
     }
 

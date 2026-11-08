@@ -22,7 +22,8 @@
 // `grows` is what the builtin does to the array it grows, as a diagnostic
 // about the growth says it (§1.3(4)) -- "push into" for push -- or "" where
 // it grows none. That array is the receiver, or under BF_OUTARG the `out`
-// array a call may pass as its second argument.
+// array a call may pass as its second argument (apply_contained's: the one
+// after the chunks).
 #pragma once
 
 namespace goose {
@@ -35,7 +36,7 @@ enum BuiltinFlags {
     BF_REUSABLE  = 1 << 4,  // Receiver must be a reusable pool of slots (§5.4).
     BF_SHRINKS   = 1 << 5,  // May shrink its receiver (§5.1, §5.2).
     BF_SLICEPOOL = 1 << 6,  // Receiver must be a reusable[] pool of slices (§5.4).
-    BF_OUTARG    = 1 << 7,  // Grows its second argument, an `out` array.
+    BF_OUTARG    = 1 << 7,  // Grows an `out` array argument, not its receiver.
 };
 
 // Receiver kind masks (members only): which array flavors have the member.
@@ -76,6 +77,11 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_ABORT,            "abort",            1,  1,   "",   "",  0,              "",            0) \
     F(B_EXIT,             "exit",             1,  1,   "",   "",  0,              "",            0) \
     F(B_HARDWARE_THREADS, "hardware_threads", 0,  0,   "",   "i", 0,              "",            0) \
+    F(B_THREAD_POOL,      "thread_pool",      0,  1,   "",   "",  0,              "",            0) \
+    F(B_APPLY,            "apply",            3, 99,   "",   "",  0,              "",            0) \
+    F(B_APPLY_CONTAINED,  "apply_contained",  3, 99,   "",   "",  0,              "append to",   BF_OUTARG) \
+    F(B_CHUNKS,           "chunks",           2,  2,   "",   "",  0,              "",            0) \
+    F(B_POOL_CLOSE,       "close",            1,  1,   "",   "",  0,              "",            BF_WRITE) \
     F(B_THREAD_SPAWN,     "thread_spawn",     1, 99,   "",   "i", 0,              "",            0) \
     F(B_THREAD_SPAWN_CONTAINED, "thread_spawn_contained", 1, 99, "", "i", 0,       "",            0) \
     F(B_THREAD_WAIT,      "thread_wait",      1,  2,   "",   "",  0,              "append to",   BF_OUTARG) \
@@ -96,6 +102,8 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_INDEX_OF,         "index_of",         2,  2,   "",   "i", BR_INDEXABLE,   "",            BF_MEMBER) \
     F(B_RANGE_INDEX,      "range_index",      2,  3,   "",   "i", BR_INDEXABLE,   "",            BF_MEMBER) \
     F(B_CHECK_LENGTH,     "check_length",     2,  3,   "i",  "i", BR_GROW | BR_GROWSHRINK, "",     BF_MEMBER) \
+    F(B_CHUNK,            "chunk",            3,  3,   "",   "",  BR_ANY,         "",            BF_MEMBER) \
+    F(B_CHUNK_AT,         "chunk_at",         3,  3,   "",   "",  BR_ANY,         "",            BF_MEMBER) \
     F(B_PUSH,             "push",             2,  2,   "e",  "r", BR_GROWABLE,    "push into",   BF_MEMBER | BF_WRITE) \
     F(B_APPEND,           "append",           2,  2,   "a",  "",  BR_GROWABLE,    "append to",   BF_MEMBER | BF_WRITE) \
     F(B_POP,              "pop",              1,  1,   "",   "e", BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS) \

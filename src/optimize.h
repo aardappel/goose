@@ -505,11 +505,15 @@ struct Optimizer {
         info.nestedcalls = false;
         // A simd body inlined into a caller would lose its versions (§7.12).
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->sf->isexport ||
-                    sp->sf->issimd || sp->relnamedresult;
+                    sp->sf->issimd || sp->relnamedresult || sp->poolentry;
         auto multiret = sp->rets.size() > 1;
         function<void(Node *, int)> rec = [&](Node *n, int d) {
             if (!n) return;
             info.nodecount++;
+            // A par for runs on the pool from a function of its own
+            // (CodeGen::OutlineParLoops), which a global initializer's body
+            // gives it none of: the body holding one stays a call.
+            if (auto fl = Is<ForLoop>(n); fl && fl->ispar) noin = true;
             if (Is<Block>(n)) info.nest = max(info.nest, ++d);   // Its children sit inside it.
             if (auto c = Is<Call>(n)) {
                 auto callee = [&](FnSpec *k) {
@@ -962,6 +966,10 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->dispatcharg = dispatcharg;
     c->builtin = builtin;
     c->poolcheck = poolcheck;
+    c->nobc = nobc;
+    c->pool_has_idx = pool_has_idx;
+    c->pool_has_why = pool_has_why;
+    c->pool_growable = pool_growable;
     c->qtype = qtype;
     c->shaderblob = shaderblob;
     c->rettypes = rettypes;
@@ -1055,6 +1063,9 @@ inline Node *ForLoop::Cp1(Inliner &inl) const {
     c->vdef = inl.Remap(vdef);
     c->idxdef = inl.Remap(idxdef);
     c->iterkind = iterkind;
+    c->ispar = ispar;
+    for (auto &[v, op] : reductions) c->reductions.push_back({ inl.Remap(v), op });
+    for (auto &[a, b] : chunkats) c->chunkats.push_back({ inl.Remap(a), inl.Remap(b) });
     return c;
 }
 

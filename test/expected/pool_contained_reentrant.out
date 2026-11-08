@@ -1,0 +1,14 @@
+one worker:
+  inner 0: true 
+    [1, 1, 1]
+  inner 1: false inner chunk 1 gives up
+    [1, 0, 0]
+  inner 2: true 
+    [1, 1, 1]
+outer: false assert failed
+  [0, 0, 0]
+four workers:
+  inner 0: true 
+  inner 1: false inner chunk 1 gives up
+  inner 2: true 
+outer: false assert failed

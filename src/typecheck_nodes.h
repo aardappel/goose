@@ -87,6 +87,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         vdef = vd;
         if (tc.deferbodies) tc.NoteDeferMention(vd);
         tc.RequireAssigned(vd, this);
+        tc.NoteParUse(this, vd);
         Val v;
         auto t = vd->narrowed ? vd->narrowed : vd->type;
         v.type = tc.LoadType(t);
@@ -107,7 +108,8 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         } else {
             v.Set(vd, true);
             v.byteview = vd->contentbyteview;
-            v.writable = !vd->copybind && !(vd->type && vd->type->cq);
+            // A par for's body sees what is outside it read-only (§4.3 R1).
+            v.writable = !vd->copybind && !(vd->type && vd->type->cq) && !tc.ParView(vd);
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
             if (vd->nonneg) v.nonnegfrom = vd;
@@ -212,6 +214,10 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // variable and grow-only arrays hold those (§3.3).
     auto natural = [&](int64_t count) {
         if (elem == tc.fntype) tc.Error(this, "function values cannot be stored in arrays (§7.6)");
+        // As ValidateType says of a thread_pool element type written out.
+        if (elem->kind == TY_POOL)
+            tc.Error(this, "thread_pool can only be owned by a local or global variable; "
+                           "nested thread_pool owners are not supported");
         tc.NoZeroSizeElement(elem, line);
         if (tc.ClassOf(elem) == SC_FIXED) return tc.ast.ArrayOf(elem, A_FIXED, line, count);
         auto t = tc.ast.ArrayOf(elem, A_VAR, line);
@@ -478,6 +484,22 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     if (auto bd = LookupBuiltin(name); bd && (bd->flags & BF_PROPERTY)) {
         if (RecvKindOf(t) & bd->recv) {
             member = bd->kind;
+            // An array's length, which no iteration of a par for can change,
+            // is read beside the parts of it the iterations write
+            // (FinishParFor); a field of the name is no length, and the
+            // header of an array a reference leads to may lie in an element
+            // an iteration owns (ParLengthExempt).
+            if (auto id = Is<Ident>(obj); id && id->vdef && tc.InPar()) {
+                if (tc.ParLengthExempt(id->vdef)) tc.ParLengthUse(obj, id->vdef);
+            } else if (auto od = Is<Dot>(obj); od && tc.InPar()) {
+                // A component's, owner.field.len (NoteParComponent).
+                auto oid = Is<Ident>(od->obj);
+                auto pc = oid ? tc.parcomponents.find(oid) : tc.parcomponents.end();
+                if (pc != tc.parcomponents.end() && oid->vdef &&
+                    pc->second->componentowner == oid->vdef &&
+                    tc.ParLengthExempt(pc->second))
+                    tc.ParLengthUse(oid, oid->vdef);
+            }
             Val v;
             assert(bd->rets[0] == 'i');
             v.type = tc.ast.inttypes[IS_I64];
@@ -505,9 +527,7 @@ inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     TypeCheck::DestScope ds(tc, TypeCheck::Dest {});
-    auto lv = tc.LValueBase(obj, cmpview);
-    tc.DerefLValue(lv, obj);
-    tc.SliceProvenance(lv, obj);
+    auto lv = tc.SlicedPath(obj, cmpview);
     TypeExpr *elem;
     if (lv.type->kind == TY_SLICE) {
         elem = lv.type->sub;
@@ -526,13 +546,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     if (lv.intemp && !cmpview) tc.NoRelRefTempRead(obj, lv.type, elem);
     if (lo) tc.CheckIntAny(lo);
     if (hi) tc.CheckIntAny(hi);
-    Val v;
-    v.type = tc.ast.SliceOf(elem, line);
-    v.SetProv(lv);
-    v.reusable = false;   // A view of a pool is not the pool.
-    if (lv.type->cq) v.writable = false;   // A const field's or element's, as a variable's.
-    v.type->cq = !v.writable;   // A slice of read-only storage is a `const T[:]` (§9.5).
-    return v;
+    return tc.SliceVal(lv, elem, line);
 }
 
 inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {

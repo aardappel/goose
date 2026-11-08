@@ -68,6 +68,13 @@ test('all builtin calls and namespace declarations highlight', async () => {
     assert.ok(has(line, 'image::worker', 'entity.name.function'));
 });
 
+test('par is a keyword before for and a name elsewhere', async () => {
+    const [loop, call] = await tokenize('par for k in n {}\nlet par = par(1);');
+    assert.ok(has(loop, 'par', 'keyword.control.goose'));
+    assert.ok(has(loop, 'for', 'keyword.control.goose'));
+    assert.ok(!call.some(token => token.text === 'par' && token.scopes.some(s => s.startsWith('keyword'))));
+});
+
 test('export modifier and exported function declaration highlight', async () => {
     const [line] = await tokenize('export fn CUSTOM_FUNCTION_0() -> const u8[:] {');
     assert.ok(has(line, 'export', 'storage.modifier.goose'));

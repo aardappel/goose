@@ -153,7 +153,7 @@ struct Parser {
             case T_DEFER: case T_RETURN: case T_BREAK: case T_CONTINUE:
                 return !declaration;
             default:
-                return AtInline() || AtCheckfree();
+                return AtInline() || AtCheckfree() || (!declaration && AtPar());
         }
     }
 
@@ -303,6 +303,13 @@ struct Parser {
         if (lex.tok != T_IDENT || lex.attr != "inline") return false;
         auto next = lex.PeekTok();
         return next == T_FN || next == T_RECURSIVE || next == T_THREADFN;
+    }
+
+    // `par` likewise, before `for` alone (docs/design/child_threads.md §4.1):
+    // `par for` is a loop whose iterations may run on the thread pool, and
+    // `par` stays a name everywhere else.
+    bool AtPar() {
+        return lex.tok == T_IDENT && lex.attr == "par" && lex.PeekTok() == T_FOR;
     }
 
     // `checkfree` likewise, before the rest of a declaration's modifiers
@@ -1260,6 +1267,13 @@ struct Parser {
                 if (stmt_level) stmt_ended = true;
                 return e;
             }
+            case T_IDENT: {
+                if (!AtPar()) return ParseBinary(1);
+                lex.Next();
+                auto e = ParseFor(true, line);
+                if (stmt_level) stmt_ended = true;
+                return e;
+            }
             case T_GUARD:
                 Error("guard is a statement: it guards the rest of the block it is in");
             case T_DEFER:
@@ -1313,8 +1327,10 @@ struct Parser {
         return Finish(New<IfExpr>(line, cond, thenb, elseb));
     }
 
-    Node *ParseFor() {
-        auto line = CurLine();
+    // `for ...`, or `par for ...` once the `par` at `parat` is consumed: the
+    // loop starts there.
+    Node *ParseFor(bool par = false, Line parat = {}) {
+        auto line = par ? parat : CurLine();
         lex.Next();
         if (lex.tok == T_BITAND) Role(R_UNARY);
         auto byref = IsNext(T_BITAND);
@@ -1341,9 +1357,11 @@ struct Parser {
             iter = ParseExpr();
             if (IsNext(T_DOTDOT)) iter = Finish(New<RangeExpr>(line, iter, ParseExpr()));
         }
-        auto f = New<ForLoop>(line, byref, var, idxvar, iter, ParseBlockExpr("for body"));
+        auto f = New<ForLoop>(line, byref, var, idxvar, iter,
+                              ParseBlockExpr(par ? "par for body" : "for body"));
         f->vartype = vartype;
         f->idxtype = idxtype;
+        f->ispar = par;
         return Finish(f);
     }
 
