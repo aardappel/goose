@@ -1021,11 +1021,13 @@ inline void CodeGen::EmitProgramInit() {
     // faults), so that goose_init can start a program in the process again:
     // this one, or another build of it that a host reloads.
     if (library) {
-        Append(code, "void goose_init(int argc, char **argv) {\n"
+        auto hostexport = sharedlibrary
+            ? "#ifdef _WIN32\n__declspec(dllexport)\n#endif\n" : "";
+        Append(code, hostexport, "void goose_init(int argc, char **argv) {\n"
                      "    if (gs_program_initialized) return;\n"
                      "    gs_program_init(argc, argv);\n",
                      MainCall(), "}\n\n");
-        Append(code, "void goose_exit(void) {\n"
+        Append(code, hostexport, "void goose_exit(void) {\n"
                      "    if (!gs_program_initialized) return;\n"
                      "    gs_rt_stop();\n"
                      "    free(gs_stks);\n"
@@ -1045,6 +1047,8 @@ inline string CodeGen::MainCall() {
 }
 
 inline void CodeGen::EmitExports() {
+    auto hostexport = sharedlibrary
+        ? "#ifdef _WIN32\n__declspec(dllexport)\n#endif\n" : "";
     for (auto sf : ast.functions) {
         if (!sf->isexport) continue;
         if (sf->specs.size() != 1 || !sinfo.count(sf->specs[0]))
@@ -1068,7 +1072,7 @@ inline void CodeGen::EmitExports() {
         auto ret = sp->rets.empty() ? string("void")
                    : returnslice ? string("const uint8_t *") : CT(sp->rets[0]);
         Append(exportprotos, ret, " ", sf->cname, "(", params, ");\n");
-        Append(code, ret, " ", sf->cname, "(", params, ") {\n"
+        Append(code, hostexport, ret, " ", sf->cname, "(", params, ") {\n"
                      "    if (!gs_program_initialized)\n"
                      "        gs_panic(\"goose_init must be called before exported functions\");\n");
         if (returnslice) {

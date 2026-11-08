@@ -712,7 +712,7 @@ R"(usage: goose <command> file.goose [options]
 Commands:
   run        Compile a program and run it in this process, which goose
              file.goose does too.
-  build      Build an executable with a C compiler on this machine.
+  build      Build an executable or shared library with a C compiler.
   check      Parse and typecheck a program, and run nothing.
   fetch      Fetch the packages a program declares.
   format     Rewrite Goose files in the standard layout.
@@ -763,9 +763,10 @@ R"(  --cc name|path        The C compiler for packages' native parts: msvc,
     if (topic == "build") return cat(
 R"(usage: goose build file.goose [options]
 
-Builds an executable beside the source with a C compiler on this machine
-(goose toolchain says which), linking the runtime and the native parts of
-the packages the program uses. Intermediates go under GOOSE_HOME.
+Builds an executable beside the source with a C compiler on this machine,
+or a shared library with --shared (goose toolchain says which), linking the
+runtime and the native parts of the packages the program uses. Intermediates
+go under GOOSE_HOME.
 
 Options:
   -o exe                Where the executable goes.
@@ -778,6 +779,11 @@ R"(  --cc name|path        The C compiler: msvc, clang-cl, clang, gcc, cc or a
                         path (or GOOSE_CC; by default the first one found).
   --standalone          Compile the runtime into the program rather than link
                         the runtime object built once per C compiler.
+  --shared              Build a self-contained shared library (.dll, .dylib or
+                        .so). Its export fns and goose_init/goose_exit are the
+                        host entry points; implies --standalone.
+  --header out.h        With --shared: also write the host's header, declaring
+                        the export fns and goose_init/goose_exit.
   -v                    Print each command the build runs and what it prints.
   --dry-run             Print the commands the build would run, and run none.
 )");
@@ -1365,7 +1371,7 @@ int Main(int argc, char **argv) {
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
     auto stats = false;
-    auto forcejit = false, standalone = false;
+    auto forcejit = false, standalone = false, shared = false;
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     auto jsondiag = false;
     string ccrequest;
@@ -1415,6 +1421,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
+        else if (arg == "--shared") shared = true;
         else if (arg == "--multi-test") multitest = true;
         else if (arg == "--gen-runtime-header") {
             try {
@@ -1509,8 +1516,12 @@ int Main(int argc, char **argv) {
             return 1;
         }
     }
-    // What `goose build` builds with; its -o names the executable, and the
-    // C goes to the program's build directory (build.h).
+    if (shared && verb != "build") {
+        fprintf(stderr, "--shared is an option of goose build\n");
+        return 1;
+    }
+    // What `goose build` builds with; its -o names the executable or shared
+    // library, and the C goes to the program's build directory (build.h).
     BuildOptions buildopts;
     string builddir;
     if (verb == "run") {
@@ -1527,12 +1538,13 @@ int Main(int argc, char **argv) {
         // fetched as its entry is reached.
         parseonly = true;
     } else if (verb == "build") {
-        if (multitest || !headername.empty()) {
-            fprintf(stderr, "goose build takes one program and no --header; the flag form "
-                            "(-o out.c) writes the C for a C host\n");
+        if (multitest || (!headername.empty() && !shared)) {
+            fprintf(stderr, "goose build takes one program, and --header only with --shared; "
+                            "the flag form (-o out.c) writes the C for a C host\n");
             return 1;
         }
-        buildopts = BuildOptions { debug, verbose, dryrun, standalone, outname };
+        if (shared) standalone = true;
+        buildopts = BuildOptions { debug, verbose, dryrun, standalone, shared, outname };
         outname.clear();
     }
     if (files.size() > 1 && !multitest) {
@@ -1565,7 +1577,7 @@ int Main(int argc, char **argv) {
     }
     // A header is for a C host, which supplies its own main and starts the
     // program through goose_init (and may end it through goose_exit).
-    auto library = !headername.empty();
+    auto library = !headername.empty() || shared;
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
                       (jit && !nocgen && !parseonly && !dump))) {
@@ -1711,7 +1723,8 @@ int Main(int argc, char **argv) {
         for (auto &rf : runtime_files)
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
         auto stackcfg = StackConfigOf(cdefines);
-        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, stackcfg.maxstacks);
+        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, shared,
+                   stackcfg.maxstacks);
         if (stacks) cg.StackReport(msgs, stackcfg);
         // The packages whose native parts the program needs, which a JIT
         // run takes functions from and a build links: its own, when it has

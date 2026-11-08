@@ -17,7 +17,8 @@ struct BuildOptions {
     bool verbose = false;     // -v: print every command and what it prints
     bool dryrun = false;      // --dry-run: print the commands and run nothing
     bool standalone = false;  // --standalone: no runtime object
-    string exe;               // -o: the executable; "" puts it beside the root source
+    bool shared = false;      // --shared: build a self-contained shared library
+    string exe;               // -o: the executable/library; "" puts it beside the root source
 };
 
 inline string AbsolutePath(const string &path) {
@@ -147,12 +148,16 @@ struct Builder {
     }
 
     // Compiles `src` and links it with `objects` and the response files
-    // `rsps` into `exe`, with `builddir` taking the intermediates.
+    // `rsps` into `exe`, with `builddir` taking the intermediates: an
+    // executable, or with --shared a shared library, whose C holds the
+    // runtime (a shared build is standalone) and whose package objects are
+    // position independent already (native.h).
     bool Link(const string &src, const vector<string> &objects, const vector<string> &rsps,
               const string &exe, const string &builddir, const string &logfile) const {
         vector<string> argv = { tc.cc };
         for (auto &f : CFlags()) argv.push_back(f);
         if (tc.style == "msvc") {
+            if (opts.shared) argv.push_back("/LD");
             argv.push_back(cat("/Fe:", exe));
             argv.push_back(cat("/Fo:", builddir, "\\"));
             if (opts.debug) argv.push_back(cat("/Fd:", builddir, "\\", PathStem(exe), ".pdb"));
@@ -160,6 +165,14 @@ struct Builder {
             for (auto &o : objects) argv.push_back(o);
             for (auto &r : rsps) argv.push_back(cat("@", r));
         } else {
+            if (opts.shared) {
+                // Not on Windows, where clang rejects the flag for its
+                // target (the code is position independent regardless).
+                #ifndef _WIN32
+                    argv.push_back("-fPIC");
+                #endif
+                argv.push_back("-shared");
+            }
             argv.push_back(src);
             for (auto &o : objects) argv.push_back(o);
             argv.push_back("-o");
@@ -212,8 +225,9 @@ inline string RuntimeObject(const Builder &b) {
 // which built the native parts whose response files are `nativersps`
 // (native.h and builtin.h, found by the caller) in link order, a package's
 // before the packages it requires and the program's own C first of all, and
-// links the executable, named by -o, the program's sidecar (`output`) or the
-// root file. The exit code.
+// links the executable, or with --shared the shared library (lib<stem>.so,
+// lib<stem>.dylib or <stem>.dll), named by -o, the program's sidecar
+// (`output`) or the root file. The exit code.
 inline int BuildExecutable(const string &rootfile, const string &cfile, const string &builddir,
                            const Toolchain &tc, const BuildOptions &opts, FILE *msgs,
                            const vector<string> &nativersps, const string &output) {
@@ -226,10 +240,21 @@ inline int BuildExecutable(const string &rootfile, const string &cfile, const st
     }
     auto exe = opts.exe;
     if (exe.empty()) {
-        exe = cat(DirOf(rootfile), output.empty() ? PathStem(rootfile) : output);
-        #ifdef _WIN32
-            if (exe.size() < 4 || exe.compare(exe.size() - 4, 4, ".exe") != 0) exe += ".exe";
-        #endif
+        auto stem = output.empty() ? PathStem(rootfile) : output;
+        if (opts.shared) {
+            #ifdef _WIN32
+                exe = cat(DirOf(rootfile), stem, ".dll");
+            #elif defined(__APPLE__)
+                exe = cat(DirOf(rootfile), "lib", stem, ".dylib");
+            #else
+                exe = cat(DirOf(rootfile), "lib", stem, ".so");
+            #endif
+        } else {
+            exe = cat(DirOf(rootfile), stem);
+            #ifdef _WIN32
+                if (exe.size() < 4 || exe.compare(exe.size() - 4, 4, ".exe") != 0) exe += ".exe";
+            #endif
+        }
     }
     if (!opts.dryrun) {
         std::error_code ec;

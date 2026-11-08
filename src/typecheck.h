@@ -3165,7 +3165,7 @@ struct TypeCheck {
             CheckRoot([&] { CheckExport(sf); });
         }
         if (library && !exportcount)
-            throw CompileError { "--header requires at least one export fn" };
+            throw CompileError { "--header and --shared require at least one export fn" };
         CheckRoot([&] { CheckGlobalShrinks(); });
         CheckRoot([&] { SettleParamRootExactness(); });
         CheckRoot([&] { ResolveGrowConflicts(); });

@@ -4173,7 +4173,11 @@ start-up code. Exported functions are not thread-safe: call them from the
 thread that called `goose_init`. `goose_exit()` ends the program and
 releases what the start set up, so that `goose_init` can start it, or
 another build of it, again in the same process; it is a runtime error
-while a worker of the program still runs. Spec §7.11.
+while a worker of the program still runs. `goose build --shared --header
+hello.h hello.goose` builds the same C straight into a shared library
+(`libhello.so`, `libhello.dylib` or `hello.dll`) with the header beside the
+source ([command_line.md §3](command_line.md#3-building-an-executable)).
+Spec §7.11.
 
 ---
 

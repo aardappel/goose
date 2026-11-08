@@ -73,6 +73,7 @@ to a process.
 """
 
 import argparse
+import ctypes
 import json
 import concurrent.futures
 import os
@@ -2487,6 +2488,81 @@ def main():
                 good = code == 0 and out2.strip() == "verbs"
                 out, err = out + out2, err + err2
             checks.append(("build", good, out + err))
+
+            shared_src = gendir / "verbs_shared.goose"
+            tc.write_text(shared_src,
+                          'export "goose_add" fn add(a: i32, b: i32) -> i32 { a + b }\n')
+            shared_suffix = ".dll" if tc.IS_WINDOWS else ".dylib" if tc.IS_MACOS else ".so"
+            shared_out = gendir / ("verbs_shared" + shared_suffix)
+            code, out, err = tc.run_capture(
+                [exe, "build", "--shared", "-o", str(shared_out), shared_src])
+            good = code == 0 and shared_out.exists()
+            detail = out + err
+            if good:
+                try:
+                    lib = ctypes.CDLL(str(shared_out.resolve()))
+                    lib.goose_init.argtypes = [ctypes.c_int,
+                                               ctypes.POINTER(ctypes.c_char_p)]
+                    lib.goose_init.restype = None
+                    lib.goose_add.argtypes = [ctypes.c_int32, ctypes.c_int32]
+                    lib.goose_add.restype = ctypes.c_int32
+                    lib.goose_exit.argtypes = []
+                    lib.goose_exit.restype = None
+                    lib.goose_init(0, None)
+                    good = lib.goose_add(20, 22) == 42
+                    lib.goose_exit()
+                except (AttributeError, OSError) as e:
+                    good = False
+                    detail += str(e)
+            checks.append(("build --shared", good, detail))
+
+            # A shared build can also emit the C host header. Exercise the
+            # documented host surface and make sure the declarations are there.
+            shared_header = gendir / "verbs_shared.h"
+            shared_header_out = gendir / ("verbs_shared_header" + shared_suffix)
+            code, out, err = tc.run_capture(
+                [exe, "build", "--shared", "--header", str(shared_header),
+                 "-o", str(shared_header_out), shared_src])
+            good = code == 0 and shared_header_out.exists() and shared_header.exists()
+            detail = out + err
+            if good:
+                header_text = shared_header.read_text(encoding="utf-8", errors="replace")
+                good = all(name in header_text
+                           for name in ("goose_init", "goose_exit", "goose_add"))
+            checks.append(("build --shared --header", good, detail))
+
+            # Without -o, the platform's normal shared-library spelling is used.
+            default_src = gendir / "verbs_shared_default.goose"
+            tc.write_text(default_src,
+                          'export "goose_add" fn add(a: i32, b: i32) -> i32 { a + b }\n')
+            default_out = gendir / (
+                "verbs_shared_default.dll" if tc.IS_WINDOWS else
+                "libverbs_shared_default.dylib" if tc.IS_MACOS else
+                "libverbs_shared_default.so")
+            if default_out.exists():
+                default_out.unlink()
+            code, out, err = tc.run_capture([exe, "build", "--shared", default_src])
+            checks.append(("build --shared default output",
+                           code == 0 and default_out.exists(), out + err))
+
+            # Shared-library mode, like --header, requires something for the
+            # host to call.
+            no_export = gendir / "verbs_shared_no_export.goose"
+            tc.write_text(no_export, "fn helper() -> i32 { 1 }\n")
+            no_export_out = gendir / ("verbs_shared_no_export" + shared_suffix)
+            code, out, err = tc.run_capture(
+                [exe, "build", "--shared", "-o", str(no_export_out), no_export])
+            checks.append(("build --shared without export (refused)",
+                           code == 1 and
+                           "--header and --shared require at least one export fn"
+                           in out + err,
+                           out + err))
+
+            code, out, err = tc.run_capture([exe, "check", "--shared", probe])
+            checks.append(("check --shared (refused)",
+                           code == 1 and "--shared is an option of goose build" in err,
+                           out + err))
+
             dry = gendir / ("verbs_dry" + tc.EXE_SUFFIX)
             code, out, err = tc.run_capture([exe, "build", "--dry-run", "-o", str(dry), probe])
             checks.append(("build --dry-run", code == 0 and not dry.exists() and
