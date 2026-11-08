@@ -1204,7 +1204,8 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
         return;
     }
     var x = v;
-    if x < 0.0 {
+    // The sign bit rather than x < 0.0: -0.0 writes its sign, as printf does.
+    if (float_text::bits_of(x) >> 63) != 0 {
         out.push('-');
         x = -x;
     }

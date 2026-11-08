@@ -390,6 +390,16 @@ fn strings() {
     h.resize(0);
     format_flt(h, 1.7976931348623157e308, 0);
     print(h.len, " ", h[..10]);                                                // 309 1797693134
+    let negzero: f64 = -0.0;
+    h.resize(0);
+    format_flt(h, negzero, 0);
+    h.push(' ');
+    format_flt(h, negzero, 2);
+    h.push(' ');
+    format_flt(h, negzero, 20);
+    h.push(' ');
+    format_flt(h, 0.0, 2);
+    print(h);                                                                  // -0 -0.00 -0.00000000000000000000 0.00
     let v, ok = parse_int("-123");
     print(v, " ", ok);                                                         // -123 true
     let v2, ok2 = parse_int("12x");
