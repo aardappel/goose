@@ -58,11 +58,13 @@ checkfree fn sign(x: f64) -> f64 {
 checkfree fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 checkfree fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
 
-// The smallest power of two that is at least max(x, 1).
+// The smallest power of two that is at least max(x, 1), aborting past 2^62.
 checkfree fn next_pow2(x: i64) -> i64 {
-    var p = 1;
-    while p < x { p = p * 2; }
-    return p;
+    if x <= 1 { return 1; }
+    assert(x <= 1 << 62);
+    var v = (x - 1) as! u64;
+    v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16; v |= v >> 32;
+    return (v + 1) as! i64;
 }
 
 // The bits set, and the leading / trailing zero bits, 64 for zero: the

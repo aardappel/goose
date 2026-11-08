@@ -129,7 +129,7 @@ fn rem<T>(a: T, b: T) -> T         // integers; pairs with `/`
 fn div_euclid<T>(a: T, b: T) -> T  // integers; pairs with `%`
 fn sign<T>(x: T) -> T               // -1, 0, 1 at x's type; f32/f64 overloads
 fn lerp(a: f64, b: f64, t: f64) -> f64      // and f32
-fn next_pow2(x: i64) -> i64         // smallest power of two >= max(x, 1)
+fn next_pow2(x: i64) -> i64         // smallest power of two >= max(x, 1); aborts past 2^62
 fn popcount(x: u64) -> i64
 fn clz(x: u64) -> i64               // 64 for 0
 fn ctz(x: u64) -> i64               // 64 for 0
