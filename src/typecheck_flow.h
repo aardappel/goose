@@ -2252,8 +2252,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
 // the construct exits in what holds here too.
 inline void TypeCheck::NoteBreak(int si) {
     auto &sc = scopes[si];
-    sc.hasbreak = true;
     if (!reachable) return;
+    sc.hasbreak = true;
     sc.breakflow = sc.breakflows ? JoinFlow(sc.breakflow, SaveFlow()) : SaveFlow();
     sc.breakflows = true;
 }
