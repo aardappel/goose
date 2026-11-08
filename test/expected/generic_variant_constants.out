@@ -1,0 +1,11 @@
+Opt.None Plain.None
+Some { 3 } 3 0
+some
+1 true
+true
+[Opt.None, Some { 1 }, Opt.None]
+Opt.None true false
+Opt.None true
+true
+true
+true true

@@ -170,8 +170,9 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
 }
 
 // A global is unassigned until the driver reaches its declaration, which
-// is when its initializer runs (§11.1).
-inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at) {
+// is when its initializer runs (§11.1). `use`: what reads vd where no
+// identifier at `at` names it.
+inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at, string_view use) {
     if (vd->assigned) return;
     // Its initializer's check failed and reported why: a use is no error
     // of its own.
@@ -181,7 +182,17 @@ inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at) {
                            "(§11.1), so ", vd->name, " has no value until its initializer at ",
                            Where(vd->line), " has run")
                      : string();
+    if (!use.empty()) Error(at, cat(use, " reads ", vd->name, " before it is assigned", order));
     Error(at, cat("variable ", vd->name, " may be used before it is assigned", order));
+}
+
+// A conversion into an index or bound type, and from_bytes' verification of
+// one, compare against its array's length (§3.11): a read of the global
+// holding the array, which the type names rather than the code.
+inline void TypeCheck::RequireIndexArray(TypeExpr *t, Node *at, string_view what) {
+    auto a = t->ix->arr;
+    RequireAssigned(a->componentowner ? a->componentowner : a, at,
+                    cat(what, " checks against ", a->name, ".len, which"));
 }
 
 // Accessing through a slice variable: writes and roots follow the slice
@@ -1946,6 +1957,37 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
     return v;
 }
 
+// An ordering comparison of an integer with a constant that the integer's
+// type alone decides, `u < 0` of an unsigned `u` or `b <= 255` of a u8, is a
+// warning: it is always true or always false, which is rarely what was
+// meant. Generic code is not judged, since another specialization's type
+// may make the comparison matter (as for redundant casts, §6.3).
+inline void TypeCheck::DecidedComparison(Binary *b, const Val &lv, const Val &rv, TypeExpr *lt,
+                                         TypeExpr *rt) {
+    auto isk = [](const Val &v) { return v.ck == CK_INT && !v.uns && !v.unsized; };
+    if (isk(lv) == isk(rv) || InGenericCode()) return;
+    // As `x op k`, the constant on the right.
+    auto op = b->op;
+    if (isk(lv)) op = op == T_LT ? T_GT : op == T_GT ? T_LT : op == T_LTEQ ? T_GTEQ : T_LTEQ;
+    auto xt = isk(lv) ? rt : lt;
+    auto k = isk(lv) ? lv.ival : rv.ival;
+    if (!xt || !IsIntT(xt)) return;
+    auto [lo, hi] = IntRange(xt->intstorage);
+    // A u64 reaches beyond i64, which its range here stops at.
+    auto hiknown = xt->intstorage != IS_U64;
+    int r = -1;   // -1 undecided, else the comparison's value.
+    switch (op) {
+        case T_LT:   r = lo >= k ? 0 : hiknown && hi < k ? 1 : -1; break;
+        case T_LTEQ: r = lo > k ? 0 : hiknown && hi <= k ? 1 : -1; break;
+        case T_GT:   r = lo > k ? 1 : hiknown && hi <= k ? 0 : -1; break;
+        case T_GTEQ: r = lo >= k ? 1 : hiknown && hi < k ? 0 : -1; break;
+        default: break;
+    }
+    if (r < 0) return;
+    Warn(b, cat("comparison is always ", r ? "true" : "false", ": ", TypeStr(xt), " values are ",
+                hiknown ? cat(lo, " to ", hi) : cat(lo, " or more")));
+}
+
 // The value of the numeric operation b, `lv op rv` (§6.1, §6.2): the
 // operands' common type `ct`, which their nodes take, and the result's type
 // and constant. A `trial` changes no node and reports no error: it gives a
@@ -1977,8 +2019,9 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
         return true;
     };
     // A shift of a constant by a count that is no constant, and integer
-    // operations whose operands are constants and such values, are no
-    // constants that adapt (Val::flexint).
+    // operations whose operands are constants, constructs of constants
+    // (Val::litint) and such values, are no constants that adapt
+    // (Val::flexint).
     auto flexint = [&](Val &v, bool shift) {
         int64_t llo, lhi, rlo, rhi;
         if (v.ck == CK_INT || !FlexConsts(lv, llo, lhi)) return;
@@ -1986,7 +2029,8 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
             v.flexint = true;
             v.litlo = llo;
             v.lithi = lhi;
-        } else if ((lv.flexint || rv.flexint) && FlexConsts(rv, rlo, rhi)) {
+        } else if ((lv.flexint || rv.flexint || lv.litint || rv.litint) &&
+                   FlexConsts(rv, rlo, rhi)) {
             v.flexint = true;
             v.litlo = std::min(llo, rlo);
             v.lithi = std::max(lhi, rhi);
@@ -2001,6 +2045,7 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
                 return fail(cat("ordering comparison requires numeric operands, got ",
                                 TypeStr(lt), " and ", TypeStr(rt)));
             retype();
+            if (!trial) DecidedComparison(b, lv, rv, lt, rt);
             v.type = ast.booltype;
             return v;
         case T_EQ: case T_NEQ:
@@ -2866,17 +2911,19 @@ inline TypeExpr *TypeCheck::ElementwiseScalarType(TypeExpr *t) {
     return rec(t) ? leaf : nullptr;
 }
 
-inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
-    if (!en->generics.empty())
+inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en, TypeExpr *written) {
+    if (!written && !en->generics.empty())
         Error(d, cat("generic enum ", en->name, " needs type arguments to name a variant"));
-    auto t = ast.EnumOf(en, {}, false, d->line);
+    auto t = ast.EnumOf(en, written ? written->enu->args : vector<TypeExpr *> {}, false, d->line);
     auto inst = GetEnumInst(t);
     auto found = en->FindVariant(d->name);
     if (!found && en->broken) throw Abandoned {};
     if (!found) Error(d, cat("enum ", en->name, " has no variant named ", d->name));
-    if (found->has_payload)
-        Error(d, cat("variant ", en->name, ".", d->name,
-                     " has a payload; construct it with ", en->name, ".", d->name, " { ... }"));
+    if (found->has_payload) {
+        auto spelled = written ? TypeStr(t) : string(en->name);
+        Error(d, cat("variant ", spelled, ".", d->name,
+                     " has a payload; construct it with ", spelled, ".", d->name, " { ... }"));
+    }
     d->variantconst = found;
     d->einst = inst;
     if (!inst->allfixed || inst->selfrel) t->enu->varmode = true;
@@ -3180,6 +3227,7 @@ inline void TypeCheck::CheckStmts(Block *b) {
         if (lost(i)) throw Abandoned {};
         blockpos.back().idx = i;
         if (auto cf = Is<ConstFor>(b->stmts[i])) b->stmts[i] = ExpandStatements(cf);
+        if (auto ci = Is<ConstIf>(b->stmts[i])) b->stmts[i] = ExpandSelection(ci);
         CheckStmt(b->stmts[i]);
     }
     if (lost(b->stmts.size())) throw Abandoned {};

@@ -83,6 +83,7 @@ inline const vector<Json> &Json::Arr(const string &key) const {
 struct JsonReader {
     const char *p;
     const char *start;
+    int depth = 0;
 
     [[noreturn]] void Fail(const char *what) {
         throw CompileError { cat("malformed JSON at byte ", (int)(p - start), ": ", what) };
@@ -132,10 +133,17 @@ struct JsonReader {
                 case 't': s += '\t'; break;
                 case 'u': {
                     auto cp = Hex4();
+                    // A high surrogate pairs only with a low one; unpaired,
+                    // either is kept as its own code point, one UTF-16 unit
+                    // as the client counts it.
                     if (cp >= 0xD800 && cp < 0xDC00 && p[0] == '\\' && p[1] == 'u') {
+                        auto next = p;
                         p += 2;
                         auto lo = Hex4();
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        if (lo >= 0xDC00 && lo < 0xE000)
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else
+                            p = next;
                     }
                     Utf8(s, cp);
                     break;
@@ -144,11 +152,23 @@ struct JsonReader {
             }
         }
     }
+    // One frame of an editor message or a CMake reply nests a handful deep;
+    // a client that sends thousands would otherwise recurse the parser off
+    // the native stack.
+    static constexpr int MAX_DEPTH = 1000;
+    struct Depth {
+        JsonReader &r;
+        ~Depth() { r.depth--; }
+    };
+
     Json Value() {
         Space();
         Json v;
         switch (*p) {
-            case '{':
+            case '{': {
+                if (depth >= MAX_DEPTH) Fail("nesting too deep");
+                Depth deeper { *this };
+                depth++;
                 v.kind = Json::OBJECT;
                 p++;
                 Space();
@@ -162,7 +182,11 @@ struct JsonReader {
                     Expect('}');
                     return v;
                 }
-            case '[':
+            }
+            case '[': {
+                if (depth >= MAX_DEPTH) Fail("nesting too deep");
+                Depth deeper { *this };
+                depth++;
                 v.kind = Json::ARRAY;
                 p++;
                 Space();
@@ -174,6 +198,7 @@ struct JsonReader {
                     Expect(']');
                     return v;
                 }
+            }
             case '"':
                 v.kind = Json::STRING;
                 v.str = String();

@@ -32,6 +32,7 @@ extern fn list_dir(path: const u8[:], out: u8[>..]&) -> bool = "gs_os_list_dir";
 // Standard streams.
 extern fn read_line(out: u8[>..]&) -> bool = "gs_os_read_line";  // one line of stdin, no newline; false at end
 extern fn read_stdin(out: u8[>..]&) = "gs_os_read_stdin";        // everything until end of input
+extern fn read_stdin(out: u8[>..]&, max: i64) -> bool = "gs_os_read_stdin_max";  // up to max bytes; false at end
 extern fn write_stdout(s: const u8[:]) = "gs_os_write_stdout";
 extern fn write_stderr(s: const u8[:]) = "gs_os_write_stderr";
 extern fn flush_stdout() = "gs_os_flush_stdout";

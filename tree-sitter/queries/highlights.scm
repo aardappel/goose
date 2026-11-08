@@ -38,11 +38,14 @@
 (named_type name: (scoped_identifier name: (identifier) @type))
 (struct_literal name: (identifier) @type)
 (struct_literal name: (scoped_identifier name: (identifier) @type))
+(variant_constant name: (identifier) @type)
+(variant_constant name: (scoped_identifier name: (identifier) @type))
 (primitive_type) @type.builtin
 
 (enum_variant name: (identifier) @constant)
 (variant_type variant: (identifier) @constant)
 (struct_literal variant: (identifier) @constant)
+(variant_constant variant: (identifier) @constant)
 (variant_pattern variant: (identifier) @constant)
 (pattern_list (identifier) @constant)
 (range_pattern (identifier) @constant)
@@ -58,6 +61,10 @@
 (self) @variable.builtin
 
 (function_modifier) @keyword.modifier
+"root" @keyword.modifier
+
+; The queries of a const if condition, keywords there only.
+(const_query name: (identifier) @keyword)
 
 [
   "fn"

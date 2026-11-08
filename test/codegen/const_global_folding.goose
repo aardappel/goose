@@ -33,7 +33,8 @@ const PICKED = PALETTE[2];                 // Not a name: runs its initializer.
 const AFTER = Sphere { pos: [1.0, 1.0, 1.0], radius: 1.0, color: PICKED, tag: 1 };
 
 // Listed elements are static data at any length; a fill past 256 elements
-// runs its initializer, a loop, rather than being spelled out.
+// runs its initializer, a loop, into a static of its own rather than being
+// spelled out.
 const LONG: i64[260] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,

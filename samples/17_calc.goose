@@ -51,17 +51,17 @@ fn evaluate(line: u8[:]) -> f64, u8[] {
         while i < line.len {
             let c = line[i];
             if c == ' ' || c == '\t' { i++; continue; }
-            if (c >= '0' && c <= '9') || c == '.' {
+            if ascii::is_digit(c) || c == '.' {
                 let start = i;
-                while i < line.len && ((line[i] >= '0' && line[i] <= '9') || line[i] == '.') { i++; }
+                while i < line.len && (ascii::is_digit(line[i]) || line[i] == '.') { i++; }
                 let v, ok = parse_flt(line[start..i]);
                 guard ok else { return 0.0, str("bad number '", line[start..i], "'") from evaluate; }
                 tokens.push(Token.Num { v: v });
                 continue;
             }
-            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+            if ascii::is_alpha(c) {
                 let start = i;
-                while i < line.len && ((line[i] >= 'a' && line[i] <= 'z') || (line[i] >= 'A' && line[i] <= 'Z')) { i++; }
+                while i < line.len && ascii::is_alpha(line[i]) { i++; }
                 guard i - start <= 16 else { return 0.0, "name too long" from evaluate; }
                 tokens.push(Token.Name { at: start as i32, len: (i - start) as i32 });
                 continue;

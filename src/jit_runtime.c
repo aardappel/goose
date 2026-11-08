@@ -62,8 +62,41 @@ static const GooseJitSymbol gs_jit_symbols[] = {
     GS_JIT_MATH(fmod)
     GS_JIT_MATH(cbrt)
     GS_JIT_MATH(hypot)
+    GS_JIT_MATH(exp2)
+    GS_JIT_MATH(expm1)
+    GS_JIT_MATH(log1p)
+    GS_JIT_MATH(sinh)
+    GS_JIT_MATH(cosh)
+    GS_JIT_MATH(tanh)
+    GS_JIT_MATH(copysign)
     GS_JIT_MATH(ldexp)
     GS_JIT_MATH(frexp)
+    GS_JIT_MATH(acosh)
+    GS_JIT_MATH(asinh)
+    GS_JIT_MATH(atanh)
+    GS_JIT_MATH(erf)
+    GS_JIT_MATH(erfc)
+    GS_JIT_MATH(tgamma)
+    GS_JIT_MATH(lgamma)
+    GS_JIT_MATH(logb)
+    GS_JIT_MATH(rint)
+    GS_JIT_MATH(nearbyint)
+    GS_JIT_MATH(fmin)
+    GS_JIT_MATH(fmax)
+    GS_JIT_MATH(fdim)
+    GS_JIT_MATH(nextafter)
+    GS_JIT_MATH(remainder)
+    GS_JIT_MATH(fma)
+    GS_JIT_MATH(scalbn)
+    GS_JIT_MATH(scalbln)
+    GS_JIT_MATH(ilogb)
+    GS_JIT_MATH(lrint)
+    GS_JIT_MATH(llrint)
+    GS_JIT_MATH(lround)
+    GS_JIT_MATH(llround)
+    GS_JIT_MATH(modf)
+    GS_JIT_MATH(remquo)
+    GS_JIT_MATH(nan)
 #undef GS_JIT_MATH
     { "exit", (const void *)gs_jit_exit },
     { NULL, NULL }
@@ -79,22 +112,11 @@ int goose_jit_run(int (*entry)(int, char **), void (*cleanup)(void),
     gs_jit_status = 0;
     if (!setjmp(gs_jit_jump)) gs_jit_status = entry(argc, argv);
     fflush(NULL);
-    gs_release_regions();
+    /* Main's regions and fault handling, then the program's stack block.
+       Workers the program left running are the process's to end, as a
+       built program's are (spec 11.2). */
+    gs_rt_release();
     cleanup();
-#ifdef _WIN32
-    if (gs_jit_fault_handler) RemoveVectoredExceptionHandler(gs_jit_fault_handler);
-    gs_jit_fault_handler = NULL;
-#else
-    if (gs_jit_fault_installed) {
-        sigaction(SIGSEGV, &gs_prev_segv, NULL);
-#ifdef SIGBUS
-        if (gs_jit_fault_installed & 2) sigaction(SIGBUS, &gs_prev_bus, NULL);
-#endif
-    }
-    gs_jit_fault_installed = 0;
-#endif
-    gs_argc = 0;
-    gs_argv = NULL;
     gs_jit_resource_dir = NULL;
     return gs_jit_status;
 }

@@ -120,7 +120,8 @@ set(goose_main_stack 67108864)
 if(MSVC)
     target_link_options(goose PRIVATE "/STACK:${goose_main_stack}")
 elseif(MINGW)
-    target_link_options(goose PRIVATE "LINKER:--stack,${goose_main_stack}")
+    # Statically link the runtime to avoid shipping libgcc, libstdc++, and libwinpthread DLLs.
+    target_link_options(goose PRIVATE "LINKER:--stack,${goose_main_stack}" -static -static-libgcc -static-libstdc++)
 elseif(APPLE)
     math(EXPR goose_main_stack_hex "${goose_main_stack}" OUTPUT_FORMAT HEXADECIMAL)
     target_link_options(goose PRIVATE "LINKER:-stack_size,${goose_main_stack_hex}")
@@ -150,6 +151,11 @@ add_dependencies(goose tcc_runtime)
 # build directory. A tcclib/ beside the compiler still wins (src/jit.h).
 set(GOOSE_TCC_LIB_PATH "${TCC_STAGE}" CACHE PATH "TinyCC's runtime directory")
 target_compile_definitions(goose PRIVATE GOOSE_TCC_LIB_PATH="${GOOSE_TCC_LIB_PATH}")
+# Likewise where it installs stdlib/. The compiler looks there after the
+# directories around its executable (StdlibDirs in src/main.cpp); empty, it
+# names no such directory.
+set(GOOSE_STDLIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/stdlib" CACHE PATH "The standard library's directory")
+target_compile_definitions(goose PRIVATE GOOSE_STDLIB_PATH="${GOOSE_STDLIB_PATH}")
 
 # C headers included explicitly by a program see the same small host interface
 # as generated C. These paths precede TinyCC's own compiler headers.
@@ -204,4 +210,18 @@ else()
     # initialised with a prefix of its fields, which is deliberate throughout:
     # the rest are value-initialised.
     target_compile_options(goose PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+endif()
+
+option(GOOSE_BUILD_LSP_TESTS "Build deterministic language server tests" OFF)
+if(GOOSE_BUILD_LSP_TESTS)
+    get_target_property(goose_lsp_sources goose SOURCES)
+    list(REMOVE_ITEM goose_lsp_sources src/main.cpp)
+    add_executable(goose_lsp_test test/lsp_server.cpp ${goose_lsp_sources})
+    foreach(prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_OPTIONS LINK_LIBRARIES)
+        set_property(TARGET goose_lsp_test PROPERTY ${prop} "$<TARGET_PROPERTY:goose,${prop}>")
+    endforeach()
+    add_dependencies(goose_lsp_test tcc_runtime)
+    enable_testing()
+    add_test(NAME lsp_call_hierarchy COMMAND goose_lsp_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/stdlib" "${CMAKE_CURRENT_BINARY_DIR}/lsp_calls.goose")
 endif()

@@ -393,15 +393,22 @@ what can happen to their size.
 | Type | What it is | Metadata |
 |---|---|---|
 | `T[k]` | fixed size, known at compile time | none |
-| `T[]` | sized at construction, frozen after | a length |
-| `T[varint]` | the same, with a variable-length length | 1–2 bytes usually |
-| `T[..k]` | capacity `k` inline, grows and shrinks within it | a small length |
-| `T[..]` | capacity chosen at construction | length + capacity |
-| `T[>..]` | **grow-only**: the workhorse | a length |
-| `T[>..<]` | **grow-shrink**: stacks, queues, heaps | a length |
+| `T[]` | sized at construction, frozen after | a length (`u32` by default) |
+| `T[varint]` | the same, with a [`varint`](#8-nested-data-stays-inline) length | 1 byte up to 127 elements, 2 up to 16383 |
+| `T[..k]` | room for `k` elements, holding 0 to `k` of them | a length, as small as `k` allows |
+| `T[..]` | the same, with `k` chosen at construction | a capacity and a length |
+| `T[>..]` | *resizable*, **grow-only**: the workhorse | a length, kept by the owner |
+| `T[>..<]` | *resizable*, **grow-shrink**: stacks, queues, heaps | a length, kept by the owner |
 
-In every one of them the representation is `[metadata][elements...]`, inline
-and packed. There is never a pointer to an element block.
+All but the two resizables are stored as `[metadata][elements...]`, inline
+in whatever holds them (a variable, a struct field, an element of another
+array) and packed, with no pointer to a separate element block. A `T[..k]`
+reserves room for all `k` elements wherever it sits. Its length takes the
+smallest unsigned type that can count to `k`: a `u8` up to 255, a `u16` up
+to 65535. That is no limit on `k`: a `u8[..300]` has a `u16` length.
+
+A resizable's elements instead sit on top of a data stack (section 4),
+where they can grow, and the variable that owns them keeps the length.
 
 ```goose
 var fixed: i32[4] = [1, 2, 3, 4];
@@ -418,7 +425,31 @@ stack.pop_n(2);                    // drops the last two at once
 
 var small: u8[..8] = [];           // lives inline anywhere a fixed value can
 small.push('h'); small.push('i');
+print(small.len, " of ", small.cap);
 ```
+
+```
+2 of 8
+```
+
+Some things work differently from a `std::vector` or a `Vec`:
+
+* **Length and capacity.** `.len` is the number of elements the array holds
+  now, like `size()`. The limited arrays `[..k]` and `[..]` also have
+  `.cap`, like `capacity()`, except that it never changes: pushing past it
+  aborts instead of reallocating. The resizables have no `.cap`. They grow
+  until their data stack's address-space reservation runs out.
+* **Alignment.** Nothing is padded. A one-byte length followed by `i64`
+  elements leaves those elements unaligned, and Goose's loads and stores
+  allow for that, which costs little on x86-64 and ARM64. A struct that has
+  to match a foreign layout gets explicit `pad` fields
+  ([spec §3.2](goose_spec.md#32-structs)).
+* **Finishing a resizable.** The compiler does not work out that an array
+  is done growing: a resizable keeps its stack until its owner's scope ends.
+  Nothing else is waiting to go on top of it, since other values use other
+  stacks. Finished data that should be compact and free of the
+  one-per-stack rule below is copied into a `T[]`:
+  `let done: i64[] = copy(grow);`.
 
 Which to reach for:
 
@@ -1384,8 +1415,8 @@ functions or files.
 
 ## 14. Threads that share nothing
 
-There is no shared mutable memory. A worker is declared `thread_fn`, and the
-compiler compiles it and everything it calls as a **separate program** with
+Threads share nothing. A worker is declared `thread_fn`, and the compiler
+compiles it and everything it calls as a **separate program** with
 its own data stacks and its own copies of the globals it uses.
 
 Values pass between threads through typed queues, with one queue per type,
@@ -1424,8 +1455,20 @@ cells: u8[] }` crosses the queue as one copy, including its pixels, which is
 what [`23_mandelbrot_threads`](../samples/23_mandelbrot_threads.goose) does.
 
 A worker that increments a global increments *its own copy*, and `main`'s
-copy is unchanged. That may sound restrictive, but it means there can be no
-data races, and the language has no locks, atomics or memory ordering.
+copy is unchanged. Goose managed data structures never share memory between
+threads. This model needs no locks, atomics or memory ordering in Goose code.
+
+The standard library is thread-safe where it accesses stateful OS
+functionality.
+
+For non-standard FFI and C code, all bets are off: Goose's guarantees do not
+extend to that code. It can access shared native state even though Goose's
+managed data never shares memory. The compiler cannot inspect the C code or
+check how it uses that state.
+
+The community convention is to treat C code as thread-safe unless stated
+otherwise. Packages should clearly document any code that is not thread-safe,
+and callers must follow the package's synchronization and lifetime rules.
 
 (Threads need an external C compiler: the in-process TinyCC backend cannot
 place thread-local storage, so compile threaded programs with `-o`.)
@@ -1606,6 +1649,13 @@ imposes it.
   ([section 13](#13-generics-and-blocks-that-disappear);
   [spec §7.6](goose_spec.md#76-static-function-values),
   [§8.2](goose_spec.md#82-case-functions-match-as-an-overload-set)).
+* **Non-standard FFI packages are outside worker isolation.** Goose managed
+  data structures never share memory between threads. The standard library
+  does not share memory either; its access to stateful OS functionality is
+  thread-safe. Non-standard packages can access C code with no such guarantee.
+  By convention, that code should be at least thread-safe unless otherwise
+  specified, and packages should clearly mark code that is not thread-safe
+  ([section 14](#14-threads-that-share-nothing)).
 * **Whole-program compilation.** There is no separate compilation, and there
   are no shared libraries of Goose code
   ([spec §10.1](goose_spec.md#101-whole-program-call-graph-order)).
@@ -1675,12 +1725,14 @@ int main(int argc, char **argv) {
 The host calls `goose_init` once before anything else. It sets up the
 runtime and the globals and then runs your Goose `fn main()`, so `main` is the
 place for a library's own start-up code. A library with nothing to start up
-may leave `main` out. A `const u8[:]` result comes back as a pointer plus an
-extra `int64_t *` parameter that receives its length; scalars and flat
-fixed-size values are returned by value. The generated functions are not
-thread-safe: call them from the thread that called `goose_init`. The
-signatures that may cross are the ones from [section 16](#16-calling-c), with
-a few more limits; see
+may leave `main` out. When the host is done with the program, `goose_exit()`
+releases what `goose_init` set up, and `goose_init` can start it again: that
+is how a host reloads a library it has rebuilt. A `const u8[:]` result comes
+back as a pointer plus an extra `int64_t *` parameter that receives its
+length; scalars and flat fixed-size values are returned by value. The
+generated functions are not thread-safe: call them from the thread that
+called `goose_init`. The signatures that may cross are the ones from
+[section 16](#16-calling-c), with a few more limits; see
 [spec §7.11](goose_spec.md#711-exporting-goose-functions-to-c).
 
 ---

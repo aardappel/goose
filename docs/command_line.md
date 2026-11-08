@@ -97,6 +97,11 @@ What a run cannot do, a build can:
   `goose run` refuses it.
 * TinyCC does not optimize, so a run is for trying things out, and
   timing is done on a build.
+* An `extern fn` that binds a C library function resolves in a run only
+  for the C99 `<math.h>` functions, in both widths (all but
+  `nexttoward`). Any other is not found when the run links; it needs a
+  build, the program's own C, or an `extern "lib" { ... }` block naming
+  the library ([reference.md](reference.md#24-calling-c-and-being-called-from-c)).
 * A run keeps its data relative to the root file: `resource_dir()`
   returns the root file's directory, where a built program's is the
   executable's ([stdlib.md](stdlib.md#os)). Relative paths are relative to
@@ -194,7 +199,7 @@ These options have the same meaning for `goose run`, `goose build`,
 | `--stack-reserve size` | The address space reserved for each data stack, from 64K up to 256T with a `K`, `M`, `G` or `T` suffix. The default is 2G. The address space is committed as it is used, so a large reservation costs nothing until it is used. |
 | `--stacks` | Report how many data stacks the program and each of its workers use, what that adds up to, and the cap it puts on `hardware_threads()`. |
 | `--bce-lines` | Report, for each source line, how many bounds checks the compiler removed and how many it kept. |
-| `--no-bce` | Keep every bounds check. `checkfree` functions are then not verified, and the compiler warns about that. |
+| `--no-bce` | Keep every bounds check. The program's `checkfree` functions are then not verified, and the compiler warns about that. |
 | `--specs` | Print every specialization of each function, after optimization, as source. |
 | `--stats` | Print a few lines about what the compile did: the declarations parsed, the specializations and optimizations, the bounds checks removed, and the files written. |
 | `--color auto\|always\|never` | Whether errors and warnings are in color ([§6](#6-what-goose-prints)). |
@@ -226,9 +231,17 @@ notes](implementation.md#7-the-runtime) explain how they are reserved.
 
 A run prints only what the program prints. A check that succeeds prints
 nothing, and a build prints only the `built` line. Errors and warnings go to
-stderr, each with the line of source it is about. `--stats` adds a few lines
-about the compile, on stdout, or on stderr for a run, whose stdout is the
-program's.
+stderr, each with the line of source it is about and, where the compiler
+knows the column, a `^~~~` under the code it is about:
+
+```
+x.goose:5: warning: redundant `as i64`: an i32 converts to i64 implicitly here
+    xs.push(((r as i64) << 32) | (c as i64));
+                                  ^~~~~~~~
+```
+
+`--stats` adds a few lines about the compile, on stdout, or on stderr for a
+run, whose stdout is the program's.
 
 Errors and warnings are in color on a terminal. `--color never`, or a
 non-empty `NO_COLOR`, turns color off. `--color always`, or a
@@ -321,7 +334,7 @@ against it (`goose version` prints the runtime's hash, which must match).
 |---|---|
 | `-o out.c` | Write the program's C, and do not run it. |
 | `--standalone` | Write C that holds the whole runtime, and builds on its own: `cc -O2 tour.c -o tour -lm -pthread`. |
-| `--header out.h` | Also write a header for a C host, declaring the program's `export fn`s, of which there must be one at least. The C then has no `main`: the host calls `goose_init(argc, argv)` once, which runs the program's `main`, and then calls the exported functions. |
+| `--header out.h` | Also write a header for a C host, declaring the program's `export fn`s, of which there must be one at least. The C then has no `main`: the host calls `goose_init(argc, argv)` once, which runs the program's `main`, and then calls the exported functions; `goose_exit()` ends the program, after which `goose_init` may start it again. |
 | `--include header.h` | Have the generated C include this header, for small shims written against the generated types (spec §7.10). May be repeated. |
 | `--jit` | Also run the program in this process. |
 | `--emit-runtime out.c` | Write the runtime's C. |
@@ -440,7 +453,9 @@ or, for the shell at hand, `source <(goose completion bash)`.
 Without `--stdlib` or `GOOSE_STDLIB`, the compiler looks for the standard
 library in a `stdlib` directory beside its executable, then in the parent
 directories up to three levels above it, which finds a release's and a
-source tree's, and last in `./stdlib`.
+source tree's, then in the directory it was built to use (the `stdlib`
+of its source tree, wherever the build directory is, or where a package
+installs it, CMake's `GOOSE_STDLIB_PATH`), and last in `./stdlib`.
 
 `GOOSE_HOME/config` holds settings that apply to every build. It is written
 like a sidecar, and its one setting is the C compiler:

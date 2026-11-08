@@ -475,6 +475,19 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
     }
 }
 
+// Does a type hold a relative reference at any depth (§3.9)? Such a field
+// names an element of the array a verified image loaded, wherever the value
+// carrying it ends up.
+inline bool TypeCheck::HoldsRelRef(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_REF: return t->ref->lenstorage >= 0;
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
+            return AnyField(t, [&](TypeExpr *ft) { return HoldsRelRef(ft); });
+        case TY_ARRAY: return HoldsRelRef(t->arr->sub);
+        default: return false;
+    }
+}
+
 // Does a type have a default value (§4.2)? Everything does except a
 // non-optional reference, which has nothing to point at, an enum without
 // variants, which has no value at all, and anything containing either

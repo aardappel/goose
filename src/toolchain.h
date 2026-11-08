@@ -424,6 +424,14 @@ inline bool FindToolchain(string request, Toolchain &out, string &why,
                 out = GccStyle(p, "in Visual Studio", "clang");
                 return true;
             }
+            // Where the LLVM installer puts it, which it leaves off PATH unless asked to.
+            if (auto pf = getenv("ProgramFiles")) {
+                auto p = cat(pf, "\\LLVM\\bin\\clang.exe");
+                if (PathExists(p)) {
+                    out = GccStyle(p, "in Program Files\\LLVM", "clang");
+                    return true;
+                }
+            }
         }
         if (wanted("msvc")) {
             // cl through vcvars64.bat, which also brings link, the headers
@@ -455,8 +463,8 @@ inline bool FindToolchain(string request, Toolchain &out, string &why,
         }
         why = name.empty()
             ? "cannot find a C compiler (looked for cl, clang-cl and clang on PATH and in "
-              "Visual Studio, and for gcc and cc on PATH); install Visual Studio with C++ or "
-              "LLVM, or set GOOSE_CC"
+              "Visual Studio, for clang in Program Files\\LLVM, and for gcc and cc on PATH); "
+              "install Visual Studio with C++ or LLVM, or set GOOSE_CC"
             : cat("cannot find the C compiler ", request, " (", how, ") on PATH or in Visual Studio");
         return false;
     #else

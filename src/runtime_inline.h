@@ -1012,6 +1012,11 @@ GS_API void gs_stack_stats(int64_t stacks);
 /* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
+/* Ends the main program, gs_rt_start's inverse, for a host that may start
+   a program again in this process (goose_exit): releases its regions, and
+   what handled faults before the runtime started does again. A thread
+   program still running is a runtime error. */
+GS_API void gs_rt_stop(void);
 
 )GSRT"
 R"GSRT(/* ---------------------------------------------------------------------------
@@ -1083,6 +1088,9 @@ GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qwait(gs_queue *q, int64_t ms);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
 GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line);
+/* Frees a queue and the messages left in it, once no thread program can
+   use it (goose_exit); gs_qinit makes it again. */
+GS_API void gs_qfree(gs_queue *q);
 
 )GSRT"
 R"GSRT(#ifndef GS_RUNTIME_OBJECT
@@ -1708,9 +1716,8 @@ R"GSRT(#define WIN32_LEAN_AND_MEAN
 
 )GSRT"
 R"GSRT(static size_t gs_page_size = 0;
-#ifdef GS_HOSTED_JIT
-static void *gs_jit_fault_handler;
-#endif
+/* The vectored handler gs_regions_init registered, for gs_fault_uninstall. */
+static void *gs_fault_handle;
 #define GS_COMMIT_CHUNK (1u << 20)
 /* What each thread program keeps of its native stack for reporting that
    stack's overflow (gs_native_stack_init). */
@@ -1771,14 +1778,11 @@ static size_t gs_os_page_size(void) {
 }
 
 )GSRT"
-R"GSRT(/* Installed once by main, before any worker can start. */
+R"GSRT(/* Installed by main as the runtime starts, before any worker can. */
 static void gs_regions_init(void) {
     gs_page_size = gs_os_page_size();
-    void *handler = AddVectoredExceptionHandler(1, gs_fault_filter);
-#ifdef GS_HOSTED_JIT
-    gs_jit_fault_handler = handler;
-#endif
-    if (!handler)
+    gs_fault_handle = AddVectoredExceptionHandler(1, gs_fault_filter);
+    if (!gs_fault_handle)
         gs_panic("cannot install data stack fault handler");
 }
 
@@ -1814,6 +1818,23 @@ R"GSRT(static void gs_release_region(const gs_region *r) {
 }
 
 )GSRT"
+R"GSRT(/* Faults are handled as before gs_regions_init (gs_rt_stop). TinyCC's
+   kernel32.def does not list RemoveVectoredExceptionHandler, so a program
+   it builds looks it up, as gs_native_stack_init does. */
+static void gs_fault_uninstall(void) {
+    if (gs_fault_handle) {
+        #ifdef __TINYC__
+            ULONG (WINAPI *remove)(PVOID) = (ULONG (WINAPI *)(PVOID))GetProcAddress(
+                GetModuleHandleA("kernel32.dll"), "RemoveVectoredExceptionHandler");
+            if (remove) remove(gs_fault_handle);
+        #else
+            RemoveVectoredExceptionHandler(gs_fault_handle);
+        #endif
+    }
+    gs_fault_handle = NULL;
+}
+
+)GSRT"
 R"GSRT(/* Whether this is the first call of gs_end; and where the later ones wait. */
 static int gs_end_first(void) {
     static volatile LONG ended;
@@ -1843,11 +1864,10 @@ static GS_TLS uintptr_t gs_native_lo, gs_native_hi;
 /* The alternate signal stack gs_native_stack_init allocated, if it did. */
 static GS_TLS void *gs_sigstack;
 #define GS_SIGSTACK_MIN (64u << 10)
-/* What the fault handler replaced, for the faults that are not its own. */
+/* What the fault handler replaced, for the faults that are not its own,
+   and which of them it did (1: SIGSEGV, 2: SIGBUS), for gs_fault_uninstall. */
 static struct sigaction gs_prev_segv, gs_prev_bus;
-#ifdef GS_HOSTED_JIT
-static int gs_jit_fault_installed;
-#endif
+static int gs_fault_installed;
 
 )GSRT"
 R"GSRT(/* For gs_trim_memory, which discards whole pages only. */
@@ -1894,15 +1914,11 @@ R"GSRT(static void gs_regions_init(void) {
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
         gs_panic("cannot install data stack fault handler");
-#ifdef GS_HOSTED_JIT
-    gs_jit_fault_installed = 1;
-#endif
+    gs_fault_installed = 1;
     #ifdef SIGBUS
         if (sigaction(SIGBUS, &sa, &gs_prev_bus))
             gs_panic("cannot install data stack fault handler");
-#ifdef GS_HOSTED_JIT
-        gs_jit_fault_installed |= 2;
-#endif
+        gs_fault_installed |= 2;
     #endif
 }
 
@@ -1998,6 +2014,16 @@ R"GSRT(static void gs_release_region(const gs_region *r) {
 }
 
 )GSRT"
+R"GSRT(/* Faults are handled as before gs_regions_init (gs_rt_stop). */
+static void gs_fault_uninstall(void) {
+    if (gs_fault_installed & 1) sigaction(SIGSEGV, &gs_prev_segv, NULL);
+    #ifdef SIGBUS
+        if (gs_fault_installed & 2) sigaction(SIGBUS, &gs_prev_bus, NULL);
+    #endif
+    gs_fault_installed = 0;
+}
+
+)GSRT"
 R"GSRT(/* Whether this is the first call of gs_end; and where the later ones wait.
    TinyCC names the memory orders in its stdatomic.h alone. */
 #ifndef __ATOMIC_SEQ_CST
@@ -2065,6 +2091,27 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
 }
 
 )GSRT"
+R"GSRT(/* Returns the pages [start, start + len) of one region to the OS, which
+   reads them back as zeros; start and len are page-aligned. Windows
+   decommits, and the access-fault handler commits the pages again on the
+   next touch, anywhere in a region's usable part. Linux drops them from the
+   resident set at once. macOS replaces them with fresh anonymous memory
+   (gs_trim_memory says why). gs_trim_memory and slice_pool's trim
+   (gs_slice_pool_trim) share it. 0 means the OS refused. */
+static int gs_discard_pages(uintptr_t start, size_t len) {
+#ifdef _WIN32
+    return VirtualFree((void *)start, len, MEM_DECOMMIT) != 0;
+#elif defined(__APPLE__)
+    return mmap((void *)start, len, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED;
+#else
+    /* Linux walks only the page tables that were ever populated, so the
+       untouched rest of a reservation costs it little. */
+    return madvise((void *)start, len, MADV_DONTNEED) == 0;
+#endif
+}
+
+)GSRT"
 R"GSRT(/* Explicit rather than on every rewind: short-lived scratch can reuse its
    pages cheaply, while a long-running application can give them back after
    replacing a large document. Keep the virtual reservation and the partly
@@ -2105,21 +2152,13 @@ GS_API uint8_t gs_trim_memory(void) {
         if ((uintptr_t)r->committed < end) end = (uintptr_t)r->committed;
 #endif
         if (start >= end) continue;
-        size_t len = (size_t)(end - start);
+        if (!gs_discard_pages(start, (size_t)(end - start))) {
+            ok = 0;
+            continue;
+        }
 #ifdef _WIN32
-        /* The access-fault handler commits the pages again on growth. */
-        if (VirtualFree((void *)start, len, MEM_DECOMMIT))
-            r->committed = (uint8_t *)start;
-        else
-            ok = 0;
-#elif defined(__APPLE__)
-        if (mmap((void *)start, len, PROT_READ | PROT_WRITE,
-                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
-            ok = 0;
-#else
-        /* Linux walks only the page tables that were ever populated, so the
-           untouched rest of the reservation costs it little. */
-        if (madvise((void *)start, len, MADV_DONTNEED)) ok = 0;
+        /* Everything from start up is decommitted now. */
+        r->committed = (uint8_t *)start;
 #endif
     }
     return (uint8_t)ok;
@@ -2939,6 +2978,11 @@ R"GSRT(GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, i
 )GSRT"
 R"GSRT(GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions) {
+    /* A host's goose_init of a second program (an image it reloaded, say)
+       over the regions of the first, which share this runtime: starting
+       would forget them rather than release them. */
+    if (gs_regions)
+        gs_panic("a program is already started in this process: call its goose_exit first");
     gs_argc = argc;
     gs_argv = argv;
     /* A region's usable part is whole pages: the guard gap behind it has to
@@ -2982,6 +3026,18 @@ R"GSRT(GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t
     gs_regions_begin(mainregions);
     gs_native_stack_init();
     gs_scan_init();
+}
+
+)GSRT"
+R"GSRT(/* The inverse, on main's thread: its regions and registry, then the fault
+   handling and the arguments. gs_rt_stop (runtime_threads.h) adds the
+   thread programs' part; the JIT host calls this directly, since a program
+   it runs may return from main with workers still running (jit_runtime.c). */
+static void gs_rt_release(void) {
+    gs_release_regions();
+    gs_fault_uninstall();
+    gs_argc = 0;
+    gs_argv = NULL;
 }
 
 )GSRT"
@@ -3763,7 +3819,46 @@ R"GSRT(GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line)
 }
 
 )GSRT"
+R"GSRT(/* No lock: nothing else can use the queue once no thread program runs. */
+GS_API void gs_qfree(gs_queue *q) {
+    struct gs_qstate *s = *q;
+    if (!s) return;
+    while (s->head) free(gs_qtake(s));
+    #ifndef _WIN32
+        pthread_mutex_destroy(&s->mutex);
+        pthread_cond_destroy(&s->cond);
+    #endif
+    free(s);
+    *q = NULL;
+}
+
+)GSRT"
 R"GSRT(#endif  /* GS_NEED_THREADS */
+
+)GSRT"
+R"GSRT(/* The records of the thread programs that aborted go with the program
+   whose workers they were, so that a program started next in the process
+   gets ids and thread_wait answers of its own; then main's part
+   (gs_rt_release). */
+GS_API void gs_rt_stop(void) {
+#if GS_NEED_THREADS
+    gs_mutex_lock(&gs_threads_mutex);
+    if (gs_threads) {
+        gs_mutex_unlock(&gs_threads_mutex);
+        gs_panic("goose_exit: a thread program is still running");
+    }
+    for (int64_t i = 0; i < gs_naborted; i++) free(gs_aborted[i].msg);
+    free(gs_aborted);
+    gs_aborted = NULL;
+    gs_naborted = gs_abortedcap = 0;
+    free(gs_abortbits);
+    gs_abortbits = NULL;
+    gs_abortbytes = 0;
+    gs_numthreads = 0;
+    gs_mutex_unlock(&gs_threads_mutex);
+#endif
+    gs_rt_release();
+}
 )GSRT"
     ) },
     { "runtime_ext.h", string_view(
@@ -3836,6 +3931,30 @@ static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
 )GSRT"
+R"GSRT(/* binary's float reads and writes (stdlib/binary.goose): a value from its
+   bits and back, which memcpy keeps exactly, NaN payloads included. */
+static float gs_f32_from_bits(uint32_t bits) {
+    float x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+static double gs_f64_from_bits(uint64_t bits) {
+    double x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+static uint32_t gs_f32_to_bits(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+static uint64_t gs_f64_to_bits(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+
+)GSRT"
 R"GSRT(/* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
    where the code is built for FMA, as two roundings elsewhere
    (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the
@@ -3873,16 +3992,35 @@ static float gs_mul_addf(float x, float y, float z) {
 R"GSRT(/* math's other libm functions (stdlib/math.goose). C has them set errno on a
    domain or range error, so a C compiler takes each call for a write to
    memory: a loop around one loads again after it whatever it had hoisted
-   out or kept in registers. Goose has no errno, so where the compiler has
-   asm labels and the const attribute each is libm's own function declared
-   under a name of its own as depending on its arguments alone; elsewhere
-   the name forwards to libm. */
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+   out or kept in registers. Goose has no errno, so gcc and clang are told
+   that each depends on its arguments alone. Under clang each is libm's own
+   function declared under a name of its own with an asm label, which clang
+   still knows as that libm function where symbols take no prefix. Where
+   they do (Apple's leading underscore), clang marks the label as a literal
+   symbol name, "\01_pow", and no longer knows it as libm's. gcc knows a
+   function only by the name it is declared under, so there, and under
+   clang on Apple, each name forwards to libm's, redeclared const: the
+   compiler then still combines sin and cos of one value into sincos, turns
+   pow(x, 2.0) into x * x and folds constant arguments. Elsewhere the name
+   forwards to libm. */
+#if defined(__clang__) && !defined(__APPLE__) && !defined(__TINYC__)
 #define GS_LIBM_SYM2(p, f) #p #f
 #define GS_LIBM_SYM(p, f) GS_LIBM_SYM2(p, f)
 #define GS_LIBM
 #define GS_LIBM1(f) __asm__(GS_LIBM_SYM(__USER_LABEL_PREFIX__, f)) __attribute__((const));
 #define GS_LIBM2(f) GS_LIBM1(f)
+#elif defined(__GNUC__) && !defined(__TINYC__)
+__attribute__((const)) double sin(double), cos(double), tan(double), asin(double), acos(double),
+    atan(double), atan2(double, double), exp(double), log(double), log2(double), log10(double),
+    pow(double, double), hypot(double, double), cbrt(double), exp2(double), expm1(double),
+    log1p(double), sinh(double), cosh(double), tanh(double);
+__attribute__((const)) float sinf(float), cosf(float), tanf(float), asinf(float), acosf(float),
+    atanf(float), atan2f(float, float), expf(float), logf(float), log2f(float), log10f(float),
+    powf(float, float), hypotf(float, float), cbrtf(float), exp2f(float), expm1f(float),
+    log1pf(float), sinhf(float), coshf(float), tanhf(float);
+#define GS_LIBM static inline
+#define GS_LIBM1(f) { return f(x); }
+#define GS_LIBM2(f) { return f(x, y); }
 #else
 #define GS_LIBM static
 #define GS_LIBM1(f) { return f(x); }
@@ -3900,6 +4038,14 @@ GS_LIBM double gs_log(double x) GS_LIBM1(log)
 GS_LIBM double gs_log2(double x) GS_LIBM1(log2)
 GS_LIBM double gs_log10(double x) GS_LIBM1(log10)
 GS_LIBM double gs_pow(double x, double y) GS_LIBM2(pow)
+GS_LIBM double gs_hypot(double x, double y) GS_LIBM2(hypot)
+GS_LIBM double gs_cbrt(double x) GS_LIBM1(cbrt)
+GS_LIBM double gs_exp2(double x) GS_LIBM1(exp2)
+GS_LIBM double gs_expm1(double x) GS_LIBM1(expm1)
+GS_LIBM double gs_log1p(double x) GS_LIBM1(log1p)
+GS_LIBM double gs_sinh(double x) GS_LIBM1(sinh)
+GS_LIBM double gs_cosh(double x) GS_LIBM1(cosh)
+GS_LIBM double gs_tanh(double x) GS_LIBM1(tanh)
 GS_LIBM float gs_sinf(float x) GS_LIBM1(sinf)
 GS_LIBM float gs_cosf(float x) GS_LIBM1(cosf)
 GS_LIBM float gs_tanf(float x) GS_LIBM1(tanf)
@@ -3912,6 +4058,14 @@ GS_LIBM float gs_logf(float x) GS_LIBM1(logf)
 GS_LIBM float gs_log2f(float x) GS_LIBM1(log2f)
 GS_LIBM float gs_log10f(float x) GS_LIBM1(log10f)
 GS_LIBM float gs_powf(float x, float y) GS_LIBM2(powf)
+GS_LIBM float gs_hypotf(float x, float y) GS_LIBM2(hypotf)
+GS_LIBM float gs_cbrtf(float x) GS_LIBM1(cbrtf)
+GS_LIBM float gs_exp2f(float x) GS_LIBM1(exp2f)
+GS_LIBM float gs_expm1f(float x) GS_LIBM1(expm1f)
+GS_LIBM float gs_log1pf(float x) GS_LIBM1(log1pf)
+GS_LIBM float gs_sinhf(float x) GS_LIBM1(sinhf)
+GS_LIBM float gs_coshf(float x) GS_LIBM1(coshf)
+GS_LIBM float gs_tanhf(float x) GS_LIBM1(tanhf)
 
 )GSRT"
 R"GSRT(/* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
@@ -3976,6 +4130,72 @@ static int64_t gs_ctz(uint64_t x) {
 }
 
 )GSRT"
+R"GSRT(/* std's rotl, rotr and byte_swap, so each is one instruction rather than an
+   idiom the C compiler may or may not recognize: MSVC's intrinsics, GCC's
+   and clang's byte-swap builtins, and the rotate idiom both GCC and clang
+   turn into rol/ror. Under TinyCC they are plain shifts. The count is taken
+   modulo the width, so a negative one turns the other way. */
+static uint32_t gs_rotl32(uint32_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotl(x, (int)(n & 31));
+#else
+    uint32_t s = (uint32_t)n & 31;
+    return (x << s) | (x >> (-s & 31));
+#endif
+}
+static uint64_t gs_rotl64(uint64_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotl64(x, (int)(n & 63));
+#else
+    uint32_t s = (uint32_t)n & 63;
+    return (x << s) | (x >> (-s & 63));
+#endif
+}
+static uint32_t gs_rotr32(uint32_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotr(x, (int)(n & 31));
+#else
+    uint32_t s = (uint32_t)n & 31;
+    return (x >> s) | (x << (-s & 31));
+#endif
+}
+static uint64_t gs_rotr64(uint64_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotr64(x, (int)(n & 63));
+#else
+    uint32_t s = (uint32_t)n & 63;
+    return (x >> s) | (x << (-s & 63));
+#endif
+}
+static uint16_t gs_byte_swap16(uint16_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap16(x);
+#elif defined(_MSC_VER)
+    return _byteswap_ushort(x);
+#else
+    return (uint16_t)((x << 8) | (x >> 8));
+#endif
+}
+static uint32_t gs_byte_swap32(uint32_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap32(x);
+#elif defined(_MSC_VER)
+    return _byteswap_ulong(x);
+#else
+    return (x << 24) | ((x & 0xFF00) << 8) | ((x >> 8) & 0xFF00) | (x >> 24);
+#endif
+}
+static uint64_t gs_byte_swap64(uint64_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap64(x);
+#elif defined(_MSC_VER)
+    return _byteswap_uint64(x);
+#else
+    return ((uint64_t)gs_byte_swap32((uint32_t)x) << 32) | gs_byte_swap32((uint32_t)(x >> 32));
+#endif
+}
+
+)GSRT"
 R"GSRT(GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);
@@ -3992,6 +4212,7 @@ GS_API void gs_os_write_stderr(sl_u8 s);
 GS_API void gs_os_flush_stdout(void);
 GS_API uint8_t gs_os_read_line(gs_rref out);
 GS_API void gs_os_read_stdin(gs_rref out);
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max);
 GS_API int64_t gs_os_arg_count(void);
 GS_API void gs_os_arg(int64_t i, gs_rref out);
 GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);
@@ -4007,6 +4228,12 @@ GS_API uint64_t gs_os_random_u64(void);
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);
+/* The shortest digits of a finite double, by magnitude: the ones print
+   writes (runtime_impl.h's gs_float_digits), into dig, which holds at least
+   17. Their count, and in *point the power of ten they are a fraction of:
+   they spell 0.d1 d2 ... * 10^*point. 0 for zero, NaN and the infinities.
+   Behind std's float_text::shortest_digits, for json's format_number. */
+GS_API int64_t gs_f64_digits(double x, sl_u8 dig, int64_t *point);
 /* std's slice_pool (stdlib/slice_pool_internal.goose) keeps its freelist in
    a checked copy of the runtime's span tree (runtime_os.h): `nodes` is a
    node[>..] of GS_SPAN_NODE-byte nodes, and `tree` its header, a field
@@ -4018,6 +4245,10 @@ GS_API void gs_slice_pool_free(gs_rref nodes, void *tree, int64_t idx, int64_t c
                                const gs_loc *at);
 GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int64_t idx,
                                     int64_t ol, int64_t cnt, const gs_loc *at);
+/* slice_pool's trim: discards the complete pages inside every free span of
+   `items`, elements of `elem` bytes; 0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at);
 )GSRT"
     ) },
     { "runtime_os.h", string_view(
@@ -4507,6 +4738,21 @@ GS_API void gs_os_read_stdin(gs_rref out) {
 }
 
 )GSRT"
+R"GSRT(/* Up to max bytes of stdin; false when none were left. */
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max) {
+    uint8_t buf[65536];
+    int64_t got = 0;
+    while (got < max) {
+        size_t want = max - got < (int64_t)sizeof buf ? (size_t)(max - got) : sizeof buf;
+        size_t n = fread(buf, 1, want, stdin);
+        if (n == 0) break;
+        gs_bld_append(out, buf, (int64_t)n);
+        got += (int64_t)n;
+    }
+    return got > 0;
+}
+
+)GSRT"
 R"GSRT(GS_API int64_t gs_os_arg_count(void) { return gs_argc; }
 
 )GSRT"
@@ -4575,6 +4821,24 @@ GS_API uint8_t gs_os_resource_dir(gs_rref out) {
     gs_bld_append(out, path, (int64_t)n);
     return 1;
 #endif
+}
+
+)GSRT"
+R"GSRT(/* The shortest digits of a finite double (runtime_ext.h). */
+GS_API int64_t gs_f64_digits(double x, sl_u8 dig, int64_t *point) {
+    uint64_t b, frac;
+    char buf[20];
+    int k, n, bexp;
+    if (x != x || isinf(x) || x == 0) return 0;
+    memcpy(&b, &x, sizeof b);
+    bexp = (int)(b >> 52) & 0x7FF;
+    frac = b & (((uint64_t)1 << 52) - 1);
+    n = gs_float_digits(bexp ? frac | (uint64_t)1 << 52 : frac, (bexp ? bexp - 1 : 0) - 1074,
+                        53, -1074, buf, &k);
+    if (n > dig.len) n = (int)dig.len;
+    memcpy(dig.data, buf, (size_t)n);
+    *point = k;
+    return n;
 }
 
 )GSRT"
@@ -5322,6 +5586,65 @@ R"GSRT(GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t le
     gs_spc_release(&p, &s, idx, ol);
     return gs_slice_pool_place(nodes, tree, len, cnt, at);
 }
+
+)GSRT"
+R"GSRT(/* slice_pool's trim: returns the complete pages inside every free span to
+   the OS (gs_discard_pages), which reads them back as zeros. `items` is the
+   pool's array viewed as bytes and `elem` its element size, so the span
+   (idx, cnt) covers bytes [idx * elem, (idx + cnt) * elem). Free spans never
+   touch, since a free merges with its neighbours, so each span is whole: a
+   page is kept only where it also holds a live element, at either end.
+
+)GSRT"
+R"GSRT(   The walk visits each node once, so a tree whose children lead back to
+   nodes already seen is corrupt, as is a span outside the array; both abort
+   before anything is discarded past them. Pages are discarded below the
+   array's stack top only, so gs_trim_memory's commit mark is not moved.
+   0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at) {
+    gs_spcpath p;
+    uintptr_t page = (uintptr_t)gs_page_size;
+    int64_t count, visits = 0, l = 0;
+    int ok = 1;
+    if (nodes.hdr->len == 0 || items.len <= 0 || elem <= 0 || page == 0) return 1;
+    count = items.len / elem;
+    GS_SPSTART(&p, tree, nodes, at);
+    p.h = GS_SPCHEAD(&p)->height;
+    if (GS_SPBADH(p.h)) gs_spc_corrupt(&p);
+    p.node[0] = GS_SPCHEAD(&p)->root;
+    p.pos[0] = 0;
+    if (p.h ? GS_SPBADIN(&p, p.node[0]) : GS_SPBADLEAF(&p, p.node[0])) gs_spc_corrupt(&p);
+    while (l >= 0) {
+        if (l == p.h) {
+            gs_spleaf *lf = GS_SPLEAF(&p, p.node[l]);
+            if (++visits >= *p.n) gs_spc_corrupt(&p);
+            for (int64_t k = 0; k < lf->n; k++) {
+                int64_t idx = lf->idx[k], cnt = lf->cnt[k];
+                if (idx < 0 || cnt <= 0 || idx > count || cnt > count - idx) gs_spc_corrupt(&p);
+                uintptr_t lo = (uintptr_t)items.data + (uintptr_t)(idx * elem);
+                uintptr_t hi = (uintptr_t)items.data + (uintptr_t)((idx + cnt) * elem);
+                uintptr_t start = (lo + page - 1) / page * page;
+                uintptr_t end = hi / page * page;
+                if (start < end && !gs_discard_pages(start, (size_t)(end - start))) ok = 0;
+            }
+            l--;
+            continue;
+        }
+        gs_spinner *in = GS_SPINNER(&p, p.node[l]);
+        if (p.pos[l] == 0 && ++visits >= *p.n) gs_spc_corrupt(&p);
+        if (p.pos[l] >= in->n) {
+            l--;
+            continue;
+        }
+        int64_t c = in->child[p.pos[l]++];
+        if (l + 1 < p.h ? GS_SPBADIN(&p, c) : GS_SPBADLEAF(&p, c)) gs_spc_corrupt(&p);
+        l++;
+        p.node[l] = c;
+        p.pos[l] = 0;
+    }
+    return (uint8_t)ok;
+}
 )GSRT"
     ) },
     { "goose.h", string_view(
@@ -5445,10 +5768,54 @@ GS_JIT_MATH2(pow)
 GS_JIT_MATH2(fmod)
 GS_JIT_MATH1(cbrt)
 GS_JIT_MATH2(hypot)
+GS_JIT_MATH1(exp2)
+GS_JIT_MATH1(expm1)
+GS_JIT_MATH1(log1p)
+GS_JIT_MATH1(sinh)
+GS_JIT_MATH1(cosh)
+GS_JIT_MATH1(tanh)
+GS_JIT_MATH2(copysign)
 double ldexp(double, int);
 float ldexpf(float, int);
 double frexp(double, int *);
 float frexpf(float, int *);
+GS_JIT_MATH1(acosh)
+GS_JIT_MATH1(asinh)
+GS_JIT_MATH1(atanh)
+GS_JIT_MATH1(erf)
+GS_JIT_MATH1(erfc)
+GS_JIT_MATH1(tgamma)
+GS_JIT_MATH1(lgamma)
+GS_JIT_MATH1(logb)
+GS_JIT_MATH1(rint)
+GS_JIT_MATH1(nearbyint)
+GS_JIT_MATH2(fmin)
+GS_JIT_MATH2(fmax)
+GS_JIT_MATH2(fdim)
+GS_JIT_MATH2(nextafter)
+GS_JIT_MATH2(remainder)
+double fma(double, double, double);
+float fmaf(float, float, float);
+double scalbn(double, int);
+float scalbnf(float, int);
+double scalbln(double, long);
+float scalblnf(float, long);
+int ilogb(double);
+int ilogbf(float);
+long lrint(double);
+long lrintf(float);
+long long llrint(double);
+long long llrintf(float);
+long lround(double);
+long lroundf(float);
+long long llround(double);
+long long llroundf(float);
+double modf(double, double *);
+float modff(float, float *);
+double remquo(double, double, int *);
+float remquof(float, float, int *);
+double nan(const char *);
+float nanf(const char *);
 #undef GS_JIT_MATH1
 #undef GS_JIT_MATH2
 #endif

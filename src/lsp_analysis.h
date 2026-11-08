@@ -372,17 +372,24 @@ struct Analysis {
                     o.index = 1;
                     view(o, fileidx, fl->idxvar);
                 }
-            } else if (Is<MatchExpr>(n) || Is<ConstFor>(n)) {
-                // A match's arms, or those a const for in its arm list
-                // generates.
-                auto &arms = Is<MatchExpr>(n) ? Is<MatchExpr>(n)->arms : Is<ConstFor>(n)->arms;
-                for (size_t i = 0; i < arms.size(); i++) {
-                    if (arms[i].pat.binder.empty()) continue;
-                    auto o = decl(Occurrence::BINDER);
-                    o.node = n;
-                    o.index = (int)i;
-                    o.isvar = arms[i].pat.byref;
-                    view(o, fileidx, arms[i].pat.binder);
+            } else if (Is<MatchExpr>(n) || Is<ConstFor>(n) || Is<ConstIf>(n)) {
+                // A match's arms, or those a const for or const if in its arm
+                // list supplies. The index counts across a const if's branches.
+                vector<const vector<MatchArm> *> lists;
+                if (auto m = Is<MatchExpr>(n)) lists.push_back(&m->arms);
+                else if (auto cf = Is<ConstFor>(n)) lists.push_back(&cf->arms);
+                else for (auto &br : Is<ConstIf>(n)->branches) lists.push_back(&br.arms);
+                int index = 0;
+                for (auto arms : lists) {
+                    for (auto &arm : *arms) {
+                        auto i = index++;
+                        if (arm.pat.binder.empty()) continue;
+                        auto o = decl(Occurrence::BINDER);
+                        o.node = n;
+                        o.index = i;
+                        o.isvar = arm.pat.byref;
+                        view(o, fileidx, arm.pat.binder);
+                    }
                 }
             } else if (auto fv = Is<FunVal>(n)) {
                 funvals[fv->body] = fv;

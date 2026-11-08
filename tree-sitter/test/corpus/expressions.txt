@@ -49,6 +49,8 @@ fn f() {
     let b = Shape.Circle { r: 1.0 };
     let c = Pair<i64> { 1, 2 };
     let d = Opt<i64>.Some { 3 };
+    let e = Opt<i64>.None;
+    if e == Opt<i64>.None { e }
 }
 
 ---
@@ -95,7 +97,24 @@ fn f() {
             (primitive_type))
           (identifier)
           (initializer_list
-            (int_literal)))))))
+            (int_literal))))
+      (variable_declaration
+        (identifier)
+        (variant_constant
+          (identifier)
+          (type_arguments
+            (primitive_type))
+          (identifier)))
+      (if_expression
+        (binary_expression
+          (identifier)
+          (variant_constant
+            (identifier)
+            (type_arguments
+              (primitive_type))
+            (identifier)))
+        (block
+          (identifier))))))
 
 ========================================
 Generic calls against comparisons
@@ -105,6 +124,8 @@ fn f() {
     let a = g<i64>(x);
     let b = a < c;
     let t: Foo<Bar<i32>> = 0;
+    let u = x.f<i64>(y);
+    let v = x.y < c;
 }
 
 ---
@@ -136,7 +157,24 @@ fn f() {
               (identifier)
               (type_arguments
                 (primitive_type)))))
-        (int_literal)))))
+        (int_literal))
+      (variable_declaration
+        (identifier)
+        (call_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (type_arguments
+            (primitive_type))
+          (argument_list
+            (identifier))))
+      (variable_declaration
+        (identifier)
+        (binary_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (identifier))))))
 
 ========================================
 Function values

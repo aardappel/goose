@@ -125,9 +125,11 @@ string RelativeTo(const string &path, const string &dir) {
 }
 
 // Where the standard library lives (§11.1): an explicit --stdlib or
-// GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
-// was built in, found by walking up from the executable. A directory more
-// than one of those name is in the list once, as the first named it.
+// GOOSE_STDLIB, else a `stdlib/` directory found by walking up from the
+// executable (a release's, or the source tree's for a build inside it), else
+// the one CMake was configured with (GOOSE_STDLIB_PATH: the source tree's, or
+// a package's install location). A directory more than one of those name is
+// in the list once, as the first named it.
 vector<string> StdlibDirs(const string &stdlibdir, const string &exe) {
     vector<string> cands;
     if (!stdlibdir.empty()) cands.push_back(cat(stdlibdir, "/"));
@@ -137,6 +139,9 @@ vector<string> StdlibDirs(const string &stdlibdir, const string &exe) {
     cands.push_back(cat(exedir, "../stdlib/"));
     cands.push_back(cat(exedir, "../../stdlib/"));
     cands.push_back(cat(exedir, "../../../stdlib/"));
+    #ifdef GOOSE_STDLIB_PATH
+        if (*GOOSE_STDLIB_PATH) cands.push_back(cat(GOOSE_STDLIB_PATH, "/"));
+    #endif
     cands.push_back("stdlib/");
     vector<string> dirs;
     set<string> seen;
@@ -167,7 +172,7 @@ static Diagnostic ImportDiagnostic(const string &file, const Import &imp, const 
         d.where.endcol = imp.end.col;
     }
     d.message = msg;
-    d.text = RenderDiagnostic(d, file, {}, false);
+    d.text = RenderDiagnostic(d, file, {});
     return d;
 }
 
@@ -204,6 +209,16 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
         return (int)ast.packages.size() - 1;
     };
     map<string, DeclaredPackage> declared;
+    // A package is its directory: every .goose file under its root is its
+    // own, and its native part is built in a directory named by that root.
+    // Two packages cannot share one; the program can share its root with one.
+    auto checkroot = [&](const string &name, const string &root) {
+        for (size_t i = 1; i < ast.packages.size(); i++)
+            if (!ast.packages[i].stdlib && ast.packages[i].root == root)
+                throw CompileError { cat("the packages ", ast.packages[i].name, " and ", name,
+                                         " have the same root, ", root,
+                                         ": each package needs a directory of its own") };
+    };
     // Loads a blessed package (§4.5) once, under its package name among the
     // declared ones: from where the compiler's build put it, or a release
     // beside the compiler, when it is compiled in, else from its source as a
@@ -238,6 +253,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
             src = ParsePackageSource(cat(be.source, "@", be.ref), "");
             root = PackageRoot(src, be.package);
         }
+        checkroot(be.package, root);
         ast.packages.push_back(Package { be.package, root, false });
         auto &p = ast.packages.back();
         if (!src.ispath) p.cachekey = GitCacheKey(src);
@@ -301,6 +317,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                         string root;
                         try {
                             root = PackageRoot(src, imp.path);
+                            checkroot(imp.path, root);
                         } catch (CompileError &e) {
                             ImportError(filename, imp, e.msg);
                         }
@@ -869,8 +886,9 @@ the program at hand.
 Options:
   -o out.c              Write the program's C rather than run it.
   --standalone          Write C that holds the whole runtime and builds alone.
-  --header out.h        Also write a header for a C host, which supplies main
-                        and starts the program through goose_init.
+  --header out.h        Also write a header for a C host, which supplies main,
+                        starts the program through goose_init and may end it
+                        through goose_exit.
   --include header.h    Have the C include this header (may be repeated).
   --jit                 Also run the program in this process.
   --emit-runtime out.c  Write the runtime's C.
@@ -1546,7 +1564,7 @@ int Main(int argc, char **argv) {
         return 1;
     }
     // A header is for a C host, which supplies its own main and starts the
-    // program through goose_init.
+    // program through goose_init (and may end it through goose_exit).
     auto library = !headername.empty();
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
@@ -1648,7 +1666,9 @@ int Main(int argc, char **argv) {
             if (!bce.checkfreefails.empty()) throw bce.CheckfreeError();
         } else {
             for (auto sf : ast.functions)
-                if (sf->checkfree && !sf->isnested) {
+                // Not for the standard library's checkfree helpers, or every
+                // program that imports std would get the warning.
+                if (sf->checkfree && !sf->isnested && !ast.StdlibFile(sf->line.fileidx)) {
                     ast.Warn(DiagLoc {}, "checkfree is not verified under --no-bce");
                     break;
                 }
@@ -1857,10 +1877,18 @@ int Main(int argc, char **argv) {
                     return 1;
                 }
             }
+            // TinyCC's parser recurses as deep as the C nests, so TinyCC
+            // compiles on a compile thread's stack as well: a Linux main
+            // thread has only `ulimit -s`.
+            TCCState *jit = nullptr;
+            RunOnCompilerStack([&]() -> int {
+                jit = CompileJit(program, JitLibPath(DirOf(exe)), symbols);
+                return 0;
+            });
             // The program shares this process, so its exit code becomes ours
             // and whatever it wrote is already on the same streams.
             fflush(msgs);
-            return RunJit(program, JitLibPath(DirOf(exe)), filename, progargs, symbols);
+            return RunJit(jit, filename, progargs);
         };
         auto code = 0;
         try {

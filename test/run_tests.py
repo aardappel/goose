@@ -1076,6 +1076,34 @@ class Runner:
                 valid = False
         return valid
 
+    def check_abandoned_accumulator(self, level, specs):
+        bodies = {}
+        for spec in specs.split("// spec ")[1:]:
+            match = re.search(r"^fn (\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
+            if match:
+                bodies[match[1]] = spec[match.end():]
+        optimized = level != "-O0"
+        shapes = {
+            "leave_arg": (False, True),
+            "leave_block": (optimized, True),
+            "leave_mixed": (optimized, True),
+            "leave_sequence": (optimized, True),
+            "safe_block": (optimized, not optimized),
+            "safe_plain_block": (optimized, not optimized),
+        }
+        valid = True
+        for name, want in shapes.items():
+            body = bodies.get(name)
+            got = None if body is None else (
+                bool(re.search(r"\bloop \{", body)),
+                bool(re.search(rf"\b{name}\(", body)),
+            )
+            if got != want:
+                self.fail(f"abandoned-accumulator {level} {name}",
+                          f"(loop, self call): got {got}, want {want}")
+                valid = False
+        return valid
+
     def check_loop_shapes(self, text):
         # The loops codegen restates mark themselves in the C with a comment
         # naming the shape (optimize_loops.h, BCE's lenbound). Every shape_
@@ -1673,6 +1701,16 @@ def main():
     for lvl in ("-O0", "-O1", "-O2"):
         r.show_task(optimize, lvl)
 
+    def abandoned_accumulator(lvl):
+        code, out, err = r.goose(lvl, "--check", "--specs",
+                                 HERE / "optimizer" / "tre_abandoned_accumulator.goose")
+        if code != 0:
+            r.fail(f"abandoned-accumulator {lvl}", out + err)
+        elif r.check_abandoned_accumulator(lvl, out):
+            r.ok(f"abandoned-accumulator {lvl}")
+    for lvl in ("-O0", "-O1", "-O2"):
+        r.show_task(abandoned_accumulator, lvl)
+
     # The data stack report (--stacks): a program with a worker, whose
     # first-line budget caps the workers at one, a recursive one whose
     # first-line GS_MAX_STACKS the compiler checks the count against, and one
@@ -1915,7 +1953,8 @@ def main():
             r.ok(f"member stores {f.name}")
     r.show_task(member_stores)
     # A constant array of listed elements is static data at any length, and
-    # a long fill keeps its runtime initialization (MAXSTATICELEMS).
+    # a long fill keeps its runtime initialization (MAXSTATICELEMS), in a
+    # static of its own outside the globals struct.
     def static_arrays():
         f = HERE / "codegen" / "const_global_folding.goose"
         cfile = gendir / "const_global_folding-static.c"
@@ -1925,13 +1964,31 @@ def main():
             return
         text = cfile.read_text()
         listed = re.search(r"^static const a260_i64 LONG_g\w* = ", text, re.MULTILINE)
-        filled = re.search(r"^static const \w+ FILLED_g", text, re.MULTILINE)
-        if not listed or filled:
+        filled = re.search(r"^static a300_i64 FILLED_g\w*;$", text, re.MULTILINE)
+        if not listed or not filled or "GS_GL->FILLED_g" in text:
             r.fail(f"static arrays {f.name}",
-                   f"LONG static: {bool(listed)}, FILLED static: {bool(filled)}")
+                   f"LONG static: {bool(listed)}, FILLED shared: {bool(filled)}")
         else:
             r.ok(f"static arrays {f.name}")
     r.show_task(static_arrays)
+    # A constant fill or string past MAXSTATICELEMS is a static of its own,
+    # read in place by every worker rather than copied at spawn (§11.2).
+    def shared_fills():
+        f = HERE / "threads" / "thread_shared_fills.goose"
+        cfile = gendir / "thread_shared_fills-shared.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"shared fills {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        bad = [n for n in ("TABLE", "ZEROS", "TEXT")
+               if not re.search(rf"^static \w+ {n}_g\w*;$", text, re.MULTILINE) or
+                  f"GS_GL->{n}_g" in text]
+        if bad:
+            r.fail(f"shared fills {f.name}", "copied or not static: " + ", ".join(bad))
+        else:
+            r.ok(f"shared fills {f.name}")
+    r.show_task(shared_fills)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the O1 pass; O0/O2 execution checks semantics.
@@ -1963,11 +2020,11 @@ def main():
         # Algebraic properties of the compiler's root domain are easier to
         # exhaust over small abstract states than to express in Goose, and
         # its containers to compare with the standard ones directly.
-        def compiler_unit(name):
+        def compiler_unit(name, sources=(), flags=()):
             out_exe = gendir / f"{name}{tc.EXE_SUFFIX}"
-            ok, log = cc.compile(HERE / f"{name}.cpp", out_exe, cpp=True,
+            ok, log = cc.compile([HERE / f"{name}.cpp", *sources], out_exe, cpp=True,
                                  opt=2 if args.profile == "baseline" else 1,
-                                 extra=extra, log=gendir / f"{name}.cc.log")
+                                 extra=[*extra, *flags], log=gendir / f"{name}.cc.log")
             if not ok:
                 r.fail(f"compiler-cc {name}", log)
             else:
@@ -1978,6 +2035,10 @@ def main():
                     r.ok(f"compiler {name}")
         for name in ("compiler_roots", "compiler_containers"):
             r.show_task(compiler_unit, name)
+        r.show_task(compiler_unit, "compiler_process",
+                    [HERE.parent / "src" / name for name in ("process.cpp", "progress.cpp")],
+                    [("/I" if cc.style == "msvc" else "-I") +
+                     str(HERE.parent / "third_party" / "subprocess")])
 
         # Direct runtime lifecycle checks use small region limits and allocator
         # instrumentation that cannot be expressed by a Goose program. Keep
@@ -1996,6 +2057,31 @@ def main():
                     r.ok(f"runtime {name}")
         r.show_task(runtime_lifecycle, "runtime_threads_lifecycle", "threads")
         r.show_task(runtime_lifecycle, "runtime_trim_memory", "runtime")
+
+        # A library build's C host: goose_exit ends the program and goose_init
+        # starts it again over fresh globals and queues, and ending it while a
+        # worker still runs is a runtime error.
+        def host_exit():
+            src = HERE / "threads" / "host_exit.goose"
+            cfile = gendir / "host_exit.c"
+            code, out, err = r.goose("-O1", "--header", gendir / "host_exit.h", "-o", cfile, src)
+            if code != 0:
+                r.fail("host-exit cgen host_exit.goose", out + err)
+                return
+            # Beside the header it includes.
+            host = gendir / "host_exit_main.c"
+            shutil.copyfile(HERE / "threads" / "host_exit.c", host)
+            out_exe = gendir / f"host_exit{tc.EXE_SUFFIX}"
+            ok, log = cc.compile([host, cfile], out_exe, opt=1, extra=extra, strict_decls=True,
+                                 runtime=r.runtime, log=gendir / "host_exit.cc.log")
+            if not ok:
+                r.fail("host-exit cc host_exit", "\n".join(log.splitlines()[:8]))
+                return
+            for name, argv in (("host_exit_c", []), ("host_exit_live", ["live"])):
+                out = r.run_expected([out_exe] + argv, name, name)
+                if out is not None and r.check_stdout(name, name, out):
+                    r.ok(f"host {name}")
+        r.show_task(host_exit)
 
         # The same coverage test through clang, release and debug. A compiler
         # that accepts more C than the standard does is not what checks the
@@ -2286,6 +2372,17 @@ def main():
         code, out, err = tc.run_capture([exe, "check", "--stack-reserve", "5000", probe])
         checks.append(("check --stack-reserve 5000 (refused)",
                        code == 1 and "from 64 KB" in err, out + err))
+        # --no-bce warns that the program's checkfree functions go unverified,
+        # and not about the standard library's.
+        nobce = gendir / "verbs_nobce.goose"
+        tc.write_text(nobce, "import std;\nfn main() { print(min(1, 2)); }\n")
+        code, out, err = tc.run_capture([exe, "check", "--no-bce", nobce])
+        checks.append(("check --no-bce, std's checkfree", code == 0 and not out and not err, out + err))
+        tc.write_text(nobce, "import std;\ncheckfree fn f(x: i64) -> i64 { min(x, 2) }\n"
+                             "fn main() { print(f(1)); }\n")
+        code, out, err = tc.run_capture([exe, "check", "--no-bce", nobce])
+        checks.append(("check --no-bce, a checkfree fn", code == 0 and
+                       "checkfree is not verified under --no-bce" in err, out + err))
         # The help: `goose --help` on the commands, `goose <command> --help`
         # and `goose help <topic>` on each, which between them name every
         # option the driver reads, but for the hidden shader ones.
@@ -2356,9 +2453,13 @@ def main():
         nowhere = gendir / "nowhere"
         nowhere.mkdir(exist_ok=True)
         env = {k: v for k, v in os.environ.items()
-               if k.upper() not in ("GOOSE_CC", "PATH", "PROGRAMFILES(X86)")}
-        # Nothing on PATH, and no Visual Studio where vswhere would be.
+               if k.upper() not in ("GOOSE_CC", "PATH", "PROGRAMFILES", "PROGRAMW6432",
+                                     "PROGRAMFILES(X86)")}
+        # Nothing on PATH, no Visual Studio where vswhere would be, and no
+        # LLVM where its installer puts it. Windows gives a 64-bit process
+        # ProgramFiles from ProgramW6432, so that one is hidden too.
         env.update({"PATH": str(nowhere), "GOOSE_HOME": str(nowhere / "home"),
+                    "PROGRAMFILES": str(nowhere), "PROGRAMW6432": str(nowhere),
                     "PROGRAMFILES(X86)": str(nowhere)})
         nocc = subprocess.run([str(exe), "toolchain"], capture_output=True, text=True,
                               errors="replace", env=env)
@@ -2417,7 +2518,7 @@ def main():
             check_cli_paths(exe, cc, gendir)
             r.ok("command line paths: new -o directories, \".\" and \"..\" sources, rooted "
                  "--include, unresolved imports, a directory as a source or an embed_file, "
-                 "no standard library, no runtime sources")
+                 "the configured standard library, no runtime sources")
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("command line paths", str(e))
     r.show_task(cli_paths)
@@ -2432,6 +2533,16 @@ def main():
         except RuntimeError as e:
             r.fail("emit order", str(e))
     r.show_task(emit_order)
+
+    def deep_expressions():
+        from deep_expressions import check_deep_expressions
+        try:
+            check_deep_expressions(exe, cc, gendir)
+            r.ok("deep expressions: sums thousands of terms long, written as C a compiler "
+                 "takes, run" + (" and built" if cc else "") + ", operands still in order")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("deep expressions", str(e))
+    r.show_task(deep_expressions)
 
     def diagnostics_json():
         from diagnostics_json import check_diagnostics_json
@@ -2594,6 +2705,19 @@ def main():
             r.fail("huge pages", str(e))
     if cc:
         r.show_task(huge_pages)
+
+    def libm_calls():
+        from libm_calls import check_libm_calls
+        try:
+            skipped = check_libm_calls(exe, [cc, clang], gendir)
+            if skipped:
+                r.say(f"skip libm calls ({skipped})")
+            else:
+                r.ok("libm calls: math's functions known to gcc and clang as libm's")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("libm calls", str(e))
+    if cc or clang:
+        r.show_task(libm_calls)
 
     def commit_limit():
         from commit_limit import check_commit_limit

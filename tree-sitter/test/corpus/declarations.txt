@@ -26,6 +26,58 @@ import json from "github.com/x/json";
       (string_content))))
 
 ========================================
+Root struct
+========================================
+
+root struct Pool<T> { items: T[>..], root: i64 }
+struct Node { next: Node&<u32 in pool.items>?, id: u32 in pool.items }
+fn root() -> i64 { 0 }
+
+---
+
+(source_file
+  (struct_declaration
+    (identifier)
+    (type_parameters
+      (type_parameter
+        (identifier)))
+    (field_declaration_list
+      (field_declaration
+        (identifier)
+        (array_type
+          (named_type
+            (identifier))))
+      (field_declaration
+        (identifier)
+        (primitive_type))))
+  (struct_declaration
+    (identifier)
+    (field_declaration_list
+      (field_declaration
+        (identifier)
+        (optional_type
+          (reference_type
+            (named_type
+              (identifier))
+            (primitive_type)
+            (storage_name
+              (identifier)
+              (identifier)))))
+      (field_declaration
+        (identifier)
+        (index_type
+          (primitive_type)
+          (storage_name
+            (identifier)
+            (identifier))))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (primitive_type)
+    (block
+      (int_literal))))
+
+========================================
 Generic struct with relative references and padding
 ========================================
 
@@ -60,7 +112,8 @@ struct Node<T: Ord> {
                 (named_type
                   (identifier))))
             (primitive_type)
-            (identifier))))
+            (storage_name
+              (identifier)))))
       (pad_declaration
         (int_literal)))))
 

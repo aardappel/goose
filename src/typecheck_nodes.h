@@ -446,7 +446,15 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     TypeCheck::DestScope ds(tc, TypeCheck::Dest {});
     if (incomplete) tc.IncompleteDot(this);
-    // EnumName.Variant: a payload-less variant constant (§3.5).
+    // EnumName.Variant, or EnumName<T>.Variant of a generic enum: a
+    // payload-less variant constant (§3.5).
+    if (enumtype) {
+        tc.ConstNamesIn(enumtype);
+        auto t = tc.Subst(enumtype);
+        if (t->kind != TY_ENUM)
+            tc.Error(this, cat(tc.TypeStr(t), " is not an enum: it has no variant ", name));
+        return tc.CheckVariantConst(this, t->enu->en, t);
+    }
     if (auto id = Is<Ident>(obj); id && id->expansionerror.empty()) {
         const FnValBind *fb;
         if (!tc.LookupVar(id->name, id->ns) && !tc.LookupTypeParam(id->name, fb) && !fb)
@@ -570,6 +578,7 @@ inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
         if (!IsIntT(st))
             tc.Error(this, cat("only an integer converts to ", tc.TypeStr(tt), ", not ",
                                tc.TypeStr(st), " (§3.11)"));
+        tc.RequireIndexArray(tt, this, cat("converting to ", tc.TypeStr(tt)));
         return v;
     }
     tc.NoteCast(this, raw, cv, v);
@@ -581,7 +590,16 @@ inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val ConstFor::Check(TypeCheck &tc, TypeExpr *) {
-    tc.Error(this, "const for is only valid in statement or constructor initializer lists");
+    tc.Error(this, "const for is only valid in statement, constructor initializer or match arm lists");
+}
+
+inline Val ConstIf::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "const if is only valid in statement, constructor initializer or match arm lists");
+}
+
+inline Val ConstQuery::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, cat(query == Q_SAME ? "same" : "has_default",
+                       " is only valid in a const if condition"));
 }
 
 inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {

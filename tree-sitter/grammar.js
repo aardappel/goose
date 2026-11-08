@@ -58,6 +58,39 @@ function commaSep1(rule) {
   return seq(sep1(rule, ','), optional(','));
 }
 
+// The binary operators, loosest first, over the operand rule given: the
+// expression grammar's operands, or a `const if` condition's.
+function binaryExpressions(operand) {
+  const table = [
+    ['||', PREC.OR],
+    ['&&', PREC.AND],
+    ['==', PREC.EQUALITY],
+    ['!=', PREC.EQUALITY],
+    ['.==', PREC.EQUALITY],
+    ['.!=', PREC.EQUALITY],
+    ['<', PREC.COMPARE],
+    ['<=', PREC.COMPARE],
+    ['>', PREC.COMPARE],
+    ['>=', PREC.COMPARE],
+    ['|', PREC.BIT_OR],
+    ['^', PREC.BIT_XOR],
+    ['&', PREC.BIT_AND],
+    ['<<', PREC.SHIFT],
+    ['>>', PREC.SHIFT],
+    ['+', PREC.ADDITIVE],
+    ['-', PREC.ADDITIVE],
+    ['*', PREC.MULTIPLICATIVE],
+    ['/', PREC.MULTIPLICATIVE],
+    ['%', PREC.MULTIPLICATIVE],
+  ];
+  return choice(...table.map(([operator, precedence]) =>
+    prec.left(precedence, seq(
+      field('left', operand),
+      field('operator', operator),
+      field('right', operand),
+    ))));
+}
+
 module.exports = grammar({
   name: 'goose',
 
@@ -75,12 +108,18 @@ module.exports = grammar({
     // block whose value is `a`.
     [$._expression_name, $.function_value_parameter],
     [$._qualified_name, $.function_value_parameter],
-    // `Name.Variant { … }` against a field access, and `f<T>(x)` or
-    // `Name<T> { … }` against a comparison: what follows decides.
+    // `Name.Variant { … }` against a field access, and `f<T>(x)`,
+    // `x.f<T>(y)`, `Name<T> { … }` or `Name<T>.Variant` against a
+    // comparison: what follows decides.
     [$._primary_expression, $.struct_literal],
-    [$._primary_expression, $._callee, $.struct_literal],
+    [$._primary_expression, $._callee, $.struct_literal, $.variant_constant],
+    [$.struct_literal, $.variant_constant],
+    [$._postfix_expression, $._callee],
     // `if f(x) {` against a trailing block.
     [$.call_expression, $._trailing_call],
+    // `const if (a` against the parenthesized expression a condition's
+    // operand may also be: both parse, and the condition's reading wins.
+    [$._const_condition, $._value_expression],
   ],
 
   rules: {
@@ -121,7 +160,9 @@ module.exports = grammar({
 
     // --- Declarations ---
 
+    // `root` is a keyword only before `struct`, at the top level.
     struct_declaration: $ => seq(
+      optional('root'),
       'struct',
       field('name', $._qualified_name),
       optional(field('type_parameters', $.type_parameters)),
@@ -311,7 +352,7 @@ module.exports = grammar({
       optional(seq(
         '<',
         field('width', alias(choice(...UNSIGNED_TYPES, 'varint'), $.primitive_type)),
-        optional(seq('in', field('pool', $._qualified_name))),
+        optional(seq('in', field('pool', $.storage_name))),
         '>',
       )),
     )),
@@ -331,8 +372,16 @@ module.exports = grammar({
       optional('const'),
       alias(choice(...UNSIGNED_TYPES), $.primitive_type),
       choice('in', 'upto'),
-      field('domain', $._qualified_name),
+      field('domain', $.storage_name),
     ),
+
+    // A global, or a field path into one (`pool.items`): an index type's
+    // domain and a relative reference's pool name. Greedy, as the compiler's
+    // parser is: a `.` after `x as u8 in pool` extends the name.
+    storage_name: $ => prec.right(seq(
+      $._qualified_name,
+      repeat(seq('.', field('field', $.identifier))),
+    )),
 
     // --- Statements ---
 
@@ -350,6 +399,7 @@ module.exports = grammar({
       $.variable_declaration,
       $.function_declaration,
       $.const_for_statement,
+      $.const_if_statement,
       $.guard_statement,
       $.defer_statement,
       $.assignment_statement,
@@ -420,6 +470,47 @@ module.exports = grammar({
 
     const_for_constants: $ => seq('[', commaSep($._expression), ']'),
 
+    // Compile-time selection on a constant condition: `const if c { … }
+    // else const if d { … } else { … }`.
+    const_if_statement: $ => seq(
+      $._const_if_head,
+      field('consequence', $.block),
+      repeat(seq('else', $._const_if_head, field('consequence', $.block))),
+      optional(seq('else', field('alternative', $.block))),
+    ),
+
+    _const_if_head: $ => seq('const', 'if', field('condition', $._const_condition)),
+
+    // A condition is the expression grammar with the queries as primaries.
+    // A query is parsed here only, so `has_default` and `same` are
+    // identifiers elsewhere. A parenthesized condition without a query
+    // parses as an ordinary parenthesized expression too; the dynamic
+    // precedence keeps the condition's reading.
+    _const_condition: $ => choice(
+      $.const_query,
+      alias($._const_binary_expression, $.binary_expression),
+      alias($._const_unary_expression, $.unary_expression),
+      prec.dynamic(1, alias($._const_parenthesized_expression, $.parenthesized_expression)),
+      $._postfix_expression,
+    ),
+
+    _const_binary_expression: $ => binaryExpressions($._const_condition),
+
+    _const_unary_expression: $ => prec(PREC.UNARY, seq(
+      field('operator', choice('-', '!', '~')),
+      field('operand', $._const_condition),
+    )),
+
+    _const_parenthesized_expression: $ => seq('(', $._const_condition, ')'),
+
+    // `has_default<A>` of a fields<T> accessor binding, `same<T1, T2>` of two types.
+    const_query: $ => seq(
+      field('name', alias(choice('has_default', 'same'), $.identifier)),
+      '<',
+      commaSep1($._type),
+      '>',
+    ),
+
     // --- Expressions ---
 
     _expression: $ => choice(
@@ -474,40 +565,12 @@ module.exports = grammar({
       $.parenthesized_expression,
       $.array_literal,
       $.struct_literal,
+      $.variant_constant,
     ),
 
     _expression_name: $ => choice($.identifier, $.scoped_identifier),
 
-    binary_expression: $ => {
-      const table = [
-        ['||', PREC.OR],
-        ['&&', PREC.AND],
-        ['==', PREC.EQUALITY],
-        ['!=', PREC.EQUALITY],
-        ['.==', PREC.EQUALITY],
-        ['.!=', PREC.EQUALITY],
-        ['<', PREC.COMPARE],
-        ['<=', PREC.COMPARE],
-        ['>', PREC.COMPARE],
-        ['>=', PREC.COMPARE],
-        ['|', PREC.BIT_OR],
-        ['^', PREC.BIT_XOR],
-        ['&', PREC.BIT_AND],
-        ['<<', PREC.SHIFT],
-        ['>>', PREC.SHIFT],
-        ['+', PREC.ADDITIVE],
-        ['-', PREC.ADDITIVE],
-        ['*', PREC.MULTIPLICATIVE],
-        ['/', PREC.MULTIPLICATIVE],
-        ['%', PREC.MULTIPLICATIVE],
-      ];
-      return choice(...table.map(([operator, precedence]) =>
-        prec.left(precedence, seq(
-          field('left', $._value_expression),
-          field('operator', operator),
-          field('right', $._value_expression),
-        ))));
-    },
+    binary_expression: $ => binaryExpressions($._value_expression),
 
     unary_expression: $ => prec(PREC.UNARY, seq(
       field('operator', choice('-', '!', '~', '&')),
@@ -538,6 +601,7 @@ module.exports = grammar({
     _callee: $ => choice(
       field('function', $._postfix_expression),
       seq(field('function', $._expression_name), field('type_arguments', $.type_arguments)),
+      prec.dynamic(1, seq(field('function', $.field_expression), field('type_arguments', $.type_arguments))),
     ),
 
     argument_list: $ => seq('(', commaSep($._expression), ')'),
@@ -604,6 +668,14 @@ module.exports = grammar({
       field('body', $.initializer_list),
     ),
 
+    // `Name<T>.Variant`, a variant with no payload of a generic enum.
+    variant_constant: $ => seq(
+      field('name', $._expression_name),
+      field('type_arguments', $.type_arguments),
+      '.',
+      field('variant', $.identifier),
+    ),
+
     // A trailing `..` fills in every field not given.
     initializer_list: $ => seq(
       '{',
@@ -616,11 +688,19 @@ module.exports = grammar({
       $.field_initializer,
       $._expression,
       $.const_for_initializer,
+      $.const_if_initializer,
     ),
 
     field_initializer: $ => seq(field('name', $.identifier), ':', field('value', $._expression)),
 
     const_for_initializer: $ => seq($._const_for_head, field('body', $.initializer_list)),
+
+    const_if_initializer: $ => seq(
+      $._const_if_head,
+      field('consequence', $.initializer_list),
+      repeat(seq('else', $._const_if_head, field('consequence', $.initializer_list))),
+      optional(seq('else', field('alternative', $.initializer_list))),
+    ),
 
     if_expression: $ => prec.right(seq(
       'if',
@@ -637,15 +717,20 @@ module.exports = grammar({
       '}',
     ),
 
-    _match_arm: $ => choice($.match_arm, $.const_for_arms),
+    _match_arm: $ => choice($.match_arm, $.const_for_arms, $.const_if_arms),
 
     // Arms expanded at specialization time: `const for <N, V> in variants<E> { V v => ..., }`.
-    const_for_arms: $ => seq(
-      $._const_for_head,
-      '{',
-      commaSep($._match_arm),
-      '}',
+    const_for_arms: $ => seq($._const_for_head, $._arm_list),
+
+    // Arms chosen at specialization time: `const if c { V v => ..., } else { ... }`.
+    const_if_arms: $ => seq(
+      $._const_if_head,
+      $._arm_list,
+      repeat(seq('else', $._const_if_head, $._arm_list)),
+      optional(seq('else', $._arm_list)),
     ),
+
+    _arm_list: $ => seq('{', commaSep($._match_arm), '}'),
 
     match_arm: $ => seq(
       field('pattern', $._pattern),

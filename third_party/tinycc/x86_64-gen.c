@@ -1011,6 +1011,11 @@ void gfunc_epilog(void)
     }
 
     v = -loc;
+    if (v < 0) {
+        /* The frame wrapped: 2 GiB or more of locals does not fit the 32-bit
+           subtraction below, and probing it would fault below the stack. */
+        tcc_error("stack frame of %u bytes too large", (unsigned)-loc);
+    }
     start = func_sub_sp_offset - FUNC_PROLOG_SIZE;
     cur_text_section->data_offset = ind;
     pe_add_unwind_data(start, ind, v);
@@ -1592,6 +1597,11 @@ void gfunc_epilog(void)
     }
     /* align local size to word & save local variables */
     v = (-loc + 15) & -16;
+    if (v < 0) {
+        /* The frame wrapped: 2 GiB or more of locals does not fit the 32-bit
+           subtraction below, and probing it would fault below the stack. */
+        tcc_error("stack frame of %u bytes too large", (unsigned)-loc);
+    }
     saved_ind = ind;
     ind = func_sub_sp_offset - FUNC_PROLOG_SIZE;
     o(0xe5894855);  /* push %rbp, mov %rsp, %rbp */

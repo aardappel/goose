@@ -182,7 +182,7 @@ inline bool EndsInBlock(const Node *n) {
     if (auto b = Is<Block>(n); b && MultiAssignOf(b)) return false;
     if (Is<IfExpr>(n) || Is<MatchExpr>(n) || Is<EarlyBlock>(n) || Is<While>(n) ||
         Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<FnDecl>(n) || Is<Block>(n) ||
-        Is<InlineBlock>(n) || Is<ConstFor>(n)) return true;
+        Is<InlineBlock>(n) || Is<ConstFor>(n) || Is<ConstIf>(n)) return true;
     if (auto c = Is<Call>(n)) return c->trailing != nullptr;
     // As Defer::Dump writes it: the block form, or its one statement.
     if (auto d = Is<Defer>(n))
@@ -300,6 +300,8 @@ inline void StructLit::Dump(string &s, int ind) const {
 }
 
 inline void DumpArms(string &s, const vector<MatchArm> &arms, int ind);
+inline void DumpFragments(string &s, int ind, const Block *body, bool armfragments,
+                          const vector<MatchArm> &arms, const vector<FieldInit> &inits);
 
 inline void ConstFor::Dump(string &s, int ind) const {
     s += "const for <";
@@ -324,6 +326,13 @@ inline void ConstFor::Dump(string &s, int ind) const {
         s += ">";
     }
     s += " ";
+    DumpFragments(s, ind, body, armfragments, arms, inits);
+}
+
+// An expansion's fragments: a statement block, or a brace-delimited list of
+// arms or of initializer entries.
+inline void DumpFragments(string &s, int ind, const Block *body, bool armfragments,
+                          const vector<MatchArm> &arms, const vector<FieldInit> &inits) {
     if (body) body->Dump(s, ind);
     else if (armfragments) {
         s += "{";
@@ -339,6 +348,30 @@ inline void ConstFor::Dump(string &s, int ind) const {
         }
         NL(s, ind);
         s += "}";
+    }
+}
+
+inline void ConstQuery::Dump(string &s, int) const {
+    if (query == Q_SAME) {
+        s += "same<";
+        types[0]->Dump(s);
+        s += ", ";
+        types[1]->Dump(s);
+    } else {
+        Append(s, "has_default<", name);
+    }
+    s += ">";
+}
+
+inline void ConstIf::Dump(string &s, int ind) const {
+    for (auto &br : branches) {
+        if (&br != &branches[0]) s += " else ";
+        if (br.cond) {
+            s += "const if ";
+            DumpOperand(s, br.cond, ind);
+            s += " ";
+        }
+        DumpFragments(s, ind, br.body, armfragments, br.arms, br.inits);
     }
 }
 
@@ -362,7 +395,8 @@ inline void Binary::Dump(string &s, int ind) const {
 }
 
 inline void Dot::Dump(string &s, int ind) const {
-    DumpOperand(s, obj, ind, true);
+    if (enumtype) enumtype->Dump(s);
+    else DumpOperand(s, obj, ind, true);
     Append(s, ".", name);
 }
 
@@ -447,7 +481,8 @@ inline void IfExpr::Dump(string &s, int ind) const {
 }
 
 // A match's arms, each on a line of its own at ind + 1, then the closing
-// brace's line at ind: `pattern => expr,`, or a `const for` of arms.
+// brace's line at ind: `pattern => expr,`, or a `const for` or `const if`
+// of arms.
 inline void DumpArms(string &s, const vector<MatchArm> &arms, int ind) {
     for (auto &arm : arms) {
         NL(s, ind + 1);

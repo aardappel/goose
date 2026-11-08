@@ -367,6 +367,10 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp, bool farreturn) {
             }
         }
         NodeVars(n, check);
+        // A conversion into an index or bound type checks against its
+        // array's global header (IndexTypeCheck), which the body need not
+        // name otherwise.
+        if (auto c = Is<AsCast>(n); c && c->totype && c->totype->ix) check(c->totype->ix->arr);
         RunChildren(n, walk);
     };
     walk(sp->body);
@@ -865,6 +869,13 @@ inline void CodeGen::EmitGlobalDecls() {
                     Append(data, "static const ", VarCT(d), " ", name, " = ", init, ";\n");
                     gstatic[d] = g->inits[di];
                     gnames[d] = cat("(*(", VarCT(d), " *)&", name, ")");
+                } else if (!d->isvar && d->type->cq && !PrefVar(d) && IsFlatFixed(d->type)) {
+                    // Written once, by gs_init_globals before any worker
+                    // exists (a long fill, say), then read in place by every
+                    // instance: a static all the same, if not a const one.
+                    Append(data, "static ", VarCT(d), " ", name, ";\n");
+                    gshared.insert(d);
+                    gnames[d] = name;
                 } else {
                     member(cat(VarCT(d), " ", name));
                 }
@@ -1005,11 +1016,24 @@ inline void CodeGen::EmitProgramInit() {
     Append(code, "    gs_program_initialized = 1;\n}\n\n");
     // A C host starts the program here: its globals, then fn main() if there
     // is one, which may call the exports and can hold the host's own setup.
-    if (library)
+    // It ends the program with goose_exit, which gives back what the start
+    // took (the data stack regions, the queues, the runtime's handling of
+    // faults), so that goose_init can start a program in the process again:
+    // this one, or another build of it that a host reloads.
+    if (library) {
         Append(code, "void goose_init(int argc, char **argv) {\n"
                      "    if (gs_program_initialized) return;\n"
                      "    gs_program_init(argc, argv);\n",
                      MainCall(), "}\n\n");
+        Append(code, "void goose_exit(void) {\n"
+                     "    if (!gs_program_initialized) return;\n"
+                     "    gs_rt_stop();\n"
+                     "    free(gs_stks);\n"
+                     "    gs_stks = NULL;\n"
+                     "    gs_nstks = 0;\n");
+        for (auto &q : qnames) Append(code, "    gs_qfree(&", q, ");\n");
+        Append(code, "    gs_program_initialized = 0;\n}\n\n");
+    }
 }
 
 // The statement that runs fn main(), or nothing for a library without one.
@@ -1065,13 +1089,28 @@ inline void CodeGen::EmitExports() {
 }
 
 inline string CodeGen::ExportHeader() {
+    // The scalar aliases as the runtime defines them (runtime.h), which the
+    // exported signatures and the type definitions spell their scalars by;
+    // a host's unit that has them already may repeat them.
     string header = "#pragma once\n#include <stdint.h>\n"
+                    "#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)\n"
+                    "#define GS_ALIGN1 __attribute__((aligned(1)))\n"
+                    "#else\n#define GS_ALIGN1\n#endif\n"
+                    "typedef int16_t gs_i16 GS_ALIGN1;\n"
+                    "typedef int32_t gs_i32 GS_ALIGN1;\n"
+                    "typedef int64_t gs_i64 GS_ALIGN1;\n"
+                    "typedef uint16_t gs_u16 GS_ALIGN1;\n"
+                    "typedef uint32_t gs_u32 GS_ALIGN1;\n"
+                    "typedef uint64_t gs_u64 GS_ALIGN1;\n"
+                    "typedef float gs_f32 GS_ALIGN1;\n"
+                    "typedef double gs_f64 GS_ALIGN1;\n"
                     "typedef struct gs_stack gs_stack;\n"
                     "#pragma pack(push, 1)\n";
     header += tdecls;
     header += "#pragma pack(pop)\n\n";
     header += "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
-              "void goose_init(int argc, char **argv);\n";
+              "void goose_init(int argc, char **argv);\n"
+              "void goose_exit(void);\n";
     header += exportprotos;
     header += "#ifdef __cplusplus\n}\n#endif\n";
     return header;

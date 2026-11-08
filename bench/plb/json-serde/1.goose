@@ -32,7 +32,6 @@ fn format_num(out: u8[>..]&, x: f64) {
 
 // G's two terms have no bits in common, so they can be added, which lets
 // the one without b be summed before b is known.
-inline fn rotl(x: u32, s: u32) -> u32 { (x << s) | (x >> (32 - s)) }
 inline fn ff(a: u32, b: u32, c: u32, d: u32, m: u32, s: u32, k: u32) -> u32 { b + rotl(a + (d ^ (b & (c ^ d))) + m + k, s) }
 inline fn gg(a: u32, b: u32, c: u32, d: u32, m: u32, s: u32, k: u32) -> u32 { b + rotl(a + m + k + (c & ~d) + (b & d), s) }
 inline fn hh(a: u32, b: u32, c: u32, d: u32, m: u32, s: u32, k: u32) -> u32 { b + rotl(a + (b ^ c ^ d) + m + k, s) }

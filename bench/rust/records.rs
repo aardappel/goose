@@ -2,8 +2,7 @@
 // single obvious way to write this, and it is a good one -- the discriminant is
 // a byte and the compiler finds a niche for it inside the `String` payload -- but
 // it is still a fixed enum: every element of the `Vec` is as large as the
-// largest variant, and the `Say` text is a separate heap allocation on top. That
-// is the shape records_fixed.goose exists to be the control for.
+// largest variant, and the `Say` text is a separate heap allocation on top.
 mod bench;
 use bench::*;
 

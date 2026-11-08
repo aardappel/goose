@@ -108,7 +108,8 @@ The library uses these conventions:
 * The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, and `os` names are global;
   `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
   `physics`, `ui` and `exception` use their own namespaces, and so do the
-  helpers `std` and `json` read and write float text with, in `float_text`.
+  helpers `std` and `json` read and write float text with, in `float_text`,
+  and `std`'s ASCII character classes, in `ascii`.
   A local named `fill` or `count` shadows the global function of that name,
   so a call to that function is an error. A global variable of such a name does not
   shadow it, because the name in a call resolves past global variables to
@@ -132,12 +133,40 @@ fn next_pow2(x: i64) -> i64         // smallest power of two >= max(x, 1)
 fn popcount(x: u64) -> i64
 fn clz(x: u64) -> i64               // 64 for 0
 fn ctz(x: u64) -> i64               // 64 for 0
+fn rotl<N>(x: u32, n: N) -> u32     // and u64; rotr rotates right
+fn byte_swap(x: u32) -> u32         // and u16, u64
+fn is_pow2<T>(x: T) -> bool         // integers; false for x <= 0
+fn ilog2<T>(x: T) -> i64            // floor(log2(x)); -1 for x <= 0
+fn isqrt<T>(x: T) -> T              // floor(sqrt(x)); aborts for x < 0
+fn gcd<T>(a: T, b: T) -> T          // never negative; gcd(0, 0) == 0
+fn lcm<T>(a: T, b: T) -> T          // never negative; 0 if either is 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
+These are all `checkfree` functions or `extern fn`s, so a `checkfree`
+function (spec §7.14) can call them.
+
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
-`/arch:AVX` or higher for that), and a loop under TinyCC.
+`/arch:AVX` or higher for that), and a loop under TinyCC. `rotl`, `rotr`
+and `byte_swap` are the runtime's as well, and one instruction each under
+GCC, clang and MSVC; the rest are Goose.
+
+`rotl` and `rotr` take a count of any integer type modulo the width, so
+every count is defined and a negative one rotates the other way:
+`rotl(x, -1) == rotr(x, 1)` and `rotl(x, 32) == x` for a `u32`. A
+narrower value widens to both overloads equally, so it names the width to
+rotate at, as `rotl(b as u32, 4)`; `byte_swap` likewise takes a `u16`,
+`u32` or `u64` by its exact type. `ilog2` returns -1 where there is no
+logarithm, as a search returns -1 where there is no position, so
+`ilog2(x) + 1` is the number of bits a positive `x` needs.
+
+`gcd` and `lcm` take any integer type and work on the magnitudes:
+`gcd(-12, 18) == 6` and `lcm(-4, 6) == 12`. Where the result does not fit
+in the type, as `gcd(i64.min, 0)` (2^63) or `lcm` of the `u8`s 16 and 17,
+they fail an `assert`, unsigned types included; a wrapped value is no
+divisor or multiple. `isqrt` is exact at every `u64`, without going
+through a float.
 
 `rem` is the remainder of truncating division: `rem(-7, 3) == -1`, paired
 with `-7 / 3 == -2`. `div_euclid` is the quotient paired with Euclidean `%`:
@@ -164,7 +193,8 @@ fn hash(s: u8[:]) -> u64            // 8 bytes per multiply; any u8 array coerce
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
-These hashes mix all of their input into the low 32 bits. `dictionary`
+These hashes mix all of their input into the low 32 bits. The scalar
+overloads and `hash_combine` are `checkfree` (spec §7.14). `dictionary`
 masks those bits to find the home slot and keeps them as the slot's tag.
 A float hashes as its bits, `-0.0` as `0.0`, and an `f32` as the `f64` of
 its value.
@@ -184,14 +214,32 @@ fn hash(k: key) -> u64 { hash_combine(hash(k.a), hash(k.b)) }
 struct rng { s: u64 }                    // splitmix64; the seed is the state
 fn rand_u64(r: rng&) -> u64
 fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n), without modulo bias; asserts n > 0
-fn rand_flt(r: rng&) -> f64              // uniform in [0, 1)
+fn rand_range(r: rng&, size: i64) -> i64            // uniform in [0, size); asserts size > 0
+fn rand_range(r: rng&, lo: i64, size: i64) -> i64   // uniform in [lo, lo + size); asserts size > 0
+fn rand_flt(r: rng&) -> f64              // uniform in [0, 1), 53 bits
+fn rand_f32(r: rng&) -> f32              // uniform in [0, 1), 24 bits
+fn rand_gaussian(r: rng&) -> f64         // standard normal distribution: mean 0, variance 1
 fn shuffle<T>(xs: T[:], r: rng&)         // Fisher-Yates
 ```
 
 ```goose
 var r = rng { os.random_seed() };   // or any fixed seed
-let d = r.rand_int(6);
+let d = r.rand_range(6);            // 0 to 5
+let roll = r.rand_range(1, 6);      // a die: 1 to 6
+let height = 170.0 + 7.5 * r.rand_gaussian();
 ```
+
+`rand_range` takes a count rather than an end, as a slice's length does, so
+`rand_range(r, lo, n)` has exactly `n` results; `lo + size - 1` has to fit
+in `i64`. Without `lo` it starts at 0, the same as `rand_int`. `rand_flt`
+and `rand_f32` take the top 53 or 24 bits of a draw, so every result is a
+multiple of 2^-53 or 2^-24 and each is equally likely. `rand_gaussian` draws
+from the normal (Gaussian) distribution by Marsaglia's polar method. It
+draws pairs from `rand_flt` until one falls inside the unit circle, which
+takes about 1.27 tries on average. The method yields two draws, but `rng`
+keeps only its seed, so the second one is dropped. The draws from a seed are
+the same on every run, and on every platform whose libm `log` gives the same
+results.
 
 ### Arrays: reading and searching
 
@@ -221,6 +269,8 @@ they are the string functions too: `find(line, "://")`. `find` and `rfind`
 compare a whole subsequence only where its first element matches.
 (The function is named `position` rather than `index_of` because
 `index_of` is the builtin that turns an element reference into its index.)
+`min(xs)` and `max(xs)` are `checkfree`; the forms that take a comparator
+are not, since that would require every comparator to be `checkfree`.
 
 ```goose
 let big = xs.find() { it > 100 };
@@ -363,6 +413,7 @@ fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8)   // base 2..
 fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>..] or u8[..k]
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, the exact value rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64
+fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool       // optional '+', whole string; false on '-' or outside u64
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
@@ -373,12 +424,18 @@ fn split(s: u8[:], sep: u8) -> const u8[:][>..]            // read-only slices i
 fn split(s: u8[:], sep: u8[:]) -> const u8[:][>..]         // matched from the left; an empty sep: [s]
 fn each_split<F>(s: u8[:], sep: u8)                        // F(part); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
+fn split_once(s: u8[:], sep: u8) -> const u8[:], const u8[:], bool    // before, after the first sep
+fn split_once(s: u8[:], sep: u8[:]) -> const u8[:], const u8[:], bool // not found: s, "", false
 fn words(s: u8[:]) -> const u8[:][>..]                     // split at runs of ASCII whitespace; no empty words
 fn each_word<F>(s: u8[:])                                  // F(word)
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])
 fn each_utf8<F>(s: u8[:])                                  // F(codepoint); malformed bytes give 0xFFFD
 fn push_utf8(out: u8[>..]&, cp: i64)                       // 0xFFFD's bytes for cp outside 0..0x10FFFF
+fn ascii::is_digit(c: u8) -> bool                          // '0'-'9'
+fn ascii::is_alpha(c: u8) -> bool                          // 'a'-'z', 'A'-'Z'
+fn ascii::is_alnum(c: u8) -> bool                          // either
+fn ascii::hex_value(c: u8) -> i64                          // 0-15 for 0-9, a-f, A-F; -1 otherwise
 ```
 
 The builtins `format`/`str`/`print` do the plain rendering of scalars and
@@ -389,6 +446,28 @@ the decimal, as C's `strtod` does, so a float's text from `print` or
 `format` reads back as the same value. Strings are `u8` arrays: input is a
 `u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
 `u8[..k]`.
+
+`split_once` cuts s at the first sep, as Go's `strings.Cut` does: the part
+before and the part after, read-only slices into s, and `true`. When sep is
+not in s it gives s whole, an empty slice and `false`, so the first part is
+the whole field either way. An empty sep is never found, as in `split`.
+
+The character classes are ASCII only, as C's `<ctype.h>` is in the C
+locale and Rust's `u8::is_ascii_digit` and its kin are: no byte from 0x80
+up is in any of them. They live in the namespace `ascii`, which `import
+std;` brings in, so that short, common names like `is_digit` stay free in
+the global one.
+
+```goose
+let text = "1f8B rest";
+var v = 0;
+var i = 0;
+while i < text.len && ascii::hex_value(text[i]) >= 0 {
+    v = v * 16 + ascii::hex_value(text[i]);
+    i++;
+}
+print(v, " ", i, " ", ascii::is_alpha(text[i + 1]));   // 8075 4 true
+```
 
 `each_utf8` decodes as the WHATWG decoder does. A sequence cut short, an
 overlong form, a surrogate or a code point past 0x10FFFF gives one 0xFFFD
@@ -403,6 +482,7 @@ format(line, "x=");
 format_int(line, x, 16, 8, '0');
 each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
+let key, value, has_value = split_once(arg, '=');   // "-o=out": "-o", "out", true
 let cmd = words(input);                   // "take  the sword": ["take", "the", "sword"]
 if cmd.len > 1 && cmd[0] == "take" { take(cmd[cmd.len - 1]); }
 ```
@@ -721,6 +801,7 @@ fn alloc_copy<T>(pool: slice_pool<T>&, src: T[:]) -> T[:]
 fn free_slice<T>(pool: slice_pool<T>&, s: T[:])
 fn realloc_slice<T>(pool: slice_pool<T>&, s: T[:], n: i64) -> T[:]
 fn recycle_all<T>(pool: slice_pool<T>&)
+fn trim(pool: slice_pool<u8>&) -> bool
 ```
 
 ```goose
@@ -778,6 +859,24 @@ double free can.
 metadata nodes. It retains initialized values, backing storage and existing
 views; the next allocation starts at index zero.
 
+`trim` returns the physical memory of a `u8` pool's free runs to the OS (and
+on Windows their commit charge), as `os::trim_memory` does above stack tops:
+it discards the complete pages inside every free span, and they read back as
+zeros, the value `alloc_slice` gives them anyway. Free spans have merged with
+their neighbors, so only a page that also holds a live element is kept. Live
+runs, views and `items.len` stay as they are, and the address range stays
+reserved, so the process's virtual size does not drop. An allocation that
+reuses a span takes its pages again. Like `trim_memory`, it is explicit:
+freeing stays as cheap as before, and a long-running program calls `trim`
+after closing large buffers, not after every free. Reading a freed run is an
+application error, but without `trim` such a read sees the run's old bytes
+until the pool reuses it; after `trim` it sees zeros, so adding a `trim` call
+can change what a program that still reads freed runs does. On Windows a
+stale view that reads a discarded page commits it again, so reading freed
+runs undoes the trim for those pages. It is limited to `u8` because a
+discarded page must read back as a valid element. `false` means an OS
+request failed.
+
 The owner follows the same placement, serialization and worker restrictions as
 `slot_pool`: serialize eligible `items` separately, and construct worker-local
 owners rather than transferring root owners. `alloc_slice` constructs defaults
@@ -808,6 +907,8 @@ fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T>
 fn xy<T>(v: vec3<T>) -> vec2<T>                 // also xy(vec4), xyz(vec4)
 ```
 
+The functions are all `checkfree` (spec §7.14).
+
 Elementwise `+ - * /` are built into the language (`a + b`, `p - q`), and
 so is unary minus on a float or signed integer vector (`-v`). `*` and `/`
 also broadcast a scalar in either order: `v * 2.0`, `v / length(v)`,
@@ -820,16 +921,21 @@ scalar converts to the component type, so an `f64` variable scaling a
 
 `math` provides libm at both widths (`sin(x)` picks `sin` or `sinf` by the
 argument's type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10
-pow floor ceil round trunc`. These return floats as C does (`as i64`
-converts).
+pow hypot cbrt exp2 expm1 log1p sinh cosh tanh floor ceil round trunc
+copysign`. These return floats as C does (`as i64` converts). `expm1(x)`
+and `log1p(x)` are `exp(x) - 1` and `log(1 + x)` without the loss of a
+small `x`'s digits; `copysign(x, y)` is `x`'s magnitude with `y`'s sign
+bit, which tells `-0.0` from `0.0`.
 `sqrt` is implemented in the runtime (`gs_sqrt`, `gs_sqrtf`). It gives the
 same correctly rounded root as C, and NaN below zero, but without C's
 errno, so it is the bare square root instruction where the C compiler
-allows. The other functions for which C sets errno (`sin` to `pow`) are
+allows. The other functions for which C sets errno (`sin` to `tanh`) are
 libm's own functions under runtime names (`gs_exp`, `gs_expf`, ...), which
 gcc and clang are told depend only on their arguments. Since Goose has no
 errno, a call does not make the C compiler reload values that a loop
-around the call holds in registers. An integer argument converts to both
+around the call holds in registers. Both compilers still know them as
+libm's, so they fold constant arguments and combine `sin` and `cos` of one
+value into one `sincos` call where the C library has it. An integer argument converts to both
 widths equally well, so the call has to name one (`sqrt(n as f64)`);
 `sqrt(n * 0.5)` calls the `f64` version, as `sqrt(0.5)` does.
 
@@ -866,10 +972,38 @@ The module also has:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;
+let E = 2.718281828459045;    let INF = 1.0 / 0.0;   let NAN = 0.0 / 0.0;
 fn radians(deg: f64) -> f64   fn degrees(rad: f64) -> f64      // and f32
 fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool        // and f32
 fn is_finite(x: f64) -> bool                                   // not inf or NaN; and f32
+fn fract(x: f64) -> f64                                        // x - floor(x); and f32
+fn inverse_lerp(a: f64, b: f64, v: f64) -> f64                 // (v - a) / (b - a); and f32
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64           // and f32
+fn wrap_angle(x: f64) -> f64                                   // into [-PI, PI); and f32
 ```
+
+`fract`, `smoothstep` and `inverse_lerp` follow GLSL and std's `lerp`:
+
+- `fract(x)` is `x - floor(x)`, so it is never negative: `fract(-0.25)` is
+  `0.75`. A tiny negative `x` rounds to `1.0`, as in GLSL.
+- `inverse_lerp(a, b, v)` undoes `lerp(a, b, t)`: 0 at `a`, 1 at `b`, and
+  not clamped, so `v` past `b` gives more than 1. It is NaN or an infinity
+  when `a == b`.
+- `smoothstep(edge0, edge1, x)` is 0 up to `edge0`, 1 from `edge1`, and
+  `3t² - 2t³` of the clamped `t = inverse_lerp(edge0, edge1, x)` between.
+  Edges in reverse run it backwards. Equal edges, which GLSL leaves
+  undefined, give 0 below the edge, 1 above it and NaN at it.
+- `wrap_angle(x)` adds or takes whole turns to bring radians into
+  `[-PI, PI)`, as a floored remainder would: `PI` wraps to `-PI`, and `-0.0`
+  stays `-0.0`. The f32 form's bounds are `PI` rounded to f32.
+
+Each gives NaN for a NaN argument, and `fract` and `wrap_angle` give NaN
+for an infinity. `NAN`'s sign is unspecified.
+`INF` and `NAN` take the type the context asks for, as `PI` does
+(`let inf32: f32 = INF;`).
+
+The libm functions are `extern fn`s and the ones above `checkfree`, so a
+`checkfree` function (spec §7.14) can call any of math.
 
 ## os
 
@@ -889,6 +1023,7 @@ fn delete_dir(path: const u8[:]) -> bool                   // an empty one
 fn list_dir(path: const u8[:], out: u8[>..]&) -> bool      // appends each name and '\n', sorted
 fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped; false at end
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
+fn read_stdin(out: u8[>..]&, max: i64) -> bool       // up to max bytes; false at end
 fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_stdout()
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
@@ -932,7 +1067,11 @@ file.
 `read_file` appends nothing when it fails. `read_stdin` appends the bytes
 unchanged, on Windows too, where the C library's text mode would turn each
 `\r\n` into a `\n` and stop at a Ctrl-Z. `read_line` strips a `\r` before a
-line's newline, along with the newline.
+line's newline, along with the newline. `read_stdin(out, max)` appends up
+to `max` bytes and waits until it has them or input ends, so a large pipe
+can be read in pieces. It returns false, having appended nothing, when no
+bytes were left or `max` is 0 or less. Interactive input in lines stays with
+`read_line`.
 
 `write_file_atomic` is for files that must never be seen half-written, such
 as saved games. It writes the data to a new file in the same directory as
@@ -1027,8 +1166,9 @@ if SDL_Init(0x20) < 0 { abort(str("SDL: ", ffi::cstr(SDL_GetError()))); }
 
 ## binary
 
-Checked, little-endian reads of external formats, written entirely in Goose.
-`import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
+Checked reads and appending writes of external formats, little- and
+big-endian, written in Goose (floats take their bits through small runtime
+helpers). `import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
 returned byte slices and fixed-width names borrow that input without copying
 or allocating. Their lifetimes and read-only access are checked normally.
 This API does not interpret Goose serialization images (`from_bytes`).
@@ -1037,9 +1177,16 @@ This API does not interpret Goose serialization images (`from_bytes`).
 
 ```goose
 fn range_ok(data: const u8[:], at: i64, size: i64) -> bool
-fn read_u16le(data: const u8[:], at: i64) -> u16, bool
-fn read_i16le(data: const u8[:], at: i64) -> i16, bool
-fn read_u32le(data: const u8[:], at: i64) -> u32, bool
+fn read_u8(data: const u8[:], at: i64) -> u8, bool
+fn read_i8(data: const u8[:], at: i64) -> i8, bool
+fn read_u16le(data: const u8[:], at: i64) -> u16, bool    // and read_u16be
+fn read_i16le(data: const u8[:], at: i64) -> i16, bool    // and read_i16be
+fn read_u32le(data: const u8[:], at: i64) -> u32, bool    // and read_u32be
+fn read_i32le(data: const u8[:], at: i64) -> i32, bool    // and read_i32be
+fn read_u64le(data: const u8[:], at: i64) -> u64, bool    // and read_u64be
+fn read_i64le(data: const u8[:], at: i64) -> i64, bool    // and read_i64be
+fn read_f32le(data: const u8[:], at: i64) -> f32, bool    // and read_f32be
+fn read_f64le(data: const u8[:], at: i64) -> f64, bool    // and read_f64be
 fn read_bytes(data: const u8[:], at: i64, size: i64) -> const u8[:], bool
 fn read_name(data: const u8[:], at: i64, width: i64) -> const u8[:], bool
 ```
@@ -1047,7 +1194,10 @@ fn read_name(data: const u8[:], at: i64, width: i64) -> const u8[:], bool
 Offsets and sizes are bytes. Negative values, truncated fields and offsets
 past the end fail with zero or an empty slice and `false`; range checking
 does not overflow on extreme offsets or sizes. An empty range at the end
-is valid. Reads work at unaligned offsets on either host byte order.
+is valid. Reads work at unaligned offsets on either host byte order. The
+`le` reads take the least significant byte first, the `be` reads the most
+significant. A float read keeps the value's bits exactly, NaN payloads
+included.
 `read_name` validates the entire fixed-width field and returns the bytes
 before its first NUL, or all `width` bytes if there is no NUL. It does not
 validate padding or interpret the bytes as a particular text encoding.
@@ -1057,9 +1207,8 @@ validate padding or interpret the bytes as a particular text encoding.
 ```goose
 struct Reader { data: const u8[:], pos: i64 }
 fn reader(data: const u8[:]) -> Reader
-fn read_u16le(r: Reader&) -> u16, bool
-fn read_i16le(r: Reader&) -> i16, bool
-fn read_u32le(r: Reader&) -> u32, bool
+fn read_u8(r: Reader&) -> u8, bool
+fn read_u16le(r: Reader&) -> u16, bool    // every offset read has a cursor form
 fn read_bytes(r: Reader&, size: i64) -> const u8[:], bool
 fn read_name(r: Reader&, width: i64) -> const u8[:], bool
 fn skip(r: Reader&, size: i64) -> bool
@@ -1096,6 +1245,35 @@ Use offset reads for random access and cursors for sequential records.
 Applications still validate signatures, counts, indices and format-specific
 limits after checking the read. The WAD loader in
 [`31_mini_doom.goose`](../samples/31_mini_doom.goose) shows both styles.
+
+### Writes
+
+```goose
+fn write_u8(out: u8[>..]&, v: u8)
+fn write_i8(out: u8[>..]&, v: i8)
+fn write_u16le(out: u8[>..]&, v: u16)    // and write_u16be
+fn write_i16le(out: u8[>..]&, v: i16)    // and write_i16be
+fn write_u32le(out: u8[>..]&, v: u32)    // and write_u32be
+fn write_i32le(out: u8[>..]&, v: i32)    // and write_i32be
+fn write_u64le(out: u8[>..]&, v: u64)    // and write_u64be
+fn write_i64le(out: u8[>..]&, v: i64)    // and write_i64be
+fn write_f32le(out: u8[>..]&, v: f32)    // and write_f32be
+fn write_f64le(out: u8[>..]&, v: f64)    // and write_f64be
+```
+
+Each write appends the value's bytes to `out`, in the order the read of the
+same name takes them, so a write followed by that read gives the value back.
+A float write keeps the value's bits exactly, NaN payloads included. The
+writes cannot fail; `out` grows as an append does.
+
+```goose
+var out: u8[>..] = [];
+binary::write_u32be(out, 0x89504E47);    // a signature, most significant byte first
+binary::write_u16le(out, 3);
+binary::write_f32le(out, 1.5);
+let version, version_ok = binary::read_u16le(out, 4);
+assert(version_ok && version == 3);
+```
 
 ## base64
 
@@ -1489,7 +1667,9 @@ fn error() -> u8[>..]       // why the last failing call failed
 fn check()                  // abort if the program has misused gfx
 fn driver() -> u8[>..]      // "direct3d12", "vulkan" or "metal"
 fn set_title(title: const u8[:])
+fn set_fullscreen(on: bool) -> bool   fn fullscreen() -> bool   fn maximize()
 fn screen() -> Texture      fn screen_depth() -> Texture      fn screen_size() -> int2
+fn pixel_density() -> f32   fn display_scale() -> f32
 fn time() -> f64            fn delta_time() -> f64            fn frame_count() -> i64
 ```
 
@@ -1503,6 +1683,21 @@ the display's own coordinates, and it has every pixel the display has in
 that area. On a high-density display, that is more pixels than its width
 and height; `screen_size()` counts these pixels, and the mouse position is
 reported in them.
+
+`pixel_density()` is the screen's pixels per unit of those coordinates: 2 on
+most high-density displays, 1 elsewhere, including Windows at any scale
+setting. `display_scale()` is that times the system's content scale, what the
+system draws its own text and controls at: 2 on a high-density Mac, 1.5 on
+Windows set to 150%. Both are SDL's values for the window, 1 when headless or
+with no window open, and they change as the window moves between displays, so
+a program that follows them reads them each frame. They only report: gfx and
+ui apply neither, and how big to draw is the program's choice. For a ui the
+size of the system's own, pass `display_scale()` to `ui::set_scale`.
+
+`set_fullscreen` makes the window borderless fullscreen at the desktop's
+resolution, or a window again. It returns false if the window can't change,
+and when headless. SDL changes it asynchronously, so `fullscreen()` can lag a
+frame or two behind. `maximize` fills the desktop as a window.
 
 ```goose
 guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
@@ -1533,6 +1728,7 @@ fn mouse_pos() -> float2    fn mouse_delta() -> float2      // in the screen's p
 fn mouse_wheel() -> f32     fn mouse_in_window() -> bool    // over the window, or dragging from it
 fn focused() -> bool                                      // keyboard focus at the last frame()
 fn set_mouse_relative(on: bool) -> bool    fn mouse_relative() -> bool
+fn set_cursor(shape: i64) -> bool                         // a system cursor, CURSOR_*
 fn set_cursor_visible(visible: bool) -> bool    fn cursor_visible() -> bool
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
 fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // to pixel x, y; button 0 only moves
@@ -1580,6 +1776,28 @@ cursor, and `cursor_visible()` reports that effective state inside the window.
 The preference is restored when relative mode is disabled. Hiding a cursor
 without focus fails; showing one always works while gfx is open.
 
+`set_cursor` selects one of the system's cursors, to show what a click on the
+thing under the mouse would do:
+
+| Constant | Cursor |
+|---|---|
+| `CURSOR_DEFAULT` | the arrow |
+| `CURSOR_TEXT` | a text caret |
+| `CURSOR_POINTER` | a hand, over a link or button |
+| `CURSOR_CROSSHAIR` | a crosshair |
+| `CURSOR_WAIT`, `CURSOR_PROGRESS` | busy, and busy but still clickable |
+| `CURSOR_MOVE` | moves in four directions |
+| `CURSOR_NOT_ALLOWED` | no action here |
+| `CURSOR_EW_RESIZE`, `CURSOR_NS_RESIZE` | resizes a side, both ways |
+| `CURSOR_NWSE_RESIZE`, `CURSOR_NESW_RESIZE` | resizes a corner, both ways |
+| `CURSOR_N_RESIZE`, `CURSOR_E_RESIZE`, `CURSOR_S_RESIZE`, `CURSOR_W_RESIZE` | resizes from that side |
+| `CURSOR_NW_RESIZE`, `CURSOR_NE_RESIZE`, `CURSOR_SE_RESIZE`, `CURSOR_SW_RESIZE` | resizes from that corner |
+
+It returns false for any other value or on failure; `error()` gives the
+reason. The shape persists until changed, and visibility and relative mode
+are left as they are. When headless, it checks the shape and changes nothing
+on the desktop. `close()` restores the default cursor.
+
 `focused()` reports keyboard focus, which differs from `mouse_in_window()`.
 `events()` includes `EVENT_FOCUS_GAINED` and `EVENT_FOCUS_LOST` in order with
 other input; these kinds have no payload. Losing focus clears held keys and
@@ -1595,6 +1813,35 @@ Headless gfx starts focused, with a visible cursor and relative mode disabled.
 The setters simulate their state without touching the system mouse.
 `inject_focus` queues the same transitions for testing; it does not change
 operating-system focus. Closing and reopening resets all these states.
+
+### Gamepads
+
+```goose
+fn gamepad_connected(slot: i64) -> bool
+fn gamepad_changes() -> i64                     // counts connects and disconnects
+fn gamepad_type(slot: i64) -> i64               // SDL's SDL_GamepadType, 0 for an empty slot
+fn gamepad_down(slot: i64, button: i64) -> bool
+fn gamepad_pressed(slot: i64, button: i64) -> bool      // went down since the last frame()
+fn gamepad_released(slot: i64, button: i64) -> bool
+fn gamepad_axis(slot: i64, axis: i64) -> f32    // sticks -1..1, triggers 0..1, no deadzone
+fn gamepad_rumble(slot: i64, low: f32, high: f32, ms: i64) -> bool   // strengths 0..1
+```
+
+Pads take the slots `0` to `MAX_GAMEPADS - 1` as they connect, and a slot
+frees when its pad disconnects, reporting any buttons it held as released.
+Watch `gamepad_changes` to notice either. Buttons follow SDL's standard layout,
+named by position: `GAMEPAD_SOUTH` is A on Xbox and Cross on PlayStation, then
+`GAMEPAD_EAST`, `GAMEPAD_WEST`, `GAMEPAD_NORTH`, `GAMEPAD_BACK`, `GAMEPAD_GUIDE`,
+`GAMEPAD_START`, `GAMEPAD_LEFT_STICK`, `GAMEPAD_RIGHT_STICK`,
+`GAMEPAD_LEFT_SHOULDER`, `GAMEPAD_RIGHT_SHOULDER`, `GAMEPAD_DPAD_UP`,
+`GAMEPAD_DPAD_DOWN`, `GAMEPAD_DPAD_LEFT`, `GAMEPAD_DPAD_RIGHT`. Axes are
+`AXIS_LEFT_X`, `AXIS_LEFT_Y`, `AXIS_RIGHT_X`, `AXIS_RIGHT_Y`,
+`AXIS_LEFT_TRIGGER`, `AXIS_RIGHT_TRIGGER`.
+
+An empty slot reads as nothing held, an axis of 0, and a rumble that returns
+false, as does a pad that cannot rumble. A slot, button or axis outside these
+ranges is a misuse. A machine without gamepad support has no gamepads, which
+is not an error.
 
 ### Buffers
 
@@ -1764,6 +2011,8 @@ compiler with `-DGOOSE_BUILTIN_LIBS=all` and otherwise built on first use;
 | `playing(voice) -> bool` | Whether the voice is still mixing. Stale/zero handles return false. |
 | `stop(voice)`, `stop_all()` | Stop one or every voice. Completed/stale/zero voices are harmless. |
 | `set_voice(voice, volume, pan, pitch) -> bool` | Change a live voice without restarting. |
+| `voice_position(voice) -> f64` | Seconds into a playing voice's sound; -1 when it is not playing. |
+| `seek(voice, seconds: f64) -> bool` | Move a playing voice to that many seconds into its sound. |
 | `render(out: f32[:]) -> bool` | Offline only: write interleaved stereo output and advance playback. |
 | `error() -> u8[>..]` | Most recent failure; successful calls do not clear it. |
 | `error_into(out: u8[:]) -> i64` | Copy as much error text as fits, returning its full length. |
@@ -1788,8 +2037,12 @@ querying a completed voice is normal; updating it returns false. Offline
 `render` needs an even sample count, allows empty output, and advances exactly
 `out.len / 2` frames. Device mode advances automatically; `playing()` describes
 the mixer, so a little audio already buffered by the device can remain after
-completion or stop. The module has no file decoding, streaming input,
-recording, or effects.
+completion or stop. `voice_position` allows for that buffering: with a device
+it reports what the listener is hearing, smoothed between the device's
+callbacks, so it can keep something in time with a sound. Offline it is the
+mixer's own place. `seek` past the end wraps a looping voice and moves any
+other to its last frame; a negative position fails. The module has no file
+decoding, streaming input, recording, or effects.
 
 ```goose
 import audio;

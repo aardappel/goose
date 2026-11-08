@@ -434,4 +434,41 @@ GS_API void gs_qlimit(gs_queue *q, int64_t n, const char *file, int line) {
     gs_mutex_unlock(&s->mutex);
 }
 
+/* No lock: nothing else can use the queue once no thread program runs. */
+GS_API void gs_qfree(gs_queue *q) {
+    struct gs_qstate *s = *q;
+    if (!s) return;
+    while (s->head) free(gs_qtake(s));
+    #ifndef _WIN32
+        pthread_mutex_destroy(&s->mutex);
+        pthread_cond_destroy(&s->cond);
+    #endif
+    free(s);
+    *q = NULL;
+}
+
 #endif  /* GS_NEED_THREADS */
+
+/* The records of the thread programs that aborted go with the program
+   whose workers they were, so that a program started next in the process
+   gets ids and thread_wait answers of its own; then main's part
+   (gs_rt_release). */
+GS_API void gs_rt_stop(void) {
+#if GS_NEED_THREADS
+    gs_mutex_lock(&gs_threads_mutex);
+    if (gs_threads) {
+        gs_mutex_unlock(&gs_threads_mutex);
+        gs_panic("goose_exit: a thread program is still running");
+    }
+    for (int64_t i = 0; i < gs_naborted; i++) free(gs_aborted[i].msg);
+    free(gs_aborted);
+    gs_aborted = NULL;
+    gs_naborted = gs_abortedcap = 0;
+    free(gs_abortbits);
+    gs_abortbits = NULL;
+    gs_abortbytes = 0;
+    gs_numthreads = 0;
+    gs_mutex_unlock(&gs_threads_mutex);
+#endif
+    gs_rt_release();
+}

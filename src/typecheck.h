@@ -41,10 +41,12 @@
 // JoinCycle), and which a back edge must then pass exactly as the entry call
 // did (ValidatePoolArgs) -- or at a threaded parameter: a class of exactly
 // rooted references or slices that every call into the cycle passes on as
-// it was first given, from storage outside every cycle (ThreadedClass). A
-// back edge may pass a threaded class something else, so a store relies on
-// it, and that call is then an error at the store (ValidateThreadArgs). A
-// cycle's *return* roots, shrinks, growths, stores and rebinds cannot come
+// it was first given, from storage outside every cycle, or gives storage
+// outside the cycle that outlives it, such as what it reads out of a free
+// variable (ThreadedClass, bounded). A back edge may pass a threaded class
+// something else, so a store relies on it, and that call is then an error
+// at the store (ValidateThreadArgs). A cycle's *return* roots, shrinks,
+// growths, stores and rebinds cannot come
 // from its bodies' records while a back edge reaches a function before its
 // body is checked through, so a cycle is checked in rounds: the first with
 // back edges that have no effects and results pointing nowhere yet, each
@@ -348,9 +350,15 @@ struct TypeCheck {
     };
     void CheckStmts(Block *b);
     size_t expansionsize = 0;
-    Node *ExpansionConstant(Node *n, set<VarDecl *> &visiting);
+    Node *ExpansionConstant(Node *n, set<VarDecl *> &visiting,
+                            const char *what = "const for source");
     void ExpandConstFor(ConstFor *cf, const function<void(ExpansionClone &)> &emit);
     Block *ExpandStatements(ConstFor *cf);
+    bool ConstCondition(Node *n);
+    bool ConstComparison(Binary *b);
+    bool ConstQueryValue(ConstQuery *q);
+    ConstIfBranch *SelectBranch(ConstIf *ci);
+    Block *ExpandSelection(ConstIf *ci);
     void ExpandInitializers(vector<FieldInit> &inits);
     void ExpandArms(vector<MatchArm> &arms);
     bool IsValuelessTail(const Node *n);
@@ -589,8 +597,8 @@ struct TypeCheck {
 
     // An error at code checked earlier, with the instantiation chain taken
     // there: how a check made once the whole program has been reports one.
-    // The text echoes the offending source line, with no caret, and then
-    // the chain.
+    // The text echoes the offending source line, with a caret under the
+    // node, and then the chain.
     [[noreturn]] void ErrorIn(DiagLoc where, const string &msg,
                               vector<Diagnostic::Related> chain) {
         for (auto &w : cur.pendingwarnings) if (!w.cast) PrintWarning(w);
@@ -600,7 +608,7 @@ struct TypeCheck {
         d.message = msg;
         d.related = std::move(chain);
         LibraryCallLocation(d);
-        d.text = ast.DiagnosticText(d, true);
+        d.text = ast.DiagnosticText(d);
         throw CompileError { d.text, { d } };
     }
 
@@ -1250,6 +1258,7 @@ struct TypeCheck {
     // back to. Both walk the element type; `why` explains a refusal.
     bool ImageSafe(TypeExpr *t, string &why);
     bool VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why);
+    bool HoldsRelRef(TypeExpr *t);
 
     // Is this a type an uninitialized `var x: T;` may have: fixed-size, so a
     // later whole-value assignment fully constructs it.
@@ -1771,7 +1780,8 @@ struct TypeCheck {
     LVal LValueBase(Node *n, bool cmpview = false);
     void NoTemporaryLiteral(Node *n, TypeExpr *t);
     void DerefLValue(LVal &lv, Node *at);
-    void RequireAssigned(VarDef *vd, Node *at);
+    void RequireAssigned(VarDef *vd, Node *at, string_view use = {});
+    void RequireIndexArray(TypeExpr *t, Node *at, string_view what);
     void SliceProvenance(LVal &lv, Node *at);
     void ReadBackLVal(LVal &lv);
     bool SlotLoadWritable(TypeExpr *t, bool path);
@@ -2061,6 +2071,7 @@ struct TypeCheck {
     Val CheckLogical(Binary *b);
     Val CheckBinaryResult(Binary *b, Val &lv, Val &rv);
     Val NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bool trial);
+    void DecidedComparison(Binary *b, const Val &lv, const Val &rv, TypeExpr *lt, TypeExpr *rt);
     Val NumericUnary(Unary *u, const Val &v, bool trial);
     // A float whose type comes from float literals alone (§6.3): a constant,
     // a literal parameter (§7.7), or a Val::litfloat.
@@ -2169,7 +2180,8 @@ struct TypeCheck {
     bool ElementwiseOK(TypeExpr *t);
     TypeExpr *ElementwiseScalarType(TypeExpr *t);
     TypeExpr *UnsignedLeaf(TypeExpr *t);
-    Val CheckVariantConst(Dot *d, SEnum *en);
+    // `written`: the enum type of `Name<T>.Variant`, type arguments and all.
+    Val CheckVariantConst(Dot *d, SEnum *en, TypeExpr *written = nullptr);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
     Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,
                      bool wantvalue, bool onjoin);
@@ -2275,7 +2287,20 @@ struct TypeCheck {
     void JudgeCallCasts(vector<SFunction *> &cands, MatchInfo &best, vector<Node *> &argnodes,
                         vector<Val> &argvals, const function<bool(vector<Val> &)> &resolves);
     void RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInfo &mi, FnSpec *denv,
-                     vector<Node *> &argnodes, int skip, const function<void()> &atskip);
+                     vector<Node *> &argnodes, int skip, const function<void()> &atskip,
+                     bool entryreach);
+    // A call checked as an operand of a call that is `discovering` is checked
+    // again, in full, in that call's phase 2, so its own phase 2 waits for
+    // that check: run at every level of a nesting, it would double the
+    // checks per level. `phase2waits` holds the calls whose last check
+    // waited, `nowait` the one CheckWaitingArg checks again in full.
+    unordered_set<Node *> phase2waits;
+    Node *nowait = nullptr;
+    bool Phase2Waits(Call *c) {
+        auto &p = cur.nodepath;
+        return c != nowait && p.size() > 1 && p.back().node == c && p[p.size() - 2].discovering;
+    }
+    void CheckWaitingArg(Call *c, Node *a, bool entryreach);
     void CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach);
     // `defaults`: the call may leave out parameters that have a default
     // (§7.1), which ResolveCall then passes. Tag dispatch and rendering
@@ -2346,23 +2371,30 @@ struct TypeCheck {
     // which every call back into the recursive cycle passes on as that call
     // did: in every activation it points where that argument did, so where
     // that is outside the cycle, a reference rooted at it may be stored
-    // inside the cycle as one rooted at a pool may (§7.8). Nothing makes a
-    // back edge pass it on, so it is restricted only once a store relies on
-    // it: a call back into the cycle passing something else is then an error
-    // at that store; one checked before any store leaves it pass-down-only.
+    // inside the cycle as one rooted at a pool may (§7.8). Or, bounded, one
+    // that points outside the cycle in every activation, though not at the
+    // same storage. Nothing makes a back edge pass it on, so it is
+    // restricted only once a store relies on it: a call back into the cycle
+    // passing something else is then an error at that store; one checked
+    // before any store leaves it pass-down-only.
     struct ThreadedClass {
         bool broken = false;
-        string why;                  // What broke it, as the diagnostics say.
+        string why;                  // What broke or bounded it, as the diagnostics say.
         // The classes created from its parameters' values, or given them at a
         // back edge: each points where it does only while it stays threaded.
         vector<VarDef *> heirs;
-        // Its arguments are read through a threaded class rather than rooted
-        // at one exactly: in every activation it points into storage that
-        // class leads to, though not into the same part of it.
+        // Its arguments are read through a threaded class or out of a
+        // variable rather than rooted at one exactly, or a call back into the
+        // cycle passes it other storage outside the cycle (PointsOutside): in
+        // every activation it points outside the cycle, though not at the
+        // same storage.
         bool bounded = false;
     };
     unordered_map<VarDef *, ThreadedClass> threadedclasses;
+    size_t threadbounds = 0;   // Classes BoundThread bounded, for a cycle's rounds to settle.
     void ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
+    bool PointsOutside(VarDef *pr, const Roots &v, vector<VarDef *> &through);
+    void BoundThread(VarDef *cls, const string &why);
     void NoteThreadedClass(VarDef *cls);
     bool ThreadedChain(VarDef *r);
     bool ThreadStorable(VarDef *r);
@@ -2392,6 +2424,7 @@ struct TypeCheck {
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
     void NamedResultCopyWarning(FnSpec *spec);
     Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
+    int HeldParam(FnSpec *spec, const Val &v);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void ReturnThroughCalls(Val &v, int tf, Return *r);
     void CheckReturn(Return *r);
@@ -2566,14 +2599,16 @@ struct TypeCheck {
                      VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false,
                      bool slot = false, bool sliceref = false);
     // Whether a holder may hold a reference into arr: `hit` takes the index
-    // of the event that says so, and `via` the type of the slot a reference
+    // of the event that says so, `via` the type of the slot a reference
     // stored there refers to where it leads into arr only through what that
-    // slot holds.
+    // slot holds, and `incoming` the by-value holder parameter whose passed
+    // contents, not one array exactly, say so (StoreEvent::incoming).
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where, size_t *hit = nullptr, TypeExpr **via = nullptr);
+                            Line *where, size_t *hit = nullptr, TypeExpr **via = nullptr,
+                            VarDef **incoming = nullptr);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
                             Line *where, set<VarDef *> &seen, size_t *hit,
-                            TypeExpr **via = nullptr);
+                            TypeExpr **via = nullptr, VarDef **incoming = nullptr);
     TypeExpr *StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, bool sliceref, VarDef *r,
                                      bool exact, VarDef *arr, TypeExpr *arrtype, Line *where,
                                      set<VarDef *> &seen);
@@ -2689,6 +2724,16 @@ struct TypeCheck {
     // specialization records (FnRecord::liveshrinks).
     bool IsClassRoot(VarDef *v) {
         return v && !v->type && !v->isglobal && !IsTemp(v);
+    }
+    // Whether arr may be storage at r's depth or outside it, which an inexact
+    // root r bounds. A parameter's class stands for the callers' storage,
+    // which none of this activation's own variables is, though a
+    // temporary's class is as deep as the activation's outermost scope
+    // (ClassDepth).
+    bool WithinDepth(VarDef *arr, VarDef *r) {
+        if (IsClassRoot(r) && arr->ownerspec && arr->ownerspec == frames.back().spec)
+            return false;
+        return Depth(arr) <= Depth(r);
     }
     // Whether local v is one the body being checked names in a frame on the
     // compile-time path: its own, or one it is lexically nested in, as a

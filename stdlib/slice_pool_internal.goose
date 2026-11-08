@@ -13,3 +13,6 @@ extern fn place(nodes: node[>..]&, tree: tree&, length: i64, cnt: i64) -> i64 = 
 extern fn release_run(nodes: node[>..]&, tree: tree&, idx: i64, cnt: i64) = "gs_slice_pool_free";
 extern fn regrow(nodes: node[>..]&, tree: tree&, length: i64, idx: i64, old: i64,
                  cnt: i64) -> i64 = "gs_slice_pool_regrow";
+// Discards the complete pages inside every free span of items (elements of
+// elem bytes); false means an OS request failed.
+extern fn trim_pages(nodes: node[>..]&, tree: tree&, items: u8[:], elem: i64) -> bool = "gs_slice_pool_trim";

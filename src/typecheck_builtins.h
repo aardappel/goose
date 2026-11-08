@@ -220,6 +220,21 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             string why;
             if (!VerifiableElem(el, el, why))
                 Error(c, cat("from_bytes<", TypeStr(t), "> has no verifier: ", why));
+            Reaches(el, [&](TypeExpr *x) {
+                if (IsIndexT(x))
+                    RequireIndexArray(x, c, cat("from_bytes<", TypeStr(t), "> verifying ",
+                                                TypeStr(x)));
+                return false;
+            });
+            // The verifier checks a link against the loaded image, but a
+            // grow-shrink result can free the element it names while the
+            // array's own contents still hold it: the store rule that keeps
+            // references into a T[>..<] out of storage (§5.2) never ran,
+            // because the verified copy is not a store.
+            if (ak == A_GROWSHRINK && HoldsRelRef(el))
+                Error(c, cat("from_bytes<", TypeStr(t),
+                             "> cannot hold relative references: a shrink would free "
+                             "what they still name"));
             CheckArg(args[0], u8slice);
             c->rettypes.push_back(t);
             c->rettypes.push_back(ast.booltype);
@@ -890,14 +905,33 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
     if (!n) return nullptr;
     auto fit = n->functionmap.find("format");
     if (fit == n->functionmap.end()) return nullptr;
+    // Non-generic overloads first, then generic ones whose value parameter
+    // is a struct, ADT or variant pattern such as Box<T> or Box<T>&, whose
+    // type variables bind to t's type arguments. One on a bare T, or an
+    // array or slice of T, would take over the rendering of every such
+    // value, the strings its own body formats included.
+    for (int pass = 0; pass < 2; pass++)
     for (auto sf : fit->second) {
         if (sf->params.size() != 2 || !sf->params[0].type || !sf->params[1].type ||
-            !sf->generics.empty() || sf->isnested)
+            sf->generics.empty() != (pass == 0) || sf->isnested)
             continue;
-        auto pt1 = Subst(sf->params[1].type);
-        auto p1 = IsPlainRef(pt1) ? pt1->ref->sub : pt1;
-        if (!TypeEq(p1, t)) continue;
-        auto pt0 = Subst(sf->params[0].type);
+        TypeExpr *pt1, *pt0;
+        if (pass == 0) {
+            pt1 = Subst(sf->params[1].type);
+            auto p1 = IsPlainRef(pt1) ? pt1->ref->sub : pt1;
+            if (!TypeEq(p1, t)) continue;
+            pt0 = Subst(sf->params[0].type);
+        } else {
+            // TryMatch binds the overload's own type variables; the types
+            // are used as written until then.
+            auto raw = sf->params[1].type;
+            auto p1 = IsPlainRef(raw) ? raw->ref->sub : raw;
+            if ((p1->kind != TY_STRUCT && p1->kind != TY_ENUM && p1->kind != TY_VARIANT) ||
+                p1->kind != t->kind)
+                continue;
+            pt1 = IsPlainRef(raw) ? ast.RefTo(t, c->line) : t;
+            pt0 = sf->params[0].type;
+        }
         if (!IsPlainRef(pt0) || !IsArrayKind(pt0->ref->sub, A_GROW) ||
             !IsU8(pt0->ref->sub->arr->sub))
             continue;
@@ -919,6 +953,11 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         mi.env = nullptr;
         string why;
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
+        if (pass == 1) {
+            pt1 = mi.paramtypes[1];
+            if (mi.tier > 1) continue;
+            if (!TypeEq(IsPlainRef(pt1) ? pt1->ref->sub : pt1, t)) continue;
+        }
         if (sf->isextern && IsRefOrSlice(pt1) && !pt1->cq && !argvals[1].writable)
             Error(c, "extern format hook needs a writable value or a const parameter");
         // Given a variable argument by a writable reference, the overload may
@@ -1465,14 +1504,27 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             Line where;
             size_t hit = 0;
             TypeExpr *via = nullptr;
+            VarDef *incoming = nullptr;
             // What a part a kill emptied held before it is gone, and so are
             // the views a path the holder keeps may have been followed to.
             auto from = LiveEventBase(v);
             size_t since;
             if (!pathslive && KilledFor(v, v, LoadType(t), arrtype, since))
                 from = std::max(from, since);
-            if (!HolderMayPointInto(v, vd, arrtype, from, &where, &hit, &via) || !UsedAfter(v))
+            if (!HolderMayPointInto(v, vd, arrtype, from, &where, &hit, &via, &incoming) ||
+                !UsedAfter(v))
                 return;
+            // The views that say so were passed by the call, not stored by
+            // the body, and only the parameter's class bounds them
+            // (StoreEvent::incoming).
+            if (incoming && !CarriedEvent(hit)) {
+                auto whose = incoming == v
+                                 ? cat(v->name, "'s views are")
+                                 : cat("it may hold ", incoming->name, "'s views, which are");
+                Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
+                             whose,
+                             " not of one array exactly, so they may point into it (§5.1)"));
+            }
             auto stored = !via ? "a reference into it"
                           : via->kind == TY_SLICE
                               ? "a reference to a slice that may point into it"
@@ -1532,6 +1584,7 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
 // the container is storage of the caller's, which a parameter's class root
 // stands for -- the call sites map those back (§3.5).
 inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
+    e.container->storedinto = true;
     storeevents.push_back(e);
     madestores.push_back(e);
     NoteSlotStore(e);
@@ -1769,6 +1822,16 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         }
         return exact ? r : Bounds(r);
     };
+    // A container the caller can name: its own variables and its lexical
+    // parents', a class root, a global. Anything else is the callee's own.
+    auto callerside = [&](VarDef *x) {
+        if (!x || x->isglobal || IsClassRoot(x)) return true;
+        auto named = false;
+        EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
+            named = named || vars[i] == x;
+        });
+        return named;
+    };
     // A class as the container a stored value was copied or read out of, as
     // seen from here: the one container the argument, or the slice a view's
     // slot held, names exactly, if it does (StoreSource). Anywhere else the
@@ -1776,10 +1839,11 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // several places, or only within one, or at a slice variable's slot,
     // whose binding says what it holds. What came out of a class's storage
     // alone (StoreEvent::classread) still did where that container is one
-    // of the caller's classes.
+    // of the caller's classes. A container of the callee's own is none:
+    // its stores are mapped for whichever call maps them last.
     auto source = [&](VarDef *src) {
         Roots r;
-        if (classat(src, r) < 0) return src;
+        if (classat(src, r) < 0) return callerside(src) ? src : nullptr;
         return r.Exact() ? StoreSource(r.alts[0].root) : nullptr;
     };
     NoteClassUses(spec, argvals);
@@ -1824,7 +1888,17 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     }
     auto end = min(rec->eventend, storeevents.size());
     for (auto i = rec->eventstart; i < end; i++) {
+        // Mapped from the body's own record, which an earlier call to it
+        // left mapped for that call's arguments.
         auto e = storeevents[i];
+        if (auto k = i - rec->eventstart; k < rec->bodyevents.size()) {
+            auto &b = rec->bodyevents[k];
+            e.container = b.container;
+            e.root = b.root;
+            e.src = b.src;
+            e.exact = b.exact;
+            e.classread = b.classread;
+        }
         // A call back into a body still being checked leaves the events of
         // that body's own variables as they are: a cycle's rounds keep the
         // variables, so they are those of the activation being checked, which
@@ -1910,7 +1984,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // A slice writes the caller's elements just as an array reference does.
     // Only a read-back from the same container preserves its existing
     // contents provenance (for example a permutation).
-    auto applyevent = [&](const StoreEvent &e, const Roots &mappedroots, bool first) {
+    auto applyevent = [&](const StoreEvent &e, const Roots &mappedroots, bool first,
+                          const StoreEvent *key) {
         // A place the mapping names exactly whose storage cannot hold the
         // stored reference's pointee is none it points into: a view the
         // argument's storage holds that leads elsewhere (a `u8[>..]&` beside
@@ -1927,8 +2002,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         auto classread = e.classread && IsClassRoot(src);
         auto once = [&](VarDef *target, VarDef *root) {
             for (auto &m : made)
-                if (m.e == &e && m.target == target && m.root == root) return false;
-            made.push_back({ &e, target, root });
+                if (m.e == key && m.target == target && m.root == root) return false;
+            made.push_back({ key, target, root });
             return true;
         };
         if (p < 0) {
@@ -1948,17 +2023,29 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         // every storage there may be behind it.
         auto widen = e.bound || !cr.Exact();
         if (e.bound) cr.Weaken();
+        // A call into a cycle reuses a body checked for the arguments the
+        // cycle's first call gave it, so what it passes here is new to that
+        // body's §9.2 checks as well (§7.8). A local of a cycle member is
+        // left to the cycle store rule, which rejects its store at the
+        // store itself (FitsAt).
+        auto cyclecall = spec->inprogress || spec->incycle;
+        auto cyclelocal = [](VarDef *x) {
+            auto o = x ? x->ownerspec : nullptr;
+            return o && (o->incycle || (o->sf && o->sf->isrec));
+        };
         auto pname = spec->sf->params[(size_t)p].name;
         for (auto &t : ShrinkTargets(cr, e.reached, e.slot)) {
             for (auto &a : r.alts) {
-                if (widen && Depth(a.root) > Depth(t.root)) {
+                if ((widen || (cyclecall && !cyclelocal(a.root))) &&
+                    Depth(a.root) > Depth(t.root)) {
                     auto rname = a.root ? a.root->name : string_view("static data");
                     Error(at, cat("call ", spec->sf->name, " stores a reference rooted at ",
                                   rname,
                                   e.bound ? cat(" into what its parameter ", pname,
                                                 " leads to, which may be ")
                                           : cat(" through its parameter ", pname,
-                                                ", whose argument may point into "),
+                                                ", whose argument ",
+                                                cr.Exact() ? "points" : "may point", " into "),
                                   TargetStr(t), ", which ", rname, " does not outlive (§9.2)"));
                 }
                 if (once(t.root, a.root))
@@ -1969,6 +2056,106 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                 slotstores.push_back({ t.root, t.bound, e,
                                        cat(" through ", spec->sf->name, "'s parameter ", pname,
                                            widen ? ", which may name it" : "") });
+        }
+    };
+    // What a holder of the callee's own holds at this call, where a store
+    // copied one (source drops those): a by-value holder parameter nothing
+    // else was stored into holds the argument's contents, each where it came
+    // from; any other holder what the body stored there, as the body's check
+    // left it (FnRecord::bodyevents), followed through the holders it was
+    // copied from. A copy back into a holder still being followed adds
+    // nothing to it, so what a holder on such a cycle holds is kept only
+    // where the walk began. Null where it cannot be followed: the store
+    // falls back on its bound.
+    struct Leaf {
+        RootAlt a;
+        VarDef *src;
+        bool classread;
+    };
+    map<VarDef *, vector<size_t>> bodystores;
+    map<VarDef *, vector<Leaf>> leaves;
+    deque<vector<Leaf>> partial;
+    set<VarDef *> failed, onpath;
+    static const vector<Leaf> none;
+    auto cycled = false;
+    std::function<const vector<Leaf> *(VarDef *)> holds = [&](VarDef *x) -> const vector<Leaf> * {
+        if (onpath.count(x)) {
+            cycled = true;
+            return &none;
+        }
+        if (!x || !x->type || IsRefOrSlice(x->type) || callerside(x) || failed.count(x))
+            return nullptr;
+        if (auto it = leaves.find(x); it != leaves.end()) return &it->second;
+        vector<Leaf> out;
+        set<tuple<VarDef *, VarDef *, VarDef *, int>> seen;
+        auto add = [&](const Leaf &l) {
+            if (seen.insert({ l.a.root, l.a.from, l.src,
+                              (int)l.a.exact | l.a.slotread << 1 | l.a.classread << 2 |
+                                  l.classread << 3 })
+                    .second)
+                out.push_back(l);
+        };
+        auto ok = true;
+        auto p = find(spec->params.begin(), spec->params.end(), x) - spec->params.begin();
+        if (p < (ptrdiff_t)min(spec->params.size(), argvals.size())) {
+            auto &v = argvals[(size_t)p];
+            ok = !x->storedinto && !ContentsOf(v).unknown;
+            auto copied = StoreSource(v.holderfrom);
+            for (auto &h : ContentsOf(v).alts) {
+                auto from = h.classread ? h.root : h.from;
+                auto src = h.exact ? nullptr : from ? StoreSource(from) : copied;
+                add({ h, src, IsClassRoot(src) && (h.classread || src == copied) });
+            }
+        } else {
+            if (bodystores.empty())
+                for (size_t k = 0; k < rec->bodyevents.size(); k++)
+                    bodystores[rec->bodyevents[k].container].push_back(k);
+            onpath.insert(x);
+            auto outer = cycled;
+            cycled = false;
+            for (auto k : bodystores[x]) {
+                auto &b = rec->bodyevents[k];
+                if (b.src && !callerside(b.src)) {
+                    auto l = holds(b.src);
+                    if (!l) {
+                        ok = false;
+                        break;
+                    }
+                    for (auto &f : *l) add(f);
+                    continue;
+                }
+                auto src = source(b.src);
+                for (auto &m : mapped(b.root, b.exact).alts) {
+                    ok = ok && callerside(m.root);
+                    add({ m, src, b.classread && IsClassRoot(src) });
+                }
+            }
+            onpath.erase(x);
+            auto incomplete = cycled && !onpath.empty();
+            cycled = outer || incomplete;
+            if (ok && incomplete) return &partial.emplace_back(std::move(out));
+        }
+        if (!ok) {
+            failed.insert(x);
+            return nullptr;
+        }
+        return &(leaves[x] = std::move(out));
+    };
+    auto applystore = [&](const StoreEvent &e, const Roots &mappedroots, bool first) {
+        auto ls = spec->inprogress ? nullptr : holds(e.src);
+        if (!ls) {
+            applyevent(e, mappedroots, first, &e);
+            return;
+        }
+        for (auto &l : *ls) {
+            auto c = e;
+            c.root = l.a.root;
+            c.exact = l.a.exact;
+            c.src = l.src;
+            c.classread = l.classread;
+            Roots one;
+            one.alts.push_back(l.a);
+            applyevent(c, one, first, &e);
         }
     };
     // A store of a view read out of the storage of one of the callee's
@@ -1985,7 +2172,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         }
         auto from = storeevents.size();
         replay.origin = (int)(&e - rec->classevents.data());
-        applyevent(e, mapped(e.root, e.exact), true);
+        applystore(e, mapped(e.root, e.exact), true);
         replay.origin = -1;
         tag(from, (int)(&e - rec->classevents.data()));
     }
@@ -1998,7 +2185,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             again = true;
             auto from = storeevents.size();
             replay.origin = (int)(e - rec->classevents.data());
-            applyevent(*e, r, first);
+            applystore(*e, r, first);
             replay.origin = -1;
             tag(from, (int)(e - rec->classevents.data()));
         }
@@ -2246,14 +2433,14 @@ inline bool TypeCheck::GlobalReach::Covered(VarDef *src, VarDef *root, bool exac
 // to the whole array is followed into it (pathslive).
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
                                           size_t from, Line *where, size_t *hit,
-                                          TypeExpr **via) {
+                                          TypeExpr **via, VarDef **incoming) {
     set<VarDef *> seen;
-    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit, via);
+    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit, via, incoming);
 }
 
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
                                           size_t from, Line *where, set<VarDef *> &seen,
-                                          size_t *hitat, TypeExpr **via) {
+                                          size_t *hitat, TypeExpr **via, VarDef **incoming) {
     if (!seen.insert(holder).second) return false;
     if (holder->type && ClassOf(holder->type) == SC_ROOT) {
         for (auto c : holder->components) {
@@ -2262,7 +2449,8 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
             size_t since;
             if (!pathslive && KilledFor(c, c, LoadType(c->type), arrtype, since))
                 start = std::max(start, since);
-            if (HolderMayPointInto(c, arr, arrtype, start, where, seen, hitat, via)) return true;
+            if (HolderMayPointInto(c, arr, arrtype, start, where, seen, hitat, via, incoming))
+                return true;
         }
     }
     // Whatever a store put there, or a view derived from it later, lies in a
@@ -2276,6 +2464,7 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
         if (!e.src || through) *where = e.at;
         if (hitat) *hitat = i;
         if (via && through) *via = through;
+        if (incoming && e.incoming && !through) *incoming = holder;
         return true;
     };
     for (auto i = from; i < storeevents.size(); i++) {
@@ -2294,21 +2483,23 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
             // Out of the storage of a parameter's class alone: what the
             // activation stored there, from its first event on, the stores
             // its callers made there being theirs to judge (NoteLiveViews).
-            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via);
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via,
+                                     incoming);
         } else if (e.src && !e.src->type) {
             // Read out of a parameter's class: storage of the caller's,
             // whose stores this function cannot see, so the class bounds
             // what was read, as an inexact root would.
-            hit = Depth(arr) <= Depth(e.src) && (!e.pointee || contains(e.pointee));
+            hit = WithinDepth(arr, e.src) && (!e.pointee || contains(e.pointee));
             if (hit) *where = e.at;
         } else if (e.src) {
             // A copy of another container's contents: whatever that one
             // holds, from its own first event on.
-            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via);
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via,
+                                     incoming);
         } else if (e.exact) {
             hit = e.root == arr;
         } else if (e.root) {
-            hit = Depth(arr) <= Depth(e.root) && (!e.pointee || contains(e.pointee));
+            hit = WithinDepth(arr, e.root) && (!e.pointee || contains(e.pointee));
         }
         if (hit) return found(i, nullptr);
     }
@@ -2384,12 +2575,12 @@ inline TypeExpr *TypeCheck::StoredSlotMayPointInto(VarDef *holder, TypeExpr *poi
     if (exact && r->type && !IsRefOrSlice(r->type))
         return HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr) ? via : nullptr;
     if (exact && IsClassRoot(r)) {
-        if (slicevia && Depth(arr) <= Depth(r)) return slicevia;
+        if (slicevia && WithinDepth(arr, r)) return slicevia;
         if (contentsvia && HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr))
             return contentsvia;
         return nullptr;
     }
-    return Depth(arr) <= Depth(r) ? via : nullptr;
+    return WithinDepth(arr, r) ? via : nullptr;
 }
 
 // The pointee types of the plain references and slices a value of type t

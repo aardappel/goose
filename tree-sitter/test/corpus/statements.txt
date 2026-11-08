@@ -186,6 +186,86 @@ fn f() {
           (int_literal))))))
 
 ========================================
+Const if
+========================================
+
+fn f() {
+    const if has_default<a> && (n == 1 || !same<T, u8>) { print(1); } else const if LIMIT > 2 { } else { }
+    let p = Point { const if same<T, i64> { x: 1, } else { x: 2, }, .. };
+    match s { const if DEBUG { Dot => 0, } else { Dot => 1, }, _ => 2 }
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (const_if_statement
+        (binary_expression
+          (const_query
+            (identifier)
+            (named_type
+              (identifier)))
+          (parenthesized_expression
+            (binary_expression
+              (binary_expression
+                (identifier)
+                (int_literal))
+              (unary_expression
+                (const_query
+                  (identifier)
+                  (named_type
+                    (identifier))
+                  (primitive_type))))))
+        (block
+          (expression_statement
+            (call_expression
+              (identifier)
+              (argument_list
+                (int_literal)))))
+        (binary_expression
+          (identifier)
+          (int_literal))
+        (block)
+        (block))
+      (variable_declaration
+        (identifier)
+        (struct_literal
+          (identifier)
+          (initializer_list
+            (const_if_initializer
+              (const_query
+                (identifier)
+                (named_type
+                  (identifier))
+                (primitive_type))
+              (initializer_list
+                (field_initializer
+                  (identifier)
+                  (int_literal)))
+              (initializer_list
+                (field_initializer
+                  (identifier)
+                  (int_literal)))))))
+      (match_expression
+        (identifier)
+        (const_if_arms
+          (identifier)
+          (match_arm
+            (pattern_list
+              (identifier))
+            (int_literal))
+          (match_arm
+            (pattern_list
+              (identifier))
+            (int_literal)))
+        (match_arm
+          (wildcard_pattern)
+          (int_literal))))))
+
+========================================
 Loops and jumps
 ========================================
 
@@ -233,7 +313,8 @@ fn f() {
         (parenthesized_type
           (index_type
             (primitive_type)
-            (identifier)))
+            (storage_name
+              (identifier))))
         (identifier)
         (block))
       (expression_statement

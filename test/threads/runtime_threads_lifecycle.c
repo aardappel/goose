@@ -50,6 +50,13 @@ static void counted_free(void *p) {
     free(p);
 }
 
+/* A block made from nothing is one more; a grown one is the same block. */
+static void *counted_realloc(void *p, size_t size) {
+    void *q = realloc(p, size);
+    if (q && !p) counter_add(&live_allocations, 1);
+    return q;
+}
+
 #ifdef _WIN32
 static void *counted_virtual_alloc(void *base, SIZE_T size, DWORD kind, DWORD prot) {
     void *p = VirtualAlloc(base, size, kind, prot);
@@ -83,6 +90,7 @@ static int counted_munmap(void *base, size_t size) {
 #define malloc counted_malloc
 #define calloc counted_calloc
 #define free counted_free
+#define realloc counted_realloc
 #define GS_NEED_THREADS 1
 #define GS_MAX_STACKS 8
 #define GS_STACK_RESERVE (256u << 10)
@@ -173,6 +181,10 @@ static void check_baseline(long allocations, long regions) {
 }
 
 int main(void) {
+#ifndef _WIN32
+    struct sigaction before;
+    check(!sigaction(SIGSEGV, NULL, &before), "read the fault handling the runtime will find");
+#endif
     /* Main's one stack, in its one region; a worker's GS_MAX_STACKS. */
     gs_rt_init(0, NULL, 1, 1, GS_MAX_STACKS);
     check(gs_hardware_threads() >= 1, "hardware_threads() reports at least one worker");
@@ -251,23 +263,47 @@ int main(void) {
             check(gs_thread_wait(ids[i], &msg, &len, __FILE__, __LINE__) == (i % 4 == 3) &&
                   !msg && len == 0, "a later wait still answers, but gets no message");
         }
-        check_baseline(allocations, regions);
+        /* The two records of which workers aborted (gs_aborted_add) stay
+           for the program's lifetime. */
+        check_baseline(allocations + 2, regions);
     }
-    /* A message no wait takes stays until the process ends. */
+    /* A message no wait takes stays until the program ends. */
     int64_t bad = gs_thread_spawn(bad_waiting_worker, &stamp, sizeof(stamp), 1);
     check(!gs_thread_wait(bad, NULL, NULL, __FILE__, __LINE__), "a contained worker aborts in thread_wait");
     check(gs_thread_wait(target, NULL, NULL, __FILE__, __LINE__), "a plain worker that returned waits true");
-    check_baseline(allocations + 1, regions);
+    check_baseline(allocations + 3, regions);
 #ifdef _WIN32
     check(GetProcessHandleCount(GetCurrentProcess(), &handles_after), "read handle count");
     check(handles_after == handles_before, "native thread handles released");
 #endif
-    /* As a worker's end does (gs_thread_main): the stack block and globals
-       instance (main has none here), then the regions. */
+    /* The main program's end (goose_exit): its stack block and globals
+       instance (main has none here) as a worker's end releases them, then
+       gs_rt_stop, which takes the aborted workers' records (the message
+       above among them), main's regions and the fault handling, so that a
+       program can start again in the process and end as cleanly. */
     gs_thread_release();
-    gs_release_regions();
-    check(counter_add(&live_allocations, 0) == 1, "test releases its main stack block");
-    check(counter_add(&live_regions, 0) == 0, "test releases its main reservation");
+    gs_rt_stop();
+    check(counter_add(&live_allocations, 0) == 0,
+          "stopping releases main's stack block and the abort records");
+    check(counter_add(&live_regions, 0) == 0, "stopping releases main's reservation");
+#ifndef _WIN32
+    struct sigaction after;
+    check(!sigaction(SIGSEGV, NULL, &after) && after.sa_sigaction == before.sa_sigaction,
+          "stopping restores the fault handling the runtime found");
+#endif
+    gs_rt_init(0, NULL, 1, 1, GS_MAX_STACKS);
+    check(gs_nregions == 1, "a program starts again after a stop");
+    GS(0)->top[0] = 99;
+    allocations = counter_add(&live_allocations, 0);
+    regions = counter_add(&live_regions, 0);
+    int64_t again = gs_thread_spawn(aborting_worker, &stamp, sizeof(stamp), 1);
+    check(!gs_thread_wait(again, NULL, NULL, __FILE__, __LINE__),
+          "a worker of the program started again runs, and its abort is recorded");
+    check_baseline(allocations + 3, regions);
+    gs_thread_release();
+    gs_rt_stop();
+    check(counter_add(&live_allocations, 0) == 0 && counter_add(&live_regions, 0) == 0,
+          "the program started again ends as cleanly");
     puts("runtime thread cleanup ok");
     return 0;
 }

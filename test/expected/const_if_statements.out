@@ -1,0 +1,27 @@
+required name
+required price
+2
+required inner
+required flag
+1
+required first
+1
+Circle.r defaults
+Rect.w required
+Rect.h required
+n 11
+count kept
+port 81
+retries kept
+level 3
+12
+2
+7
+int 1
+bool true
+other 2.5
+c 1
+c 3
+trace off
+quiet
+limit 4

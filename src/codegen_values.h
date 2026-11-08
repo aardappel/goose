@@ -1759,12 +1759,33 @@ inline bool CodeGen::IsCName(const string &x) {
            all_of(x.begin(), x.end(), [](char c) { return isalnum((unsigned char)c) || c == '_'; });
 }
 
+// Whether n's value may take statements to compute: a call, control
+// expression or string literal in it, or a part deep enough to spill (GenX).
 inline bool CodeGen::HasStmts(Node *n) {
-    if (!n) return false;
+    return n && (NestsDeep(n) || EmitsStmts(n));
+}
+
+inline bool CodeGen::EmitsStmts(Node *n) {
     if (Is<Call>(n) || IsCtl(n) || Is<StrLit>(n)) return true;
     auto found = false;
-    n->Children([&](Node *c) { found = found || HasStmts(c); });
+    n->Children([&](Node *c) { found = found || EmitsStmts(c); });
     return found;
+}
+
+// Whether n is `levels` deep or deeper, as an expression whose control
+// expressions are leaves: their C values are temps.
+inline bool CodeGen::NestsDeep(Node *n, int levels) {
+    if (levels <= 1) return true;
+    if (IsCtl(n)) return false;
+    auto deep = false;
+    n->Children([&](Node *c) { deep = deep || NestsDeep(c, levels - 1); });
+    return deep;
+}
+
+inline bool CodeGen::Spills(Node *n) {
+    auto t = n->exprtype;
+    return t && (t->kind == TY_FLT || t->kind == TY_BOOL || (t->kind == TY_INT && !IsVarintT(t))) &&
+           NestsDeep(n);
 }
 
 // Equality of two direct operands (§4.5): a slice compares length then

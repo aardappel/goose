@@ -188,8 +188,7 @@ struct Lexer {
                 d.where.endcol = d.where.col + (int)max<size_t>(len, 1);
             }
         }
-        d.text = RenderDiagnostic(d, filename, errlinestart ? string_view(source) : string_view(),
-                                  true);
+        d.text = RenderDiagnostic(d, filename, errlinestart ? string_view(source) : string_view());
         return d;
     }
 

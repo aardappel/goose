@@ -20,6 +20,14 @@ extern fn log(x: f64) -> f64 = "gs_log";              extern fn log(x: f32) -> f
 extern fn log2(x: f64) -> f64 = "gs_log2";            extern fn log2(x: f32) -> f32 = "gs_log2f";
 extern fn log10(x: f64) -> f64 = "gs_log10";          extern fn log10(x: f32) -> f32 = "gs_log10f";
 extern fn pow(x: f64, y: f64) -> f64 = "gs_pow";      extern fn pow(x: f32, y: f32) -> f32 = "gs_powf";
+extern fn hypot(x: f64, y: f64) -> f64 = "gs_hypot";  extern fn hypot(x: f32, y: f32) -> f32 = "gs_hypotf";
+extern fn cbrt(x: f64) -> f64 = "gs_cbrt";            extern fn cbrt(x: f32) -> f32 = "gs_cbrtf";
+extern fn exp2(x: f64) -> f64 = "gs_exp2";            extern fn exp2(x: f32) -> f32 = "gs_exp2f";
+extern fn expm1(x: f64) -> f64 = "gs_expm1";          extern fn expm1(x: f32) -> f32 = "gs_expm1f";
+extern fn log1p(x: f64) -> f64 = "gs_log1p";          extern fn log1p(x: f32) -> f32 = "gs_log1pf";
+extern fn sinh(x: f64) -> f64 = "gs_sinh";            extern fn sinh(x: f32) -> f32 = "gs_sinhf";
+extern fn cosh(x: f64) -> f64 = "gs_cosh";            extern fn cosh(x: f32) -> f32 = "gs_coshf";
+extern fn tanh(x: f64) -> f64 = "gs_tanh";            extern fn tanh(x: f32) -> f32 = "gs_tanhf";
 // x * y + z, rounded once where the code is built for FMA and twice where it
 // is not: which is the implementation's, so results may differ between
 // machines (§7.12). A simd fn's versions past the baseline round once.
@@ -29,22 +37,69 @@ extern fn floor(x: f64) -> f64;                       extern fn floor(x: f32) ->
 extern fn ceil(x: f64) -> f64;                        extern fn ceil(x: f32) -> f32 = "ceilf";
 extern fn round(x: f64) -> f64;                       extern fn round(x: f32) -> f32 = "roundf";
 extern fn trunc(x: f64) -> f64;                       extern fn trunc(x: f32) -> f32 = "truncf";
+// x's magnitude with y's sign, -0.0 and NaN's sign included: the sign bit,
+// which no comparison can read.
+extern fn copysign(x: f64, y: f64) -> f64;            extern fn copysign(x: f32, y: f32) -> f32 = "copysignf";
 
 let PI = 3.141592653589793;
 let TAU = 6.283185307179586;
+let E = 2.718281828459045;
+let INF = 1.0 / 0.0;
+let NAN = 0.0 / 0.0;
 
 // Both widths, as libm's functions above. The f32 forms multiply by the
 // ratio written out, which rounds to f32 once; 180.0 / PI worked out in
 // f32 rounds PI first and comes out an ulp off.
-fn radians(deg: f64) -> f64 { deg * (PI / 180.0) }
-fn radians(deg: f32) -> f32 { deg * 0.017453292519943295 }
-fn degrees(rad: f64) -> f64 { rad * (180.0 / PI) }
-fn degrees(rad: f32) -> f32 { rad * 57.29577951308232 }
+checkfree fn radians(deg: f64) -> f64 { deg * (PI / 180.0) }
+checkfree fn radians(deg: f32) -> f32 { deg * 0.017453292519943295 }
+checkfree fn degrees(rad: f64) -> f64 { rad * (180.0 / PI) }
+checkfree fn degrees(rad: f32) -> f32 { rad * 57.29577951308232 }
 
 // x - x is 0 for every finite x, and NaN for an infinity or a NaN.
-fn is_nan(x: f64) -> bool { x != x }
-fn is_nan(x: f32) -> bool { x != x }
-fn is_inf(x: f64) -> bool { x == x && (x - x) != (x - x) }
-fn is_inf(x: f32) -> bool { x == x && (x - x) != (x - x) }
-fn is_finite(x: f64) -> bool { x - x == 0.0 }
-fn is_finite(x: f32) -> bool { x - x == 0.0 }
+checkfree fn is_nan(x: f64) -> bool { x != x }
+checkfree fn is_nan(x: f32) -> bool { x != x }
+checkfree fn is_inf(x: f64) -> bool { x == x && (x - x) != (x - x) }
+checkfree fn is_inf(x: f32) -> bool { x == x && (x - x) != (x - x) }
+checkfree fn is_finite(x: f64) -> bool { x - x == 0.0 }
+checkfree fn is_finite(x: f32) -> bool { x - x == 0.0 }
+
+// x - floor(x), as GLSL's fract: in [0, 1) for a negative x as well
+// (fract(-0.25) is 0.75), though a tiny negative x rounds up to 1.0. NaN
+// for an infinity or a NaN.
+checkfree fn fract(x: f64) -> f64 { x - floor(x) }
+checkfree fn fract(x: f32) -> f32 { x - floor(x) }
+
+// The fraction of the way from a to b that v is, the inverse of std's lerp:
+// 0 at a, 1 at b, and past them outside [a, b]. Not clamped; NaN or an
+// infinity when a == b.
+checkfree fn inverse_lerp(a: f64, b: f64, v: f64) -> f64 { (v - a) / (b - a) }
+checkfree fn inverse_lerp(a: f32, b: f32, v: f32) -> f32 { (v - a) / (b - a) }
+
+// GLSL's smoothstep: 0 at or below edge0, 1 at or above edge1, and the
+// cubic 3t^2 - 2t^3 of t = inverse_lerp(edge0, edge1, x) between. edge0 >
+// edge1 runs it backwards; edge0 == edge1, which GLSL leaves undefined, is
+// 0 below the edge, 1 above it and NaN at it.
+checkfree fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    var t = (x - edge0) / (edge1 - edge0);
+    if t < 0.0 { t = 0.0; } else if t > 1.0 { t = 1.0; }
+    t * t * (3.0 - 2.0 * t)
+}
+checkfree fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    var t = (x - edge0) / (edge1 - edge0);
+    if t < 0.0 { t = 0.0; } else if t > 1.0 { t = 1.0; }
+    t * t * (3.0 - 2.0 * t)
+}
+
+// An angle in radians brought into [-PI, PI) by whole turns: PI itself
+// wraps to -PI, as a floored remainder would. The last step catches a
+// quotient that rounded across a turn. NaN for an infinity or a NaN.
+checkfree fn wrap_angle(x: f64) -> f64 {
+    var r = x - TAU * floor((x + PI) / TAU);
+    if r >= PI { r -= TAU; } else if r < -PI { r += TAU; }
+    r
+}
+checkfree fn wrap_angle(x: f32) -> f32 {
+    var r = x - TAU * floor((x + PI) / TAU);
+    if r >= PI { r -= TAU; } else if r < -PI { r += TAU; }
+    r
+}

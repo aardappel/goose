@@ -664,9 +664,9 @@ inline HoverText HoverOf(const Located &loc, const Occurrence &occ) {
                 });
                 if (c) type = Is<MatchExpr>(c)->arms[(size_t)occ.index].binder->type;
                 found = c;
-            } else if (Is<ConstFor>(occ.node)) {
-                // An arm the const for generates for each entry: the types
-                // the clones' arms bind here.
+            } else if (Is<ConstFor>(occ.node) || Is<ConstIf>(occ.node)) {
+                // An arm the const for generates for each entry, or a const
+                // if chooses: the types the clones' arms bind here.
                 set<string> types;
                 for (auto &[vd, p] : an.defplaces)
                     if (p.fileidx == loc.fi->fileidx && p.start == occ.start && vd->type)

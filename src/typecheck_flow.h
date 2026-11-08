@@ -578,6 +578,7 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     auto slotref = previous->slotref;
     auto constuse = previous->constuse;
     auto constwhat = previous->constwhat;
+    auto storedinto = previous->storedinto;
     auto components = std::move(previous->components);
     for (auto c : components) if (c) ResetLocal(c);
     *previous = VarDef {};
@@ -589,6 +590,7 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     previous->slotref = slotref;
     previous->constuse = constuse;
     previous->constwhat = constwhat;
+    previous->storedinto = storedinto;
     return previous;
 }
 
@@ -1869,11 +1871,14 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
     auto warnbase = cur.pendingwarnings.size();
     auto settled = false;
     Scope sc;
+    // What a pass feeds back only grows, so the passes are bounded by the
+    // variables in scope and their roots. A pass may move a fact on by just
+    // one variable (`a = b; b = c; ...`), so the limit grows with them.
+    auto maxpasses = 16 + (int)head.locals.size();
     for (auto passes = 0;; passes++) {
-        // What a pass feeds back only grows, so the passes are bounded by
-        // the variables in scope and their roots.
-        if (passes >= 16)
-            Error(x, "this loop's checking does not settle (internal limit of 16 passes)");
+        if (passes >= maxpasses)
+            Error(x, cat("this loop's checking does not settle (internal limit of ", maxpasses,
+                         " passes)"));
         RestoreFlow(head);
         cur.pendingwarnings.resize(warnbase);
         cur.looppasses.push_back({ (int)scopes.size(), firstbase, storeevents.size(), settled });

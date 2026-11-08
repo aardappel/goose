@@ -62,6 +62,29 @@ static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
+/* binary's float reads and writes (stdlib/binary.goose): a value from its
+   bits and back, which memcpy keeps exactly, NaN payloads included. */
+static float gs_f32_from_bits(uint32_t bits) {
+    float x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+static double gs_f64_from_bits(uint64_t bits) {
+    double x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+static uint32_t gs_f32_to_bits(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+static uint64_t gs_f64_to_bits(double x) {
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+
 /* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
    where the code is built for FMA, as two roundings elsewhere
    (GS_MUL_ADD_MODE, runtime.h). A call names the macro, which picks the
@@ -98,16 +121,35 @@ static float gs_mul_addf(float x, float y, float z) {
 /* math's other libm functions (stdlib/math.goose). C has them set errno on a
    domain or range error, so a C compiler takes each call for a write to
    memory: a loop around one loads again after it whatever it had hoisted
-   out or kept in registers. Goose has no errno, so where the compiler has
-   asm labels and the const attribute each is libm's own function declared
-   under a name of its own as depending on its arguments alone; elsewhere
-   the name forwards to libm. */
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+   out or kept in registers. Goose has no errno, so gcc and clang are told
+   that each depends on its arguments alone. Under clang each is libm's own
+   function declared under a name of its own with an asm label, which clang
+   still knows as that libm function where symbols take no prefix. Where
+   they do (Apple's leading underscore), clang marks the label as a literal
+   symbol name, "\01_pow", and no longer knows it as libm's. gcc knows a
+   function only by the name it is declared under, so there, and under
+   clang on Apple, each name forwards to libm's, redeclared const: the
+   compiler then still combines sin and cos of one value into sincos, turns
+   pow(x, 2.0) into x * x and folds constant arguments. Elsewhere the name
+   forwards to libm. */
+#if defined(__clang__) && !defined(__APPLE__) && !defined(__TINYC__)
 #define GS_LIBM_SYM2(p, f) #p #f
 #define GS_LIBM_SYM(p, f) GS_LIBM_SYM2(p, f)
 #define GS_LIBM
 #define GS_LIBM1(f) __asm__(GS_LIBM_SYM(__USER_LABEL_PREFIX__, f)) __attribute__((const));
 #define GS_LIBM2(f) GS_LIBM1(f)
+#elif defined(__GNUC__) && !defined(__TINYC__)
+__attribute__((const)) double sin(double), cos(double), tan(double), asin(double), acos(double),
+    atan(double), atan2(double, double), exp(double), log(double), log2(double), log10(double),
+    pow(double, double), hypot(double, double), cbrt(double), exp2(double), expm1(double),
+    log1p(double), sinh(double), cosh(double), tanh(double);
+__attribute__((const)) float sinf(float), cosf(float), tanf(float), asinf(float), acosf(float),
+    atanf(float), atan2f(float, float), expf(float), logf(float), log2f(float), log10f(float),
+    powf(float, float), hypotf(float, float), cbrtf(float), exp2f(float), expm1f(float),
+    log1pf(float), sinhf(float), coshf(float), tanhf(float);
+#define GS_LIBM static inline
+#define GS_LIBM1(f) { return f(x); }
+#define GS_LIBM2(f) { return f(x, y); }
 #else
 #define GS_LIBM static
 #define GS_LIBM1(f) { return f(x); }
@@ -125,6 +167,14 @@ GS_LIBM double gs_log(double x) GS_LIBM1(log)
 GS_LIBM double gs_log2(double x) GS_LIBM1(log2)
 GS_LIBM double gs_log10(double x) GS_LIBM1(log10)
 GS_LIBM double gs_pow(double x, double y) GS_LIBM2(pow)
+GS_LIBM double gs_hypot(double x, double y) GS_LIBM2(hypot)
+GS_LIBM double gs_cbrt(double x) GS_LIBM1(cbrt)
+GS_LIBM double gs_exp2(double x) GS_LIBM1(exp2)
+GS_LIBM double gs_expm1(double x) GS_LIBM1(expm1)
+GS_LIBM double gs_log1p(double x) GS_LIBM1(log1p)
+GS_LIBM double gs_sinh(double x) GS_LIBM1(sinh)
+GS_LIBM double gs_cosh(double x) GS_LIBM1(cosh)
+GS_LIBM double gs_tanh(double x) GS_LIBM1(tanh)
 GS_LIBM float gs_sinf(float x) GS_LIBM1(sinf)
 GS_LIBM float gs_cosf(float x) GS_LIBM1(cosf)
 GS_LIBM float gs_tanf(float x) GS_LIBM1(tanf)
@@ -137,6 +187,14 @@ GS_LIBM float gs_logf(float x) GS_LIBM1(logf)
 GS_LIBM float gs_log2f(float x) GS_LIBM1(log2f)
 GS_LIBM float gs_log10f(float x) GS_LIBM1(log10f)
 GS_LIBM float gs_powf(float x, float y) GS_LIBM2(powf)
+GS_LIBM float gs_hypotf(float x, float y) GS_LIBM2(hypotf)
+GS_LIBM float gs_cbrtf(float x) GS_LIBM1(cbrtf)
+GS_LIBM float gs_exp2f(float x) GS_LIBM1(exp2f)
+GS_LIBM float gs_expm1f(float x) GS_LIBM1(expm1f)
+GS_LIBM float gs_log1pf(float x) GS_LIBM1(log1pf)
+GS_LIBM float gs_sinhf(float x) GS_LIBM1(sinhf)
+GS_LIBM float gs_coshf(float x) GS_LIBM1(coshf)
+GS_LIBM float gs_tanhf(float x) GS_LIBM1(tanhf)
 
 /* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
    set is a pointer to std's ByteSet. */
@@ -198,6 +256,71 @@ static int64_t gs_ctz(uint64_t x) {
 #endif
 }
 
+/* std's rotl, rotr and byte_swap, so each is one instruction rather than an
+   idiom the C compiler may or may not recognize: MSVC's intrinsics, GCC's
+   and clang's byte-swap builtins, and the rotate idiom both GCC and clang
+   turn into rol/ror. Under TinyCC they are plain shifts. The count is taken
+   modulo the width, so a negative one turns the other way. */
+static uint32_t gs_rotl32(uint32_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotl(x, (int)(n & 31));
+#else
+    uint32_t s = (uint32_t)n & 31;
+    return (x << s) | (x >> (-s & 31));
+#endif
+}
+static uint64_t gs_rotl64(uint64_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotl64(x, (int)(n & 63));
+#else
+    uint32_t s = (uint32_t)n & 63;
+    return (x << s) | (x >> (-s & 63));
+#endif
+}
+static uint32_t gs_rotr32(uint32_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotr(x, (int)(n & 31));
+#else
+    uint32_t s = (uint32_t)n & 31;
+    return (x >> s) | (x << (-s & 31));
+#endif
+}
+static uint64_t gs_rotr64(uint64_t x, int64_t n) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _rotr64(x, (int)(n & 63));
+#else
+    uint32_t s = (uint32_t)n & 63;
+    return (x >> s) | (x << (-s & 63));
+#endif
+}
+static uint16_t gs_byte_swap16(uint16_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap16(x);
+#elif defined(_MSC_VER)
+    return _byteswap_ushort(x);
+#else
+    return (uint16_t)((x << 8) | (x >> 8));
+#endif
+}
+static uint32_t gs_byte_swap32(uint32_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap32(x);
+#elif defined(_MSC_VER)
+    return _byteswap_ulong(x);
+#else
+    return (x << 24) | ((x & 0xFF00) << 8) | ((x >> 8) & 0xFF00) | (x >> 24);
+#endif
+}
+static uint64_t gs_byte_swap64(uint64_t x) {
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+    return __builtin_bswap64(x);
+#elif defined(_MSC_VER)
+    return _byteswap_uint64(x);
+#else
+    return ((uint64_t)gs_byte_swap32((uint32_t)x) << 32) | gs_byte_swap32((uint32_t)(x >> 32));
+#endif
+}
+
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);
@@ -214,6 +337,7 @@ GS_API void gs_os_write_stderr(sl_u8 s);
 GS_API void gs_os_flush_stdout(void);
 GS_API uint8_t gs_os_read_line(gs_rref out);
 GS_API void gs_os_read_stdin(gs_rref out);
+GS_API uint8_t gs_os_read_stdin_max(gs_rref out, int64_t max);
 GS_API int64_t gs_os_arg_count(void);
 GS_API void gs_os_arg(int64_t i, gs_rref out);
 GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);
@@ -229,6 +353,12 @@ GS_API uint64_t gs_os_random_u64(void);
    cached tops first; C called from Goose must not call it. 0 means an OS
    request failed; a top outside its region panics. */
 GS_API uint8_t gs_trim_memory(void);
+/* The shortest digits of a finite double, by magnitude: the ones print
+   writes (runtime_impl.h's gs_float_digits), into dig, which holds at least
+   17. Their count, and in *point the power of ten they are a fraction of:
+   they spell 0.d1 d2 ... * 10^*point. 0 for zero, NaN and the infinities.
+   Behind std's float_text::shortest_digits, for json's format_number. */
+GS_API int64_t gs_f64_digits(double x, sl_u8 dig, int64_t *point);
 /* std's slice_pool (stdlib/slice_pool_internal.goose) keeps its freelist in
    a checked copy of the runtime's span tree (runtime_os.h): `nodes` is a
    node[>..] of GS_SPAN_NODE-byte nodes, and `tree` its header, a field
@@ -240,3 +370,7 @@ GS_API void gs_slice_pool_free(gs_rref nodes, void *tree, int64_t idx, int64_t c
                                const gs_loc *at);
 GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int64_t idx,
                                     int64_t ol, int64_t cnt, const gs_loc *at);
+/* slice_pool's trim: discards the complete pages inside every free span of
+   `items`, elements of `elem` bytes; 0 means an OS request failed. */
+GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
+                                  const gs_loc *at);

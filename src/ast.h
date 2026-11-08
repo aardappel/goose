@@ -835,6 +835,8 @@ enum NodeKind : uint8_t {
     NK_LoopExpr,
     NK_ForLoop,
     NK_ConstFor,
+    NK_ConstIf,
+    NK_ConstQuery,
     NK_Return,
     NK_Break,
     NK_Continue,
@@ -1069,6 +1071,9 @@ NODE(Dot)
     string_view name;
     string_view ns;                 // For a UFCS call: the namespace of the declaration
                                     // this was written in, where the function resolves first.
+    // `Name<T>.Variant`, a payload-less variant constant of a generic enum:
+    // the enum type as written (obj is the Ident `Name`).
+    TypeExpr *enumtype = nullptr;
     // Filled by typecheck: field access, builtin property (.len/.cap), or a
     // payload-less variant constant (obj names the enum type).
     int fieldidx = -1;
@@ -1365,6 +1370,38 @@ NODE(ConstFor)
     bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
     vector<MatchArm> arms;
     ConstFor(Line l) : Node(l, NKind) {}
+NODE_END
+
+// A compile-time query, valid in a `const if` condition only (const_for.md
+// §11.3): `has_default<A>` of a fields<T> accessor binding, or `same<T1, T2>`
+// of two types.
+enum QueryKind { Q_HAS_DEFAULT, Q_SAME };
+
+NODE(ConstQuery)
+    QueryKind query;
+    string_view name;               // has_default: the accessor binding, as written.
+    vector<TypeExpr *> types;       // same: the two types.
+    // Filled by cloning under an expansion, as a Dot's accessor is: the
+    // field the binding stands for, in its owning struct or variant type.
+    TypeExpr *owner = nullptr;
+    string_view field;
+    ConstQuery(Line l, QueryKind _query, string_view _name)
+        : Node(l, NKind), query(_query), name(_name) {}
+NODE_END
+
+// One branch of a `const if`: its condition, null for the final else, and
+// fragments of the enclosing list's category, as a ConstFor's are.
+struct ConstIfBranch {
+    Node *cond = nullptr;
+    Block *body = nullptr;          // Statement fragments, or null for initializer or arm fragments.
+    vector<FieldInit> inits;
+    vector<MatchArm> arms;
+};
+
+NODE(ConstIf)
+    vector<ConstIfBranch> branches;
+    bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
+    ConstIf(Line l) : Node(l, NKind) {}
 NODE_END
 
 NODE(Return)
@@ -1771,6 +1808,9 @@ struct VarDef {
     // that class's storage holds (RootAlt::classread).
     Roots contents;
     bool contentbyteview = false; // A stored reference may view raw typed storage.
+    // A store other than a parameter's binding has been made into it, in
+    // any round of a cycle's check (TypeCheck::HeldParam).
+    bool storedinto = false;
     // A literal parameter (§7.7): reads as a constant of unknown value.
     // A function-value parameter bound from one stands for that one.
     bool unsized = false;
@@ -2103,6 +2143,10 @@ struct StoreEvent {
     // rooted at the class still names it as the container it was read out
     // of (RootAlt::from).
     bool classread = false;
+    // The contents a by-value holder parameter was passed, where they are not
+    // one array exactly (RootArg::heldexact): its class only bounds them, and
+    // no store in the body put them there.
+    bool incoming = false;
 };
 
 // A shrink, and a reference, slice or holder still used after it that only
@@ -2146,6 +2190,11 @@ struct RetRoot {
     bool byteview = false;
     bool freshview = false;    // Prov::freshview.
     bool set = false;          // A non-null return has recorded its root.
+    // The by-value holder parameter every return gives as it was passed,
+    // nothing stored into it since its binding: the result holds what the
+    // argument held (TypeCheck::CallResult). -1 where any return gives
+    // something else.
+    int heldparam = -1;
 };
 
 // A literal parameter's contact with a type (§7.7): what the literal at
@@ -2249,6 +2298,14 @@ struct FnRecord {
     vector<ShrinkOrder> shrinkorders;
     size_t eventstart = 0;         // storeevents.size() when the body's check began.
     size_t eventend = 0;           // And when it ended.
+    // Where those events pointed as the check left them, at the body's
+    // classes: each call maps them afresh, where a call before it left them
+    // mapped for its own arguments (TypeCheck::ApplyCalleeStores).
+    struct BodyEvent {
+        VarDef *container, *root, *src;
+        bool exact, classread;
+    };
+    vector<BodyEvent> bodyevents;
 };
 
 // One monomorphic specialization of a function: the unit of typechecking and
@@ -2490,20 +2547,18 @@ struct Ast {
     struct ImportSite { Line line; Line end; string path; };
     vector<ImportSite> imports;
 
-    // The text the terminal shows for d (RenderDiagnostic), the source line
-    // it is on included where `withsource`: an error echoes its line, a
-    // warning does not.
-    string DiagnosticText(const Diagnostic &d, bool withsource) const {
+    // The text the terminal shows for d (RenderDiagnostic), with the source
+    // line it is on and a caret under its range.
+    string DiagnosticText(const Diagnostic &d) const {
         auto known = d.where.fileidx >= 0 && d.where.fileidx < (int)sources.size();
         return RenderDiagnostic(d, known ? sources[d.where.fileidx].first : string(),
-                                known && withsource ? string_view(*sources[d.where.fileidx].second)
-                                                    : string_view(),
-                                false);
+                                known ? string_view(*sources[d.where.fileidx].second)
+                                      : string_view());
     }
 
     void Warn(Diagnostic d) {
         d.warning = true;
-        d.text = DiagnosticText(d, false);
+        d.text = DiagnosticText(d);
         Emit(d);
     }
 
@@ -2511,7 +2566,7 @@ struct Ast {
     // as text or through the sink, and kept in `errors`.
     void Report(Diagnostic d) {
         d.warning = false;
-        if (d.text.empty()) d.text = DiagnosticText(d, true);
+        if (d.text.empty()) d.text = DiagnosticText(d);
         errors.push_back(d);
         Emit(d);
     }

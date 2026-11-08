@@ -68,6 +68,12 @@ inline bool TypeCheck::IsValuelessTail(const Node *n) {
             }
             return false;
         }
+        // Conditions are not evaluated here: every branch's arms count, as
+        // a runtime if's branches do.
+        if (auto ci = Is<ConstIf>(x)) {
+            for (auto &br : ci->branches) if (arms(br.arms)) return true;
+            return false;
+        }
         if (auto l = Is<LoopExpr>(x)) return !BreaksWithValue(l->body);
         if (auto b = Is<Block>(x)) return walk(b->tail);
         if (auto e = Is<EarlyBlock>(x)) return walk(e->body);
@@ -76,23 +82,26 @@ inline bool TypeCheck::IsValuelessTail(const Node *n) {
     return walk(n);
 }
 
-inline Node *TypeCheck::ExpansionConstant(Node *n, set<VarDecl *> &visiting) {
+// The constant a `const for` source entry or a `const if` operand (`what`)
+// is, as a literal node: a typed or adaptable integer, a float, a bool or a
+// string (const_for.md §3.3, §11.2).
+inline Node *TypeCheck::ExpansionConstant(Node *n, set<VarDecl *> &visiting, const char *what) {
     // Checking a named global may have inserted its ordinary integer-to-
     // float conversion. This is not permission for a source-level cast.
     if (auto a = Is<AsCast>(n); a && a->implicit) {
-        auto c = ExpansionConstant(a->child, visiting);
+        auto c = ExpansionConstant(a->child, visiting, what);
         if (auto i = Is<IntLit>(c)) {
             auto f = ast.New<FltLit>(n->line, i->uns ? (double)(uint64_t)i->val : (double)i->val);
             f->fixedtype = a->type;
             if (a->type->fltstorage == FS_F32) f->val = (float)f->val;
             return f;
         }
-        Error(n, "unsupported conversion in const for constant source");
+        Error(n, cat("unsupported conversion in ", what));
     }
     Val v;
     bool literal;
     set<VarDecl *> integers;
-    ConstUse use { n, "const for source" };
+    ConstUse use { n, what };
     if (ConstIntValue(n, v, literal, integers, &use)) {
         // `~c` (Val::notconst) stays one, to adapt where the entry is used.
         if (v.notconst)
@@ -114,17 +123,18 @@ inline Node *TypeCheck::ExpansionConstant(Node *n, set<VarDecl *> &visiting) {
     if (auto id = Is<Ident>(n)) {
         auto g = ast.LookupGlobal(id->name, id->ns);
         if (g && !g->isvar && g->inits.size() == 1) {
-            if (!visiting.insert(g).second) Error(n, "cycle in const for constant initializer");
+            if (!visiting.insert(g).second) Error(n, cat("cycle in ", what, " constant initializer"));
             use.named = g->defs[0];
             RelyOnConstant(use, g->defs[0]);
-            auto c = ExpansionConstant(g->inits[0], visiting);
+            auto c = ExpansionConstant(g->inits[0], visiting, what);
             visiting.erase(g);
             auto t = g->defs[0]->type ? g->defs[0]->type : g->type;
             if (t && t->kind == TY_FLT) {
                 if (auto i = Is<IntLit>(c))
                     c = ast.New<FltLit>(n->line, i->uns ? (double)(uint64_t)i->val : (double)i->val);
                 auto f = Is<FltLit>(c);
-                if (!f) Error(n, "const for named floating constant requires a numeric constant initializer");
+                if (!f) Error(n, cat("named floating constant in ", what,
+                                     " requires a numeric constant initializer"));
                 if (g->type || !g->defs[0]->constlit) f->fixedtype = ast.PlainOf(t);
                 if (t->fltstorage == FS_F32) f->val = (float)f->val;
                 return c;
@@ -134,7 +144,153 @@ inline Node *TypeCheck::ExpansionConstant(Node *n, set<VarDecl *> &visiting) {
             if (Is<StrLit>(c) && (!t || (t->kind == TY_SLICE && IsU8(t->sub)))) return c;
         }
     }
-    Error(n, "const for source requires a scalar or string constant, or supported integer constant expression");
+    Error(n, cat(what, " requires a scalar or string constant, or supported integer constant expression"));
+}
+
+// The kind of the literal ExpansionConstant gives, for diagnostics.
+static const char *ConstantKind(const Node *c) {
+    return Is<FltLit>(c) ? "float" : Is<BoolLit>(c) ? "bool" : Is<StrLit>(c) ? "string" : "integer";
+}
+static string AConstantKind(const Node *c) {
+    auto k = ConstantKind(c);
+    return cat(*k == 'i' ? "an " : "a ", k);
+}
+
+static bool CompareResult(TType op, int cmp) {
+    switch (op) {
+        case T_EQ: return cmp == 0;
+        case T_NEQ: return cmp != 0;
+        case T_LT: return cmp < 0;
+        case T_LTEQ: return cmp <= 0;
+        case T_GT: return cmp > 0;
+        default: return cmp >= 0;
+    }
+}
+
+// A comparison in a `const if` condition: two constant operands of one kind
+// (const_for.md §11.2). Integers unify as constant arithmetic unifies them
+// (ConstIntValue's binary case); an integer beside a float converts (§6.3);
+// booleans and strings take `==` and `!=` only.
+inline bool TypeCheck::ConstComparison(Binary *b) {
+    auto what = "const if condition";
+    ConstNames(b->left, what);
+    ConstNames(b->right, what);
+    Val l, r;
+    bool llit, rlit;
+    set<VarDecl *> visiting;
+    ConstUse use { b, what };
+    auto lint = ConstIntValue(b->left, l, llit, visiting, &use);
+    auto rint = ConstIntValue(b->right, r, rlit, visiting, &use);
+    if (lint && rint) {
+        auto lf = l, rf = r;
+        if (!llit) lf.ck = CK_NONE;
+        if (!rlit) rf.ck = CK_NONE;
+        auto t = UnifyNumeric(b, b->op, lf, rf, l.type, r.type, true);
+        auto cmp = IsUnsigned(t->intstorage)
+            ? ((uint64_t)l.ival > (uint64_t)r.ival) - ((uint64_t)l.ival < (uint64_t)r.ival)
+            : (l.ival > r.ival) - (l.ival < r.ival);
+        return CompareResult(b->op, cmp);
+    }
+    // A query is a bool constant, as a named one is.
+    auto operand = [&](Node *n) -> Node * {
+        if (auto q = Is<ConstQuery>(n)) return ast.New<BoolLit>(n->line, ConstQueryValue(q));
+        return ExpansionConstant(n, visiting, what);
+    };
+    auto lc = operand(b->left), rc = operand(b->right);
+    if (Is<FltLit>(lc) || Is<FltLit>(rc)) {
+        auto value = [&](Node *c, bool isint, const Val &v) -> double {
+            if (auto f = Is<FltLit>(c)) return f->val;
+            if (isint) return v.uns ? (double)(uint64_t)v.ival : (double)v.ival;
+            Error(b, cat(what, " compares a float with ", AConstantKind(c)));
+        };
+        auto lv = value(lc, lint, l), rv = value(rc, rint, r);
+        return CompareResult(b->op, (lv > rv) - (lv < rv));
+    }
+    auto lk = ConstantKind(lc), rk = ConstantKind(rc);
+    if (strcmp(lk, rk) != 0)
+        Error(b, cat(what, " compares ", AConstantKind(lc), " with ", AConstantKind(rc)));
+    if (b->op != T_EQ && b->op != T_NEQ)
+        Error(b, cat(lk, " constants compare with == and != only in a ", what));
+    auto equal = Is<StrLit>(lc) ? Is<StrLit>(lc)->val == Is<StrLit>(rc)->val
+                                : Is<BoolLit>(lc)->val == Is<BoolLit>(rc)->val;
+    return equal == (b->op == T_EQ);
+}
+
+inline bool TypeCheck::ConstQueryValue(ConstQuery *q) {
+    if (q->query == Q_HAS_DEFAULT) {
+        if (!q->owner)
+            Error(q, cat("has_default<", q->name, "> requires ", q->name,
+                         " to be a fields<T> accessor binding in scope"));
+        // Only a written `= ...` counts, whatever the field's type defaults
+        // to on its own; the expression itself is not evaluated.
+        auto owner = ast.PlainOf(q->owner);
+        auto &fields = owner->kind == TY_VARIANT ? owner->var->variant->fields
+                                                 : GetStructInst(owner)->st->fields;
+        for (auto &f : fields) if (f.name == q->field) return f.defaultval != nullptr;
+        Error(q, cat("internal: has_default of unknown field ", q->field));
+    }
+    TypeExpr *ts[2];
+    for (size_t i = 0; i < 2; i++) {
+        auto raw = q->types[i];
+        ConstNamesIn(raw);
+        auto t = Subst(raw);
+        // Validation reports an unknown name before it could pass as a generic.
+        if (t->kind != TY_FN) ValidateType(t, q->line, VT_POINTEE);
+        if (HasGenerics(t)) Error(q, cat("same requires concrete types, got ", TypeStr(t)));
+        ts[i] = t;
+    }
+    return TypeEq(ts[0], ts[1]);
+}
+
+// A `const if` condition's value in this specialization (const_for.md
+// §11.2): boolean constants and queries, `!`, `&&`, `||`, and comparisons of
+// constant operands. Anything else is an error, never a runtime branch.
+inline bool TypeCheck::ConstCondition(Node *n) {
+    if (auto b = Is<BoolLit>(n)) return b->val;
+    if (auto q = Is<ConstQuery>(n)) return ConstQueryValue(q);
+    if (auto u = Is<Unary>(n); u && u->op == T_NOT) return !ConstCondition(u->child);
+    if (auto b = Is<Binary>(n)) {
+        switch (b->op) {
+            case T_ANDAND: case T_OROR: {
+                // Both operands are conditions, whichever decides the result.
+                auto l = ConstCondition(b->left);
+                auto r = ConstCondition(b->right);
+                return b->op == T_ANDAND ? l && r : l || r;
+            }
+            case T_EQ: case T_NEQ: case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:
+                return ConstComparison(b);
+            default: break;
+        }
+    }
+    auto what = "const if condition";
+    if (Is<Ident>(n) || Is<IntLit>(n) || Is<FltLit>(n) || Is<StrLit>(n) || Is<Unary>(n) ||
+        Is<Binary>(n)) {
+        ConstNames(n, what);
+        set<VarDecl *> visiting;
+        auto c = ExpansionConstant(n, visiting, what);
+        if (auto bl = Is<BoolLit>(c)) return bl->val;
+        Error(n, cat(what, " requires a bool, not ", AConstantKind(c), ": ", ExprStr(n)));
+    }
+    Error(n, cat(what, " requires a constant: ", ExprStr(n), " is not one"));
+}
+
+inline ConstIfBranch *TypeCheck::SelectBranch(ConstIf *ci) {
+    for (auto &br : ci->branches)
+        if (!br.cond || ConstCondition(br.cond)) return &br;
+    return nullptr;
+}
+
+// A `const if` in a statement list: the chosen branch's block, in a block
+// standing for the selection as ExpandStatements's stands for an expansion,
+// and empty where no branch is chosen. The block is a plain scope, not an
+// expansion boundary: `break` and `continue` leave it as they leave an
+// `if`'s branch. The branch not chosen is never checked.
+inline Block *TypeCheck::ExpandSelection(ConstIf *ci) {
+    auto out = ast.New<Block>(ci->line);
+    out->origin = ci->Origin();
+    out->expansiontrace = ci->expansiontrace;
+    if (auto br = SelectBranch(ci)) out->stmts.push_back(br->body);
+    return out;
 }
 
 inline void TypeCheck::ExpandConstFor(ConstFor *cf, const function<void(ExpansionClone &)> &emit) {
@@ -226,44 +382,57 @@ inline Block *TypeCheck::ExpandStatements(ConstFor *cf) {
 }
 
 // A match's arm list with each `const for` of arms replaced by its arms, one
-// set per entry, in place: the ordinary match checks then see every arm.
+// set per entry, and each `const if` by its chosen branch's arms, in place:
+// the ordinary match checks then see every arm.
 inline void TypeCheck::ExpandArms(vector<MatchArm> &arms) {
     if (none_of(arms.begin(), arms.end(), [](const MatchArm &a) { return a.expansion != nullptr; }))
         return;
     vector<MatchArm> flat;
     for (auto &arm : arms) {
+        vector<MatchArm> generated;
         if (auto cf = Is<ConstFor>(arm.expansion)) {
-            vector<MatchArm> generated;
             ExpandConstFor(cf, [&](ExpansionClone &) {
                 for (auto &a : cf->arms) {
                     generated.push_back(CloneArm(ast, a));
                     generated.back().generated = true;
                 }
             });
-            ExpandArms(generated);
-            flat.insert(flat.end(), generated.begin(), generated.end());
+        } else if (auto ci = Is<ConstIf>(arm.expansion)) {
+            // Arms chosen inside a const for's arms are generated ones too.
+            if (auto br = SelectBranch(ci))
+                for (auto &a : br->arms) {
+                    generated.push_back(a);
+                    generated.back().generated |= arm.generated;
+                }
         } else {
             flat.push_back(arm);
+            continue;
         }
+        ExpandArms(generated);
+        flat.insert(flat.end(), generated.begin(), generated.end());
     }
     arms = std::move(flat);
 }
 
 inline void TypeCheck::ExpandInitializers(vector<FieldInit> &inits) {
-    if (none_of(inits.begin(), inits.end(), [](const FieldInit &fi) { return Is<ConstFor>(fi.val); }))
-        return;
+    auto expansion = [](const FieldInit &fi) { return Is<ConstFor>(fi.val) || Is<ConstIf>(fi.val); };
+    if (none_of(inits.begin(), inits.end(), expansion)) return;
     vector<FieldInit> flat;
     for (auto &fi : inits) {
+        vector<FieldInit> generated;
         if (auto cf = Is<ConstFor>(fi.val)) {
-            vector<FieldInit> generated;
             ExpandConstFor(cf, [&](ExpansionClone &) {
                 for (auto &entry : cf->inits) generated.push_back(ast.CloneFieldInit(entry));
             });
-            ExpandInitializers(generated);
-            flat.insert(flat.end(), generated.begin(), generated.end());
+        } else if (auto ci = Is<ConstIf>(fi.val)) {
+            if (auto br = SelectBranch(ci))
+                for (auto &entry : br->inits) generated.push_back(entry);
         } else {
             flat.push_back(fi);
+            continue;
         }
+        ExpandInitializers(generated);
+        flat.insert(flat.end(), generated.begin(), generated.end());
     }
     inits = std::move(flat);
 }
