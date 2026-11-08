@@ -818,15 +818,16 @@ module.exports = grammar({
     identifier: _ => /[A-Za-z_][A-Za-z0-9_]*/,
 
     int_literal: _ => token(choice(
-      /[0-9]+/,
-      /0[xX][0-9a-fA-F]+/,
+      /[0-9]+(_[0-9]+)*/,
+      /0[xX][0-9a-fA-F]+(_[0-9a-fA-F]+)*/,
     )),
 
     // A `.` starts a fraction only when a digit follows, so `1..2` is a range.
+
     float_literal: _ => token(choice(
-      /[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?/,
-      /[0-9]+[eE][+-]?[0-9]+/,
-      /0[xX][0-9a-fA-F]+(\.[0-9a-fA-F]+)?[pP][+-]?[0-9]+/,
+      /[0-9]+(_[0-9]+)*\.[0-9]+(_[0-9]+)*([eE][+-]?[0-9]+(_[0-9]+)*)?/,
+      /[0-9]+(_[0-9]+)*[eE][+-]?[0-9]+(_[0-9]+)*/,
+      /0[xX][0-9a-fA-F]+(_[0-9a-fA-F]+)*(\.[0-9a-fA-F]+(_[0-9a-fA-F]+)*)?[pP][+-]?[0-9]+(_[0-9]+)*/,
     )),
 
     // An integer constant.

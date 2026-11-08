@@ -379,55 +379,70 @@ struct Lexer {
 
             default: {
                 if (isdigit((uint8_t)c)) {
+                    auto ScanDigits = [&](auto is_digit) {
+                        while (is_digit((uint8_t)*p) || *p == '_') {
+                            if (*p == '_' &&
+                                (!is_digit((uint8_t)p[-1]) ||
+                                 !is_digit((uint8_t)p[1])))
+                                Error("invalid numeric separator");
+                            p++;
+                        }
+                    };
+                    auto CleanNumber = [&](const char *begin) {
+                        string result;
+                        for (auto q = begin; q < p; q++)
+                            if (*q != '_') result += *q;
+                        return result;
+                    };
                     if (c == '0' && (*p == 'x' || *p == 'X')) {
                         p++;
                         auto numstart = p;
-                        while (isxdigit((uint8_t)*p)) p++;
+                        ScanDigits([](uint8_t ch) { return isxdigit(ch); });
                         if (p == numstart) Error("hex digits expected after 0x");
                         // C99-style hex floats: 0x1.8p3 (binary exponent required).
                         auto ishexfloat = false;
                         if (*p == '.' && isxdigit((uint8_t)p[1])) {
                             ishexfloat = true;
                             p++;
-                            while (isxdigit((uint8_t)*p)) p++;
+                            ScanDigits([](uint8_t ch) { return isxdigit(ch); });
                         }
                         if (*p == 'p' || *p == 'P') {
                             ishexfloat = true;
                             p++;
                             if (*p == '+' || *p == '-') p++;
                             if (!isdigit((uint8_t)*p)) Error("exponent digits expected in hex float");
-                            while (isdigit((uint8_t)*p)) p++;
+                            ScanDigits([](uint8_t ch) { return isdigit(ch); });
                         } else if (ishexfloat) {
                             Error("hex float requires a p exponent");
                         }
                         if (ishexfloat) {
-                            fval = strtod(string(start, p).c_str(), nullptr);
+                            fval = strtod(CleanNumber(start).c_str(), nullptr);
                             Set(T_FLTLIT);
                             return;
                         }
                         errno = 0;
-                        ival = (int64_t)strtoull(string(numstart, p).c_str(), nullptr, 16);
+                        ival = (int64_t)strtoull(CleanNumber(numstart).c_str(), nullptr, 16);
                         if (errno) Error("hex literal too large for 64 bits");
                         iuns = ival < 0;
                         Set(T_INTLIT);
                         return;
                     }
-                    while (isdigit((uint8_t)*p)) p++;
+                    ScanDigits([](uint8_t ch) { return isdigit(ch); });
                     // A '.' only makes this a float if a digit follows; "1..2" must
                     // lex as int, "..", int.
                     auto isfloat = *p == '.' && isdigit((uint8_t)p[1]);
                     if (isfloat) {
                         p++;
-                        while (isdigit((uint8_t)*p)) p++;
+                        ScanDigits([](uint8_t ch) { return isdigit(ch); });
                     }
                     if ((*p == 'e' || *p == 'E') &&
                         (isdigit((uint8_t)p[1]) ||
                          ((p[1] == '+' || p[1] == '-') && isdigit((uint8_t)p[2])))) {
                         isfloat = true;
                         p += 2;
-                        while (isdigit((uint8_t)*p)) p++;
+                        ScanDigits([](uint8_t ch) { return isdigit(ch); });
                     }
-                    auto text = string(start, p);
+                    auto text = CleanNumber(start);
                     if (isfloat) {
                         fval = strtod(text.c_str(), nullptr);
                         Set(T_FLTLIT);
