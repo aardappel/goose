@@ -650,7 +650,18 @@ def check_lsp_protocol(exe, base):
     if len(edits) != 2:
         fail("safe Unicode-position rename has wrong edits", result)
     renamed_body = apply(body, edits)
-    for candidate, expected in ((body, "3\n"), (body.replace("first", "second"), "4\n"), (renamed_body, "3\n")):
+    before = body[:body.index("unrelated")]
+    function_params = {"textDocument": {"uri": uri}, "position": {
+        "line": before.count("\n"), "character": len(before.rsplit("\n", 1)[-1].encode("utf-16-le")) // 2}}
+    result = two.request("textDocument/rename", {**function_params, "newName": "x"})
+    function_body = apply(body, result.get("changes", {}).get(uri, []))
+    if function_body != body.replace("fn unrelated(", "fn x("):
+        fail("function rename to a stdlib parameter name has wrong edits", result)
+    result = two.request("textDocument/rename", {**function_params, "newName": "abs"}, raw=True)
+    if result.get("error", {}).get("code") != -32803:
+        fail("function rename to a stdlib declaration was not refused", result)
+    for candidate, expected in ((body, "3\n"), (body.replace("first", "second"), "4\n"),
+                               (renamed_body, "3\n"), (function_body, "3\n")):
         safety.write_text(candidate, encoding="utf-8")
         code, out, err = tc.run_capture([exe, "run", str(safety), "--offline"])
         if code or out != expected:
