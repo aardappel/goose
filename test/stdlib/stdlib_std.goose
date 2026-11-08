@@ -12,8 +12,9 @@ fn scalars() {
     print(sign(-9), " ", sign(0), " ", sign(4), " ", sign(-0.5), " ", sign(2.0));        // -1 0 1 -1.0 1.0
     print(lerp(0.0, 10.0, 0.25));                                                      // 2.5
     let max_pow2: i64 = 1 << 62;
-    print(next_pow2(-10), " ", next_pow2(0), " ", next_pow2(1), " ", next_pow2(5), " ", next_pow2(64));     // 1 1 1 8 64
-    print(next_pow2(max_pow2 - 1) == max_pow2, " ", next_pow2(max_pow2) == max_pow2);                    // true true
+    print(next_pow2(-10), " ", next_pow2(0), " ", next_pow2(1), " ", next_pow2(5), " ",
+          next_pow2(64));                                                              // 1 1 1 8 64
+    print(next_pow2(max_pow2 - 1) == max_pow2, " ", next_pow2(max_pow2) == max_pow2);  // true true
     print(popcount(255), " ", popcount(0), " ", clz(1), " ", ctz(8), " ", clz(0));      // 8 0 63 3 64
     let top: u64 = 0x8000000000000000;
     let ones: u64 = 0xffffffffffffffff;
