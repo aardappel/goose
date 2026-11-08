@@ -3891,6 +3891,126 @@ inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
     return spec;
 }
 
+// Whether pool.apply's worker sf takes a growable output of its own first,
+// a T[>..]& (Call::pool_growable), rather than a chunk T[:] of the array
+// chunks() names: as its first parameter is written, whatever else about
+// it EnsurePoolSpec then rejects.
+inline bool TypeCheck::PoolGrowableParam(SFunction *sf) {
+    if (sf->params.empty() || !sf->params[0].type) return false;
+    auto t = sf->params[0].type;
+    return t->kind == TY_REF && t->ref->sub->kind == TY_ARRAY &&
+           t->ref->sub->arr->akind == A_GROW;
+}
+
+// The specialization pool.apply runs as each task, whose first parameter is
+// chunktype: the chunk T[:] it writes, or the T[>..]& it grows, which a
+// task starts empty on stacks of its own (PoolGrowableParam).
+inline FnSpec *TypeCheck::EnsurePoolSpec(SFunction *sf, TypeExpr *chunktype, bool &has_idx,
+                                         size_t nextra, Line l) {
+    if (sf->brokensig) throw Abandoned {};
+    if (sf->isthread)
+        Error(l, cat("pool.apply takes a regular fn, not thread_fn ", sf->name));
+    if (sf->isextern)
+        Error(l, cat("pool.apply cannot dispatch extern fn ", sf->name));
+    if (sf->isnested)
+        Error(l, cat("pool.apply requires a top-level fn, not nested fn ", sf->name));
+    if (!sf->generics.empty())
+        Error(l, cat("pool.apply worker fn ", sf->name, " cannot have generic type parameters"));
+    if (sf->has_rets)
+        Error(l, cat("pool.apply worker fn ", sf->name, " cannot return values"));
+    for (auto &p : sf->params)
+        if (!p.type)
+            Error(l, cat("pool.apply worker fn ", sf->name, " needs fully typed parameters"));
+    if (sf->params.size() == 1 + nextra) {
+        has_idx = false;
+    } else if (sf->params.size() == 2 + nextra &&
+               Subst(sf->params[1].type)->kind == TY_INT &&
+               Subst(sf->params[1].type)->intstorage == IS_I64 &&
+               !Subst(sf->params[1].type)->ix) {
+        has_idx = true;
+    } else {
+        Error(l, cat("pool.apply(", sf->name, ", ...): ", sf->name, " takes ",
+                     (int64_t)sf->params.size(), " parameter(s), expected (",
+                     IsPlainRef(chunktype) ? "out: " : "chunk: ", TypeStr(chunktype),
+                     ", [idx: i64, ]...) matching ", (int64_t)nextra, " extra argument(s)"));
+    }
+    for (auto sp : sf->specs) {
+        if (!sp->poolentry) continue;
+        if (sp->failed) throw Abandoned {};
+        if (!TypeEq(sp->argtypes[0], chunktype))
+            Error(l, cat("pool.apply(", sf->name, ", ...): first parameter of ", sf->name,
+                         " is ", TypeStr(sp->argtypes[0]), ", expected ", TypeStr(chunktype)));
+        return sp;
+    }
+    auto spec = ast.NewFnSpec();
+    spec->sf = sf;
+    spec->poolentry = true;
+    vector<Val> args(sf->params.size());
+    int classes = 0;
+    int pdepth = (int)scopes.size() + 1;
+    for (size_t i = 0; i < sf->params.size(); i++) {
+        auto &p = sf->params[i];
+        auto t = Subst(p.type);
+        ValidateType(t, sf->line, VT_PARAM);
+        RootArg ra;
+        RootArg noview;
+        noview.cls = -1;
+        args[i].type = t;
+        if (i == 0) {
+            if (!TypeEq(t, chunktype))
+                Error(l, cat("pool.apply(", sf->name, ", ...): first parameter ", p.name, " of ",
+                             sf->name, " must be ", TypeStr(chunktype), ", got ", TypeStr(t)));
+            ra.cls = ++classes;
+            ra.depth = pdepth;
+            ra.depthkey = -classes;
+            ra.exact = true;
+            ra.concrete = false;
+            ra.writable = true;
+            auto r = ast.NewVarDef();
+            r->name = p.name;
+            r->depth = pdepth;
+            args[i].Set(r, true);
+            args[i].writable = true;
+        } else if (has_idx && i == 1) {
+            // Validated as i64 above.
+        } else if (t->kind == TY_SLICE && t->cq && ClassOf(t->sub) == SC_FIXED && IsFlat(t->sub)) {
+            ra.cls = ++classes;
+            ra.depth = pdepth;
+            ra.depthkey = -classes;
+            ra.exact = true;
+            ra.concrete = false;
+            ra.writable = false;
+            auto r = ast.NewVarDef();
+            r->name = p.name;
+            r->depth = pdepth;
+            args[i].Set(r, true);
+            args[i].writable = false;
+        } else if (IsPlainRef(t) && !t->ref->optional && t->cq &&
+                   ClassOf(t->ref->sub) == SC_FIXED && IsFlat(t->ref->sub)) {
+            ra.cls = ++classes;
+            ra.depth = pdepth;
+            ra.depthkey = -classes;
+            ra.exact = true;
+            ra.concrete = false;
+            ra.writable = false;
+            auto r = ast.NewVarDef();
+            r->name = p.name;
+            r->depth = pdepth;
+            args[i].Set(r, true);
+            args[i].writable = false;
+        } else if (!IsFlat(t)) {
+            Error(l, cat("pool.apply extra parameter ", p.name, " of ", sf->name,
+                         " must be flat or const (`const T&` / `const T[:]`), not ", TypeStr(t)));
+        }
+        spec->argtypes.push_back(t);
+        spec->roots.push_back(ra);
+        spec->views.push_back(noview);
+    }
+    sf->specs.push_back(spec);
+    CheckSpecBody(spec, &args, l);
+    return spec;
+}
+
 // ------------------------------------------------------------------
 // Calling a function value F(a): the body is cloned and checked inline
 // in the lexical environment it was written in (§7.6).
@@ -4031,6 +4151,9 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
             DestScope rd(*this, dest);
             v = CheckValue(c->fvbody->tail, nullptr);
             NoRelRefCopy(c->fvbody->tail, v.type);
+            // The result is a copy of the tail (TempCopy, below), which of a
+            // thread_pool in storage is a second handle to its pool.
+            if (v.type && v.type->kind == TY_POOL) RequireCopyable(v, c->fvbody->tail, v.type);
         }
     }
     // Storage provenance is supplied independently of a destination type:

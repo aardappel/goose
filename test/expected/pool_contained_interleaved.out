@@ -1,0 +1,5 @@
+task on 1 worker(s): false assert failed [2]
+task on 2 worker(s): false assert failed [2]
+worker's pools: 2
+worker: false assert failed
+main runs on

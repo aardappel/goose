@@ -477,8 +477,12 @@ roots. The `TypeCheck` constructor:
 * checks the global initializers in order (a `var` global declared with
   only a type gets its type's default value there, `DefaultValue`, which
   the rest of the compiler sees as if it were written in the source);
-* then checks `main`, then every `thread_fn`, and finally the eligible
-  functions that nothing reached (`CheckUnreached`).
+* then checks `main`, then every `thread_fn`, and then the eligible
+  functions that nothing reached (`CheckUnreached`);
+* and finally checks the globals of every `pool.apply` worker's thread
+  program (`CheckThreadGlobals`, §3.14). A worker is specialized where an
+  apply naming it is checked, which for an apply in an export or in code no
+  call reaches is `CheckUnreached`, so this waits until those have run.
 
 That last check covers only top-level functions with fully annotated
 parameters, no generics, and no syntactically detected `return from` to an
@@ -879,6 +883,31 @@ Call synchronization accounts for all stacks reached through root arguments
 and captures; array-view hoisting recognizes component projections. Generated
 C checks exercise these decisions. See [the design and measurements](design/root_structs.md)
 for v1 boundaries, the repeatable native benchmark and deferred ABI work.
+
+**Thread pools** (spec §11.2, `docs/design/parallel_blocks.md`).
+`thread_pool` is the builtin type `TY_POOL` (`Ast::pooltype`), which
+`ResolveTypeNames` makes of the bare name where no declaration or alias
+has it. It is fixed-size (`ClassOf`) but not flat (`IsFlat`), it has no
+image (`ImageSafe`) and no default value (`HasDefault`), so a global needs
+an initializer and a local declared without one is unassigned until its
+first assignment. Like a root owner, a pool is held only by an owning
+declaration: `ValidateType` takes `TY_POOL` for a local, a global and the
+pointee of a reference (`VT_LOCAL`, `VT_GLOBAL`, `VT_POINTEE`) only, and an
+array literal of pools is refused as an element type written out would
+be. A pool is a handle, which a copy would duplicate and a close through
+either copy would leave dangling in the other, so every way of taking a
+pool in storage by value is an error. `ImplicitCopy` counts a pool lvalue,
+a loaded pointee or a reference to a pool as an implicit copy, which
+`RequireCopyable` and `ImplicitCopyError` report, and `CheckBranchCopy`
+too for a construct's value, unless the construct is an argument
+(`argpath`), which binds the pool it chooses to a `thread_pool&`. `copy`
+refuses one, `CheckVarDecl` an un-annotated binding of a reference to one
+and a multi-value binding that is not by reference, `CheckFunValCall` a
+function value whose block's value is one, `CheckInferredResult` and
+`ValidateType` (`VT_RET`) a result, and `AssignableClassCheck` a whole
+assignment. In C a pool is a `gs_pool` (`CT`), the address of the
+runtime's `gs_pool_state` (§7), 8 bytes, and `NULL` once closed; a local
+declared without an initializer starts as `NULL` (`BindLocal`).
 
 An array literal uses its destination's type when one is available.
 Otherwise it is a `T[k]` for fixed-size elements or a `T[]` for non-fixed
@@ -3950,8 +3979,9 @@ not judged at a cast which gets a warning itself.
 Builtins are defined by one X-macro table (`builtins.h`), which drives
 arity, receiver kinds, provenance requirements, simple signatures, and the
 arrays a builtin grows and shrinks. A growth of the receiver, or of the
-`out` argument that `to_bytes` and `thread_wait` take (`BF_OUTARG`), is
-logged under the table's name for it (`grows`, `NoteGrow`). A
+`out` argument that `to_bytes`, `thread_wait` and `apply_contained` take
+(`BF_OUTARG`; `apply_contained`'s is its message buffer), is logged under
+the table's name for it (`grows`, `NoteGrow`). A
 `BF_SHRINKS` receiver gets the shrink checks, and an `e` or `a` argument
 completes a pending `var x = []` receiver.
 `CheckBuiltin` handles the custom ones. `print`/`str`/`format` check
@@ -3974,6 +4004,56 @@ name, as a member, through a function value, as a dispatched case or as a
 callable. `thread_spawn` takes the one `thread_fn` its
 first argument names, and a name with several is ambiguous: the worker's
 arguments do not choose among them.
+
+The thread pool builtins (spec §11.2) are checked in `CheckBuiltin` too.
+`thread_pool(n)` (`B_THREAD_POOL`) takes an `i64` and is a `TY_POOL`, and
+`close` (`B_POOL_CLOSE`) takes a pool variable, or a plain reference to
+one, through which it can be written. `apply` and `apply_contained`
+(`B_APPLY`, `B_APPLY_CONTAINED`) share one check. Their receiver must be a
+pool, and the argument after it a call `chunks(a, x)` as written, which is
+marked `B_CHUNKS`; `chunks` anywhere else is an error. The worker is the
+next argument, or for `apply_contained` the one after it, where the next
+one names no top-level function and is the message buffer instead
+(`Call::pool_has_why`). An argument names the top-level functions of its
+name unless a local, a type parameter or a nested function hides them.
+The worker's first parameter as written says whether it grows an output
+of its own, a `T[>..]&` (`PoolGrowableParam`, `Call::pool_growable`), or
+takes a chunk `T[:]`. The array `a` must be writable, with one exact root
+(`Prov::Exact`, `Root`) and fixed-size flat elements: for a chunk any
+`BR_INDEXABLE` array or a slice, for a growable output a grow-only or
+grow-shrink array whose elements hold no index type. `x` is an `i64`, or
+for a chunk a `const i64[:]` of offsets, which may not have the array's
+root (`Prov::Has`). A growable apply logs the growth of `a` at the call
+(`NoteGrow`) before its later arguments are checked, as a member
+operation's growth of its receiver is (§3.10). The message buffer is
+checked as `thread_wait`'s (`CheckByteOut`), may not have the array's root
+either, and is held as a receiver while the later arguments run
+(`ForOperands`, `HK_RECEIVER`), since it is appended to after them.
+
+`EnsurePoolSpec` (`typecheck_calls.h`) makes the specialization the tasks
+run, the worker's *pool entry* (`FnSpec::poolentry`): one per function,
+shared by every apply that names it, as `EnsureThreadSpec` makes one per
+`thread_fn`. It refuses a `thread_fn`, an `extern fn`, a nested function,
+a generic one, one with results and one with an untyped parameter, and
+takes the second parameter for the chunk's index where the function has
+one more parameter than the apply has extra arguments
+(`Call::pool_has_idx`); that parameter must then be a plain `i64`. Each
+parameter that is a reference or a slice gets a root class of its own at
+a depth past every scope open at the apply (`pdepth`), so that the body
+can store none of them where it would outlive the task: the first
+parameter, the chunk `T[:]` or the output `T[>..]&`, a writable exact
+class that must be of the type `chunks()` gives, and each `const U[:]` or
+`const U&` of a fixed-size flat `U` a read-only one. The index and the
+flat parameters passed by value need no class, and a parameter of any
+other type is an error. The body is checked once with these roots
+(`CheckSpecBody`). Back in `CheckBuiltin`, each extra argument is checked
+at its parameter's type, refused where that type holds an index type
+(`ThreadIndexError`), and, where it is a reference or a slice, refused if
+it may have the array's root. The call keeps the pool entry in
+`Call::spec`, which codegen and the language server read. Its thread
+program's globals are checked last (§3.1), where a global `thread_pool`
+is an error: the copy a task would take is a handle to the threads of the
+instance that made it.
 
 `embed_file(path)` reads a file when the program is compiled
 (`EmbedFile`). The path is a string literal or a `let`/`const` global
@@ -4258,7 +4338,8 @@ saves nothing.
 `Scan` never inlines:
 
 * a `recursive` function or cycle member;
-* a `thread_fn`;
+* a `thread_fn`, or a `pool.apply` worker's pool entry
+  (`FnSpec::poolentry`, §3.14), whose body each task's thunk calls;
 * a `simd` function (its callers would run the baseline only, §6.13);
 * a function returning more than one value. Where that is the only reason
   (`InlineInfo::c_inlinable`) and the thresholds pass at a call site, the
@@ -4716,6 +4797,11 @@ These invalidate facts:
   a shrink or a free may still name, and such a slot stays a value of the
   element type. A resizable array never shrinks while a reference into it
   lives, so its growth fills fresh slots only;
+* a thread pool's apply, which writes the array `chunks()` names, through
+  its tasks or by appending what they grew: what is known of that array's
+  storage and length is killed as for a callee's write through it
+  (`KillArgStorage`). `apply_contained`'s message buffer takes the kill a
+  growth gives, as `thread_wait`'s does (`GrowShrinkKill`);
 * a repeated declaration inside a loop;
 * a call.
 
@@ -5733,6 +5819,55 @@ on macOS the wait is for a relative time
 or a thread's arguments as no bytes, and the receiver zeroes the object C
 gives it rather than reading past the image.
 
+**Thread pools.** `thread_pool(n)` is `gs_pool_create(n, file, line)`,
+with `gs_hardware_threads()` for a missing `n`, and `close` is
+`gs_pool_destroy` on the pool's variable, reached through the reference
+where it is one, which is then set to `NULL`. Nothing else destroys a pool:
+no scope exit emits either (`run_tests.py` reads the C of
+`pool_close.goose` for that).
+
+`EmitPoolApply` (`codegen_builtins.h`) emits `pool.apply` and
+`pool.apply_contained`. The worker's pool entry gets a thread entry's
+thunk (`EnsureThreadThunk`, `EmitThreadThunk`), which opens the thread
+program's stack block, unpacks the packet, fills a fresh globals instance
+and calls the body. For a growable output (`Call::pool_growable`), the
+first argument is instead an empty `T[>..]` on a stack of its own that the
+thunk reserves, and once the body has returned, `gs_pool_keep` copies its
+elements into the task's output slot, before the worker rewinds its
+stacks. The apply resolves the pool's variable first (`RecvLoc`), but
+reads the handle out of it only once the arguments it evaluates up front
+have run, and checks it then (`gs_pool_check_open`, `GS_E_POOLCLOSED`),
+since an argument may have closed the pool and freed what the handle
+pointed at. Up front, in order, it evaluates the array's elements and
+length (`ArrayView`), or the output's location (`RecvLoc`) and the task
+count; the chunk size, checked against zero (`GS_E_CHUNKSIZE`, as the
+task count is), or the offsets slice; the message buffer, whose address it
+takes there (`PinMessageBuffer`); and, into a C local, every extra argument
+whose fixed size is one byte or more (`FixedSize(pt) > 0`). A growable apply
+then asks the pool for its output slots (`gs_pool_outs_new`). The loop over
+the chunks computes each chunk's slice, checking an offsets pair before it
+uses it (`GS_E_CHUNKBOUNDS`), and builds the task's packet on a scratch
+stack (`BytesTemp`): the chunk, or the address of the task's output slot;
+the index, where the worker takes it; the extra arguments, each one held
+in a local copied from it, and any other constructed into the packet as
+`thread_spawn` builds its own, so that it is evaluated once per task: one
+of a variable-size or resizable type, and one of a fixed-size type whose
+values take no bytes, a `T[0]` or a variant type with no payload (spec
+§11.2; `threads/pool_arg_evaluation.goose` counts them); and the images of
+the globals the worker's program uses (`ThreadGlobals`). Where a packet
+constructed an argument, the pool is read and checked again, and the task
+goes to `gs_pool_spawn`, or to `gs_pool_spawn_contained` with the apply's
+batch. The loop and the wait after it are a sync point for every cached
+stack top, as a call that reaches every stack is (`MarkFlush`,
+`MarkReload`, §6.10). `gs_pool_wait` ends a plain apply. A contained one
+ends with `gs_pool_wait_contained`, whose answer is the call's value and
+which hands over the first abort's message where there is a buffer. Then,
+for a growable output, the slots' elements are appended to the output in
+task order, at its stack top as an append writes them, if every task
+returned (`AppendPoolOuts`, which frees the slots), and last the message
+is appended to the buffer and freed (`AppendMessage`, as
+`thread_wait(id, msg)` appends its message).
+
 ### 6.9 Generated walkers
 
 Codegen generates these per type, on demand:
@@ -6480,7 +6615,9 @@ A thread program's stacks
 are kept in a block reached through the thread-local `gs_stks`. Since the
 compiler knows how many there are, all of them are reserved as the thread
 program starts (`gs_stack_block`, called from `gs_rt_init` for main and from
-its entry thunk for a worker). A worker's stacks are released when it exits.
+its entry thunk for a worker). A worker's stacks are released when it exits;
+a thread pool's threads keep theirs mapped from one task to the next
+(**Thread pools**, below).
 Every region owned by the current thread program is registered
 thread-locally, so that the fault handler never touches another worker's
 state. The registry is sized to the program's region count; the runtime
@@ -6578,6 +6715,82 @@ goes into `gs_aborted` and stays there until the first wait that asks for it
 takes it out, so that list holds only the messages no wait has taken. The
 bit is never cleared. `gs_panic`, `gs_exit`, and the fault handlers still
 end the process.
+
+**Thread pools** (spec §11.2, `runtime_threads.h`). A pool
+(`gs_pool_state`) is a mutex, a queue of tasks in the order they were
+handed over (`gs_pool_task`: the runner, the worker's thunk, a `malloc`'d
+copy of the packet and a contained task's batch), a count of the tasks not
+yet finished, and condition variables for work and for the end of it.
+`gs_pool_create(n, file, line)` aborts with `GS_E_POOLTHREADS` where `n` is
+zero or less, and otherwise starts `n - 1` threads of the pool's own
+(`gs_pool_worker_main`, each of which opens its region registry,
+`gs_regions_begin(gs_workerregions)`, and prepares its native stack,
+`gs_native_stack_init`, once), gives the thread that will apply the pool a
+registry and a worker id the pool keeps for it (`caller_regions`,
+`caller_thread_id`), and lists the pool among the live ones
+(`gs_live_pools`). `gs_pool_submit` queues a task and wakes a thread.
+`gs_pool_wait` makes the thread applying the pool its last worker: it runs
+the tasks no pool thread has taken yet itself, then waits for those still
+running. A pool of one worker, with no thread of its own, so runs every
+task on that thread, in the order they were handed over. A task's runner,
+`gs_pool_run` (`runtime.h`), runs it as a thread program: it puts the
+thread's stack block and globals instance aside (`gs_stks`, `gs_nstks`,
+`gs_gl`), runs the thunk, releases the task's (`gs_thread_release`) and
+gives the thread its own back.
+
+A pool's threads reserve their data stack regions once and reuse them for
+every task after. `gs_regions_mapped`, kept beside `gs_nregions` for each
+thread's registry, is how many of its entries have a region mapped, and
+`gs_reserve_region` hands out the entry at `gs_nregions` as it is, its
+base given to the stack that asked, wherever that entry is below the mark:
+only past it does it map a region. A pool thread sets `gs_nregions` to 0
+before each task, so the task's thunk (`gs_stack_block`, `gs_stack_init`)
+gets the same regions in the same order, each with its stack's top at its
+base, and no task maps or unmaps any once a task as large has run on that
+thread. The regions stay committed from task to task, as a rewound stack's
+pages do (spec §1.2). `gs_release_regions` releases every mapped entry, up
+to the mark, which the thread does as it ends, when its pool is destroyed;
+for any other thread program the mark and the count agree. The thread
+applying a pool cannot rewind its own registry, whose regions hold its
+program's live storage, so `gs_pool_run_caller` runs each task it takes on
+the pool's `caller_regions` instead: it saves the thread's `gs_regions`,
+`gs_nregions`, `gs_regions_mapped`, `gs_regions_cap`,
+`gs_current_thread_id` and `gs_contain`, installs the pool's registry,
+rewound to 0 with the mark it last reached (`caller_regions_mapped`), the
+pool's worker id, and no containment (a task of a plain apply is not
+contained, wherever it runs), and restores the thread's own after the
+task. The count is 0 whenever one registry is swapped for the other, so
+the fault handler never reads past what the registry in place holds.
+
+A contained task (`gs_pool_spawn_contained`) belongs to its apply's batch
+(`gs_pool_batch`), which the apply's first task makes and the pool lists,
+and `gs_pool_run` runs its thunk through `gs_pool_guard`, whose
+`gs_run_contained` an abort in the task returns to, as a contained
+worker's does. The task's frames unwind to there, and the release that
+follows a return follows. Under the pool's lock, the batch keeps the first
+abort's message and frees later ones, and a thread that takes a task of a
+batch that has aborted frees it unrun (`gs_pool_take`).
+`gs_pool_wait_contained` waits as `gs_pool_wait` does, hands over the
+batch's message, and frees the batch. While a pool has tasks out, from
+the first one handed to it to the end of the wait for them, plain or
+contained, the contained thread program that handed them out, if one did
+(the pool's `handed_by`), counts the pool in `gs_contained::handing`, and
+`gs_fail` contains an abort only where that count is 0: the tasks out may
+be writing into the storage the end of a contained thread program would
+release. A growable apply's output slots (`gs_pool_outs_new`,
+`gs_pool_out`) are listed by the pool too, and `gs_pool_keep` fills a
+task's slot with a `malloc`'d copy of its elements.
+
+`gs_pool_check_open` aborts with `GS_E_POOLCLOSED` on a closed pool, and
+`gs_pool_destroy` (`close`) first runs and waits for any task the pool has
+yet to finish, since a pool of one worker has no thread of its own that
+would, then stops and joins its threads, unmaps the regions in
+`caller_regions`, unlists the pool, and frees the batches and output slots
+that no apply freed: those of an apply whose argument closed the pool, or
+that a long-distance return out of an argument left. `gs_rt_stop`
+(`goose_exit`) destroys the pools a program leaves open, and refuses while
+a thread program still runs, a task a pool has yet to finish among them
+(`gs_threads_any_live`).
 
 **Integer semantics** (§6.2): every operation runs at its type through
 `gs_add_i32`-style helpers. Under `GS_DEBUG` these are functions that check
@@ -7662,7 +7875,9 @@ at what precedes the name being typed:
   it). The object's type from a clone gives the fields of a struct or a
   variant's payload, the functions whose first parameter takes the type
   (`FirstParamTakes`: untyped, generic, the type or a reference to it) as
-  UFCS calls, and the builtin members of its kind (`RecvKindOf`). An enum's
+  UFCS calls, and the builtin members of its kind (`RecvKindOf`). A
+  `thread_pool`, which has no such kind, gets `apply`, `apply_contained`
+  and `close` instead, each with its form as detail. An enum's
   name before the `.` gives its variants, and a value no instantiation typed
   gives every field and function.
 * After `::`, it offers the namespace's declarations.
@@ -7713,7 +7928,16 @@ exemplar knows the type only as `?`). The second is the parameter's name
 before each argument written in a call resolved to a specialization (not
 before the defaults that a global's initializer, checked in place, holds). A
 UFCS call's object stands for the first parameter, and an argument that is
-the parameter's own name gets no hint. Folding ranges are every
+the parameter's own name gets no hint. `thread_spawn` and `pool.apply`
+keep their worker's specialization (`Call::spec`), and only the arguments
+they pass on to the worker get hints, with the worker's parameters: for a
+spawn from the first on, for an apply from the one after the chunk and the
+index, which the apply passes itself. Their own arguments (the pool, the
+chunks, a message buffer, the worker's name) get none, and neither do
+the arguments of any other builtin. Hover on the builtin's name names the
+builtin, which has no definition, and the worker is passed by name, as a
+function value is: it is not called there for the call hierarchy, and
+renaming it leaves the builtin as it is. Folding ranges are every
 brace-delimited body (a block, a match, a struct literal) and declaration
 that spans more than one line, as `region`, and every run of `//` comment
 lines, as `comment`. A body's or declaration's range ends one line early

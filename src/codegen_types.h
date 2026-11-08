@@ -17,7 +17,7 @@ inline bool CodeGen::TEq(TypeExpr *a, TypeExpr *b) {
     switch (a->kind) {
         case TY_INT:  return a->intstorage == b->intstorage;
         case TY_FLT:  return a->fltstorage == b->fltstorage;
-        case TY_BOOL: case TY_VOID: case TY_FN: return true;
+        case TY_BOOL: case TY_POOL: case TY_VOID: case TY_FN: return true;
         case TY_STRUCT: return SI(a) == SI(b);
         case TY_ENUM:   return EIOf(a) == EIOf(b) && a->enu->varmode == b->enu->varmode;
         case TY_ARRAY: {
@@ -301,6 +301,7 @@ inline int64_t CodeGen::FixedSize(TypeExpr *t) {
         case TY_INT:  assert(t->intstorage != IS_VARINT); return IntSize(t->intstorage);
         case TY_FLT:  return t->fltstorage == FS_F32 ? 4 : 8;
         case TY_BOOL: return 1;
+        case TY_POOL: return 8;
         case TY_REF:
             if (t->ref->lenstorage >= 0) {
                 assert(t->ref->lenstorage != IS_VARINT);
@@ -458,6 +459,7 @@ inline string CodeGen::RawMangle(TypeExpr *t) {
         }
         case TY_FLT: return t->fltstorage == FS_F32 ? "f32" : "f64";
         case TY_BOOL: return "b";
+        case TY_POOL: return "pool";
         case TY_STRUCT: {
             auto s = Sanitize(t->struc->st->ns, t->struc->st->name);
             for (auto a : t->struc->args) Append(s, "_", Mangle(a));
@@ -527,6 +529,7 @@ inline string CodeGen::CT(TypeExpr *t, bool unaligned) {
         case TY_FLT:  return t->fltstorage == FS_F32 ? (unaligned ? "gs_f32" : "float")
                                                    : (unaligned ? "gs_f64" : "double");
         case TY_BOOL: return "uint8_t";
+        case TY_POOL: return "gs_pool";
         case TY_VOID: return "void";
         case TY_REF: {
             auto &r = *t->ref;

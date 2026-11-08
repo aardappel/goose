@@ -112,7 +112,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
 | `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks, and `runtime_trim_memory.c`, the native test of releasing unused data-stack memory. |
 | `storage/` | Relative references, pools and serialization. |
-| `threads/` | Workers, queues, shared globals, contained workers' aborts and `runtime_threads_lifecycle.c`, the native runtime lifecycle test; `host_exit.c` is the C host of `host_exit.goose`, a library build the host starts, ends with `goose_exit` and starts again (the `host_exit` task). Imported helpers live in `threads/spawn/`. |
+| `threads/` | Workers, queues, shared globals, contained workers' aborts, thread pools (`parallel_scope.goose` and the `pool_*` and `chunk_*` fixtures, below) and `runtime_threads_lifecycle.c`, the native runtime lifecycle test; `host_exit.c` is the C host of `host_exit.goose`, a library build the host starts, ends with `goose_exit` and starts again (the `host_exit` task). Imported helpers live in `threads/spawn/`. |
 | `stdlib/` | Standard-library modules. |
 | `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated self-checks of the stage-2 compiler, and compare JIT/native self-compilation. |
 | `audio/` | The `audio` module: the offline PCM mixer advanced by exact frame counts; the rejection of bad rates, PCM, parameters and output; voice and sound capacity and stale handles; and the threading rejection. |
@@ -122,7 +122,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `packages/` | Programs declaring packages from path sources under `pkgs/`, built by `goose build`: pure Goose packages (`pkg_basic`), one with plain C under its sidecar (`pkg_c_lib`), a CMake one (`pkg_cmake_lib`, which `native_toolchain.py` also uses), and programs with C of their own from a sidecar (`pkg_own_c`; `pkg_float_abi`, floating-point arguments on the stack between native C and TinyCC). `pkgs/col` is the package `errors/pkg_collision.goose` imports. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `errors_tc/recovery/` | Programs with several errors, which the parser, resolution and the checker continue past (`docs/design/language_server.md` §5 D). Taken in order, each `// error:` marker must be part of the message of the error at the same position in the order the compiler reports them, and there must be no other errors, both in text and under `--diagnostics json`. `imported/` holds a module that `imports.goose` imports, which is not a fixture of its own. |
-| `lsp/` | Language-server fixtures driven by `lsp_protocol.py` over the protocol, not compiled as programs. `basics.goose` declares queries and expected answers in `// lsp:` lines and imports `helper.goose`. `complete.goose` ends with `p.` to test completion. `recovery.goose` has errors in two functions; `// lsp: error` lines specify their locations, and queries use the code checked so far. `broken_decls.goose` has errors inside a struct, an enum, and functions, plus an unresolved import. `exemplar.goose` tests queries on uncalled generic functions using exemplar checks (`docs/design/language_server.md` §11). `roots_lib.goose` contains an error and is opened and closed alongside its importers, `roots_app.goose` and `roots_app2.goose`. `source_index.goose` tests globals whose initializers omit defaults or expand a `const for`, a generic function matching a `const for` arm list, and calls containing commas in literals and comments. `two_a.goose` and `two_b.goose` import `two_shared.goose`; only the second instantiates its generic function. `ufcs_ns.goose` makes UFCS calls on a namespaced type from the global namespace, one of which matches no overload. `pools.goose` declares a root struct and uses a `slot_pool` and a `slice_pool`, whose generic functions taking the pool first must be offered as members. |
+| `lsp/` | Language-server fixtures driven by `lsp_protocol.py` over the protocol, not compiled as programs. `basics.goose` declares queries and expected answers in `// lsp:` lines and imports `helper.goose`. `complete.goose` ends with `p.` to test completion. `recovery.goose` has errors in two functions; `// lsp: error` lines specify their locations, and queries use the code checked so far. `broken_decls.goose` has errors inside a struct, an enum, and functions, plus an unresolved import. `exemplar.goose` tests queries on uncalled generic functions using exemplar checks (`docs/design/language_server.md` §11). `roots_lib.goose` contains an error and is opened and closed alongside its importers, `roots_app.goose` and `roots_app2.goose`. `source_index.goose` tests globals whose initializers omit defaults or expand a `const for`, a generic function matching a `const for` arm list, and calls containing commas in literals and comments. `two_a.goose` and `two_b.goose` import `two_shared.goose`; only the second instantiates its generic function. `ufcs_ns.goose` makes UFCS calls on a namespaced type from the global namespace, one of which matches no overload. `pools.goose` declares a root struct and uses a `slot_pool` and a `slice_pool`, whose generic functions taking the pool first must be offered as members; it also applies a `thread_pool`, whose `apply`, `apply_contained` and `close` must be offered, and checks hover, definition, references and rename at those builtins and at the worker's name, and that the arguments `pool.apply` and `thread_spawn` pass on are hinted with the worker's parameters. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
 | `toolchain_selection.py` | Which compiler the runners use (`find_goose` in `scripts/toolchain.py`). An `--exe` path is used as given, made absolute, even when there are other compilers in `build/`. Without `--exe`, the runners use the first of `build/Release/`, `build/RelWithDebInfo/`, `build/` itself (for a single-configuration generator) and `build/Debug/`, so that a routine run uses an optimized compiler and an assertion build has to be chosen with `--exe`. If there is no compiler in any of these, or the `--exe` path does not exist, the run stops rather than using another compiler. A unittest, run by the main runner. |
@@ -130,6 +130,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `compiler_containers.cpp` | The compiler's `small_vector` and `flat_map` against `std::vector` and `std::unordered_map` under random operations, across in-place/heap storage, growth and erasure, and `flat_map`'s reuse of an erased key's value cell; compiled and run in both native profiles. |
 | `resource_paths.py` | Unicode source and C output paths, JIT entry-source resource roots, native executable roots with separate and standalone runtimes, relocation, and unchanged working-directory file access. Called by the main runner. |
 | `cli_paths.py` | Tests command-line and import paths. `-o` may target a directory that does not yet exist, for generated C or a `goose build` executable. Package sources may be `"."` or `".."`, and an `--include` path may start with a separator. An unresolved import must report the searched locations. Other cases pass a directory as the source or to `embed_file`, and run a compiler without a source tree beside it, which must find the standard library it was configured with and report that `--gen-runtime-header` finds no runtime sources. Called by the main runner. |
+| `runtime_header.py` | `src/runtime_inline.h`, the runtime C the compiler is built with and writes into every program, is byte for byte what `--gen-runtime-header` writes from `src/runtime/`. The generator runs on a copy of that directory, named by `GOOSE_RUNTIME`, so nothing in the tree is written. A runtime file changed without the header regenerated fails the check, and so does a header that a merge took from one side when the other side changed the runtime too. Called by the main runner; run it by hand with `python test/runtime_header.py`. |
 | `extern_types.py` | One imported extern interface and C adapter with unused and partially used functions: slice, reference-pointee and return types are available to the header at O0/O2 through native C and TinyCC, with no implementation needed for an unused extern. Called by the main runner. |
 | `extern_dylib.py` | An extern block bound from a shared library that the test builds. Every parameter shape goes through the runtime's binding, with the library opened by a spelling relative to the resource directory and by a bare name on the loader's path, both under the JIT (with no C toolchain available) and in a built program. The generated C is the same across compiles and binds only the members that are called. A missing library or symbol is a runtime error naming the spelling tried, and unused members need neither. A package declaring both kinds of extern builds its native part only for a program that calls its static one. The sidecar's `dylibs` lists map a name to the spelling each platform opens, with the program's mapping taking precedence over a package's, and a malformed entry or a name that no extern block declares is refused. Called by the main runner. |
 | `runtime_cache.py`, `runtime_cache_cc.c` | Concurrent first builds share one completed runtime object; a failed compile cannot poison the cache, retry and reuse work, and dry runs leave the cache untouched. A controlled C compiler exercises both driver flag styles in debug and release configurations. Called by the main runner. |
@@ -148,6 +149,69 @@ bootstrap program, rather than discovering its modules as standalone fixtures.
 Keep fixture stems unique across categories,
 since expectations and generated build artifacts use those names. The runner
 rejects duplicate names.
+
+The thread pool fixtures (spec §11.2, `docs/design/parallel_blocks.md`) are
+in `threads/`. Like every program with threads, they run built from their C
+and are skipped by the TinyCC runs, which refuse threads. Most run
+everything on a pool of four workers and again on a pool of one, which has
+no thread of its own, so that the thread applying it runs every task, in
+order, and must find its own storage as it left it; both print the same.
+
+* `parallel_scope.goose`: `pool.apply` over chunks by size and by offsets,
+  with and without the chunk's index, shared `const` arguments read in
+  place and changed between applies, a pool passed by reference, the
+  worker called directly too, and a parallel hash join whose build and
+  probe both run on the pool: the probe counting into `chunks(counts, 1)`
+  and writing at prefix-sum offsets, and again in one pass with growable
+  output, beside a parallel filter.
+* `pool_growable.goose`: workers that grow a `T[>..]&` of their own
+  through `chunks(out, n)`, with output whose size depends on the data or
+  on scheduling, appended in task order, and `pool.apply_contained`, which
+  appends only where every task returned.
+* `pool_arg_evaluation.goose`: how often, and in what order, an apply
+  evaluates its arguments, by size, by offsets, into growable output,
+  contained, and with no task at all. The pool, the array, its chunk size,
+  offsets or task count, the message buffer and the extra arguments of a
+  fixed-size type that takes bytes are evaluated once, before any task is
+  out, and every other extra argument once per task, as the task is built:
+  a variable-size or resizable one, and a `T[0]` or a variant type with no
+  payload, which take no bytes. A `T[..0]` and an empty struct, which take
+  a byte, are evaluated once.
+* `pool_caller_worker.goose`: the thread applying a pool as its last
+  worker, on stacks the pool keeps for it, with the globals copied for
+  each task and an argument built for each, and a task's own pool.
+* `pool_chosen.goose`: the ways to pick or hand on a pool that make no
+  second handle to it, which the copies of `errors_tc/pool_copy*.goose`
+  would.
+* `pool_close.goose`: pools closed under `defer`, on every exit, and pools
+  left open; its C is read too (below).
+* `pool_contained.goose`: a failed assert, bounds check, `abort(msg)` and
+  division in a task of `pool.apply_contained`, with the message taken
+  into a builder, a limited array, a reference or nothing, and the pool
+  applied again after. `pool_contained_reentrant.goose` and
+  `pool_contained_interleaved.goose` apply pools from an apply's own
+  arguments, between its tasks: each apply keeps to its own tasks' aborts,
+  and a contained thread program is contained again once no pool it
+  applies has tasks out. `message_capacity_contained.goose` frees an
+  abort's message however its append to a buffer ends.
+* Expected aborts: `pool_size_zero.goose`, `chunk_size_zero.goose`,
+  `chunk_tasks_zero.goose` and `chunk_offsets_bounds.goose` (a pool's
+  count and the chunks' checks); `pool_closed_apply.goose`,
+  `pool_close_chunk_size.goose`, `pool_close_extra_arg.goose` and
+  `pool_close_built_arg.goose` (an apply on a pool closed before it, or by
+  one of its own arguments); and `pool_task_uncontained.goose`,
+  `pool_worker_applier.goose` and `pool_contained_applier.goose` (aborts
+  that end the program although a contained thread program is involved: a
+  plain apply's task, and a contained one's own while a pool it applies
+  has tasks out).
+
+Their rejections are the `errors_tc/pool_*.goose` fixtures, other than the
+`pool_ref_*` ones, which are about reusable pools: `pool_apply_*` (shared
+arguments or offsets that alias the array, a write through a `const`
+parameter, a reference parameter that is not `const`, a `thread_fn` as the
+worker, a global pool in a worker), `pool_copy*` and `pool_return_local`
+(every way of copying a pool), `pool_close_*`, `pool_contained_msg_*` (the
+message buffer) and `pool_growable_*` (growable output).
 
 ## Configurations and backends
 
@@ -192,11 +256,18 @@ mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits, children outliving their parents and contained
 workers that abort; and that `gs_rt_stop` ends the main program with every
 allocation and mapping released and the fault handling restored, after
-which a program starts and ends again. The `host_exit` task builds
+which a program starts and ends again. It runs thread pools phase after
+phase across programs started and stopped in turn, both the pools a
+program destroys and those it leaves for the stop: a pool's tasks run on
+the regions its workers mapped first, the waiting thread runs tasks on a
+registry the pool keeps for it and finds its own as it left them, contained
+batches abort, alone and interleaved, and the outputs that tasks keep for
+their apply go with the apply, or else with the pool. Small limits make a
+region registry that leaks entries fail quickly. The `host_exit` task builds
 `test/threads/host_exit.goose` for its C host, `host_exit.c`, which starts,
-uses and ends the program three times over, each round over fresh globals
-and queues, and once ends it while a worker still runs, which is a runtime
-error. The direct `test/runtime/runtime_trim_memory.c` test
+uses and ends the program three times over, each round over fresh globals,
+thread pools and queues, and once ends it while a worker still runs, which
+is a runtime error. The direct `test/runtime/runtime_trim_memory.c` test
 checks that releasing unused data-stack memory decommits the pages on
 Windows and drops them from the resident set on Linux and macOS, while
 keeping live partial pages and other stacks. It also checks that discarded
@@ -364,9 +435,11 @@ The runner checks more than exit status and runtime output:
 | `loop_shapes.goose` at O1 | Read the generated C: every `shape_` function has the restated loop it is named for, marked by codegen's `/* loop shape: ... */` comment, and no `keep_` function has one (`docs/implementation.md` §6.12). Its runs check that each restated loop computes what a reference loop does. |
 | `member_parameters.goose` at O1 | Read the generated C: `walk`, which takes two slices and a `T[>..]&`, has each as two scalar C parameters (data pointer and count, header pointer and stack; spec C.3, `ParamFields`). Its runs pass slices, builders and pool references through calls, a recursion, a case-function dispatch, nested functions' free variables, a `simd` function, a `format` overload and an exported wrapper. |
 | `member_stores.goose` at O1 | Read the generated C: `store_links` stores to fields reached through references that cannot be rebound, with no index on the way, as C member stores rather than through a pointer taken first (`StableDest`). Its runs check the stores, and check that when the right side rebinds the reference, the store still goes to the destination named before the right side ran (`evaluation_order.goose` has a right side writing the destination itself). |
+| `pool_close.goose` at O0, its C | Read the generated C (the `pool_scope_exits` task): a thread pool is destroyed (`gs_pool_destroy`) only where the program closes it, never at a scope's exit. `kept` and `main` make pools they leave open, `deferred` closes its pool on both of its exits, `end_pool` closes the pool it is given, and `main`'s one close is the global's (spec §11.2). |
 | `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator and plain recursion become loops, including a list walk that hands on a node read through its parameter. Modulo, floating-point reassociation, nonlocal-return frames, returns inside nested loops and a reference to a local passed down keep their self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. The `gb_` functions count the copies of their first statement: guarded base-case inlining copies the body once per self-call site where the test compares unassigned parameters, including self-calls written with UFCS, but not where the test reads a global or a node, does arithmetic, or reads an assigned parameter. A u64 above i64.max that the optimizer creates (here, the starting accumulator of a fold and of `tre_and`) dumps as that unsigned value. |
 | `optimize.goose` at O1, its C | `il_pair`, an `inline fn` returning two values, stays a call in Goose but is declared `GS_INLINE` in the C, for the C compiler to inline (spec §7.13). `il_plain`, a copy of `il_big` without the keyword, is not. |
 | `docs/reference.md` | Every ```` ```goose ```` block of the language reference compiles (as written, or wrapped in a `main`), a block marked `// error` fails, no block warns, and where the JIT runs, each complete program prints what the block after it shows. `scripts/check_doc_examples.py` does the work in a process of its own, as the samples' runner does, writing the blocks under `build/gen/<profile>/doc_examples/`; its docstring has the markers a document uses for a block that is only a fragment or is compiled without being run. Run it by hand on any document: `python scripts/check_doc_examples.py docs/reference.md --run -v`. |
+| `doc_builtins.py` | Every builtin in the table of `src/builtins.h`, the array members among them, is named in code in the builtins section of the language reference (section 25) and in that of the specification (spec §12), whose tables point on to where each one is described. A builtin the compiler gains that either section leaves out fails the check. Run it by hand with `python test/doc_builtins.py`. |
 | The command line (`driver_verbs` in `run_tests.py`) | The verbs against the flags they stand for: `goose run` (where the JIT runs) prints what the program does, `goose check` only checks it, and `goose run -o` is refused; `goose version` and `goose --version` print the compiler's version and the runtime's 12 hex digits; a word that is not a command, an option or a file is an unknown command, named with the command it is close to; `--color always` and `CLICOLOR_FORCE` color an error and its caret, and output that is not a terminal, or `NO_COLOR`, has none; `goose check` prints nothing on success, and with `--stats` its `typechecked ok` line; every shell's completion script names the commands and their options, bash's (where there is bash) completes a command, an option and a `.goose` file, and zsh's parses (where there is zsh); `goose help --man` holds every command's help, and groff (where there is one) reads it without a warning; a `--stack-reserve` under 64 KB is refused. For the help: `goose --help` names the commands but not the hidden flags; together, `goose <command> --help` for run, build, check, fetch, format, toolchain, version, lsp and completion, `goose help c` and `goose help internals` name every option that `src/main.cpp` reads except the hidden shader ones; `goose help build` names `--dry-run`; an unknown topic is refused; and no file, or `goose build` with none, prints the usage. `goose toolchain --json` finds a C compiler wherever the runner found one, escapes a tab in `GOOSE_HOME`, and does not mistake a directory named `git` on PATH for git; with no C compiler anywhere, `goose toolchain` names every one it looked for; and `goose build --cc` naming a file that is not a program says why it cannot start it. Where there is a C compiler, `goose build` builds an executable that runs, and `--dry-run` prints what it would run without building one. |
 | `doc_comments.py` | `goose --dump-docs` prints the documentation comments of a program's declarations, fields and variants: the run of `//` lines directly above each one, without its indentation. A blank line, a block comment or any token ends a run, a comment after code does not start one, and a banner followed by a blank line belongs to nothing. The program still checks and roundtrips. |
 | `format.py` | `goose format`: each golden case, formatted through standard input, prints the layout it expects and is a fixed point. The cases cover the spaces the parser's token roles decide (unary against binary operators, generic lists against comparisons, type suffixes, `as!`, `[>..<]`, ranges), trailing commas added where a list's closing bracket starts a line and not after an initializer list's `..`, an array's fill form, parentheses or a last match arm ending in `return` or a bare `break`, a run of declarations lined up in columns, indentation (tabs, continuations keeping their offset from the line they continue and going no further left than it, so that a chain broken after its operators stays lined up under its first operand, bracket-aligned lines moving with their bracket, the body of a wrapped header or condition, `})`), blank lines, `\r\n` and a byte order mark, trailing comments moved with their line and aligned runs kept aligned, block comments and a multi-line string moved with their line, and a table of statements after semicolons kept. The command line: a file rewritten in place, a formatted one left with its modification time, `--check` listing what is not formatted (exit 1) and writing nothing, the directory walk (`.goose` files, sorted, no dot-directories or build trees unless named), a file that does not parse left as it is while the others are formatted (exit 2, which wins over `--check`'s 1), a read-only file refused, standard input with no files or `-`, wrong arguments, `--verify` and the help. A file's documentation comments come through as `--dump-docs` printed them. A second task, `format_sweep`, runs `goose format --verify` over `samples/`, `stdlib/`, `bench/` and `test/`: every file must format, pass the formatter's own checks (the same tokens and comments, a comma added only before a closing bracket, a parse to the same dump and documentation) and come out the same when formatted again; the only files skipped as not parsing must be under `errors/` or `errors_tc/`, or be the four fixtures broken on purpose. |

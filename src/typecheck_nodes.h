@@ -212,6 +212,10 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // variable and grow-only arrays hold those (§3.3).
     auto natural = [&](int64_t count) {
         if (elem == tc.fntype) tc.Error(this, "function values cannot be stored in arrays (§7.6)");
+        // As ValidateType says of a thread_pool element type written out.
+        if (elem->kind == TY_POOL)
+            tc.Error(this, "thread_pool can only be owned by a local or global variable; "
+                           "nested thread_pool owners are not supported");
         tc.NoZeroSizeElement(elem, line);
         if (tc.ClassOf(elem) == SC_FIXED) return tc.ast.ArrayOf(elem, A_FIXED, line, count);
         auto t = tc.ast.ArrayOf(elem, A_VAR, line);

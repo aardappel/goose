@@ -22,6 +22,7 @@
       <item>i8</item> <item>i16</item> <item>i32</item> <item>i64</item>
       <item>u8</item> <item>u16</item> <item>u32</item> <item>u64</item>
       <item>f32</item> <item>f64</item>
+      <item>thread_pool</item>
     </list>
     <list name="constants">
       <item>true</item> <item>false</item> <item>null</item> <item>self</item>
@@ -31,6 +32,8 @@
       <item>abort</item> <item>exit</item> <item>copy</item> <item>default</item>
       <item>hardware_threads</item> <item>thread_spawn</item>
       <item>thread_spawn_contained</item> <item>thread_wait</item>
+      <item>apply</item> <item>apply_contained</item> <item>chunks</item>
+      <item>close</item>
       <item>qput</item> <item>qget</item> <item>qpoll</item> <item>qlimit</item>
       <item>to_bytes</item> <item>bytes_of</item> <item>from_bytes</item>
       <item>embed_file</item> <item>embed_shader</item>

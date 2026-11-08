@@ -2600,6 +2600,13 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // as a single binding's does, unless the declaration binds by
             // reference (`.=`); one to a non-fixed value binds it (§4.1).
             auto rv = vd->byref || IsNonFixedRef(rets[i]) ? rets[i] : DecayRef(rets[i]);
+            // Decayed, a reference to a thread_pool is a copy of the pool, a
+            // second handle to it, as a single binding's would be. The
+            // assignments `a, b = f();` makes of its results (Parser::
+            // ParseMultiAssign) say so of theirs, which cannot bind by
+            // reference.
+            if (rv.type && rv.type->kind == TY_POOL && rv.pointee && !vd->results)
+                Error(vd->inits[0], "thread_pool cannot be copied; bind it by reference (.=) instead");
             // A decayed reference result is a copy of its pointee, while a
             // value result is built where it is received, from_bytes' array
             // included (NoRelRefCopy).
@@ -2652,6 +2659,12 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                                            " binds by reference without it (§4.1)"));
             } else {
                 v = CheckValue(vd->inits[i], ann, false, false, !ann);
+                // The pool a reference points at copies too, loaded from it
+                // (Val::pointee) for an un-annotated binding.
+                if (v.type && v.type->kind == TY_POOL &&
+                    (v.lvalue || v.pointee || IsPlainRef(v.type)))
+                    Error(vd->inits[i],
+                          "thread_pool cannot be copied; pass it by reference (thread_pool&) instead");
                 // An un-annotated binding of a non-fixed lvalue is a
                 // reference to it (§4.1), like an untyped parameter's, and
                 // one of a reference to such a value is that reference,
@@ -2750,6 +2763,7 @@ inline void TypeCheck::CheckCycleInit(VarDef *d, int fi, int calls) {
 
 // §4.4: which lvalues accept `=` after construction.
 inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
+    if (t->kind == TY_POOL) Error(at, "a thread_pool cannot be reassigned");
     auto cls = ClassOf(t);
     if (cls == SC_ROOT) Error(at, "a root owner cannot be assigned as a whole; assign its fields instead");
     if (cls == SC_VARIABLE && !(t->kind == TY_ARRAY && t->arr->akind == A_LIMITED))

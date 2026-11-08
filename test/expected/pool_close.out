@@ -1,0 +1,5 @@
+kept: 3
+deferred: 2 1
+rounds: 3 [1, 1, 1, 2, 2, 2]
+shared: [1, 2, 3, 4, 5, 6]
+left open: [1, 1, 2, 2, 3, 3]
