@@ -429,6 +429,10 @@ Built-in members, which exist as the rules above allow:
   nowhere else: not in another field or element, nor inside an element. A
   parameter's storage is checked at each call (§10.2). A reference rooted
   elsewhere is a compile error.
+* `.index_of(r, msg) -> i64`: the same, for an `r` that is not rooted at the
+  array exactly. The call then checks as it runs that `r` is aligned to an
+  element inside the current length, and aborts with the string literal
+  `msg` otherwise.
 
 Growth always supplies element values, so no operation can expose
 uninitialized slots (§5.3). Per UFCS these are ordinary functions:
@@ -1992,6 +1996,63 @@ at a pool, as at any array, but which offers none of the pool's operations.
 Only a plain reference variable or parameter is a pool reference: an
 optional one, a field, an element and a function's result are not, even
 where they point at a pool.
+
+### 5.5 Owning handles (experimental)
+
+`own` and `trusted fn` implement the linear form of
+[design/ownership.md](design/ownership.md), to gain experience with it; the
+rules may change. The [reference](reference.md#owning-handles) shows them in
+use. They are checked and erased: no destructor exists and no code runs at a
+scope exit, apart from the one length check below.
+
+* **Types.** `own` qualifies a reference (plain, optional, or a fixed-width
+  relative link), a slice, a non-root struct or an integer that is no index
+  type. It is written first in the type, before `const`. A struct with an
+  `own` field *holds* own values: it is fixed-size, neither flat nor
+  image-safe, and each such field is *emptyable*: an `own T?`, an
+  `own T[:]`, or a struct of those. An own value is no enum payload, no
+  element of a fixed or frozen array and no field of a root struct, and a
+  global holding one is emptyable or a growable array. `(own T)&` is not a
+  type: a reference to an own value has its plain type.
+* **The obligation.** A local or parameter whose type holds an own value is
+  *held* once bound, and is *consumed* exactly once on every path to the end
+  of its scope, to a `return`, to a `break` or `continue` that leaves its
+  scope, and to a call that may return past it (§7.11). A use at a
+  destination whose type holds an own value consumes it: an argument for an
+  `own` parameter, the value returned for an `own` result, the initializer
+  of an own field or of a pushed element, the initializer of a declaration
+  without a plain type annotation, the new value of `replace`. A `defer`
+  whose body consumes a variable declared outside it claims the variable for
+  every exit of the block the `defer` is in. Any other use reads the value
+  as its plain type and consumes nothing. Where paths join, a variable's
+  states agree; a loop body does not consume a variable declared outside it
+  without giving it a value again.
+* **Empty values.** A variable of type `own T?` or `own T[:]` known to hold
+  null or the empty run owes nothing: after a `null` or `[]`, after
+  `take`, and where a condition found it null.
+* **Storage.** `take(place)` yields the own value a place holds and leaves
+  its empty value; `replace(place, v)` stores `v` and yields what was there.
+  An assignment to storage holding an own value is an error, except to a
+  variable that holds nothing, to a field the function has seen emptied
+  through the same variable since the last store of an own value or call
+  that may make one, and in a `trusted fn`.
+* **Arrays.** For a growable array whose elements hold own values, `push`
+  consumes its argument and `pop` yields the element as an own value;
+  `clear`, `pop_n`, `resize`, `append`, `copy`, assignment of the whole
+  array and iteration by value are errors. A local such array aborts where
+  its scope ends unless its length is zero.
+* **`trusted fn`.** In a function declared `trusted` (which an `extern` one
+  is not), a plain value may be returned or stored as an own one, an `own`
+  parameter need not be consumed, and storage holding own values may be
+  assigned. Where a trusted fn ends without consuming an own reference
+  parameter whose pointee holds own values, every own field of the pointee
+  is known empty, or it is an error; an own slice parameter whose elements
+  hold own values is an error.
+* **Not carried.** An untyped parameter never becomes `own`: it borrows. An
+  own value does not cross `thread_spawn`, a queue or `to_bytes`. The code
+  generated differs only by the stores of `take` and `replace`, the emptying
+  of the own fields of a struct variable that was moved, and the length
+  check above.
 
 ---
 
@@ -5110,13 +5171,14 @@ field       := ("let" | "const")? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" declname "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := "checkfree"? ("export" strlit? | "extern" strlit?)? "checkfree"? "simd"?
+fndecl      := "trusted"? "checkfree"? ("export" strlit? | "extern" strlit?)? "checkfree"? "simd"?
                "inline"? "recursive"? ("fn" | "thread_fn")
                declname generics? "(" params? ")" ("->" rettypes)?
                (blockexpr | ("=" strlit)? ";")
                                                  // "=" strlit: extern only, its C symbol
                                                  // "extern" strlit: deprecated, the same
                                                  // checkfree at most once (§7.14)
+                                                 // trusted: not with extern (§5.5)
                                                  // nested: ident only
 externblock := "extern" strlit "{" externmember* "}"   // §7.10: the library, then its functions
 externmember := "fn" declname "(" params? ")" ("->" rettypes)? ("=" strlit)? ";"
@@ -5128,7 +5190,7 @@ rettypes    := type ("," type)*                  // no parens in declarations
 globaldecl  := ("reusable" ("[" "]")?)? ("let" | "var" | "const") declname (":" type)? ("=" expr)? ";"
                                                  // no initializer: var with a type only
 
-type        := "const"? (prim | qname tyargs? | "(" type ")") postfix*
+type        := "own"? "const"? (prim | qname tyargs? | "(" type ")") postfix*   // own: §5.5
              | "const"? indextype                // no postfix (§3.11)
                                                  // const: the first & or [:] (§9.5)
 indextype   := ("u8"|"u16"|"u32"|"u64") ("in" | "upto") qname

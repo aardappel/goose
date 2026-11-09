@@ -907,6 +907,7 @@ read the same way.
 | `.resize(n, v)`, `.resize(n)` | the same | grows with copies of `v`, or shrinks |
 | `.clear()` | the same | empties the array |
 | `.index_of(r) -> i64` | arrays of fixed-size elements | the index of the element `r` refers to |
+| `.index_of(r, "msg") -> i64` | the same | the same for a reference the compiler cannot place in the array: checked when it runs, aborting with the message |
 | `.range_index(s, msg?) -> i64` | the same | the start of a wholly contained slice; checked when provenance does not prove it |
 | `.check_length(n, msg?) -> i64` | grow-only, grow-shrink, fixed-size elements | validates a count against the data-stack reservation; returns it without changing the array |
 
@@ -2503,6 +2504,203 @@ links. Allocation and free do support defaultable self-relative elements.
 Pass an owner as `slice_pool<T>&`, and use its `items` array for indexing and
 slicing. The [library contract](stdlib.md#slice_pool) covers defaults,
 subranges, empty slices, high-water storage and relocation.
+
+### Owning handles
+
+A slot or a run that is taken and never given back is a leak, and one given
+back twice puts two owners on the same storage. Declaring the handle `own`
+makes giving it back exactly once a rule the checker follows. This is the
+linear form of [design/ownership.md](design/ownership.md), implemented to
+gain experience with it: the rules here may still change.
+
+`own` is a type qualifier, written before the type: `own Conn&`,
+`own Conn?`, `own u8[:]`, `own Window` for a struct, `own u64` for an integer
+handle from C. A value of such a type carries an obligation. It is not
+copied, and on every path through the function holding it exactly one thing
+*consumes* it:
+
+* passing it to a parameter declared `own`;
+* returning it from a function whose result is declared `own`;
+* storing it where the type says `own`: a field of a struct literal, an
+  element pushed onto an array, a `replace`;
+* binding it to another variable: `let b = a;` moves, and `a` holds nothing
+  afterwards;
+* a `defer` that does one of these, which claims it for every exit of the
+  block the `defer` is in.
+
+Every other use *borrows* it as its plain type: reading and writing through
+it, passing it to a parameter declared `Conn&` or left untyped, comparing
+it. A borrow discharges nothing. `own` is checked and then erased: there are
+no destructors, and no code runs at a scope exit.
+
+The pools give and take such handles beside their plain operations:
+
+| Operation | Meaning |
+|---|---|
+| `p.take(v) -> own T&` | a slot holding `v`, chosen as `alloc_ref` chooses it |
+| `p.take_with() { … } -> own T&` | the same, built in the slot, as `alloc_with` |
+| `p.release(h)` | ends the claim and frees the slot |
+| `p.release(h) { … }` | the same for an element with own fields: the block is given the element as `it` and must `take` every one of them |
+| `p.release_all() { … }` | empties the pool, moving every element to the block; how a local pool of own-holding elements ends |
+| `s.take_slice(n) -> own T[:]`, `s.take_copy(src) -> own T[:]` | a run, as `alloc_slice` and `alloc_copy` give it |
+| `s.release(r)` | ends the claim and frees the run |
+| `s.resize(r, n) -> own T[:]` | consumes the run and returns the one that replaces it |
+
+```goose
+import slice_pool;
+import slot_pool;
+
+struct Conn { id: i64, input: own u8[:] }
+
+var bytes = slice_pool<u8> {};
+var conns = slot_pool<Conn> {};
+
+fn open(id: i64) -> own Conn& {
+    conns.take(Conn { id: id, input: bytes.take_slice(4) })
+}
+
+fn close(c: own Conn&) {
+    conns.release(c) { bytes.release(take(it.input)); };
+}
+
+fn grow(c: Conn&, n: i64) {
+    c.input = bytes.resize(take(c.input), n);
+}
+
+fn main() {
+    let a = open(1);
+    let b = open(2);
+    grow(a, 16);                       // a borrow: a still holds the connection
+    print(a.id, " ", a.input.len, " ", b.input.len);
+    close(a);
+    let tmp = bytes.take_slice(8);
+    defer bytes.release(tmp);          // claimed: released on every way out of main
+    close(b);
+    print(conns.free_slots.len, " of ", conns.items.len, " slots free");
+}
+```
+
+```
+1 16 4
+2 of 2 slots free
+```
+
+Leaving a handle unconsumed on any path is an error where the path ends,
+and so is using one after it was consumed:
+
+```goose
+import slot_pool;
+var pool = slot_pool<i64> {};
+fn main() {
+    let h = pool.take(1);              // error: h is still held at the end of the function
+    print(h);
+}
+```
+
+```goose
+import slot_pool;
+var pool = slot_pool<i64> {};
+fn main() {
+    let h = pool.take(1);
+    pool.release(h);
+    print(h);                          // error: h was consumed by the release above
+}
+```
+
+Where the paths into a point disagree, one having consumed a handle and
+another not, the join is the error: consume it on both, or on neither. A
+loop may not consume a handle its next iteration would find gone, and a call
+that may leave by a `return … from` ([section 20](#return--from)) may not be
+made while an unclaimed handle is held: claim it with a `defer` first.
+
+**Fields.** A field may own. Its type is `own T?` or `own T[:]`, the two own
+types with an empty value (null, and the empty run), or a struct of such
+fields; a struct holding own fields is fixed-size and is itself not copied.
+A [relative link](#11-relative-references) may own as well,
+`own Node&<u32 in nodes.items>?`: four bytes in place of a pointer, read
+and taken as the `own Node?` it stands for.
+Storage holds a live value or an empty one at all times, and gives it up
+only through two builtins:
+
+* `take(place)` returns the value a place holds and leaves the place empty;
+* `replace(place, v)` stores `v` and returns what was there, to be consumed.
+
+Assigning over an own field would drop what it holds, so it is an error
+unless the code has just emptied the field, as `grow` above does. What the
+checker has seen emptied through a variable it forgets at any other store of
+an own value, and at a call that may make one: a block that empties an
+element takes its fields into variables first, and stores them afterwards.
+A variable of type `own T?` or `own T[:]` that is known empty owes nothing:
+one written as `null` or `[]`, one a `take` emptied, and one a condition
+found null.
+
+```goose
+import slot_pool;
+struct Node { key: i64, next: own Node? }
+var nodes = slot_pool<Node> {};
+
+fn main() {
+    var head: own Node? = null;
+    for k in 3 { head .= nodes.take(Node { key: k, next: take(head) }); }
+    var sum = 0;
+    while head {
+        sum += head.key;
+        var rest: own Node? = null;
+        nodes.release(head) { rest .= take(it.next); };
+        head .= rest;
+    }
+    print(sum, " ", nodes.free_slots.len);
+}
+```
+
+```
+3 3
+```
+
+A handle that was stored in a field no longer tells the checker which pool
+it came from, so `release` checks that when it runs and aborts on a handle of
+another pool, as [`index_of`](#members) does when given a message.
+
+**Arrays.** A growable array may hold elements with own fields. `push` moves
+an element in and `pop` moves one out; `clear`, `pop_n`, `resize`, `copy`
+and assignment of the whole array are rejected, and a `for` over it binds
+by reference. A local array of such elements must be empty where its scope
+ends, which is the one check ownership adds to a running program: it aborts
+otherwise, naming the declaration. A global one has no scope exit.
+
+**`trusted fn`.** An obligation begins and ends in a function declared
+`trusted`: only there may a plain value be returned as `own`, an `own`
+parameter end without a consumer, and a slot holding own fields be
+overwritten. The checker still holds a trusted fn to one thing: where it
+ends a handle's claim, the own fields of the element the handle points at
+must all be known empty, which is why `release` needs its block for a `Conn`.
+The pools' owning operations are trusted fns written in Goose. Wrapping a
+resource from C is the other use:
+
+```goose
+var open_windows = 0;
+trusted fn window_open() -> own u64 { open_windows += 1; return 7; }
+trusted fn window_close(w: own u64) { open_windows -= 1; }
+
+fn main() {
+    let w = window_open();
+    defer window_close(w);
+    print("window ", w, ", open ", open_windows);
+}
+```
+
+```
+window 7, open 1
+```
+
+**Limits.** An own value does not cross a thread boundary, a queue or a
+serialized image. It may not be an enum's payload, an element of a fixed or
+frozen array, a field of a root struct, or a global that is not an optional,
+a slice or an array. A slice of elements with own fields
+cannot be released as a run: keep such elements in a `slot_pool`. The plain
+pool operations (`alloc_ref`, `free`, `free_slice`) remain and are not
+checked: a pool's slots are owned as far as they are taken and released
+through the operations above.
 
 ### Deprecated builtin pools
 
@@ -4196,6 +4394,7 @@ standard library, written in Goose under `stdlib/` and documented in
 | `abort(msg)`, `exit(code)` | end the program; neither returns | [20](#stopping-the-program) |
 | `copy(x) -> T` | a fresh copy of the stored value `x` names | [4](#copies-are-visible) |
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it, declared defaults applied | [8](#field-defaults) |
+| `take(place) -> T`, `replace(place, v) -> T` | the own value a place holds, leaving it empty or holding `v` | [14](#owning-handles) |
 | `hardware_threads()`, `thread_spawn(worker, args…)`, `thread_spawn_contained(worker, args…)`, `thread_wait(id)`, `thread_wait(id, msg)` | workers | [22](#22-threads) |
 | `qput(v)`, `qget<T>()`, `qpoll<T>()`, `qlimit<T>(n)` | the typed queues | [22](#22-threads) |
 | `to_bytes(a)`, `to_bytes(a, out)`, `bytes_of(a)`, `from_bytes<T[>..]>(b)` | serialization | [23](#23-serialization) |
@@ -4219,8 +4418,8 @@ varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`.
 
 **Contextual keywords**, which are ordinary names everywhere else: `from`
 (after a `return` value), `upto` (after an unsigned type in a type),
-`inline` and `checkfree` (before `fn`, `recursive`, `simd` or
-`thread_fn`), `fields`, `variants` and `types` (in a `const for` header),
+`inline`, `checkfree` and `trusted` (before `fn`, `recursive`, `simd` or
+`thread_fn`), `own` (before a type), `fields`, `variants` and `types` (in a `const for` header),
 `has_default` and `same` (in a `const if` condition).
 
 **Operators**, tightest first; the precedence is Rust's:

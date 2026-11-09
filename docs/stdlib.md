@@ -787,6 +787,31 @@ the allocated slot.
 A root owner cannot be copied to a worker; worker-local pools are allowed.
 See [the migration plan](design/root_structs.md#separate-follow-up-reusable-pools-in-the-stdlib).
 
+**Owning handles** (experimental, [reference §14](reference.md#owning-handles)):
+
+```goose
+trusted fn take<T>(pool: slot_pool<T>&, value: T) -> own T&
+trusted fn take_with<T, F>(pool: slot_pool<T>&) -> own T&
+trusted fn release<T>(pool: slot_pool<T>&, h: own T&)
+trusted fn release<T, F>(pool: slot_pool<T>&, h: own T&)
+fn release_all<T, F>(pool: slot_pool<T>&)
+```
+
+`take` and `take_with` choose a slot as `alloc_ref` and `alloc_with` do and
+return it as an `own T&`, which the checker holds its holder to passing to
+`release` exactly once. `release` frees the slot. For a `T` with own fields
+it takes a block, which is given the element as `it` and must `take` every
+own field of it; the checker rejects a release that leaves one. A handle
+kept in a field and taken out again no longer names its pool to the
+checker, so `release` checks that the handle is a slot of this pool when it
+runs and aborts otherwise. `release_all` pops every element, live or free,
+and moves it to its block to be emptied, a released one owning nothing; it
+leaves the pool empty, which a local pool of own-holding elements must be
+where its scope ends. A pool whose elements own slots of the same pool
+cannot be emptied that way (its links would dangle as it shrinks), so it is
+a global. The plain operations stay available and unchecked: `free` of a
+slot whose element still owns something is a leak the checker does not see.
+
 ## slice_pool
 
 `import slice_pool;` provides reusable contiguous runs of fixed-size elements.
@@ -802,7 +827,19 @@ fn free_slice<T>(pool: slice_pool<T>&, s: T[:])
 fn realloc_slice<T>(pool: slice_pool<T>&, s: T[:], n: i64) -> T[:]
 fn recycle_all<T>(pool: slice_pool<T>&)
 fn trim(pool: slice_pool<u8>&) -> bool
+
+// Owning runs (experimental, reference §14):
+trusted fn take_slice<T>(pool: slice_pool<T>&, n: i64) -> own T[:]
+trusted fn take_copy<T>(pool: slice_pool<T>&, src: T[:]) -> own T[:]
+trusted fn release<T>(pool: slice_pool<T>&, s: own T[:])
+trusted fn resize<T>(pool: slice_pool<T>&, s: own T[:], n: i64) -> own T[:]
 ```
+
+The owning forms are `alloc_slice`, `alloc_copy`, `free_slice` and
+`realloc_slice` with the run typed `own T[:]`: its holder must pass it to
+`release`, or to `resize`, which returns the run that replaces it, exactly
+once. An empty run owns nothing and is released harmlessly. Elements with
+own fields of their own are not supported in a run.
 
 ```goose
 import slice_pool;

@@ -28,12 +28,15 @@
 - [7. Directions, side by side](#7-directions-side-by-side)
 - [8. Recommendation and order](#8-recommendation-and-order)
 - [9. Open questions](#9-open-questions)
+- [10. Implementation status](#10-implementation-status)
 - [References](#references)
 
 </details>
 
-Research note, November 2026. Nothing here is implemented, and every piece
-of syntax is a placeholder. The question was whether Goose can have a notion
+Research note, November 2026. The linear form of section 4 has since been
+built on a branch; [section 10](#10-implementation-status) says what was
+built and where it departs from this note. The rest is not implemented, and
+its syntax is a placeholder. The question was whether Goose can have a notion
 of ownership strong enough to settle what [coroutines.md](coroutines.md)
 leaves open at R5 (a suspended coroutine can be dropped or copied, so no
 cleanup written inside it is reliable) and what
@@ -937,6 +940,71 @@ The order below is for the first case.
   implicit free into an error") disappear under this design, since every
   pool is linear; the question becomes whether any pool wants the affine
   release of direction 3.
+
+## 10. Implementation status
+
+The linear form of section 4 is implemented on the `rfc-ownership` branch
+(November 2026), to gain experience with it: `own` and `trusted fn`, the
+flow rules of 4.4, `take` and `replace`, the finalizer check of 4.6, arrays
+of `own`-holding elements with the scope-exit compare, owning operations on
+both pools, owned relative links, and a sample
+([33_owned_handles](../../samples/33_owned_handles.goose)). The rules as
+built are in [reference §14](../reference.md#owning-handles) and
+[spec §5.5](../goose_spec.md#55-owning-handles-experimental). Not built: the
+affine form (4.5), release as a shrink (4.8), `clear_all`, `handle_of`, and
+all of section 5.
+
+Where the implementation departs from sections 4 and 6:
+
+* **Borrowing is by type.** 4.2 lists the uses that borrow. As built, any
+  use of an `own` value at a destination whose type holds no `own` value
+  reads it as its plain type, and a destination whose type does hold one
+  consumes it. An untyped parameter therefore borrows, and `let m = h;`
+  moves. This is what makes an `own u64` handle from C usable at all.
+* **`trusted fn` covers three things, not one.** 4.6 and section 6 speak of
+  the trusted *end* of an obligation. A pool needs its *beginning* as well
+  (a plain `T&` returned as `own T&`) and the *overwrite* of a slot that
+  held `own` fields when it is reused. All three are what `trusted fn`
+  permits.
+* **Emptiness is a flow fact of its own.** 4.6 has the kill facts of §9.2
+  carry "this field was taken" from the release block to the trusted end.
+  They cannot: a call of a function value clears them in both directions.
+  Each tracked variable has a bit per `own` field instead, set by `take`,
+  joined with the flow state, and cleared by any other store of an `own`
+  value and by a call that may make one. A plain reference carries such
+  bits too, which is what lets `c.buf = pool.resize(take(c.buf), n)` be an
+  assignment.
+* **A known-empty state.** An `own T?` or `own T[:]` variable written as
+  `null` or `[]`, emptied by `take`, or found null by a condition, owes
+  nothing. Without it a list could not be walked and freed, and no
+  finalizer block could hand a field to a variable outside it.
+* **Codegen is not untouched.** Section 6's last row has no codegen change
+  beyond the length compare. A struct variable that is moved has its `own`
+  fields emptied in the generated code, because a reference bound to it
+  earlier would otherwise still read the moved value as live; `take` and
+  `replace` are stores; and the bounds-check eliminator sees all three as
+  writes.
+* **A stored handle forgets its pool.** An `own T?` field is a pointer; the
+  handle taken out of it is rooted nowhere the checker knows, and the static
+  check behind `free_ref` fails. `release` therefore checks the handle as
+  it runs (`index_of` with a message). `handle_of`, which would make an
+  `own` handle from any reference or index, was not provided: it is the
+  forge that makes the exactly-once claim false.
+* **Owned relative links are in.** 4.6 and section 9 defer them. They took
+  forty lines, since a link loads as the reference it stands for, and they
+  are how Goose's pool structures link: four bytes, and the type names the
+  pool.
+* **A local pool ends by `release_all`.** 4.6 gives a local pool the compare
+  `free_slots.len == items.len`. The compiler knows arrays, not the
+  library's pool, so the rule is the array's: `items` must be empty, which
+  `release_all` brings about by popping. A pool whose elements own slots of
+  the same pool cannot shrink (§5.1), so it cannot be a local.
+* **Runs of `own`-holding elements are rejected**, where a trusted fn would
+  end one: nothing in the text could say each element was emptied.
+* **Size.** About 1,600 lines of C++ (700 of them the new
+  `typecheck_own.h`), 70 lines of Goose in the two pools, and 80 error
+  fixtures, against section 6's "the largest new piece: `defer`'s flow work
+  was 196 lines".
 
 ## References
 
