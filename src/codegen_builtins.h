@@ -509,6 +509,24 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             L(lv.fl, ".len++;");
             return {};
         }
+        case B_TAKE: {
+            // The value leaves its place, which is left holding nothing.
+            auto t = c->rettypes[0];
+            auto place = OwnPlace(an[0], t);
+            auto v = Snapshot(t, place);
+            EmitOwnEmpty(place, t);
+            return { v };
+        }
+        case B_REPLACE: {
+            // The new value is evaluated before the old one is read: what
+            // computing it takes out of the place is not read out again.
+            auto t = c->rettypes[0];
+            auto place = OwnPlace(an[0], t);
+            auto nv = Snapshot(t, GenXD(an[1], t));
+            auto old = Snapshot(t, place);
+            L(place, " = ", nv, ";");
+            return { old };
+        }
         default:
             Fail(ln, cat("builtin not implemented: ", builtindefs[c->builtin].name));
     }

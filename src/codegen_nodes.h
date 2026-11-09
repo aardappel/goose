@@ -63,6 +63,13 @@ inline string StrLit::CgX(CodeGen &cg) {
 inline string Ident::CgX(CodeGen &cg) {
     assert(vdef);   // Named-function values never reach runtime.
     auto x = cg.LoadLoc(cg.VarLoc(vdef), exprtype, line);
+    // A struct moved out of its variable leaves the own values there empty
+    // (TypeCheck::ConsumeVar): a reference to the variable finds none.
+    if (ownmove && vdef->type && !vdef->type->oq) {
+        auto v = cg.Snapshot(exprtype, x);
+        cg.EmitOwnEmpty(cg.VarLoc(vdef).s, vdef->type);
+        return v;
+    }
     // A literal parameter (§7.7) is passed at its nominal type and read at
     // the type each use adapted it to; the call-site check made the
     // conversion exact. A named constant is read likewise at the type its

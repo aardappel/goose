@@ -67,6 +67,50 @@ inline uint32_t TypeCheck::OwnLeafMask(TypeExpr *t) {
     return leaves.size() == MAXOWNLEAVES ? ~0u : (1u << leaves.size()) - 1;
 }
 
+// The own fields of the struct of type t that the literal n builds leaves
+// empty, as bits (OwnLeaves): one it gives no value, a null or a []. Zero
+// for any other expression, of which nothing is known.
+inline uint32_t TypeCheck::LitEmptyLeaves(Node *n, TypeExpr *t) {
+    auto bit = 0;
+    uint32_t mask = 0;
+    auto count = [&](TypeExpr *st) {
+        vector<OwnLeaf> leaves;
+        OwnLeaves(st, {}, leaves);
+        return (int)leaves.size();
+    };
+    auto empty = [&](Node *v) {
+        if (!v || Is<NullLit>(v)) return true;
+        if (auto al = Is<ArrayLit>(v)) return al->elems.empty() && !al->fillval && !al->capexpr;
+        auto c = Is<Call>(v);
+        return c && c->builtin == B_DEFAULT;
+    };
+    auto set = [&](int k) { if (k < (int)MAXOWNLEAVES) mask |= 1u << k; };
+    function<void(Node *, TypeExpr *)> walk = [&](Node *v, TypeExpr *st) {
+        auto sl = Is<StructLit>(v);
+        auto inst = GetStructInst(st);
+        for (size_t i = 0; i < inst->st->fields.size(); i++) {
+            if (inst->st->fields[i].ispad) continue;
+            auto ft = inst->ftypes[i];
+            auto fv = sl && sl->sinst == inst ? sl->InitFor((int)i) : nullptr;
+            if (ft->oq) {
+                if (sl && empty(fv)) set(bit);
+                bit++;
+            } else if (OwnPointee(ft) && ft->kind == TY_STRUCT) {
+                if (sl && Is<StructLit>(fv)) {
+                    walk(fv, ft);
+                } else {
+                    auto n = count(ft);
+                    if (sl && empty(fv))
+                        for (auto k = 0; k < n; k++) set(bit + k);
+                    bit += n;
+                }
+            }
+        }
+    };
+    if (auto st = OwnPointee(t); st && st == t && Is<StructLit>(n)) walk(n, st);
+    return mask;
+}
+
 inline void TypeCheck::TrackOwn(VarDef *vd) {
     if (!vd->type || vd->isglobal || vd->istemp || vd->copybind || !OwnTracked(vd->type)) return;
     ownused = true;
@@ -252,11 +296,14 @@ inline void TypeCheck::RequireOwnConsumed(int base, const Node *at, const string
             vector<OwnLeaf> leaves;
             OwnLeaves(OwnPointee(v->type), {}, leaves);
             string missing;
+            auto nmissing = 0;
             for (size_t k = 0; k < leaves.size(); k++)
-                if (!(o.empty & (1u << k)))
+                if (!(o.empty & (1u << k))) {
                     Append(missing, missing.empty() ? "" : ", ", leaves[k].path.substr(1));
+                    nmissing++;
+                }
             fail(cat("trusted fn ", ending->sf->name, " ends the claim of ", v->name, " on a ",
-                     TypeStr(OwnPointee(v->type)), " whose own field", leaves.size() > 1 ? "s " : " ",
+                     TypeStr(OwnPointee(v->type)), " whose own field", nmissing > 1 ? "s " : " ",
                      missing, " may still hold a value: take() each one before ", exit,
                      ", in the block the caller passes"));
         }
@@ -340,6 +387,45 @@ inline void TypeCheck::RestoreOwn(const OwnSnapshot &o) {
     if (cur.ownfresh.size() > o.fresh) cur.ownfresh.resize(o.fresh);
 }
 
+// The own fields a path names, as bits of the variable that answers for
+// them: `c.buf` of a struct variable c, `h.buf` of an own handle h, or the
+// same through a borrow bound to what h points at (VarDef::ownalias). The
+// path crosses no other reference and no element, whose storage no variable
+// answers for. `whole`: the path is the variable itself.
+inline bool TypeCheck::OwnPath(Node *n, VarDef *&base, uint32_t &bits, bool &whole) {
+    vector<string_view> names;
+    while (auto d = Is<Dot>(n)) {
+        names.push_back(d->name);
+        n = d->obj;
+    }
+    auto id = Is<Ident>(n);
+    if (!id || !id->vdef) return false;
+    auto vd = id->vdef;
+    if (vd->ownalias) vd = vd->ownalias;
+    if (!vd->owned) return false;
+    base = vd;
+    whole = names.empty();
+    bits = 0;
+    auto st = OwnPointee(vd->type);
+    if (whole) {
+        bits = OwnLeafMask(vd->type);
+        return true;
+    }
+    if (!st) return false;
+    string path;
+    for (auto i = names.size(); i-- > 0;) Append(path, ".", names[i]);
+    vector<OwnLeaf> leaves;
+    OwnLeaves(st, {}, leaves);
+    for (size_t k = 0; k < leaves.size() && k < MAXOWNLEAVES; k++) {
+        auto &lp = leaves[k].path;
+        // The field itself, or a struct of them.
+        if (lp == path || (lp.size() > path.size() && lp.compare(0, path.size(), path) == 0 &&
+                           lp[path.size()] == '.'))
+            bits |= 1u << k;
+    }
+    return bits != 0;
+}
+
 // An assignment writes over storage holding an own value, which would drop
 // what is there: a variable that holds nothing takes a new value, a trusted
 // fn vouches for the slot it reuses, and anything else is a replace().
@@ -389,6 +475,130 @@ inline void TypeCheck::CallMayPropagate(Node *at, FnSpec *spec, string_view name
                        cat("this call of ", name, ", which may return past here (a `return ... "
                            "from`, or a block's return)"),
                        nullptr);
+}
+
+// take(place): the own value a place holds, leaving the place empty (§4.6
+// of the design note): an optional reference's null, a slice's empty run,
+// each own field of a struct.
+inline Val TypeCheck::CheckTake(Call *c, vector<Node *> &args) {
+    ownused = true;
+    auto lv = CheckLValue(args[0]);
+    auto t = lv.var ? lv.var->type : lv.type;
+    // A plain reference names the place it points at.
+    if (IsPlainRef(t) && !t->oq) {
+        DerefLValue(lv, args[0]);
+        t = lv.type;
+    }
+    if (!HoldsOwn(t))
+        Error(c, cat("take moves an own value out of the place holding it, and ",
+                     ExprStr(args[0]), " is a ", TypeStr(t), ", which holds none"));
+    if (!OwnTracked(t))
+        Error(c, cat("take moves one own value, and ", ExprStr(args[0]), " is a ", TypeStr(t),
+                     ": its elements leave one at a time, by pop"));
+    if (!OwnEmptyable(t))
+        Error(c, cat("take leaves its place empty, and a ", TypeStr(t), " has no empty value: "
+                     "only an optional reference (own T?), a slice (own T[:]) and a struct of "
+                     "those do",
+                     lv.var && lv.var->owned ? cat("; ", lv.var->name, " is a variable, which "
+                                                   "moves by being passed on") : string()));
+    VarDef *base = nullptr;
+    uint32_t bits = 0;
+    auto whole = false;
+    auto tracked = OwnPath(args[0], base, bits, whole);
+    if (tracked && whole && base == lv.var) {
+        // The variable's own value: a move, which also leaves it empty.
+        UseOwn(base, args[0]);
+        if (base->own.state == OS_CLAIMED)
+            Error(c, cat(base->name, " is released by the defer", OwnWhere(base->own.at),
+                         ": taking it as well would release it twice"));
+        base->own.state = OS_CONSUMED;
+        base->own.at = args[0];
+        base->own.empty = 0;
+    } else if (tracked) {
+        if (deferbodies && Depth(base) <= DeferDepth())
+            Error(c, cat("a defer claims a whole own variable, not a field of one: take ",
+                         ExprStr(args[0]), " into a variable of its own, and release that"));
+        base->own.empty |= bits;
+    } else if (!lv.writable) {
+        Error(c, cat("cannot take ", ExprStr(args[0]), " through a non-writable value (const, "
+                     "or a read-only instantiation, §9.5): take writes the empty value back"));
+    }
+    args[0]->exprtype = t;
+    c->rettypes.push_back(t);
+    Val v;
+    v.type = t;
+    if (IsRefOrSlice(t)) {
+        // The value points where the place's did.
+        auto rv = ContainerRead(lv);
+        if (lv.var && IsRefOrSlice(lv.var->type)) rv.SetProv(RefProvOf(lv.var));
+        v.SetProv(rv);
+    } else {
+        v.Set(TempRoot(), false);
+        if (HoldsPlainRef(t)) {
+            auto rv = lv.var ? Val {} : ContainerRead(lv);
+            v.contents = lv.var ? lv.var->contents : rv.contents;
+            v.holderset = true;
+        }
+    }
+    return v;
+}
+
+// replace(place, v): stores v in a place holding an own value and gives
+// back what was there, for the caller to consume.
+inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
+    ownused = true;
+    auto lv = CheckLValue(args[0]);
+    auto t = lv.var ? lv.var->type : lv.type;
+    if (IsPlainRef(t) && !t->oq) {
+        DerefLValue(lv, args[0]);
+        t = lv.type;
+    }
+    if (!HoldsOwn(t))
+        Error(c, cat("replace exchanges the own value a place holds, and ", ExprStr(args[0]),
+                     " is a ", TypeStr(t), ", which holds none: assign it"));
+    if (!OwnTracked(t))
+        Error(c, cat("replace exchanges one own value, and ", ExprStr(args[0]), " is a ",
+                     TypeStr(t), ": its elements enter and leave one at a time, by push and pop"));
+    VarDef *base = nullptr;
+    uint32_t bits = 0;
+    auto whole = false;
+    auto tracked = OwnPath(args[0], base, bits, whole);
+    if (tracked && whole && base == lv.var) {
+        UseOwn(base, args[0]);
+        if (base->own.state == OS_CLAIMED)
+            Error(c, cat(base->name, " is released by the defer", OwnWhere(base->own.at),
+                         ": the value replace returns would be released as well"));
+    } else if (!lv.writable && !(lv.var && lv.var->owned)) {
+        Error(c, cat("cannot replace ", ExprStr(args[0]), " through a non-writable value "
+                     "(const, or a read-only instantiation, §9.5)"));
+    }
+    args[0]->exprtype = t;
+    Val old;
+    old.type = t;
+    if (IsRefOrSlice(t)) {
+        auto rv = ContainerRead(lv);
+        if (lv.var && IsRefOrSlice(lv.var->type)) rv.SetProv(RefProvOf(lv.var));
+        old.SetProv(rv);
+    } else {
+        old.Set(TempRoot(), false);
+        if (HoldsPlainRef(t)) {
+            auto rv = lv.var ? Val {} : ContainerRead(lv);
+            old.contents = lv.var ? lv.var->contents : rv.contents;
+            old.holderset = true;
+        }
+    }
+    Val nv;
+    {
+        // The new value is stored where the old one lay.
+        DestScope ds(*this, Dest(lv, lv.var && IsRefOrSlice(t), lv.reached));
+        SlotScope ss(*this, true);
+        nv = CheckValue(args[1], t);
+    }
+    // A variable now points where either value did.
+    if (lv.var && IsRefOrSlice(t) && !lv.var->isglobal) AddBinding(lv.var, nv);
+    NoteOwnFill(c);
+    c->rettypes.push_back(t);
+    return old;
 }
 
 }  // namespace goose

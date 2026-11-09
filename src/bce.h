@@ -3774,6 +3774,62 @@ inline bool SliceExpr::BceWalk(BCE &b) {
     return true;
 }
 
+// A value the analysis does not follow is written to the place lval: what
+// an assignment of it kills (Assign::BceWalk), for the builtins that
+// exchange an own value where it lies (take, replace).
+inline void BceUnknownWrite(BCE &b, Node *lval) {
+    auto lt = lval->exprtype;
+    if (lt && lt->kind == TY_REF) {
+        auto ch = b.ChainOf(lval);
+        if (Is<Ident>(lval) && ch.kind == BCE::CH_OK) {
+            b.RebindKill(ch.root);
+            return;
+        }
+        auto [k, u] = b.ChainUlt(lval, true);
+        b.RefSlotWriteKill(k, u, ch.root);
+        return;
+    }
+    if (auto id = Is<Ident>(lval)) {
+        auto v = id->vdef;
+        if (!v) return;
+        auto t = v->type;
+        if (t && t->kind == TY_SLICE) b.SlotWriteKill(BCE::UK_OWNED, v);
+        else if (t && t->kind != TY_FLT && t->kind != TY_BOOL && t->kind != TY_INT)
+            b.StorageWriteKill(BCE::UK_OWNED, v, v);
+        return;
+    }
+    auto elemwrite = [&] {
+        if (BCE::HoldsLen(lt)) b.ElementLvalKill(lval);
+        if (BCE::HoldsRef(lt)) {
+            auto [k, u] = b.ChainUlt(lval, true);
+            b.RefSlotWriteKill(k, u, nullptr);
+        }
+    };
+    if (Is<Index>(lval)) return elemwrite();
+    auto ch = b.ChainOf(lval);
+    if (ch.kind == BCE::CH_INDEX) return elemwrite();
+    if (ch.kind == BCE::CH_FAIL || !ch.root) {
+        b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, nullptr);
+        return;
+    }
+    if (!ch.anycross) {
+        b.StorageWriteKill(BCE::UK_OWNED, ch.root, ch.root);
+    } else if (ch.rootonlycross) {
+        auto [k, u] = b.UltOf(ch.root);
+        if (k != BCE::UK_STATIC) b.StorageWriteKill(k, u, ch.root);
+        else b.RebindKill(ch.root);
+    } else {
+        b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, ch.root);
+    }
+}
+
+// A struct moved out of its variable leaves the own slices there empty
+// (TypeCheck::ConsumeVar): a write of the variable's storage.
+inline bool Ident::BceWalk(BCE &b) {
+    if (ownmove && vdef) b.StorageWriteKill(BCE::UK_OWNED, vdef, vdef);
+    return true;
+}
+
 inline bool Call::BceWalk(BCE &b) {
     Node *recv = nullptr;
     // A call into user code is a site (RecordSite): each integer argument's
@@ -3851,6 +3907,11 @@ inline bool Call::BceWalk(BCE &b) {
         auto arg0 = recv ? (args.empty() ? nullptr : args[0])
                          : (args.size() > 1 ? args[1] : nullptr);
         switch (builtin) {
+            case B_TAKE: case B_REPLACE:
+                // Each stores another value in its place: an empty one, or
+                // its argument.
+                if (rn) BceUnknownWrite(b, rn);
+                break;
             case B_MOVE_FROM:
                 // The copy writes the slice captured before the source ran.
                 // A source-side rebind can give the receiver another target.

@@ -166,6 +166,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             v.writable = false;
             return v;
         }
+        case B_TAKE: return CheckTake(c, args);
+        case B_REPLACE: return CheckReplace(c, args);
         case B_COPY: {
             // copy(x): a fresh value from stored one (§4.1), for the
             // destinations that never copy implicitly.

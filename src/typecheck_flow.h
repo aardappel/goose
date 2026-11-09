@@ -2772,6 +2772,22 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         d->constfval = v.fval;
         d->constfrom = d->constlit ? v.constfrom : nullptr;
         Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
+        // A struct built here holds nothing in the own fields its literal
+        // left out.
+        if (d->owned && !d->type->oq) d->own.empty = LitEmptyLeaves(vd->inits[i], d->type);
+        // A `let` reference bound to what an own variable holds or points
+        // at: a take() through it is one through that variable (OwnPath).
+        if (ownused && !vd->isvar && !global && IsPlainRef(d->type) && !d->type->oq) {
+            auto in = vd->inits[i];
+            while (auto u = Is<Unary>(in)) in = u->child;
+            if (auto id = Is<Ident>(in); id && id->vdef) {
+                auto src = id->vdef;
+                auto ht = src->narrowed ? src->narrowed : src->type;
+                if (src->ownalias) d->ownalias = src->ownalias;
+                else if (src->owned && ht && (IsPlainRef(ht) ? ht->oq : OwnPointee(ht) != nullptr))
+                    d->ownalias = src;
+            }
+        }
         auto len = Is<Dot>(vd->inits[i]);
         if (!vd->isvar && !global && len && len->member == B_LEN &&
             d->type->kind == TY_INT && d->type->intstorage == IS_I64)

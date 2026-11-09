@@ -316,6 +316,35 @@ inline bool CodeGen::HasSelfRelRef(TypeExpr *t) {
 // its destination only as the named result built there (§3.9, §7.3): the
 // checker allows nothing else (TypeCheck::AllowNamedResult), and a copy
 // would keep offsets measured from the local.
+// Leaves the own values the C lvalue lv of type t holds empty
+// (docs/design/ownership.md): a null reference, an empty slice, each of them
+// all zero bits, as their default is (EmitDefaultInto).
+inline void CodeGen::EmitOwnEmpty(const string &lv, TypeExpr *t) {
+    if (t->oq) {
+        L("GS_MEMZERO(&", lv, ", sizeof(", lv, "));");
+        return;
+    }
+    if (t->kind != TY_STRUCT) return;
+    auto si = SI(t);
+    for (size_t i = 0; i < si->st->fields.size(); i++) {
+        auto ft = si->ftypes[i];
+        if (!ft || !HoldsOwnOf(ft, [&](TypeExpr *x) { return FieldRuns(x); })) continue;
+        EmitOwnEmpty(cat(lv, ".", Sanitize(si->st->fields[i].name)), ft);
+    }
+}
+
+// The place take() or replace() exchanges a value of type t at, resolved
+// now, as a C lvalue through a pointer nothing later can move.
+inline string CodeGen::OwnPlace(Node *n, TypeExpr *t) {
+    auto lv = GenLocNow(n);
+    if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv);
+    if (!lv.val || lv.ispref)
+        Fail(n->line, "internal: an own value in storage with no C layout of its own");
+    auto p = T();
+    L(CT(lv.t), " *", p, " = &(", lv.s, ");");
+    return cat("(*", p, ")");
+}
+
 inline void CodeGen::NoSelfRelCopy(Node *val) {
     auto id = Is<Ident>(val);
     if (id && id->vdef && id->vdef->type && HasSelfRelRef(id->vdef->type))

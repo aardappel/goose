@@ -84,6 +84,15 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
         auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre,
                              entryreach, bd ? &nomatch : nullptr, expected);
         if (!nomatch) return v;
+        // take and replace are for own values (docs/design/ownership.md):
+        // any other call of a user function of the name is that function's
+        // to judge.
+        if ((bd->kind == B_TAKE || bd->kind == B_REPLACE) &&
+            !(c->args.size() >= 1 && c->args[0]->exprtype && HoldsOwn(c->args[0]->exprtype))) {
+            reachable = entryreach;
+            return ResolveCall(c, cands, env, id->name, nullptr, nopre, entryreach, nullptr,
+                               expected);
+        }
         // Without a cast, an argument might have matched a function (JudgeCastAt).
         auto fallback = builtinfallback;
         fallback.insert(c->args.begin(), c->args.end());

@@ -1142,6 +1142,8 @@ struct CodeGen {
     bool NeedsResultLocation(TypeExpr *t) { return IsFix(t) && t->kind != TY_REF && HasRelRef(t); }
     bool HasSelfRelRef(TypeExpr *t);
     void NoSelfRelCopy(Node *val);
+    void EmitOwnEmpty(const string &lv, TypeExpr *t);
+    string OwnPlace(Node *n, TypeExpr *t);
     bool HasUninitSlots(TypeExpr *t);
 
     // Byte span of the largest fixed value that can be a relative

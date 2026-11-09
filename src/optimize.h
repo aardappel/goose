@@ -909,6 +909,7 @@ inline Node *Ident::Cp1(Inliner &inl) const {
     auto c = inl.ast.New<Ident>(line, name, ns);
     c->vdef = inl.Remap(vdef);
     c->fnref = fnref;
+    c->ownmove = ownmove;
     return c;
 }
 

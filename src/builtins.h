@@ -107,7 +107,9 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_FREE,             "free",             2,  2,   "i",  "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_REUSABLE) \
     F(B_ALLOC_SLICE,      "alloc_slice",      2,  2,   "",   "s", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_SLICEPOOL) \
     F(B_REALLOC_SLICE,    "realloc_slice",    3,  3,   "",   "s", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_SLICEPOOL) \
-    F(B_FREE_SLICE,       "free_slice",       2,  2,   "",   "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_SLICEPOOL)
+    F(B_FREE_SLICE,       "free_slice",       2,  2,   "",   "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_SLICEPOOL) \
+    F(B_TAKE,             "take",             1,  1,   "",   "",  0,              "",            0) \
+    F(B_REPLACE,          "replace",          2,  2,   "",   "",  0,              "",            0)
 
 enum BuiltinKind {
     #define F(k, n, lo, hi, a, r, rv, gr, fl) k,

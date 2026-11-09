@@ -1,0 +1,13 @@
+conn 1 scratch true live 1
+spare 6 live 2
+released: live 0 conns 0
+local 7 true live 1
+taken true live 0
+moved: source empty true true pooled 8
+whole 3 true left true
+outer AB 3 4 runs 3
+inner 0 ABC left 0
+held 4 runs 1
+current 2 live 1
+current empty true
+end: live 0 conns 0 runs 0

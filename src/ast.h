@@ -993,6 +993,7 @@ NODE_END
 NODE(Ident)
     string_view expansionerror;
     BCE_MARK
+    BCE_WALK
     string_view name;               // As written: `x`, `ns::x` or `::x`. A qualified
                                     // spelling is one interned string, so it can never
                                     // coincide with a local's name.
