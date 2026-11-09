@@ -48,6 +48,7 @@ add_executable(goose
     src/typecheck_types.h
     src/typecheck_exprs.h
     src/typecheck_flow.h
+    src/typecheck_own.h
     src/typecheck_calls.h
     src/typecheck_builtins.h
     src/typecheck_nodes.h

@@ -1,0 +1,8 @@
+// error: this own Node& is dropped
+// A borrow of a fresh value leaves nothing holding it.
+struct Node { v: i64 }
+var nodes: Node[>..] = [];
+trusted fn make(v: i64) -> own Node& { return nodes.push(Node { v: v }); }
+trusted fn drop_node(h: own Node&) {}
+fn show(n: Node&) { print(n.v); }
+fn main() { print(make(1).v); }

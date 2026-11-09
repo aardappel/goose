@@ -85,8 +85,10 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
     if (!expansionerror.empty()) tc.Error(this, string(expansionerror));
     if (auto vd = tc.LookupVar(name, ns, this)) {
         vdef = vd;
+        ownmove = false;
         if (tc.deferbodies) tc.NoteDeferMention(vd);
         tc.RequireAssigned(vd, this);
+        if (vd->owned) tc.UseOwn(vd, this);
         Val v;
         auto t = vd->narrowed ? vd->narrowed : vd->type;
         v.type = tc.LoadType(t);

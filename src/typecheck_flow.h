@@ -22,6 +22,7 @@ inline void TypeCheck::PushScope(int kind, Node *node) {
 
 inline void TypeCheck::PopScope() {
     auto &s = scopes.back();
+    OwnScopeEnd(s, (int)scopes.size() - 1);
     // A `var x = []` that nothing ever pushed into has no type to give
     // codegen; the scope ending is the last chance to say so.
     for (auto i = s.varbase; i < (int)vars.size(); i++)
@@ -943,7 +944,7 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
     FlowState f;
     EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
         auto v = vars[i];
-        f.locals.push_back({ i, v, { v->assigned, v->maybeassigned, v->narrowed } });
+        f.locals.push_back({ i, v, { v->assigned, v->maybeassigned, v->narrowed, v->own } });
     });
     // Globals' narrowing participates too (assignment in branches).
     for (auto v : narrowedglobals)
@@ -959,6 +960,7 @@ inline void TypeCheck::RestoreFlow(const FlowState &f) {
         e.var->assigned = e.state.assigned;
         e.var->maybeassigned = e.state.maybeassigned;
         e.var->narrowed = e.state.narrowed;
+        e.var->own = e.state.own;
     }
     for (auto v : narrowedglobals) v->narrowed = nullptr;
     for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
@@ -985,7 +987,8 @@ inline TypeCheck::FlowState TypeCheck::JoinFlow(const FlowState &a, const FlowSt
         auto aa = at(a, p, e), bb = at(b, q, e);
         e.state = { (!a.reachable || aa.assigned) && (!b.reachable || bb.assigned),
                     (a.reachable && aa.maybeassigned) || (b.reachable && bb.maybeassigned),
-                    narrow(aa.narrowed, bb.narrowed) };
+                    narrow(aa.narrowed, bb.narrowed),
+                    !a.reachable ? bb.own : !b.reachable ? aa.own : JoinOwn(aa.own, bb.own) };
     }
     // A global stays narrowed where every reachable side narrowed it.
     if (!a.reachable) joined.globals = b.globals;
@@ -1027,6 +1030,12 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
         auto t = id->vdef->type;
         if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed)
             SetNarrowed(id->vdef, NarrowedRef(t, cond->line));
+        // An own optional found null holds nothing: there is no obligation
+        // left on this path.
+        if (t && IsOptional(t) && !sense && id->vdef->owned && id->vdef->own.state == OS_HELD) {
+            id->vdef->own.state = OS_CONSUMED;
+            id->vdef->own.at = cond;
+        }
         return;
     }
     if (auto u = Is<Unary>(cond)) {
@@ -1068,6 +1077,7 @@ inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v, Node *at) {
 inline TypeExpr *TypeCheck::NarrowedRef(TypeExpr *t, Line l) {
     auto r = ast.RefTo(t->ref->sub, l);
     r->cq = t->cq;
+    r->oq = t->oq;
     return r;
 }
 
@@ -1467,6 +1477,7 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     x->flat = last == x && x->elseb && entry.reachable && !bflow.reachable;
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
+    OwnAgree(x, "if");
     if (!wantvalue) return VoidVal();
     auto v = JoinBranches(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, onjoin);
     // On joinpath the construct that started it makes the copy (CheckJoin).
@@ -1800,6 +1811,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     }
     if (!first) RestoreFlow(acc);
     reachable = resultreach;
+    OwnAgree(m, "match");
     if (!wantvalue) return VoidVal();
     return onjoin ? result : TempCopy(result);
 }
@@ -1834,6 +1846,7 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     x->body->exprtype = v.type ? v.type : ast.voidtype;
     JoinBreakFlow(sc, true);
     reachable = reachable || sc.hasbreak;  // Exits via the tail or any break.
+    OwnAgree(x, "block");
     if (!wantvalue) return VoidVal();
     CheckBranchRoot(v, CurDepth(), x->body->tail, "block");
     if (sc.breaktype) CheckBranchRoot(sc.breakvalue, CurDepth(), x, "block");
@@ -1894,6 +1907,18 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
         auto lp = cur.looppasses.back();
         cur.looppasses.pop_back();
         auto next = sc.backedges ? JoinFlow(entry, sc.backedge) : entry;
+        // An own variable held on entry that an iteration consumed: the
+        // next pass meets it at the consume, which says so (UseOwn).
+        if (ownused) {
+            size_t p = 0;
+            for (auto &e : next.locals) {
+                if (e.state.own.state != OS_MIXED) continue;
+                while (p < entry.locals.size() && entry.locals[p].index < e.index) p++;
+                if (p < entry.locals.size() && entry.locals[p].var == e.var &&
+                    entry.locals[p].state.own.state != OS_MIXED)
+                    e.state.own.claim = -1;
+            }
+        }
         auto changed = lp.changed || !SameFlow(next, head);
         head = next;
         if (changed) continue;
@@ -1922,6 +1947,7 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     });
     JoinBreakFlow(sc, false);
     reachable = sc.hasbreak;  // A loop only exits via break.
+    OwnAgree(x, "loop");
     if (!wantvalue || !sc.breaktype) return VoidVal();
     CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
     return onjoin ? sc.breakvalue : TempCopy(sc.breakvalue);
@@ -1942,6 +1968,7 @@ inline void TypeCheck::CheckWhile(While *x) {
     });
     RestoreFlow(exit);
     JoinBreakFlow(sc, true);
+    OwnAgree(x, "loop");
 }
 
 inline void TypeCheck::CheckFor(ForLoop *x) {
@@ -2141,6 +2168,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         CheckLoopBody(x->body);
     });
     JoinBreakFlow(sc, true);
+    OwnAgree(x, "loop");
 }
 
 inline int TypeCheck::RealFrameIndex() {
@@ -2244,6 +2272,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
             Error(b, "this construct mixes valueless and valued breaks");
         sc.valuelessbreak = true;
     }
+    RequireOwnConsumed(scopes[si].varbase, b, "this break", nullptr);
+    RunOwnClaims(si);
     NoteBreak(si);
     reachable = false;
 }
@@ -2276,6 +2306,8 @@ inline void TypeCheck::CheckContinue(Node *n) {
     if (si == -2) Error(n, "continue cannot cross a const for expansion boundary");
     if (si == -3) JumpLeavesDefer(n, "continue");
     if (si < 0) Error(n, "continue outside of a loop");
+    RequireOwnConsumed(scopes[si].varbase, n, "this continue", nullptr);
+    RunOwnClaims(si);
     auto &sc = scopes[si];
     sc.backedge = sc.backedges ? JoinFlow(sc.backedge, SaveFlow()) : SaveFlow();
     sc.backedges = true;
@@ -2312,13 +2344,40 @@ inline void TypeCheck::CheckDefer(Defer *d) {
     for (auto g : ast.globals)
         for (auto v : g->defs)
             if (v->isvar) v->narrowed = nullptr;
+    auto ownbefore = SaveOwn();
     PushScope(SK_DEFER, d);
     deferbodies++;
     CheckBlockVal(d->body, nullptr, false);
     deferbodies--;
     PopScope();
+    // An own variable the body consumes it claims (docs/design/ownership.md
+    // 4.3): every exit of the block the defer is written in then releases
+    // it, and until one does the code after the defer may still use it.
+    vector<VarDef *> claimed;
+    for (auto &[v, before] : ownbefore.vars)
+        if (v->own.state == OS_CONSUMED && before.state == OS_HELD) claimed.push_back(v);
     RestoreFlow(saved);
+    RestoreOwn(ownbefore);
+    for (auto v : claimed) {
+        v->own.state = OS_CLAIMED;
+        v->own.claim = scopes.back().serial;
+        v->own.at = d;
+        scopes.back().ownclaims = true;
+    }
     d->exprtype = ast.voidtype;
+}
+
+// The scope of the innermost defer body the code being checked is written
+// in, as InDeferBody finds one; -1 for none.
+inline int TypeCheck::DeferDepth() {
+    for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+        auto hi = fi + 1 < (int)frames.size() ? frames[fi + 1].scopebase : (int)scopes.size();
+        for (auto i = hi - 1; i >= frames[fi].scopebase; i--)
+            if (scopes[i].kind == SK_DEFER) return i;
+        if (!frames[fi].isfunval) break;
+        fi = frames[fi].lexframe;
+    }
+    return -1;
 }
 
 // Whether the code being checked is written in a defer body: one of the
@@ -2488,7 +2547,10 @@ inline void TypeCheck::CheckStmtExpr(Node *n) {
     if (auto x = Is<MatchExpr>(n)) { CheckMatch(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<EarlyBlock>(n)) { CheckEarlyBlock(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<LoopExpr>(n)) { CheckLoop(x, nullptr, false); n->exprtype = ast.voidtype; return; }
+    // An own value the statement made and nothing took is dropped with it.
+    auto fresh = cur.ownfresh.size();
     NoUntypedEmptyArray(CheckValue(n, nullptr), n, "a statement");
+    NoOwnDropped(fresh);
 }
 
 inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
@@ -2525,6 +2587,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (t->kind == TY_FN)
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
         d->type = t;
+        TrackOwn(d);
         if (global) CheckVarExtent(d, vd);
         if (v && IsRefOrSlice(t)) {
             BindRefProvenance(d, *v);
@@ -2599,7 +2662,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // A reference result decays to a copy of a fixed-size pointee,
             // as a single binding's does, unless the declaration binds by
             // reference (`.=`); one to a non-fixed value binds it (§4.1).
-            auto rv = vd->byref || IsNonFixedRef(rets[i]) ? rets[i] : DecayRef(rets[i]);
+            // An own result is the handle it is, which the name now holds.
+            auto ownref = rets[i].type->oq && IsPlainRef(rets[i].type);
+            auto rv = vd->byref || ownref || IsNonFixedRef(rets[i]) ? rets[i]
+                                                                      : DecayRef(rets[i]);
             // A decayed reference result is a copy of its pointee, while a
             // value result is built where it is received, from_bytes' array
             // included (NoRelRefCopy).
@@ -2608,6 +2674,8 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             CheckBindingRoot(d, rv, vd->inits[0]);
             Finish(d, rv.type, &rv, vd->inits[0]);
         }
+        cur.ownfresh.erase(remove(cur.ownfresh.begin(), cur.ownfresh.end(), vd->inits[0]),
+                           cur.ownfresh.end());
         return;
     }
     if (vd->inits.size() != vd->names.size())
@@ -2634,6 +2702,8 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 // reference, a reference or slice value as it is (§3.8).
                 v = CheckV(vd->inits[i], nullptr);
                 if (v.isnull) Error(vd->inits[i], "null needs an annotated optional type");
+                // A reference to an own value borrows it.
+                if (v.type->oq && IsRefOrSlice(v.type)) v.type = ast.UnownedOf(v.type);
                 if (v.lvalue && !IsRefOrSlice(v.type)) {
                     vd->inits[i] = AutoRef(vd->inits[i], v);
                 } else if (!IsRefOrSlice(v.type)) {
@@ -2657,6 +2727,11 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 // one of a reference to such a value is that reference,
                 // which CheckValue keeps.
                 if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
+                // A declaration without a type takes an own value over: a
+                // move (docs/design/ownership.md 4.3).
+                if (!ann && v.type && !v.isnull && !v.emptyarr && (ownused || v.type->oq) &&
+                    HoldsOwn(v.type))
+                    ConsumeOwn(vd->inits[i], v.pointee);
             }
         }
         if (IsUntypedEmptyArray(v.type) && !ann) {
@@ -2810,6 +2885,8 @@ inline void TypeCheck::CheckAssign(Assign *a) {
             }
         }
     }
+    // The variable assigned as a whole may hold nothing yet (UseOwn).
+    Saved<Node *> oa(ownassigning, a->lval);
     auto lv = CheckLValue(a->lval);
     // Generic code stores a whole value of a type parameter's type with `.=`
     // (§3.8): it rebinds where the type is a reference, and assigns as `=`
@@ -2873,6 +2950,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     }
     // Plain value assignment.
     auto target = lv.var ? lv.var->type : lv.type;
+    auto ownstore = OwnAssign(a, lv, target);
     if (lv.var && !lv.var->assigned) {
         // First assignment of an uninitialized local constructs it.
     } else {
@@ -2912,6 +2990,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         }
         lv.var->assigned = lv.var->maybeassigned = true;
         KillNarrow(lv.var);
+        if (ownstore && lv.var->owned) lv.var->own = OwnFlow {};
     }
 }
 
@@ -2933,6 +3012,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     // (its byte length could change, §3.6/§3.9).
     if (target->ref->lenstorage == IS_VARINT)
         Error(a, "varint-width relative references are written only at construction");
+    auto ownstore = OwnAssign(a, lv, target);
     if (lv.var) {
         if (!lv.var->isvar && lv.var->assigned)
             Error(a, cat("cannot rebind let ", lv.var->name));
@@ -2953,7 +3033,9 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         v = CheckV(a->rhs, target);
         if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v, !target->cq);
         wasplain = IsPlainRef(v.type);
+        auto moved = v.type && !v.isnull && (ownused || v.type->oq) && HoldsOwn(v.type);
         MustFit(v, a->rhs, target);
+        if (moved && HoldsOwn(target)) ConsumeOwn(a->rhs);
     }
     a->rhs->exprtype = v.type;
     if (lv.var) {
@@ -2961,6 +3043,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         if (!lv.var->refrootknown || lv.var->ref.Unknown()) BindRefProvenance(lv.var, v);
         else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
         lv.var->assigned = lv.var->maybeassigned = true;
+        if (ownstore && lv.var->owned) lv.var->own = OwnFlow {};
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).
         if (target->ref->optional) {
@@ -3001,6 +3084,7 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
     if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
         Error(a, "varint fields are written only at construction (§3.6)");
     AssignableClassCheck(pt, a);
+    OwnAssign(a, at, pt);
     auto arr = ResizableArrayIn(pt);
     Roots built;
     if (arr) built = at;

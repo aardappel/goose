@@ -1,0 +1,13 @@
+borrows 1 1 1 1 2 true
+written through 5
+moves 3
+branches 0 10 20 30
+loops 2 102 5
+optional 7
+pick 1 2
+two 9 9
+claims 4 blocks 6 guarded 3 -1
+nested 11
+window 3 1 w
+raw 42 41
+live 0 windows 0

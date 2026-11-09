@@ -1001,6 +1001,9 @@ NODE(Ident)
     // Filled by typecheck: exactly one of these.
     VarDef *vdef = nullptr;         // A variable.
     SFunction *fnref = nullptr;     // A named function used as a function value.
+    // A struct variable holding own values, moved from here (TypeCheck::
+    // ConsumeVar): the read leaves the variable's own fields empty.
+    bool ownmove = false;
     Ident(Line l, string_view _name, string_view _ns = {}) : Node(l, NKind), name(_name), ns(_ns) {}
 NODE_END
 
@@ -1704,6 +1707,25 @@ NODE_END
 // Keep that distinction even for roots with no resizable fields.
 enum SizeClass { SC_FIXED, SC_VARIABLE, SC_RESIZABLE, SC_ROOT };
 
+// What the checker knows of a variable carrying an obligation
+// (docs/design/ownership.md): flow state, saved and joined with definite
+// assignment (TypeCheck::FlowState). It holds its value, a `defer` written
+// before here releases it at the exits of the scope `claim` (a
+// Scope::serial), it was consumed, or the paths here disagree. `empty` has
+// a bit per own field of a struct it is or points at (TypeCheck::OwnLeaves)
+// that is known to hold nothing; `at` is what consumed or claimed it, for
+// diagnostics, and no part of the state.
+enum OwnState : uint8_t { OS_HELD, OS_CLAIMED, OS_CONSUMED, OS_MIXED };
+struct OwnFlow {
+    OwnState state = OS_HELD;
+    uint32_t empty = 0;
+    int claim = 0;
+    const Node *at = nullptr;
+    bool operator==(const OwnFlow &o) const {
+        return state == o.state && empty == o.empty && claim == o.claim;
+    }
+};
+
 // One checked variable: a global, local, parameter, or binding (for/match/
 // function value). Created per specialization, so generic code has concrete
 // types here. Also carries the transient flow state (assigned/narrowed) used
@@ -1831,6 +1853,13 @@ struct VarDef {
     bool assigned = false;
     bool maybeassigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
+    // A local or parameter whose value carries an obligation
+    // (TypeCheck::TrackOwn), and its flow state.
+    bool owned = false;
+    OwnFlow own;
+    // A `let` reference or a block's parameter bound to what an own handle
+    // variable points at: a take() through it is one through the handle.
+    VarDef *ownalias = nullptr;
     bool captured = false;         // Accessed from a nested fn / function value.
     // The first comparison relying on the variable being non-negative
     // (§6.1), and the first writable reference bound to it (§4.4), whichever
@@ -2244,6 +2273,7 @@ struct EnvRead {
     VarDef *var = nullptr;
     bool assigned = false;
     bool maybeassigned = false;
+    OwnFlow own;
     bool refrootknown = false;
     Prov ref;
     Roots contents;
@@ -2256,6 +2286,8 @@ struct EnvRead {
 struct OuterExit {
     FnSpec *target = nullptr;
     set<VarDef *> assigned, maybeassigned;
+    // What the exits left of the own variables outside the target, joined.
+    vector<pair<VarDef *, OwnFlow>> own;
 };
 
 // The analysis a checked body exposes to its callers. A recursive round
@@ -2419,6 +2451,10 @@ struct FnSpec {
     Line joinedat;                 // The call that joined it to its cycle.
     set<FnSpec *> needs;           // Concrete `return from` targets enclosing every call.
     bool hasdefer = false;         // The body, a function value's run in it included, has a `defer`.
+    // The body, a function value's run in it or a callee included, may store
+    // an own value into storage (a replace, a trusted fn's assignment): what
+    // a caller knew to be empty may not be after a call (TypeCheck::NoteOwnFill).
+    bool fillsown = false;
     // Calls that reused this spec, with the call path each was checked on: a
     // target recorded later applies to those paths too. The call that created
     // the spec needs no entry, since its path starts every path a target

@@ -172,6 +172,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             auto av = CheckV(args[0], nullptr);
             args[0]->exprtype = av.type;
             auto v = DecayRef(av);
+            // An own value is not copied (docs/design/ownership.md 4.2): its
+            // bits are read by borrowing it, and its obligation moves.
+            if (v.type && HoldsOwn(v.type))
+                Error(c, cat("copy of a ", TypeStr(v.type), ", which holds an own value: an own "
+                             "value is never copied; pass it on, or read what it holds through "
+                             "a reference"));
             if (ClassOf(v.type) == SC_ROOT)
                 Error(c, "root owners cannot be copied; bind a reference instead");
             if (v.type->kind == TY_SLICE)

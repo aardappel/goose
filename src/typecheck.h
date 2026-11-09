@@ -180,6 +180,10 @@ struct TypeCheck {
         vector<VarDef *> vars;
         vector<bool> assigned, maybeassigned, maybeonentry;
         bool reached = false;
+        // The variables outside it that carry an obligation, and the join of
+        // what its exits left of each (NoteExit).
+        vector<VarDef *> ownvars;
+        vector<OwnFlow> own;
     };
 
     // One level of the compile-time call path.
@@ -255,6 +259,7 @@ struct TypeCheck {
         bool assigned = false;
         bool maybeassigned = false;
         TypeExpr *narrowed = nullptr;
+        OwnFlow own;                // Of a variable carrying an obligation (VarDef::owned).
         bool operator==(const VarFlow &) const = default;
     };
     struct FlowEntry {
@@ -326,6 +331,8 @@ struct TypeCheck {
         // in (CheckLoopPasses).
         FlowState backedge;
         bool backedges = false;
+        // A `defer` written in it claimed an own variable (CheckDefer).
+        bool ownclaims = false;
     };
 
     vector<Frame> frames;
@@ -1917,6 +1924,7 @@ struct TypeCheck {
             Error(n, "a function value must be a function name or block literal (§7.6); "
                      "evaluate runtime expressions separately");
         NoteTemp(n, v, cyclecalls);
+        if (ownused || (v.type && v.type->oq)) NoteOwnFresh(n, v);
         RecordVal(n, v);
         // A value of a type naming nothing is a consequence of the error
         // reported where the name is written, and says nothing more.
@@ -2059,6 +2067,7 @@ struct TypeCheck {
             Error(n, cat("array length ", count, " exceeds storage range of ", TypeStr(t)));
     }
     bool FitsAt(Val &v, TypeExpr *dt);
+    bool FitsPlain(Val &v, TypeExpr *dt);
     static string ConstStr(const Val &v);
     Val CheckCond(Node *n);
     TypeExpr *UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool wantvalue);
@@ -2472,6 +2481,62 @@ struct TypeCheck {
     unordered_map<Defer *, vector<VarDef *>> defermentions;
     void CheckDefer(Defer *d);
     bool InDeferBody();
+
+    // ------------------------------------------------------------------
+    // Ownership (docs/design/ownership.md; typecheck_own.h): the obligation
+    // an `own` value carries, as flow state of the variable holding it.
+
+    // Set by the first variable or value that carries one: a program
+    // without any pays a test where the rules below would look.
+    bool ownused = false;
+    // An own field of a struct type, by value at any depth: its path of
+    // field names, each after a '.', and its type. A struct's are numbered
+    // in declaration order, which is their bit in OwnFlow::empty.
+    struct OwnLeaf {
+        string path;
+        TypeExpr *type;
+    };
+    static constexpr size_t MAXOWNLEAVES = 32;
+    void OwnLeaves(TypeExpr *t, const string &prefix, vector<OwnLeaf> &out);
+    uint32_t OwnLeafMask(TypeExpr *t);
+    uint32_t LitEmptyLeaves(Node *n, TypeExpr *t);
+    TypeExpr *OwnPointee(TypeExpr *t);
+    bool OwnTracked(TypeExpr *t);
+    void TrackOwn(VarDef *vd);
+    bool InTrusted();
+    string OwnWhere(const Node *at);
+    static OwnFlow JoinOwn(const OwnFlow &a, const OwnFlow &b);
+    void UseOwn(VarDef *vd, const Node *at);
+    void ConsumeVar(VarDef *vd, Node *at);
+    void ConsumeOwn(Node *n, bool pointee = false);
+    bool OwnPlace(Node *n);
+    Val BorrowOwn(Node *n, Val v);
+    void NoteOwnFresh(Node *n, const Val &v);
+    void NoOwnDropped(size_t base);
+    void RequireOwnConsumed(int base, const Node *at, const string &exit, FnSpec *ending);
+    void OwnScopeEnd(const Scope &s, int scopeidx);
+    void RunOwnClaims(int fromscope);
+    void OwnAgree(Node *at, const char *construct);
+    void NoteOwnFill(Node *at);
+    void ClearOwnEmpties();
+    bool OwnPath(Node *n, VarDef *&base, uint32_t &bits, bool &whole);
+    int DeferDepth();
+    void GuardOwnArrays(VarDecl *decl, VarDef *d);
+    // The variable a whole assignment is about to give a value, which may
+    // hold none (CheckAssign, CheckLValue).
+    Node *ownassigning = nullptr;
+    bool OwnAssign(Node *at, const LVal &lv, TypeExpr *target);
+    void CallMayPropagate(Node *at, FnSpec *spec, string_view name);
+    Val CheckTake(Call *c, vector<Node *> &args);
+    Val CheckReplace(Call *c, vector<Node *> &args);
+    // A check that is made again discards what it did to the obligations
+    // (ResolveCall's first look at its arguments): the state to return to.
+    struct OwnSnapshot {
+        vector<pair<VarDef *, OwnFlow>> vars;
+        size_t fresh = 0;
+    };
+    OwnSnapshot SaveOwn();
+    void RestoreOwn(const OwnSnapshot &o);
     void NoteDeferMention(VarDef *v);
     void CheckDefers();
     void CheckVarDecl(VarDecl *vd, bool global);
@@ -2844,6 +2909,10 @@ struct TypeCheck {
         // The parts of holders emptied on every path here (Kill), part of
         // the flow state, which a branch joins and a loop's head takes.
         vector<Kill> kills;
+        // The own values made so far that nothing has taken over yet: a
+        // call's result, a literal (NoteOwnFresh). One left when its
+        // statement ends was dropped (NoOwnDropped).
+        vector<Node *> ownfresh;
     };
     BodyState cur;
     // The states of the bodies being checked around this one, outermost

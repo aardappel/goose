@@ -35,6 +35,8 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         // run, no path may start at it, whether it reads or writes.
         if (vd->isglobal) RequireAssigned(vd, n);
         id->vdef = vd;
+        id->ownmove = false;
+        if (vd->owned && vd->assigned && ownassigning != n) UseOwn(vd, n);
         LVal lv;
         lv.type = vd->narrowed ? vd->narrowed : vd->type;
         lv.var = vd;
@@ -810,8 +812,10 @@ inline TypeExpr *TypeCheck::StorageType(const Val &v) {
 }
 
 inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
-    return dt->kind == TY_REF && v.lvalue && v.type->kind != TY_REF && !v.isnull &&
-           TypeEq(StorageType(v), dt->ref->sub);
+    if (dt->kind != TY_REF || !v.lvalue || v.type->kind == TY_REF || v.isnull) return false;
+    // A reference to an own value's storage borrows it, as its plain type.
+    auto st = StorageType(v);
+    return TypeEq(st->oq && st->kind != TY_SLICE ? ast.UnownedOf(st) : st, dt->ref->sub);
 }
 
 inline bool TypeCheck::IsNonFixedLValue(const Val &v) {
@@ -936,6 +940,9 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
         Error(n, "cannot infer the element type of []: an omitted result type is taken from "
                  "the value returned (§7.1); declare the function's result type");
     if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
+    // An own value returned is the caller's from here on.
+    if (v.type && !v.isnull && !v.emptyarr && (ownused || v.type->oq) && HoldsOwn(v.type))
+        ConsumeOwn(n, v.pointee);
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
     NoRelRefCopy(n, v.type);
@@ -980,7 +987,18 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
     if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT &&
         v.type->kind != TY_ARRAY && Is<StructLit>(c->defaultinit))
         n = c->defaultinit;
-    auto dt = expected && expected->kind != TY_VOID ? expected : DecayedType(v);
+    // An own value (docs/design/ownership.md) meets no destination type
+    // here as what it is where a variable or a fresh value gives it, which
+    // whatever takes it consumes: a handle stays the reference it is. Read
+    // out of other storage it is a borrow, of its plain type.
+    auto ownval = (ownused || (v.type && v.type->oq)) && v.type && !v.isnull && !v.emptyarr &&
+                  HoldsOwn(v.type);
+    auto keepown = false;
+    if (ownval && (!expected || expected->kind == TY_VOID)) {
+        if (!OwnPlace(n)) keepown = IsPlainRef(v.type);
+        else if (v.type->oq) v.type = ast.UnownedOf(v.type);
+    }
+    auto dt = expected && expected->kind != TY_VOID ? expected : keepown ? v.type : DecayedType(v);
     // An argument's parameter may bind the branch by reference instead, which
     // makes the & redundant another way: the argument's check against it
     // says which (argpath, RefCopyWarnings).
@@ -990,7 +1008,9 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
     Val copied;
     if (!expected || expected->kind == TY_VOID) {
         if (branchcopy) CheckBranchCopy(v, n, dt, copied);
-        if (!inferred || !IsNonFixedRef(v)) v = DecayRef(v);
+        if (!keepown && (!inferred || !IsNonFixedRef(v))) v = DecayRef(v);
+        // A branch's value becomes its construct's: a move.
+        if (ownval && branchcopy && HoldsOwn(v.type)) ConsumeOwn(n, v.pointee);
     } else {
         if (!callsite && expected->kind == TY_REF && UserRefOf(n))
             Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
@@ -1001,8 +1021,13 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         if (!KeepsRef(v, expected)) v = DecayRef(v);
         auto from = LoadType(v.type);
         auto litfloat = v.litfloat;
+        // What the destination takes over, where its type holds an
+        // obligation; any other destination borrows (FitsAt).
+        auto moved = ownval && !v.isnull && HoldsOwn(v.type);
+        auto viaref = v.pointee;
         MustFit(v, n, expected);
         NoRelRefCopy(n, expected);
+        if (moved && reachable && HoldsOwn(expected)) ConsumeOwn(n, viaref);
         if (reachable && expected->kind == TY_FLT) {
             if (IsIntT(from)) ToFloat(n, from, expected);
             else if (litfloat && !TypeEq(from, expected)) RetypeFlex(n, expected);
@@ -1027,6 +1052,8 @@ inline Val TypeCheck::CheckValueAt(Node *&n, TypeExpr *expected, Dest d, bool ca
 inline Val TypeCheck::Operand(Node *n) {
     DestScope ds(*this, Dest {});
     auto v = DecayRef(CheckV(n, nullptr));
+    // An operator reads an own value, which borrows it.
+    if (v.type && v.type->oq) v.type = ast.UnownedOf(v.type);
     n->exprtype = v.type;
     // An operator computes with the number an index type holds (§3.11), so
     // nothing it computes is one. The operand keeps its type for the
@@ -1084,6 +1111,29 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
 // slots pass curdst null: parameters always die before their arguments'
 // roots).
 inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
+    if (!dt->oq && !(v.type && v.type->oq)) return FitsPlain(v, dt);
+    // Ownership (docs/design/ownership.md): a destination that is not own
+    // borrows an own value, as its plain type. An own destination takes an
+    // own value, a null or a [], which hold nothing, and in a trusted fn a
+    // plain value, whose obligation begins there.
+    if (!dt->oq) {
+        if (!BindsRef(v, dt)) v.type = ast.UnownedOf(v.type);
+        return FitsPlain(v, dt);
+    }
+    if (!v.type->oq && !v.isnull && !v.emptyarr && !InTrusted()) {
+        fitfail = cat("expected an own value of type ", TypeStr(dt), ", got a ",
+                      TypeStr(BindsRef(v, ast.UnownedOf(dt)) ? ast.UnownedOf(dt) : v.type),
+                      ", which carries no obligation: only a function declared to return an "
+                      "own value, or a trusted fn, makes one");
+        return false;
+    }
+    if (v.type->oq) v.type = ast.UnownedOf(v.type);
+    if (!FitsPlain(v, ast.UnownedOf(dt))) return false;
+    v.type = dt;
+    return true;
+}
+
+inline bool TypeCheck::FitsPlain(Val &v, TypeExpr *dt) {
     auto t = v.type;
     // An lvalue at a reference destination is the reference to it (§4.1),
     // a `const T&` where the lvalue is read-only (§9.5).
@@ -1427,6 +1477,10 @@ inline TypeExpr *TypeCheck::UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool
     if (!a) return b;
     if (!b) return a;
     if (TypeEq(a, b)) return a;
+    if (a->oq != b->oq && wantvalue)
+        Error(at, cat("branches disagree: one gives an own value (", TypeStr(a->oq ? a : b),
+                      "), which moves, and the other a ", TypeStr(a->oq ? b : a),
+                      ", which it only borrows"));
     if (TopConstEq(a, b)) return a->cq ? a : b;   // Read-only in one branch: in both.
     if (a->kind == TY_INT && b->kind == TY_INT && (a->ix || b->ix)) {
         // Index or bound types of one array join at the wider width, as a
@@ -3416,12 +3470,14 @@ inline void TypeCheck::CheckStmt(Node *n) {
     // the function's locals outlive it.
     FlagScope rs(inreturn, false);
     NodeScope ns(*this, n);
-    if (auto vd = Is<VarDecl>(n)) { CheckVarDecl(vd, false); return; }
-    if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }
-    if (auto x = Is<IncDec>(n)) { CheckIncDec(x); return; }
-    if (auto fd = Is<FnDecl>(n)) { DeclareLocalFn(fd); return; }
-    if (auto d = Is<Defer>(n)) { CheckDefer(d); return; }
-    CheckStmtExpr(n);
+    auto fresh = cur.ownfresh.size();
+    if (auto vd = Is<VarDecl>(n)) CheckVarDecl(vd, false);
+    else if (auto a = Is<Assign>(n)) CheckAssign(a);
+    else if (auto x = Is<IncDec>(n)) CheckIncDec(x);
+    else if (auto fd = Is<FnDecl>(n)) DeclareLocalFn(fd);
+    else if (auto d = Is<Defer>(n)) CheckDefer(d);
+    else CheckStmtExpr(n);
+    NoOwnDropped(fresh);
 }
 
 }  // namespace goose

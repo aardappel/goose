@@ -172,6 +172,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
     if (d->accessorowner) Error(d, "const for field accessor is not callable");
     auto entryreach = reachable;
     Val ov;
+    auto ownsnap = SaveOwn();
     {
         PathScope ps(*this, d->obj);
         Discovering discovering(*this, c);
@@ -222,8 +223,10 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
         DefaultScopeName(d->name, c, true);
         cands = ast.LookupMethods(d->name, d->ns, rt);
     }
-    if (!cands.empty())
+    if (!cands.empty()) {
+        RestoreOwn(ownsnap);
         return ResolveCall(c, cands, env, d->name, &ov, d->obj, entryreach, nullptr, expected);
+    }
     CheckWaitingArg(c, d->obj, entryreach);
     // A member builtin taking any receiver (bytes_of) takes it as checked.
     NoArrayJoin(ov);
@@ -349,6 +352,10 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         argnodes.push_back(prenode);
         argvals.push_back(std::move(v));
     }
+    // The arguments are checked twice, here for their types and again
+    // against their parameters (RecheckArgs): what this first check did to
+    // the obligations of own values is discarded with it.
+    auto ownsnap = SaveOwn();
     {
         Discovering discovering(*this, c);
         for (auto &a : c->args) {
@@ -371,6 +378,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             argvals.push_back(std::move(v));
         }
     }
+    RestoreOwn(ownsnap);
     // A function whose header was lost to a parse error has nothing to
     // check the call against, nor the call's result to go on with.
     for (auto sf : cands)
@@ -453,7 +461,28 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         FlagScope rs(reachable, entryreach);
         BindBranchesByRef(argnodes, argvals, best.paramtypes, best.sf, -1, best.nwritten);
     }
+    // An own variable passed to a parameter that takes it over is the
+    // callee's before the body runs, a block of this function written at
+    // the call included (ConsumeVar; phase 2 meets the same node again).
+    if (ownused) {
+        for (size_t i = 0; i < best.nwritten && i < argnodes.size(); i++) {
+            if (!HoldsOwn(best.paramtypes[i]) || argvals[i].pointee || !argvals[i].type ||
+                !HoldsOwn(argvals[i].type))
+                continue;
+            auto an = argnodes[i];
+            while (auto u = Is<Unary>(an)) {
+                if (!u->synth) break;
+                an = u->child;
+            }
+            if (auto id = Is<Ident>(an); id && id->vdef && id->vdef->owned)
+                ConsumeVar(id->vdef, an);
+        }
+    }
     auto spec = GetOrCreateSpec(best, argvals, c);
+    // What the body did to the own variables around it, on every path it
+    // returns by, and to what the checker took for empty.
+    OwnAgree(c, "call");
+    if (ownused && (spec->fillsown || spec->inprogress)) NoteOwnFill(c);
     ApplyCalleeShrinks(c, spec, argvals, name, argnodes);
     ApplyCalleeGrows(c, spec, argvals, name);
     // Phase 2 starts at the call's entry again: a later argument may have
@@ -461,6 +490,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     // it.
     auto argsreach = reachable;
     RecheckArgs(c, cands, best, denv, argnodes, -1, {}, entryreach);
+    if (!phase2waits.count(c)) CallMayPropagate(c, spec, name);
     // A C function's parameters are what they say (§7.10): a read-only
     // reference or slice needs the parameter declared const.
     if (best.sf->isextern) {
@@ -828,6 +858,8 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
                     why = cat("cannot infer a type for argument ", (int64_t)i + 1);
                     return false;
                 }
+                // Only a parameter declared own takes an own value over.
+                if (nt->oq) nt = ast.UnownedOf(nt);
                 mi.paramtypes[i] = nt;
                 mi.tier = std::max(mi.tier, 1);
                 continue;
@@ -838,6 +870,9 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
                 auto at = st && st->kind == TY_REF ? StorageType(av) : av.type;
                 why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(at), " as ",
                           TypeStr(p.type));
+                if (st && st->oq && !at->oq)
+                    Append(why, ": a plain value carries no obligation, which only a function "
+                                "declared to return an own value, or a trusted fn, begins");
                 string litwhy;
                 auto tofloat = false;
                 if (av.litelems && st && !LitElemsAt(av, st, tofloat, &litwhy) &&
@@ -959,11 +994,17 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     if ((av.lvalue || av.storagebranches) && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
         av.type->kind != TY_REF) {
         Val rv = av;
-        rv.type = ast.RefTo(StorageType(av), pt->line);
+        auto st = StorageType(av);
+        // A reference to an own value's storage borrows it (BindsRef).
+        if (st->oq && st->kind != TY_SLICE) st = ast.UnownedOf(st);
+        rv.type = ast.RefTo(st, pt->line);
         rv.lvalue = false;
         return UnifyArgRaw(pt, rv, b, tier);
     }
     auto at = NaturalType(av);
+    // A parameter not declared own borrows an own argument, as its plain
+    // type, which is what binds a type variable too.
+    if (at && at->oq && !pt->oq) at = ast.UnownedOf(at);
     auto hadgen = HasGenerics(pt);
     if (hadgen) {
         if (!BindTypes(pt, at, b)) {
@@ -1069,6 +1110,8 @@ inline bool TypeCheck::BindTypes(TypeExpr *pt, TypeExpr *at,
                 if (at->enu->varmode)
                     bindto = ast.EnumOf(at->enu->en, at->enu->args, false, at->line);
             }
+            // `own T` binds T to what is owned.
+            if (pt->oq && bindto->oq) bindto = ast.UnownedOf(bindto);
             for (auto &[n, t] : b)
                 if (n == name) return TypeEq(t, bindto);
             b.push_back({ name, bindto });
@@ -1836,8 +1879,8 @@ inline vector<VarDef *> TypeCheck::NarrowedOptionals(const MatchInfo &mi) {
 }
 
 inline EnvRead TypeCheck::EnvReadOf(VarDef *vd) {
-    return { vd, vd->assigned, vd->maybeassigned, vd->refrootknown, vd->ref, vd->contents,
-             vd->contentbyteview, vd->slotref };
+    return { vd, vd->assigned, vd->maybeassigned, vd->own, vd->refrootknown, vd->ref,
+             vd->contents, vd->contentbyteview, vd->slotref };
 }
 
 // A body names vd outside its activation: a nested function one of its
@@ -1873,7 +1916,7 @@ inline void TypeCheck::NoteCalleeEnvReads(FnSpec *callee) {
 // (StoreIntoSlot), and for a `let`, which is assigned only where it cannot
 // be already (§4.4), maybe assigned or not as it was.
 inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
-    return vd->assigned == r.assigned &&
+    return vd->assigned == r.assigned && (!vd->owned || vd->own == r.own) &&
            (vd->isvar || vd->maybeassigned == r.maybeassigned) &&
            vd->refrootknown == r.refrootknown &&
            vd->ref == r.ref && vd->contents == r.contents &&
@@ -1910,6 +1953,8 @@ inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
         // whether it may be assigned (EnvIs), and stays so where it was.
         v->assigned = x.assigned;
         v->maybeassigned = v->maybeassigned || x.maybeassigned;
+        // What it holds of an own value is flow as well.
+        if (v->owned) v->own = x.own;
         if (EnvIs(v, x)) continue;
         v->refrootknown = x.refrootknown;
         v->ref = x.ref;
@@ -1940,12 +1985,24 @@ inline void TypeCheck::NoteExit(int tf, const OuterExit *added) {
         e->assigned[i] = (!e->reached || e->assigned[i]) && isassigned(e->vars[i]);
         e->maybeassigned[i] = (e->reached && e->maybeassigned[i]) || maybe(e->vars[i]);
     }
+    // What the exit leaves of the own variables outside the body: as they
+    // are here, or as the reused callee's check found them when it took it.
+    auto ownat = [&](VarDef *v) {
+        if (added)
+            for (auto &[w, f] : added->own) if (w == v) return f;
+        return v->own;
+    };
+    for (size_t i = 0; i < e->ownvars.size(); i++) {
+        auto here = ownat(e->ownvars[i]);
+        e->own[i] = e->reached ? JoinOwn(e->own[i], here) : here;
+    }
     e->reached = true;
     auto target = frames[tf].spec;
     for (auto k = tf + 1; k < (int)frames.size(); k++) {
         auto mine = frames[k].exits;
         if (!mine) continue;
         OuterExit x { target };
+        for (auto v : e->ownvars) x.own.push_back({ v, ownat(v) });
         for (auto v : e->vars) {
             auto at = find(mine->vars.begin(), mine->vars.end(), v);
             if (at == mine->vars.end()) continue;
@@ -1961,6 +2018,15 @@ inline void TypeCheck::NoteExit(int tf, const OuterExit *added) {
             // any of them may have.
             std::erase_if(o.assigned, [&](VarDef *v) { return !x.assigned.count(v); });
             o.maybeassigned.insert(x.maybeassigned.begin(), x.maybeassigned.end());
+            for (auto &[v, f] : x.own) {
+                auto seen = false;
+                for (auto &[w, g] : o.own)
+                    if (w == v) {
+                        g = JoinOwn(g, f);
+                        seen = true;
+                    }
+                if (!seen) o.own.push_back({ v, f });
+            }
             known = true;
         }
         if (!known) outer.push_back(std::move(x));
@@ -2730,7 +2796,9 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
         auto pt = spec->argtypes[i];
         ValidateType(pt, sf->line, VT_PARAM);
         string why;
-        if (!ExternParamOk(pt, why) || !DylibValueOk(sf, pt, why))
+        // An own value crosses as its bits: the obligation is C's from there.
+        auto shape = ast.UnownedOf(pt);
+        if (!ExternParamOk(shape, why) || !DylibValueOk(sf, shape, why))
             Error(sf->line, cat("extern fn ", sf->name, ": parameter ", p.name, " of type ",
                                 TypeStr(pt), " cannot cross to C: ", why));
         auto vd = ast.NewVarDef();
@@ -2748,7 +2816,8 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
         auto t = Subst(rt);
         ValidateType(t, sf->line, VT_LOCAL);
         string why;
-        if (!ExternValueOk(t, why) || !DylibValueOk(sf, t, why))
+        auto shape = ast.UnownedOf(t);
+        if (!ExternValueOk(shape, why) || !DylibValueOk(sf, shape, why))
             Error(sf->line, cat("extern fn ", sf->name, " cannot return ", TypeStr(t), ": ",
                                 why));
         spec->rets.push_back(t);
@@ -3029,6 +3098,11 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         exits.vars.push_back(vars[i]);
         exits.maybeonentry.push_back(vars[i]->maybeassigned);
     });
+    if (ownused)
+        EachNamedVar(lexframe, spec, [&](int i) {
+            if (vars[i]->owned) exits.ownvars.push_back(vars[i]);
+        });
+    exits.own.resize(exits.ownvars.size());
     exits.assigned.resize(exits.vars.size());
     exits.maybeassigned.resize(exits.vars.size());
     for (auto g : ast.globals) for (auto v : g->defs) outernarrowed.push_back({ v, v->narrowed });
@@ -3084,6 +3158,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                          i < oldparams.size() ? oldparams[i] : nullptr);
         vd->isparam = true;
         vd->assigned = vd->maybeassigned = true;
+        TrackOwn(vd);
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
         if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
@@ -3360,6 +3435,10 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                         } else {
                             vector<Val> vals = { tv };
                             RecordReturn(spec, vals, tail);
+                            // The tail is the body's return: its exit.
+                            RequireOwnConsumed(frames[fi].varbase, tail, "the end of the function",
+                                               sf->trusted ? spec : nullptr);
+                            RunOwnClaims(frames[fi].scopebase);
                             NoteExit(fi);
                             reachable = false;
                         }
@@ -3389,6 +3468,9 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             rr.set = true;
         }
     } else if (reachable) {
+        RequireOwnConsumed(frames[fi].varbase, nullptr, "the end of the function",
+                           sf->trusted ? spec : nullptr);
+        RunOwnClaims(frames[fi].scopebase);
         NoteExit(fi);
         if (spec->retsknown && !spec->rets.empty())
             Error(sf->body, cat("function ", sf->name,
@@ -3413,6 +3495,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             exits.vars[i]->assigned = exits.assigned[i];
             exits.vars[i]->maybeassigned = exits.maybeassigned[i];
         }
+        for (size_t i = 0; i < exits.ownvars.size(); i++) exits.ownvars[i]->own = exits.own[i];
     }
     spec->record.mayreturn = exits.reached;
     reachable = savereach;
@@ -3850,6 +3933,16 @@ inline void TypeCheck::CheckReturn(Return *r) {
         }
         RecordReturn(tspec, vals, r);
     }
+    // The return leaves every scope of its function, and of the calls
+    // between here and it: nothing they declared may still hold an own
+    // value, but for a trusted fn's own parameters at its own return.
+    auto local = tf == (int)frames.size() - 1;
+    RequireOwnConsumed(frames[tf].varbase, r,
+                       local ? string("this return")
+                             : cat("this return, which leaves ", frames[tf].sf->name,
+                                   " and the calls between"),
+                       local && frames[tf].sf->trusted ? tspec : nullptr);
+    RunOwnClaims(frames[tf].scopebase);
     NoteExit(tf);
     reachable = false;
 }
@@ -3912,12 +4005,15 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
     if (!c->tyargs.empty()) Error(c, "a block takes no type arguments");
     vector<Val> argvals;
     argvals.reserve(c->args.size());
+    // Checked again against the parameters below, as a call's are.
+    auto ownsnap = SaveOwn();
     for (auto a : c->args) {
         PathScope ps(*this, a);
         auto v = CheckV(a, nullptr);
         a->exprtype = v.type;
         argvals.push_back(std::move(v));
     }
+    RestoreOwn(ownsnap);
     vector<Param> params;
     if (fv->explicit_params) {
         params = fv->params;
@@ -3948,6 +4044,8 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
             auto nt = NaturalType(argvals[i]);
             if (!nt || nt->kind == TY_VOID || nt == fntype)
                 Error(c->args[i], "cannot infer a type for this argument");
+            // An untyped parameter borrows an own value, as a function's does.
+            if (nt->oq) nt = ast.UnownedOf(nt);
             ptypes.push_back(nt);
         }
         if (!params[i].type || params[i].type->kind != TY_SLICE) NoArrayJoin(argvals[i]);
@@ -4002,6 +4100,20 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
     for (size_t i = 0; i < params.size(); i++) {
         auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
         vd->assigned = vd->maybeassigned = true;
+        TrackOwn(vd);
+        // A borrow of what an own variable holds or points at: a take()
+        // through it is one through that variable (OwnPath).
+        if (ownused && !params[i].isvar && IsPlainRef(ptypes[i]) && !ptypes[i]->oq) {
+            auto an = c->args[i];
+            while (auto u = Is<Unary>(an)) an = u->child;
+            if (auto id = Is<Ident>(an); id && id->vdef) {
+                auto src = id->vdef;
+                auto ht = src->narrowed ? src->narrowed : src->type;
+                if (src->ownalias) vd->ownalias = src->ownalias;
+                else if (src->owned && ht && (IsPlainRef(ht) ? ht->oq : OwnPointee(ht) != nullptr))
+                    vd->ownalias = src;
+            }
+        }
         if (IsRefOrSlice(ptypes[i])) {
             BindRefProvenance(vd, argvals[i]);
             if (ptypes[i]->cq) vd->ref.writable = false;
@@ -4031,6 +4143,9 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
             DestScope rd(*this, dest);
             v = CheckValue(c->fvbody->tail, nullptr);
             NoRelRefCopy(c->fvbody->tail, v.type);
+            // The block's value is the call's: an own one moves into it.
+            if (v.type && !v.isnull && !v.emptyarr && (ownused || v.type->oq) && HoldsOwn(v.type))
+                ConsumeOwn(c->fvbody->tail, v.pointee);
         }
     }
     // Storage provenance is supplied independently of a destination type:
