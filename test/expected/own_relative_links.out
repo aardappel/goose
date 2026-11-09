@@ -1,0 +1,6 @@
+built 4 3 2 1 0 live 5
+dropped 4 2 1 0 live 4
+cut 4 live 4
+tail freed 4 live 1
+live 0 of 5
+chain 3 live 0

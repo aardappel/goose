@@ -345,6 +345,19 @@ inline string CodeGen::OwnPlace(Node *n, TypeExpr *t) {
     return cat("(*", p, ")");
 }
 
+// The relative-reference slot take() or replace() exchanges, resolved now:
+// a loc at the slot's address, held in a local nothing later can move.
+inline CodeGen::Loc CodeGen::RelSlotNow(Node *n) {
+    auto lv = GenLocNow(n);
+    string faddr, off;
+    RelParts(lv, faddr, off);
+    auto p = T();
+    L("uint8_t *", p, " = ", faddr, ";");
+    lv.s = p;
+    lv.val = false;
+    return lv;
+}
+
 inline void CodeGen::NoSelfRelCopy(Node *val) {
     auto id = Is<Ident>(val);
     if (id && id->vdef && id->vdef->type && HasSelfRelRef(id->vdef->type))

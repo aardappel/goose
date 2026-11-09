@@ -657,13 +657,13 @@ inline bool TypeCheck::OwnEmptyable(TypeExpr *t) {
 // What `own` may qualify, and where such a type may stand.
 inline void TypeCheck::ValidateOwn(TypeExpr *t, Line l, int pos) {
     auto ok = t->kind == TY_SLICE || t->kind == TY_STRUCT ||
-              (t->kind == TY_REF && t->ref->lenstorage < 0) ||
+              (t->kind == TY_REF && t->ref->lenstorage != IS_VARINT) ||
               (t->kind == TY_INT && t->intstorage != IS_VARINT && !t->ix);
     if (t->kind == TY_STRUCT && t->struc->st->isroot) ok = false;
     if (!ok)
         Error(l, cat("own qualifies a reference, a slice, a struct or an integer handle, not ",
                      TypeStr(ast.UnownedOf(t)),
-                     IsRelRef(t) ? ": an owned relative link is not supported" : ""));
+                     IsRelRef(t) ? ": an owned relative link has a fixed width" : ""));
     if (pos == VT_POINTEE)
         Error(l, cat("a reference to an own value borrows it, as its plain type: write ",
                      TypeStr(ast.UnownedOf(t)), "&, not (", TypeStr(t), ")&"));
@@ -839,6 +839,7 @@ inline TypeExpr *TypeCheck::LoadType(TypeExpr *t) {
     if (IsRelRef(t)) {
         auto r = ast.RefTo(t->ref->sub, t->line, t->ref->optional);
         r->cq = t->cq;
+        r->oq = t->oq;
         return r;
     }
     return t;

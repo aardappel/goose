@@ -524,6 +524,14 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         case B_TAKE: {
             // The value leaves its place, which is left holding nothing.
             auto t = c->rettypes[0];
+            if (auto st = an[0]->exprtype; st && IsRelRef(st)) {
+                // A relative link: the reference it stands for is loaded,
+                // and the slot left with the null offset.
+                auto slot = RelSlotNow(an[0]);
+                auto v = Snapshot(t, LoadLoc(slot, t, ln));
+                L("*(", RelCT(st), " *)(", slot.s, ") = 0;");
+                return { v };
+            }
             auto place = OwnPlace(an[0], t);
             auto v = Snapshot(t, place);
             EmitOwnEmpty(place, t);
@@ -533,6 +541,13 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // The new value is evaluated before the old one is read: what
             // computing it takes out of the place is not read out again.
             auto t = c->rettypes[0];
+            if (auto st = an[0]->exprtype; st && IsRelRef(st)) {
+                auto nv = Snapshot(t, GenX(an[1]));
+                auto slot = RelSlotNow(an[0]);
+                auto old = Snapshot(t, LoadLoc(slot, t, ln));
+                EmitRelStoreAt(slot.s, st, nv, ln, false, RelFacts {});
+                return { old };
+            }
             auto place = OwnPlace(an[0], t);
             auto nv = Snapshot(t, GenXD(an[1], t));
             auto old = Snapshot(t, place);

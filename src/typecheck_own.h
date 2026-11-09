@@ -627,9 +627,11 @@ inline Val TypeCheck::CheckTake(Call *c, vector<Node *> &args) {
                      "or a read-only instantiation, §9.5): take writes the empty value back"));
     }
     args[0]->exprtype = t;
-    c->rettypes.push_back(t);
+    // A relative link gives the reference it stands for.
+    auto vt = IsRelRef(t) ? LoadType(t) : t;
+    c->rettypes.push_back(vt);
     Val v;
-    v.type = t;
+    v.type = vt;
     if (IsRefOrSlice(t)) {
         // The value points where the place's did.
         auto rv = ContainerRead(lv);
@@ -677,8 +679,9 @@ inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
                      "(const, or a read-only instantiation, §9.5)"));
     }
     args[0]->exprtype = t;
+    auto vt = IsRelRef(t) ? LoadType(t) : t;
     Val old;
-    old.type = t;
+    old.type = vt;
     if (IsRefOrSlice(t)) {
         auto rv = ContainerRead(lv);
         if (lv.var && IsRefOrSlice(lv.var->type)) rv.SetProv(RefProvOf(lv.var));
@@ -703,7 +706,7 @@ inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
     auto keep = tracked ? base->own.empty & ~bits : 0;
     NoteOwnFill(c);
     if (tracked) base->own.empty = keep;
-    c->rettypes.push_back(t);
+    c->rettypes.push_back(vt);
     return old;
 }
 

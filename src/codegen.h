@@ -1004,6 +1004,7 @@ struct CodeGen {
     // temporary that later statements cannot change (IndexLoc).
     bool locnow = false;
     Loc GenLocNow(Node *n);
+    Loc RelSlotNow(Node *n);
     bool QuietValue(Node *n);
     bool StableDest(Node *n);
     string BytesTemp(string &stk);
