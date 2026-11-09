@@ -681,3 +681,53 @@ def check_lsp_protocol(exe, base):
     code = two.p.wait(timeout=30)
     if code != 0:
         raise RuntimeError(f"goose lsp exited with {code}:\n{tc.decode(two.p.stderr.read())}")
+    check_buffer_imports(exe, base / "buffer_imports")
+
+
+def check_buffer_imports(exe, base):
+    """Unsaved modules take the same import precedence as saved ones."""
+    base = Path(base).resolve()
+    for case, name in (("plain", "buffer_module"), ("local", "math"), ("blessed", "gfx"),
+                       ("stdlib", "math"), ("empty", "math"), ("package", "buffer_pkg")):
+        directory = base / case
+        directory.mkdir(parents=True, exist_ok=True)
+        root = directory / "main.goose"
+        libdir = directory / "stdlib" if case == "stdlib" else directory
+        libdir.mkdir(exist_ok=True)
+        module = libdir / f"{name}.goose"
+        if module.exists():
+            raise RuntimeError(f"buffer import fixture must not exist on disk: {module}")
+        options = {"entryFiles": [str(root)]}
+        if case == "stdlib":
+            options["stdlib"] = str(libdir)
+        declaration = f"namespace {name};\nfn buffered_value() -> i64 {{ 42 }}\n"
+        text = f"import {name};\nfn main() {{ let value = {name}::buffered_value(); }}\n"
+        if case == "empty":
+            declaration = ""
+            text = f"import {name};\nfn main() {{}}\n"
+        if case == "package":
+            package = directory / "package"
+            package.mkdir(exist_ok=True)
+            (package / f"{name}.goose").write_text(declaration, encoding="utf-8")
+            text = f'import {name} from "./package";\nimport {name};\nfn main() {{}}\n'
+        client = Client(exe, directory)
+        try:
+            client.request("initialize", {"capabilities": {}, "initializationOptions": options})
+            client.send("initialized", {}, request=False)
+            for path, body in ((module, declaration), (root, text)):
+                client.send("textDocument/didOpen", {"textDocument": {
+                    "uri": uri_of(path), "languageId": "goose", "version": 1, "text": body}}, request=False)
+            doc = {"textDocument": {"uri": uri_of(root)}}
+            target = client.request("textDocument/definition", {**doc, "position": {"line": 0, "character": 7}})
+            errors = [d for d in client.published.get(uri_of(root).lower(), []) if d.get("severity") == 1]
+            if case == "package":
+                if not any("is both a file of this package" in d["message"] for d in errors):
+                    raise RuntimeError(f"unsaved package conflict was not diagnosed: {errors}")
+            elif errors or not target or target["uri"].lower() != uri_of(module).lower():
+                raise RuntimeError(f"{case} buffer import: errors={errors}, definition={target}")
+        finally:
+            client.request("shutdown", None)
+            client.send("exit", request=False)
+            code = client.p.wait(timeout=30)
+            if code != 0:
+                raise RuntimeError(f"buffer import server exited with {code}:\n{tc.decode(client.p.stderr.read())}")
