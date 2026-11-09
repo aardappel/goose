@@ -109,16 +109,23 @@ fn main() {
           is_nan(smoothstep(0.0, 1.0, NAN)));   // 0.0 1.0 true true
     // wrap_angle brings an angle into [-PI, PI): PI goes to -PI, and -0.0
     // stays.
-    var wa: f64[>..] = [0.5, PI, -PI, 3.0 * PI / 2.0, -0.0, 7.0 * TAU + 1.0, -5.0 * TAU - 1.0, 1e10];
+    var wa: f64[>..] = [0.5, PI, -PI, 3.0 * PI / 2.0, -0.0, 7.0 * TAU + 1.0, -5.0 * TAU - 1.0,
+                        1e10, 1e18, 1.1319666049798702e17];
     print(wrap_angle(wa[0]), " ", wrap_angle(wa[1]) == -PI, " ", wrap_angle(wa[2]) == -PI, " ",
           abs(wrap_angle(wa[3]) + PI / 2.0) < 1e-12, " ", wrap_angle(wa[4]), " ", abs(wrap_angle(wa[5]) - 1.0) < 1e-12,
           " ", abs(wrap_angle(wa[6]) + 1.0) < 1e-12);   // 0.5 true true true -0.0 true true
-    let wbig = wrap_angle(wa[7]);
-    print(wbig >= -PI && wbig < PI, " ", is_nan(wrap_angle(inf)), " ", is_nan(wrap_angle(NAN)));   // true true true
-    var waf: f32[>..] = [3.1415927, -3.1415927, 7.0, -7.0];
+    let w10 = wrap_angle(wa[7]);
+    let w18 = wrap_angle(wa[8]);
+    let w17 = wrap_angle(wa[9]);
+    print(w10 >= -PI && w10 < PI, " ", w18 >= -PI && w18 < PI, " ", w17 >= -PI && w17 < PI,
+          " ", is_nan(wrap_angle(inf)), " ", is_nan(wrap_angle(NAN)));   // true true true true true
+    var waf: f32[>..] = [3.1415927, -3.1415927, 7.0, -7.0, 1e9, 210858020.0];
     let pif: f32 = PI;
     print(wrap_angle(waf[0]) == -pif, " ", wrap_angle(waf[1]) == -pif, " ", abs(wrap_angle(waf[2]) - (7.0 - pif * 2.0)) < 1e-5,
           " ", abs(wrap_angle(waf[3]) + (7.0 - pif * 2.0)) < 1e-5);   // true true true true
+    let wf9 = wrap_angle(waf[4]);
+    let wf8 = wrap_angle(waf[5]);
+    print(wf9 >= -pif && wf9 < pif, " ", wf8 >= -pif && wf8 < pif);   // true true
     // Every wrapped value lies in [-PI, PI), at both widths.
     var ok = true;
     for i in 0..2000 {
