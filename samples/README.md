@@ -100,6 +100,12 @@ run as part of the test suite.
 |---|---|
 | [26_file_tree](26_file_tree.goose) | A directory tree: the nodes are kept in a stdlib `slot_pool` and passed around as references. Each directory's entries are one run of 4-byte `in nodes.items` links in a stdlib `slice_pool`, and a run is grown in place or moved by `realloc_slice`. `rm -r` returns slots and runs to the pools, `mv` relinks, and the pools' counts show the reuse. |
 
+## Owning handles
+
+| Sample | What it shows |
+|---|---|
+| [33_owned_handles](33_owned_handles.goose) | A session table that owns its connections, each of which owns the run holding its unread input. The handles are declared `own`, so the checker holds every path to giving each slot and run back exactly once: `take` and `release` on the stdlib pools, a release block that must empty the element's own fields, `take()` and `replace()` on fields, a `defer` that claims a scratch run across an early return. Each function's comment names the compile error that leaving out one of its lines would be. Nothing of it reaches the generated code: there are no destructors. |
+
 ## The GPU
 
 | Sample | What it shows |
