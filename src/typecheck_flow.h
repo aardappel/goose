@@ -1024,36 +1024,39 @@ inline void TypeCheck::MergeFlow(const FlowState &a, const FlowState &b) {
 
 // Optional narrowing (§3.8): a bare optional variable as a condition, and
 // the obvious compositions. `sense` = the region where cond is true.
-inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
+// `ownonly` leaves the types alone and settles just what an own optional
+// found null owes, where a `while` exits on its condition.
+inline void TypeCheck::NarrowCond(Node *cond, bool sense, bool ownonly) {
     if (auto id = Is<Ident>(cond)) {
         if (!id->vdef) return;
         auto t = id->vdef->type;
-        if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed)
+        if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed && !ownonly)
             SetNarrowed(id->vdef, NarrowedRef(t, cond->line));
         // An own optional found null holds nothing: there is no obligation
         // left on this path.
         if (t && IsOptional(t) && !sense && id->vdef->owned && id->vdef->own.state == OS_HELD) {
-            id->vdef->own.state = OS_CONSUMED;
+            id->vdef->own.state = OS_EMPTY;
             id->vdef->own.at = cond;
         }
         return;
     }
     if (auto u = Is<Unary>(cond)) {
-        if (u->op == T_NOT) NarrowCond(u->child, !sense);
+        if (u->op == T_NOT) NarrowCond(u->child, !sense, ownonly);
         return;
     }
     if (auto b = Is<Binary>(cond)) {
         if ((b->op == T_ANDAND && sense) || (b->op == T_OROR && !sense)) {
-            NarrowCond(b->left, sense);
-            for (auto v : b->rightkills) v->narrowed = nullptr;
-            NarrowCond(b->right, sense);
+            NarrowCond(b->left, sense, ownonly);
+            if (!ownonly)
+                for (auto v : b->rightkills) v->narrowed = nullptr;
+            NarrowCond(b->right, sense, ownonly);
             return;
         }
         // o != null narrows where true; o == null narrows where false.
         if (b->op == T_EQ || b->op == T_NEQ) {
             auto other = Is<NullLit>(b->left) ? b->right
                                               : Is<NullLit>(b->right) ? b->left : nullptr;
-            if (other) NarrowCond(other, b->op == T_NEQ ? sense : !sense);
+            if (other) NarrowCond(other, b->op == T_NEQ ? sense : !sense, ownonly);
         }
         return;
     }
@@ -1967,6 +1970,7 @@ inline void TypeCheck::CheckWhile(While *x) {
         CheckLoopBody(x->body);
     });
     RestoreFlow(exit);
+    if (ownused) NarrowCond(x->cond, false, true);
     JoinBreakFlow(sc, true);
     OwnAgree(x, "loop");
 }
@@ -2790,8 +2794,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         d->constfrom = d->constlit ? v.constfrom : nullptr;
         Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
         // A struct built here holds nothing in the own fields its literal
-        // left out.
+        // left out, and an optional or a slice given a null or a [] nothing.
         if (d->owned && !d->type->oq) d->own.empty = LitEmptyLeaves(vd->inits[i], d->type);
+        if (d->owned && d->type->oq && OwnEmptyable(d->type) && OwnNothing(vd->inits[i]))
+            d->own.state = OS_EMPTY;
         // A `let` reference bound to what an own variable holds or points
         // at: a take() through it is one through that variable (OwnPath).
         if (ownused && !vd->isvar && !global && IsPlainRef(d->type) && !d->type->oq) {
@@ -2983,7 +2989,6 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     }
     // Plain value assignment.
     auto target = lv.var ? lv.var->type : lv.type;
-    auto ownstore = OwnAssign(a, lv, target);
     if (lv.var && !lv.var->assigned) {
         // First assignment of an uninitialized local constructs it.
     } else {
@@ -3013,6 +3018,9 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     auto killat = storeevents.size();
     auto v = CheckAssignedValue(a, target, arr, built,
                                 Dest(lv, lv.var && IsRefOrSlice(target), lv.reached));
+    // The store writes over what the location holds once the value has
+    // been computed, which may have taken an own value out of it.
+    auto ownstore = OwnAssign(a, lv, target);
     NoteKill(a->lval, lv, target, v, killat);
     if (lv.var) {
         NoLetReassign(a, lv.var, "assign to", "assigned");
@@ -3023,7 +3031,11 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         }
         lv.var->assigned = lv.var->maybeassigned = true;
         KillNarrow(lv.var);
-        if (ownstore && lv.var->owned) lv.var->own = OwnFlow {};
+        if (ownstore && lv.var->owned) {
+            lv.var->own = OwnFlow {};
+            if (lv.var->type->oq && OwnEmptyable(lv.var->type) && OwnNothing(a->rhs))
+                lv.var->own.state = OS_EMPTY;
+        }
     }
 }
 
@@ -3045,7 +3057,6 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     // (its byte length could change, §3.6/§3.9).
     if (target->ref->lenstorage == IS_VARINT)
         Error(a, "varint-width relative references are written only at construction");
-    auto ownstore = OwnAssign(a, lv, target);
     if (lv.var) {
         if (!lv.var->isvar && lv.var->assigned)
             Error(a, cat("cannot rebind let ", lv.var->name));
@@ -3070,13 +3081,18 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         MustFit(v, a->rhs, target);
         if (moved && HoldsOwn(target)) ConsumeOwn(a->rhs);
     }
+    // As an assignment's: after the value, which may have emptied the slot.
+    auto ownstore = OwnAssign(a, lv, target);
     a->rhs->exprtype = v.type;
     if (lv.var) {
         NoLetReassign(a, lv.var, "rebind", "bound");
         if (!lv.var->refrootknown || lv.var->ref.Unknown()) BindRefProvenance(lv.var, v);
         else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
         lv.var->assigned = lv.var->maybeassigned = true;
-        if (ownstore && lv.var->owned) lv.var->own = OwnFlow {};
+        if (ownstore && lv.var->owned) {
+            lv.var->own = OwnFlow {};
+            if (OwnEmptyable(lv.var->type) && OwnNothing(a->rhs)) lv.var->own.state = OS_EMPTY;
+        }
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).
         if (target->ref->optional) {
@@ -3117,7 +3133,6 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
     if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
         Error(a, "varint fields are written only at construction (§3.6)");
     AssignableClassCheck(pt, a);
-    OwnAssign(a, at, pt);
     auto arr = ResizableArrayIn(pt);
     Roots built;
     if (arr) built = at;
@@ -3126,6 +3141,7 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
     dest.slot = pt->kind == TY_SLICE;
     auto killat = storeevents.size();
     auto v = CheckAssignedValue(a, pt, arr, built, dest);
+    OwnAssign(a, at, pt);
     // Through a reference variable the part written is its whole pointee; a
     // reference loaded out of a field names no part KillPath can.
     if (Is<Ident>(a->lval)) NoteKill(a->lval, at, pt, v, killat);

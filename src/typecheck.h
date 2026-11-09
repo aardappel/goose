@@ -1529,7 +1529,7 @@ struct TypeCheck {
         }
     }
     void MergeFlow(const FlowState &a, const FlowState &b);
-    void NarrowCond(Node *cond, bool sense);
+    void NarrowCond(Node *cond, bool sense, bool ownonly = false);
 
     void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
     // vd, about to be narrowed, joins narrowedglobals if it is a global.
@@ -2500,6 +2500,7 @@ struct TypeCheck {
     void OwnLeaves(TypeExpr *t, const string &prefix, vector<OwnLeaf> &out);
     uint32_t OwnLeafMask(TypeExpr *t);
     uint32_t LitEmptyLeaves(Node *n, TypeExpr *t);
+    static bool OwnNothing(Node *n);
     TypeExpr *OwnPointee(TypeExpr *t);
     bool OwnTracked(TypeExpr *t);
     void TrackOwn(VarDef *vd);

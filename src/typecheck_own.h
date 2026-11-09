@@ -111,6 +111,16 @@ inline uint32_t TypeCheck::LitEmptyLeaves(Node *n, TypeExpr *t) {
     return mask;
 }
 
+// Whether n is written as a value that owns nothing: a null, a [], a
+// default.
+inline bool TypeCheck::OwnNothing(Node *n) {
+    if (!n) return false;
+    if (Is<NullLit>(n)) return true;
+    if (auto al = Is<ArrayLit>(n)) return al->elems.empty() && !al->fillval && !al->capexpr;
+    auto c = Is<Call>(n);
+    return c && c->builtin == B_DEFAULT;
+}
+
 inline void TypeCheck::TrackOwn(VarDef *vd) {
     if (!vd->type || vd->isglobal || vd->istemp || vd->copybind || !OwnTracked(vd->type)) return;
     ownused = true;
@@ -137,6 +147,13 @@ inline OwnFlow TypeCheck::JoinOwn(const OwnFlow &a, const OwnFlow &b) {
         r.empty = a.empty & b.empty;
         if (!r.at) r.at = b.at;
         return r;
+    }
+    // A variable known empty on one path is, beside one that may hold a
+    // value, one that may: whatever takes it finds out which. Beside a
+    // consumed one, whose bits are stale, it is as good as consumed.
+    if (a.state == OS_EMPTY || b.state == OS_EMPTY) {
+        auto &other = a.state == OS_EMPTY ? b : a;
+        if (other.state != OS_MIXED) return other;
     }
     OwnFlow r;
     r.state = OS_MIXED;
@@ -175,7 +192,7 @@ inline void TypeCheck::ConsumeVar(VarDef *vd, Node *at) {
     };
     auto &o = vd->own;
     switch (o.state) {
-        case OS_HELD: break;
+        case OS_HELD: case OS_EMPTY: break;
         case OS_CONSUMED:
             // The same node, checked again (a call's argument, ResolveCall).
             if (o.at == at) {
@@ -332,7 +349,7 @@ inline void TypeCheck::RequireOwnConsumed(int base, const Node *at, const string
         auto v = vars[i];
         if (!v->owned || !v->assigned) continue;
         auto &o = v->own;
-        if (o.state == OS_CONSUMED || o.state == OS_CLAIMED) continue;
+        if (o.state == OS_CONSUMED || o.state == OS_CLAIMED || o.state == OS_EMPTY) continue;
         auto loc = at ? LocOf(at) : LocOf(v->line);
         auto fail = [&](const string &msg) { ErrorIn(loc, msg, Chain(ActiveExpansionTrace())); };
         if (o.state == OS_MIXED)
@@ -556,14 +573,14 @@ inline Val TypeCheck::CheckTake(Call *c, vector<Node *> &args) {
     auto whole = false;
     auto tracked = OwnPath(args[0], base, bits, whole);
     if (tracked && whole && base == lv.var) {
-        // The variable's own value: a move, which also leaves it empty.
+        // The variable's own value: it is left empty, which it then reads as.
         UseOwn(base, args[0]);
         if (base->own.state == OS_CLAIMED)
             Error(c, cat(base->name, " is released by the defer", OwnWhere(base->own.at),
                          ": taking it as well would release it twice"));
-        base->own.state = OS_CONSUMED;
+        base->own.state = OS_EMPTY;
         base->own.at = args[0];
-        base->own.empty = 0;
+        base->own.empty = OwnLeafMask(base->type);
     } else if (tracked) {
         if (deferbodies && Depth(base) <= DeferDepth())
             Error(c, cat("a defer claims a whole own variable, not a field of one: take ",
@@ -618,6 +635,7 @@ inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
         if (base->own.state == OS_CLAIMED)
             Error(c, cat(base->name, " is released by the defer", OwnWhere(base->own.at),
                          ": the value replace returns would be released as well"));
+        base->own = OwnFlow {};
     } else if (!lv.writable && !(lv.var && lv.var->owned)) {
         Error(c, cat("cannot replace ", ExprStr(args[0]), " through a non-writable value "
                      "(const, or a read-only instantiation, §9.5)"));

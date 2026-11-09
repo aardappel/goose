@@ -1716,11 +1716,12 @@ enum SizeClass { SC_FIXED, SC_VARIABLE, SC_RESIZABLE, SC_ROOT };
 // (docs/design/ownership.md): flow state, saved and joined with definite
 // assignment (TypeCheck::FlowState). It holds its value, a `defer` written
 // before here releases it at the exits of the scope `claim` (a
-// Scope::serial), it was consumed, or the paths here disagree. `empty` has
-// a bit per own field of a struct it is or points at (TypeCheck::OwnLeaves)
-// that is known to hold nothing; `at` is what consumed or claimed it, for
-// diagnostics, and no part of the state.
-enum OwnState : uint8_t { OS_HELD, OS_CLAIMED, OS_CONSUMED, OS_MIXED };
+// Scope::serial), it was consumed, or the paths here disagree; or it is an
+// optional reference or a slice known to be null or empty, which reads as
+// that and owes nothing. `empty` has a bit per own field of a struct it is
+// or points at (TypeCheck::OwnLeaves) that is known to hold nothing; `at`
+// is what consumed or claimed it, for diagnostics, and no part of the state.
+enum OwnState : uint8_t { OS_HELD, OS_CLAIMED, OS_CONSUMED, OS_MIXED, OS_EMPTY };
 struct OwnFlow {
     OwnState state = OS_HELD;
     uint32_t empty = 0;

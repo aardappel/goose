@@ -258,6 +258,17 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         setlitelems();
         return v;
     }
+    if (elems.empty() && !fillval && expected && expected->kind == TY_SLICE && expected->oq) {
+        // [] at an own slice is the empty run, which owns nothing and
+        // views nothing (docs/design/ownership.md 4.6): what a take()
+        // leaves behind. It points nowhere, so a variable it initializes
+        // takes its first binding from the run it is given later, at
+        // whatever depth that one's pool is.
+        v.type = expected;
+        v.SetUnknown();
+        v.writable = true;
+        return v;
+    }
     if (elems.empty() && !elem) {
         // [] adapts to any array type; callers re-check with an expected type
         // or report the missing context.
