@@ -1,0 +1,12 @@
+slots 11 20 live 2 at 1
+reused 0 30 [30, 20]
+live 0
+list sum 6 live 0
+local 15 bytes 5
+emptied 0
+runs [1, 2, 3] [7, 8] 5
+resized [1, 2, 3, 0, 0] 10
+late [4, 5, 6]
+conns 2 a 8/16 b 4 bytes 40
+reused 0 scratch 4
+conns 0

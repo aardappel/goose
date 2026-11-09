@@ -359,6 +359,13 @@ inline void TypeCheck::RequireOwnConsumed(int base, const Node *at, const string
         // A struct whose own fields were all taken holds nothing.
         if (!v->type->oq && mask && o.empty == mask) continue;
         if (ending && v->isparam && v->type->oq && v->ownerspec == ending) {
+            // A run's elements have no text each: nothing here could say
+            // that each was emptied.
+            if (v->type->kind == TY_SLICE && HoldsOwn(v->type->sub))
+                fail(cat("trusted fn ", ending->sf->name, " ends the claim of ", v->name,
+                         " on a run of ", TypeStr(v->type->sub), ", whose elements hold own "
+                         "values: a run of such elements is not supported; keep them in a "
+                         "slot_pool, one handle each"));
             if (!mask || o.empty == mask) continue;
             vector<OwnLeaf> leaves;
             OwnLeaves(OwnPointee(v->type), {}, leaves);

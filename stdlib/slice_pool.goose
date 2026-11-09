@@ -75,6 +75,27 @@ fn realloc_slice<T>(p: slice_pool<T>&, s: T[:], n: i64) -> T[:] {
     return slice_pool_detail::finish(p, to, count, idx, s);
 }
 
+// Owning runs (docs/design/ownership.md): take_slice and take_copy give a
+// run as an `own T[:]`, a claim the checker holds its holder to passing to
+// release exactly once, or to resize, which gives back the run that
+// replaces it. Anything else borrows the run as the T[:] it is. An empty
+// run owns nothing, and releasing one is harmless.
+trusted fn take_slice<T>(p: slice_pool<T>&, n: i64) -> own T[:] {
+    return alloc_slice(p, n);
+}
+
+trusted fn take_copy<T>(p: slice_pool<T>&, src: T[:]) -> own T[:] {
+    return alloc_copy(p, src);
+}
+
+trusted fn release<T>(p: slice_pool<T>&, s: own T[:]) {
+    free_slice(p, s);
+}
+
+trusted fn resize<T>(p: slice_pool<T>&, s: own T[:], n: i64) -> own T[:] {
+    return realloc_slice(p, s, n);
+}
+
 // Retain values and backing storage; every element belongs to one free run.
 fn recycle_all<T>(p: slice_pool<T>&) {
     if p.nodes.len == 0 && p.items.len == 0 { return; }
