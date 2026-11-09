@@ -511,10 +511,24 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             Warn(args[1], cat("redundant &: ", ExprStr(Is<Unary>(args[1])->child),
                               " is passed by reference without it (§4.1)"));
         args[1]->exprtype = av.type;
-        if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
+        // An own handle is borrowed here, as the reference it is.
+        auto at = av.type->oq ? ast.UnownedOf(av.type) : av.type;
+        if (!IsPlainRef(at) || !TypeEq(at->ref->sub, elem))
             Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
                          ", got ", TypeStr(StorageType(av))));
-        CheckRootedAtReceiver(c, d.name, rv, av, elem, "a reference", "§3.3");
+        if (args.size() == 3) {
+            // With a message to abort with, a reference the checker cannot
+            // place in this array is checked when the call runs, as
+            // range_index checks a slice: aligned to an element, and
+            // inside the length.
+            c->poolcheck = !RootedAtReceiver(rv, av, elem);
+            CheckArg(args[2], u8slice);
+            if (!Is<StrLit>(args[2]))
+                Error(args[2], ".index_of takes its abort message as a string literal");
+        } else {
+            c->poolcheck = false;
+            CheckRootedAtReceiver(c, d.name, rv, av, elem, "a reference", "§3.3");
+        }
     }
     if (d.kind == B_RANGE_INDEX || d.kind == B_CHECK_LENGTH) {
         if (ClassOf(elem) != SC_FIXED)

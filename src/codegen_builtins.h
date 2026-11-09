@@ -306,6 +306,18 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto lv = RecvLoc(an[0]);
             auto v = ArrayView(lv);
             auto rx = GenX(an[1]);
+            if (c->poolcheck) {
+                // Not provably an element of this array: one compare rejects
+                // an address before the elements, which wraps, or past them.
+                auto esz = FixedSize(v.elem);
+                auto off = T(), i = T();
+                L("uint64_t ", off, " = (uint64_t)((uintptr_t)(", rx, ") - (uintptr_t)(",
+                  v.elems, "));");
+                L("if (", off, " % ", esz, " || ", off, " / ", esz, " >= (uint64_t)(", v.len,
+                  ")) ", FailCall("GS_E_ARRAYSLICE", an.size() > 2 ? an[2] : nullptr, ln), ";");
+                L("int64_t ", i, " = (int64_t)(", off, " / ", esz, ");");
+                return { i };
+            }
             return { cat("(((uint8_t *)(", rx, ") - (uint8_t *)(", v.elems, ")) / ",
                          FixedSize(v.elem), ")") };
         }
