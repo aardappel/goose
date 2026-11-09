@@ -98,9 +98,10 @@ fn close(c: own Conn&) {
 }
 
 fn grow(c: Conn&, n: i64) {
-    // replace() gives back the run to hand to resize, with an empty one in its place.
-    let old = replace(c.scratch, []);
-    bytes.release(replace(c.scratch, bytes.resize(old, n)));
+    // take() empties the field, and the run resize returns fills it again.
+    c.scratch = bytes.resize(take(c.scratch), n);
+    // replace() exchanges a run for another, here an empty one for itself.
+    bytes.release(replace(c.inbuf, replace(c.inbuf, [])));
 }
 
 fn elements() {

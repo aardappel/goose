@@ -122,7 +122,15 @@ inline bool TypeCheck::OwnNothing(Node *n) {
 }
 
 inline void TypeCheck::TrackOwn(VarDef *vd) {
-    if (!vd->type || vd->isglobal || vd->istemp || vd->copybind || !OwnTracked(vd->type)) return;
+    if (!vd->type || vd->isglobal || vd->istemp || vd->copybind) return;
+    if (!OwnTracked(vd->type)) {
+        if (vd->type->kind == TY_REF && OwnPointee(vd->type)) {
+            ownused = true;
+            vd->ownborrow = true;
+            vd->own = OwnFlow {};
+        }
+        return;
+    }
     ownused = true;
     vd->owned = true;
     vd->own = OwnFlow {};
@@ -436,7 +444,7 @@ inline void TypeCheck::OwnAgree(Node *at, const char *construct) {
 }
 
 inline void TypeCheck::ClearOwnEmpties() {
-    for (auto v : vars) if (v->owned) v->own.empty = 0;
+    for (auto v : vars) if (v->owned || v->ownborrow) v->own.empty = 0;
 }
 
 // Code here, or a callee, may store an own value into storage: nothing the
@@ -450,7 +458,7 @@ inline void TypeCheck::NoteOwnFill(Node *) {
 inline TypeCheck::OwnSnapshot TypeCheck::SaveOwn() {
     OwnSnapshot o;
     if (!ownused) return o;
-    for (auto v : vars) if (v->owned) o.vars.push_back({ v, v->own });
+    for (auto v : vars) if (v->owned || v->ownborrow) o.vars.push_back({ v, v->own });
     o.fresh = cur.ownfresh.size();
     return o;
 }
@@ -462,10 +470,12 @@ inline void TypeCheck::RestoreOwn(const OwnSnapshot &o) {
 }
 
 // The own fields a path names, as bits of the variable that answers for
-// them: `c.buf` of a struct variable c, `h.buf` of an own handle h, or the
-// same through a borrow bound to what h points at (VarDef::ownalias). The
-// path crosses no other reference and no element, whose storage no variable
-// answers for. `whole`: the path is the variable itself.
+// them: `c.buf` of a struct variable c, `h.buf` of an own handle h, the
+// same through a borrow bound to what h points at (VarDef::ownalias), or
+// through any other plain reference, which answers for what the code has
+// seen emptied through it (VarDef::ownborrow). The path crosses no other
+// reference and no element, whose storage no variable answers for. `whole`:
+// the path is the variable itself.
 inline bool TypeCheck::OwnPath(Node *n, VarDef *&base, uint32_t &bits, bool &whole) {
     vector<string_view> names;
     while (auto d = Is<Dot>(n)) {
@@ -476,7 +486,10 @@ inline bool TypeCheck::OwnPath(Node *n, VarDef *&base, uint32_t &bits, bool &who
     if (!id || !id->vdef) return false;
     auto vd = id->vdef;
     if (vd->ownalias) vd = vd->ownalias;
-    if (!vd->owned) return false;
+    if (!vd->owned && !vd->ownborrow) return false;
+    // A defer's body runs at the exits: what it empties through a borrow
+    // says nothing of the code after the defer.
+    if (!vd->owned && deferbodies && Depth(vd) <= DeferDepth()) return false;
     base = vd;
     whole = names.empty();
     bits = 0;
@@ -521,13 +534,26 @@ inline bool TypeCheck::OwnAssign(Node *at, const LVal &lv, TypeExpr *target) {
         if (holds) NoteOwnFill(at);
         return true;
     }
-    if (!InTrusted()) {
-        auto what = ExprStr(Is<Assign>(at) ? Is<Assign>(at)->lval : at);
+    // A field its variable has seen emptied, with nothing since that could
+    // have filled it, takes a value as an empty variable does:
+    // `c.buf = pool.resize(take(c.buf), n)`.
+    VarDef *base = nullptr;
+    uint32_t bits = 0;
+    auto whole = false;
+    auto as = Is<Assign>(at);
+    auto emptied = as && OwnPath(as->lval, base, bits, whole) && bits &&
+                   (base->own.empty & bits) == bits;
+    if (!emptied && !InTrusted()) {
+        auto what = ExprStr(as ? as->lval : at);
         Error(at, cat("assigning to ", what, " would drop the ", TypeStr(target), " it holds: "
-                      "exchange it with replace(", what, ", ...), which returns the old value "
-                      "to consume"));
+                      "take() it first, or exchange it with replace(", what, ", ...), which "
+                      "returns the old value to consume"));
     }
+    // What else the variable has seen emptied stays so: the store went
+    // through it, to these fields.
+    auto keep = emptied ? base->own.empty & ~bits : 0;
     NoteOwnFill(at);
+    if (emptied) base->own.empty = keep;
     return true;
 }
 
@@ -579,7 +605,7 @@ inline Val TypeCheck::CheckTake(Call *c, vector<Node *> &args) {
     uint32_t bits = 0;
     auto whole = false;
     auto tracked = OwnPath(args[0], base, bits, whole);
-    if (tracked && whole && base == lv.var) {
+    if (tracked && whole && base == lv.var && base->owned) {
         // The variable's own value: it is left empty, which it then reads as.
         UseOwn(base, args[0]);
         if (base->own.state == OS_CLAIMED)
@@ -592,6 +618,9 @@ inline Val TypeCheck::CheckTake(Call *c, vector<Node *> &args) {
         if (deferbodies && Depth(base) <= DeferDepth())
             Error(c, cat("a defer claims a whole own variable, not a field of one: take ",
                          ExprStr(args[0]), " into a variable of its own, and release that"));
+        if (!base->owned && !lv.writable)
+            Error(c, cat("cannot take ", ExprStr(args[0]), " through a non-writable value (const, "
+                         "or a read-only instantiation, §9.5): take writes the empty value back"));
         base->own.empty |= bits;
     } else if (!lv.writable) {
         Error(c, cat("cannot take ", ExprStr(args[0]), " through a non-writable value (const, "
@@ -637,7 +666,7 @@ inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
     uint32_t bits = 0;
     auto whole = false;
     auto tracked = OwnPath(args[0], base, bits, whole);
-    if (tracked && whole && base == lv.var) {
+    if (tracked && whole && base == lv.var && base->owned) {
         UseOwn(base, args[0]);
         if (base->own.state == OS_CLAIMED)
             Error(c, cat(base->name, " is released by the defer", OwnWhere(base->own.at),
@@ -671,7 +700,9 @@ inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
     }
     // A variable now points where either value did.
     if (lv.var && IsRefOrSlice(t) && !lv.var->isglobal) AddBinding(lv.var, nv);
+    auto keep = tracked ? base->own.empty & ~bits : 0;
     NoteOwnFill(c);
+    if (tracked) base->own.empty = keep;
     c->rettypes.push_back(t);
     return old;
 }

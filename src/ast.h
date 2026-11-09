@@ -1866,6 +1866,9 @@ struct VarDef {
     // A `let` reference or a block's parameter bound to what an own handle
     // variable points at: a take() through it is one through the handle.
     VarDef *ownalias = nullptr;
+    // A plain reference to a struct with own fields, which owes nothing:
+    // `own.empty` says which of the fields the code here has seen emptied.
+    bool ownborrow = false;
     bool captured = false;         // Accessed from a nested fn / function value.
     // The first comparison relying on the variable being non-negative
     // (§6.1), and the first writable reference bound to it (§4.4), whichever

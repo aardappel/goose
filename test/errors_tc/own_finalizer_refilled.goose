@@ -1,5 +1,5 @@
-// error: trusted fn conn_release ends the claim of h on a Conn whose own fields scratch, spare may still hold a value
-// A replace may fill what a take emptied, so nothing is known empty after it.
+// error: trusted fn conn_release ends the claim of h on a Conn whose own field scratch may still hold a value
+// A replace fills the field a take emptied; the other one stays known empty.
 struct Buf { n: i64 }
 struct Conn { fd: i64, scratch: own Buf?, spare: own Buf? }
 var bufs: Buf[>..] = [];

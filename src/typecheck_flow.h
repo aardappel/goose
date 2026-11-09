@@ -3093,6 +3093,8 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
             lv.var->own = OwnFlow {};
             if (OwnEmptyable(lv.var->type) && OwnNothing(a->rhs)) lv.var->own.state = OS_EMPTY;
         }
+        // What it saw emptied was of the struct it pointed at before.
+        if (lv.var->ownborrow) lv.var->own.empty = 0;
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).
         if (target->ref->optional) {
