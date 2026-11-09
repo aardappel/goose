@@ -1444,6 +1444,10 @@ NODE_END
 NODE(Defer)
     BCE_WALK
     Block *body;
+    // Made by the checker after the declaration of a local array whose
+    // elements hold own values (TypeCheck::GuardOwnArrays): its scope may
+    // not end while it holds any.
+    VarDef *ownguard = nullptr;
     Defer(Line l, Block *_body) : Node(l, NKind), body(_body) {}
 NODE_END
 

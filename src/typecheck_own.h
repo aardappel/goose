@@ -240,6 +240,56 @@ inline void TypeCheck::ConsumeOwn(Node *n, bool pointee) {
     if (inner != n) f.erase(remove(f.begin(), f.end(), inner), f.end());
 }
 
+// A local array whose elements hold own values, or a root struct with a
+// field that is one, must hold none where its scope ends (4.6 of the design
+// note): there is no text per element there to consume what they own. The
+// one check ownership adds at run time, written as the defer the program
+// would write: `defer if xs.len != 0 { abort(...) }`, after the declaration.
+inline void TypeCheck::GuardOwnArrays(VarDecl *decl, VarDef *d) {
+    auto t = d->type;
+    if (!t) return;
+    vector<string_view> fields;
+    auto whole = t->kind == TY_ARRAY && HoldsOwn(t->arr->sub);
+    if (t->kind == TY_STRUCT && t->struc->st->isroot) {
+        auto inst = GetStructInst(t);
+        for (size_t i = 0; i < inst->st->fields.size(); i++)
+            if (auto ft = inst->ftypes[i]; ft && ft->kind == TY_ARRAY && HoldsOwn(ft->arr->sub))
+                fields.push_back(inst->st->fields[i].name);
+    }
+    if (!whole && fields.empty()) return;
+    ownused = true;
+    if (blockpos.empty()) Error(decl, "internal: an own array declared outside a block");
+    auto b = blockpos.back().block;
+    auto idx = blockpos.back().idx;
+    if (idx >= b->stmts.size() || b->stmts[idx] != decl)
+        Error(decl, cat("an array of own-holding elements (", d->name, ") is declared as a "
+                        "statement of its own, with one name"));
+    // A later pass of a loop, or round of a cycle, checks the same body.
+    if (idx + 1 < b->stmts.size())
+        if (auto df = Is<Defer>(b->stmts[idx + 1]); df && df->ownguard == d) return;
+    auto line = decl->line;
+    auto body = ast.New<Block>(line);
+    auto check = [&](string_view field) {
+        Node *place = ast.New<Ident>(line, d->name);
+        if (!field.empty()) place = ast.New<Dot>(line, place, field);
+        auto len = ast.New<Dot>(line, place, "len");
+        auto cond = ast.New<Binary>(line, T_NEQ, len, ast.New<IntLit>(line, 0));
+        auto fail = ast.New<Call>(line, ast.New<Ident>(line, "::abort"));
+        fail->args.push_back(ast.New<StrLit>(
+            line, cat(d->name, field.empty() ? "" : ".", field, " still holds own values where "
+                      "its scope ends: pop each element, or release them all, before it does")));
+        fail->implicit = true;
+        auto then = ast.New<Block>(line);
+        then->stmts.push_back(fail);
+        body->stmts.push_back(ast.New<IfExpr>(line, cond, then, nullptr));
+    };
+    if (whole) check({});
+    for (auto f : fields) check(f);
+    auto df = ast.New<Defer>(line, body);
+    df->ownguard = d;
+    b->stmts.insert(b->stmts.begin() + (ptrdiff_t)idx + 1, df);
+}
+
 // An own value a call or a literal made, which nothing holds yet.
 inline void TypeCheck::NoteOwnFresh(Node *n, const Val &v) {
     // A call's results after the first reach only a declaration binding

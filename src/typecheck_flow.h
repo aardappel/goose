@@ -2101,6 +2101,22 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
                              "&x binding form (copies are not supported)");
                 bindtype = LoadType(elem);
             }
+            // An element holding an own value is not copied out of the array
+            // (docs/design/ownership.md 4.2): a struct of them binds by
+            // reference, and a handle as the borrow of it, its plain type.
+            if (HoldsOwn(elem)) {
+                if (!elem->oq) {
+                    if (!byref)
+                        Error(x, cat("elements holding own values (", TypeStr(elem), ") are not "
+                                     "copied: bind them by reference, as for &", x->var, " in ..."));
+                } else if (byref && elem->kind != TY_REF) {
+                    Error(x, cat("an own value's slot is not bound by reference: `for ", x->var,
+                                 " in ...` borrows each ", TypeStr(elem),
+                                 ", and take() or pop() moves one out"));
+                } else {
+                    bindtype = ast.UnownedOf(bindtype);
+                }
+            }
         } else {
             Error(x, cat("cannot iterate a value of type ", TypeStr(t)));
         }
@@ -2612,6 +2628,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             CheckCycleInit(d, fi, calls);
             vars.push_back(d);
             for (auto c : d->components) if (c) vars.push_back(c);
+            GuardOwnArrays(vd, d);
         }
     };
     // A var global declared without an initializer starts as its type's

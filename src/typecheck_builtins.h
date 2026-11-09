@@ -368,6 +368,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             Error(c, cat(".move_from takes a slice of ", TypeStr(elem), ", got ", TypeStr(sv.type)));
         if (HasRelRefT(elem))
             Error(c, ".move_from cannot copy elements containing self-relative references");
+        if (HoldsOwn(elem))
+            Error(c, cat(".move_from copies elements, and a ", TypeStr(elem), " holds an own "
+                         "value, which is never copied"));
         AppendedCopies(args[1], sv, elem, rv);
         return VoidVal();
     }
@@ -390,6 +393,27 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             RequireComplete(rt, c->line);
         }
         elem = rt->arr->sub;
+    }
+    // An element holding an own value enters by push and leaves by pop
+    // (docs/design/ownership.md 4.6): a member that copies elements would
+    // copy what they own, and one that drops several would drop it, with no
+    // text per element to say what becomes of each. A trusted fn vouches
+    // for the elements it drops.
+    if (elem && HoldsOwn(elem)) {
+        ownused = true;
+        auto copies = d.kind == B_APPEND || (d.kind == B_RESIZE && args.size() == 3) ||
+                      d.kind == B_ALLOC_INDEX || d.kind == B_ALLOC_REF ||
+                      d.kind == B_ALLOC_SLICE || d.kind == B_REALLOC_SLICE ||
+                      d.kind == B_FREE || d.kind == B_FREE_SLICE;
+        auto drops = d.kind == B_POP_N || d.kind == B_CLEAR || d.kind == B_RESIZE;
+        if (copies)
+            Error(c, cat(".", d.name, " is not available on ", TypeStr(rv.type), ": its "
+                         "elements hold own values (", TypeStr(elem), "), which enter one at a "
+                         "time, by push, and are never copied"));
+        if (drops && !InTrusted())
+            Error(c, cat(".", d.name, " would drop the own values the elements of ",
+                         TypeStr(rv.type), " hold: pop them one at a time and consume each, as "
+                         "in `while xs.len > 0 { let x = xs.pop(); ... }`"));
     }
     // The receiver grows (§1.3(4)): logged ahead of the arguments, so that
     // a value built in place among them is checked against the growths
@@ -637,6 +661,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // holds is not rooted at the temporary (§9.2).
             if (IsRefOrSlice(elem)) {
                 heldread();
+                // One holding an own value has left the array for good.
+                if (elem->oq) v.lvalue = false;
                 break;
             }
             v.type = LoadType(elem);
@@ -659,12 +685,18 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // to references (§3.8).
             if (elem->kind == TY_REF) {
                 heldread();
+                // The element owns what it refers to: this is a borrow.
+                if (elem->oq) {
+                    v.type = ast.UnownedOf(v.type);
+                    c->rettypes.back() = v.type;
+                }
                 break;
             }
-            v.type = ast.RefTo(elem, c->line);
+            v.type = ast.RefTo(elem->oq ? ast.UnownedOf(elem) : elem, c->line);
             v.TakeAlts(rv);
             v.ClearReads();
-            v.writable = rv.writable;
+            // An own value's slot is exchanged by replace(), never written.
+            v.writable = rv.writable && !elem->oq;
             // What a receiver that decays the reference loads through.
             c->rettypes.push_back(v.type);
             break;

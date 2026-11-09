@@ -1,0 +1,12 @@
+handles 4 sum 3 first 0 pushed 9 live 4
+popped, live 0
+task 0 buf 0
+task 1 buf 10
+task 2 buf 20
+task 9 no buf
+last 9 live 2
+drained 0 live 0
+limited 0 live 0
+optionals 0 live 0
+sched done 2 live 0
+table 2 live 0
