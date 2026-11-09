@@ -1,0 +1,5 @@
+stretch tree of depth 7	 root hash: 128 check: true
+64	 trees of depth 4	 root hash sum: 1024
+16	 trees of depth 6	 root hash sum: 1024
+long lived tree of depth 6	 root hash: 64 check: true
+live 0 of 255
