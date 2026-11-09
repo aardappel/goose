@@ -153,7 +153,7 @@ struct Parser {
             case T_DEFER: case T_RETURN: case T_BREAK: case T_CONTINUE:
                 return !declaration;
             default:
-                return AtInline() || AtCheckfree();
+                return AtInline() || AtCheckfree() || AtTrusted();
         }
     }
 
@@ -314,6 +314,23 @@ struct Parser {
                next == T_EXTERN || next == T_IDENT;
     }
 
+    // `trusted` likewise (docs/design/ownership.md), before `checkfree` and
+    // the rest.
+    bool AtTrusted() {
+        if (lex.tok != T_IDENT || lex.attr != "trusted") return false;
+        auto next = lex.PeekTok();
+        return next == T_FN || next == T_RECURSIVE || next == T_SIMD || next == T_IDENT ||
+               next == T_EXTERN || next == T_EXPORT;
+    }
+
+    // `own` is a keyword only where a type begins and another type follows
+    // it, which no type name is followed by: it stays a name everywhere else.
+    bool AtOwn() {
+        if (lex.tok != T_IDENT || lex.attr != "own") return false;
+        auto next = lex.PeekTok();
+        return next == T_IDENT || next == T_CONST || next == T_COLONCOLON || IsPrimTypeToken(next);
+    }
+
     void Expect(TType t, const char *context) {
         if (lex.tok != t)
             Error(cat("expected \'", TName(t), "\' in ", context, ", found \'", TokStr(), "\'"));
@@ -465,7 +482,7 @@ struct Parser {
             ParseStructDecl(true);
             return;
         }
-        if (AtInline() || AtCheckfree()) goto fndecl;
+        if (AtInline() || AtCheckfree() || AtTrusted()) goto fndecl;
         switch (lex.tok) {
             case T_STRUCT: ParseStructDecl(); return;
             case T_ENUM:   ParseEnumDecl();   return;
@@ -749,6 +766,13 @@ struct Parser {
             checkfree = true;
             lex.Next();
         }
+        auto trusted = [&]() {
+            if (!AtTrusted()) return;
+            if (sf->trusted) Error("trusted repeated in a function declaration");
+            sf->trusted = true;
+            lex.Next();
+        };
+        trusted();
         if (lex.tok == T_EXPORT) {
             if (sf->isextern) Error("export fn cannot be extern");
             sf->isexport = true;
@@ -775,12 +799,16 @@ struct Parser {
                 lex.Next();
             }
         }
+        trusted();
         if (!checkfree && AtCheckfree()) {
             checkfree = true;
             lex.Next();
         }
         if (checkfree && sf->isextern)
             Error("extern fn cannot be checkfree: it has no body to check");
+        if (sf->trusted && sf->isextern)
+            Error("extern fn cannot be trusted: its own parameters and results are C's to "
+                  "account for already");
         // A nested function is part of the body it is declared in.
         sf->checkfree = checkfree || (nested && curfn && curfn->checkfree);
         if (IsNext(T_SIMD)) {
@@ -976,11 +1004,17 @@ struct Parser {
         // Foo&` a reference to a read-only Foo, `const (u8[:])&` a reference
         // to a read-only slice value. Where no reference or slice follows,
         // the value's contents are read-only: `const i64[3]`.
+        // `own` qualifies the same one (docs/design/ownership.md): `own
+        // Node&` is a handle, `own u8[:]` a run, `own Window` a value that is
+        // itself the claim. It comes before `const`.
+        auto ownq = AtOwn();
+        if (ownq) lex.Next();
         auto constq = IsNext(T_CONST);
         auto t = ParseTypePrimary();
         auto qualify = [&](TypeExpr *n) {
             n->cq = constq;
-            constq = false;
+            n->oq = ownq;
+            constq = ownq = false;
         };
         // Postfix type operators, applied left to right.
         for (;;) {
@@ -1071,6 +1105,7 @@ struct Parser {
                 }
                 default:
                     if (constq) t = ast.ConstOf(t);
+                    if (ownq) t = ast.OwnOf(t);
                     return t;
             }
         }
@@ -2065,7 +2100,7 @@ struct Parser {
     // One statement of b, or its tail; returns false once the block has
     // ended (its `}` consumed, by a guard's rest of the block included).
     bool ParseStatement(Block *b) {
-        if (AtInline() || AtCheckfree()) goto nestedfndecl;
+        if (AtInline() || AtCheckfree() || AtTrusted()) goto nestedfndecl;
         switch (lex.tok) {
             case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: {
                 if (lex.tok == T_CONST && lex.PeekTok() == T_FOR) {

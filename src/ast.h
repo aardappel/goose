@@ -307,6 +307,12 @@ struct TypeExpr {
     // reference or slice, one whose pointee or elements are. Part of the
     // type's identity (TypeEq); a C type does not carry it.
     bool cq = false;
+    // `own T` (docs/design/ownership.md): a value carrying an obligation,
+    // which is not copied and is consumed exactly once. On a reference or
+    // slice the obligation is a claim on what it points at, on any other
+    // value on the value itself. Part of the type's identity (TypeEq); a C
+    // type does not carry it.
+    bool oq = false;
     // A use of a type alias (resolve.h): a copy of the alias's type, whose
     // sizes name what they name where the alias is declared, at top level,
     // whatever scope the use is in (TypeCheck::ConstNamesIn).
@@ -1525,6 +1531,11 @@ struct SFunction {
     // Declared with `checkfree`, or nested in such a function: a bounds
     // check left in any copy of the body is an error (bce.h).
     bool checkfree = false;
+    // Declared with `trusted`: where an obligation begins or ends without a
+    // check (docs/design/ownership.md). Its `own` parameters need no
+    // consumer, a plain value meets an `own` destination in it, and it may
+    // write over storage holding `own` values.
+    bool trusted = false;
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
     bool isexport = false;      // A Goose function exposed through a C ABI wrapper.
@@ -1886,6 +1897,7 @@ struct StructInst {
     FieldRun run;                  // st->fields with ftypes (RunsOf).
     SizeClass sclass = SC_FIXED;
     bool flat = true;
+    bool holdsown = false;         // A field holds an `own` value (HoldsOwnOf).
     bool validated = false;        // Guards against recursive by-value nesting.
     // Its build was cut short by the error that ended the root it was in
     // (TypeCheck::CheckRoot): never used again, and a use of it ends its own
@@ -1936,6 +1948,20 @@ template<typename F> bool AnyFieldOf(span<const FieldRun> runs, F f) {
 template<typename F> void EachFieldOf(span<const FieldRun> runs, F f) {
     for (auto &run : runs)
         for (auto ft : *run.ftypes) if (ft) f(ft);
+}
+
+// Whether a value of type t carries an obligation (docs/design/ownership.md):
+// it is `own` itself, or holds an `own` value by value at any depth, which a
+// plain reference or slice to one does not. `runs` is the pass's FieldRuns,
+// as for AnyFieldOf.
+template<typename R> bool HoldsOwnOf(TypeExpr *t, R runs) {
+    if (t->oq) return true;
+    switch (t->kind) {
+        case TY_REF: case TY_SLICE: return false;
+        case TY_ARRAY: return HoldsOwnOf(t->arr->sub, runs);
+        default:
+            return AnyFieldOf(runs(t), [&](TypeExpr *ft) { return HoldsOwnOf(ft, runs); });
+    }
 }
 
 // Whether a value of type t holds a relative reference by value, at any
@@ -2723,15 +2749,33 @@ struct Ast {
         return n;
     }
 
-    // The same type without its own qualifier: what a load of a const value
+    // The same type without its own qualifiers: what a load of a const value
     // yields (a copy), and the pointee of a reference to one, whose
-    // constness the reference carries instead. A reference or slice keeps
-    // its qualifier, which is about its own pointee.
+    // constness the reference carries instead; a reference to an `own`
+    // value borrows it, as its plain type. A reference or slice keeps its
+    // qualifiers, which are about its own pointee.
     TypeExpr *PlainOf(TypeExpr *t) {
-        if (!t->cq || t->kind == TY_REF || t->kind == TY_SLICE) return t;
+        if ((!t->cq && !t->oq) || t->kind == TY_REF || t->kind == TY_SLICE) return t;
         auto n = NewType(t->kind, t->line);
         *n = *t;
-        n->cq = false;
+        n->cq = n->oq = false;
+        return n;
+    }
+
+    // The same type carrying an obligation (`own T`), and the same type
+    // without one: what a borrow of an `own` value reads it as.
+    TypeExpr *OwnOf(TypeExpr *t) {
+        if (t->oq) return t;
+        auto n = NewType(t->kind, t->line);
+        *n = *t;
+        n->oq = true;
+        return n;
+    }
+    TypeExpr *UnownedOf(TypeExpr *t) {
+        if (!t->oq) return t;
+        auto n = NewType(t->kind, t->line);
+        *n = *t;
+        n->oq = false;
         return n;
     }
 

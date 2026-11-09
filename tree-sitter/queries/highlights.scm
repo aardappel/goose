@@ -75,6 +75,7 @@
   "let"
   "var"
   "const"
+  "own"
   "pad"
   "reusable"
   "namespace"

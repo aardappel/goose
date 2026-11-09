@@ -400,7 +400,8 @@ inline TypeExpr *Ast::CloneExpansionType(TypeExpr *t) {
                 if (b->kind != TY_ENUM) return invalid("variable mode requires an ADT type");
                 b = EnumOf(b->enu->en, b->enu->args, true, t->line);
             }
-            return t->cq ? ConstOf(b) : b;
+            if (t->cq) b = ConstOf(b);
+            return t->oq ? OwnOf(b) : b;
         }
     }
     // Copy compound templates: sizes and nested type arguments can depend

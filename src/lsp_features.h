@@ -70,6 +70,7 @@ inline string FnHeader(const SFunction *sf) {
     string s;
     if (sf->isexport) s += "export ";
     if (sf->isextern) s += "extern ";
+    if (sf->trusted) s += "trusted ";
     if (sf->checkfree && !sf->isnested) s += "checkfree ";
     if (sf->isinline) s += "inline ";
     if (sf->issimd) s += "simd ";

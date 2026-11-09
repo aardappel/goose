@@ -59,11 +59,13 @@ inline void TypeExpr::Dump(string &s, size_t limit) const {
             if (IsRefOrSlice(p)) return true;
         return false;
     };
+    // `own` binds as `const` does, and is written before it.
+    if (oq) s += "own ";
     if (cq) s += "const ";
     auto SubDump = [&](const TypeExpr *inner) {
         // An index type takes no postfix of its own: `(u32 in a)[>..]`.
-        auto parens = inner->kind == TY_FN || inner->cq || inner->ix ||
-                      (cq && chainhasrs(inner));
+        auto parens = inner->kind == TY_FN || inner->cq || inner->oq || inner->ix ||
+                      ((cq || oq) && chainhasrs(inner));
         if (parens) s += "(";
         inner->Dump(s, limit);
         if (parens) s += ")";
@@ -694,6 +696,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
         // Ast::Dump prints around the run of them.
         if (sf->dylib.empty()) s += "extern ";
     }
+    if (sf->trusted) s += "trusted ";
     // A nested function takes its enclosing function's checkfree.
     if (sf->checkfree && !(sf->isnested && sf->outer && sf->outer->checkfree))
         s += "checkfree ";

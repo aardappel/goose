@@ -251,6 +251,7 @@ module.exports = grammar({
     // `export` takes the C symbol's name, as `extern` did before the
     // symbol moved after the signature (still accepted, deprecated).
     function_modifier: $ => choice(
+      'trusted',
       'checkfree',
       'simd',
       'inline',
@@ -287,10 +288,14 @@ module.exports = grammar({
     _type_no_index: $ => choice(
       $._postfix_type,
       $.const_type,
+      $.own_type,
     ),
 
     // `const` qualifies the first reference or slice built on the base type.
     const_type: $ => seq('const', $._postfix_type),
+
+    // `own` qualifies the same one, and comes before `const`.
+    own_type: $ => seq('own', choice($._postfix_type, $.const_type)),
 
     _postfix_type: $ => choice(
       $.primitive_type,

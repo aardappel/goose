@@ -102,6 +102,10 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         if (auto zs = ZeroSizeKind(ft))
             Error(st->line, cat("field ", st->fields[i].name, " of struct ", st->name,
                                 " cannot be ", zs, ": ", TypeStr(ft), " (§3.4)"));
+        if (HoldsOwn(ft)) {
+            ValidateOwnField(ft, st->fields[i], cat("struct ", st->name), st->line, st->isroot);
+            inst->holdsown = true;
+        }
         auto c = ClassOf(ft);
         if (c == SC_RESIZABLE && !st->isroot) {
             // A pad after the tail too: its bytes would lie where the tail
@@ -130,6 +134,11 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         }
         inst->frameobj = fo;
     }
+    // take() and replace() exchange an own field where it lies, as a C
+    // member: the struct around it has a C layout of its own.
+    if (inst->holdsown && !st->isroot && inst->sclass != SC_FIXED)
+        Error(st->line, cat("struct ", st->name, " holds own values, so it must be fixed-size: "
+                            "keep its variable-size fields in a struct of their own"));
     inst->validated = true;
     typechain.pop_back();
     EndTypeBuild();
@@ -208,6 +217,12 @@ inline void TypeCheck::BuildVariant(EnumInst *inst, size_t vi) {
         if (auto zs = ZeroSizeKind(ft))
             Error(en->line, cat("field ", v.fields[i].name, " of variant ", en->name, ".", v.name,
                                 " cannot be ", zs, ": ", TypeStr(ft), " (§3.4)"));
+        // A match binds a fixed-mode payload by value, and a whole assignment
+        // replaces a variant: both would copy or drop what the payload owns.
+        if (HoldsOwn(ft))
+            Error(en->line, cat("field ", v.fields[i].name, " of variant ", en->name, ".", v.name,
+                                " holds an own value (", TypeStr(ft), "): an enum's payloads "
+                                "cannot own anything; keep it in a struct field"));
         auto c = ClassOf(ft);
         if (c == SC_RESIZABLE) {
             if (i + 1 < (int)v.fields.size())
@@ -360,8 +375,10 @@ inline SizeClass TypeCheck::ClassOf(TypeExpr *t) {
     }
 }
 
-// Flat (§1.1): no references, slices, or relative references at any depth.
+// Flat (§1.1): no references, slices, or relative references at any depth,
+// and no obligation, which the receiving program could not discharge.
 inline bool TypeCheck::IsFlat(TypeExpr *t) {
+    if (t->oq) return false;
     switch (t->kind) {
         case TY_REF: case TY_SLICE: return false;
         case TY_STRUCT: return GetStructInst(t)->flat;
@@ -426,6 +443,10 @@ inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
 inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
     if (ClassOf(t) == SC_ROOT) {
         why = "a root owner has no contiguous byte image; serialize its fields separately";
+        return false;
+    }
+    if (t->oq) {
+        why = cat(TypeStr(t), " is an own value, whose obligation an image would copy");
         return false;
     }
     switch (t->kind) {
@@ -494,6 +515,13 @@ inline bool TypeCheck::HoldsRelRef(TypeExpr *t) {
 // without a declared field default. default<T>() gives it for a fixed-size
 // T only; DefaultValue builds it for any.
 inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
+    // An own value's default is the one that holds nothing: a null, an
+    // empty slice.
+    if (t->oq && !OwnEmptyable(t)) {
+        why = cat(TypeStr(t), " is an own value with no empty state: only what produces "
+                  "one makes one");
+        return false;
+    }
     switch (t->kind) {
         case TY_INT:
             // The array may be empty, so not even 0 is an index of it (§3.11).
@@ -610,7 +638,59 @@ inline void TypeCheck::RequireComplete(TypeExpr *t, Line l) {
                  "declaration");
 }
 
+inline bool TypeCheck::HoldsOwn(TypeExpr *t) {
+    if (t->oq) return true;
+    switch (t->kind) {
+        case TY_STRUCT: return GetStructInst(t)->holdsown;
+        case TY_ARRAY: return HoldsOwn(t->arr->sub);
+        default: return false;   // An enum's payloads hold none (BuildVariant).
+    }
+}
+
+inline bool TypeCheck::OwnEmptyable(TypeExpr *t) {
+    if (t->oq) return t->kind == TY_SLICE || IsOptional(t);
+    // A struct's own fields all are (ValidateOwnField); an array's elements
+    // leave it one at a time.
+    return t->kind == TY_STRUCT && !t->struc->st->isroot && GetStructInst(t)->holdsown;
+}
+
+// What `own` may qualify, and where such a type may stand.
+inline void TypeCheck::ValidateOwn(TypeExpr *t, Line l, int pos) {
+    auto ok = t->kind == TY_SLICE || t->kind == TY_STRUCT ||
+              (t->kind == TY_REF && t->ref->lenstorage < 0) ||
+              (t->kind == TY_INT && t->intstorage != IS_VARINT && !t->ix);
+    if (t->kind == TY_STRUCT && t->struc->st->isroot) ok = false;
+    if (!ok)
+        Error(l, cat("own qualifies a reference, a slice, a struct or an integer handle, not ",
+                     TypeStr(ast.UnownedOf(t)),
+                     IsRelRef(t) ? ": an owned relative link is not supported" : ""));
+    if (pos == VT_POINTEE)
+        Error(l, cat("a reference to an own value borrows it, as its plain type: write ",
+                     TypeStr(ast.UnownedOf(t)), "&, not (", TypeStr(t), ")&"));
+    if (pos == VT_GLOBAL && !OwnEmptyable(t))
+        Error(l, cat("a global of type ", TypeStr(t), " would hold its obligation for good: a "
+                     "global has no scope exit, and nothing could consume it; keep it in a "
+                     "local, or declare an own T? or own T[:], which take() can empty"));
+}
+
+// A field holding an own value: one a take() can leave empty, or, in a root
+// struct, the array of a container.
+inline void TypeCheck::ValidateOwnField(TypeExpr *ft, const Field &f, string_view owner, Line l,
+                                        bool root) {
+    if (OwnEmptyable(ft)) return;
+    if (ft->kind == TY_ARRAY) {
+        if (root) return;
+        Error(l, cat("field ", f.name, " of ", owner, " is an array of own-holding elements (",
+                     TypeStr(ft), "), which only a root struct's field or a variable can be"));
+    }
+    Error(l, cat("field ", f.name, " of ", owner, " has type ", TypeStr(ft), ", an own value "
+                 "with no empty state: an own field is read with take(), which leaves it "
+                 "empty, so declare it as an optional reference (own T?) or a slice "
+                 "(own T[:])"));
+}
+
 inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
+    if (t->oq) ValidateOwn(t, l, pos);
     switch (t->kind) {
         case TY_GENERIC:
             if (t->named->opaque) return;
@@ -677,6 +757,18 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
         case TY_ARRAY: {
             RequireComplete(t, l);
             ValidateType(t->arr->sub, l, VT_ELEM);
+            // An element holding an own value enters and leaves one at a
+            // time, by push and pop, which a fixed-length array has none of.
+            if ((t->arr->akind == A_FIXED || t->arr->akind == A_VAR) && HoldsOwn(t->arr->sub))
+                Error(l, cat("an array of fixed length cannot hold own values (",
+                             TypeStr(t->arr->sub), "): they enter and leave one at a time, by "
+                             "push and pop, so use a growable array"));
+            // One is the variable declaring it for its whole life, which
+            // answers for its elements where its scope ends.
+            if ((pos == VT_RET || pos == VT_PARAM) && HoldsOwn(t->arr->sub))
+                Error(l, cat("an array of own-holding elements (", TypeStr(t), ") is not ",
+                             pos == VT_RET ? "returned" : "passed", " by value: declare it "
+                             "where it lives, and pass a reference to it"));
             auto ec = ClassOf(t->arr->sub);
             switch (t->arr->akind) {
                 case A_FIXED:

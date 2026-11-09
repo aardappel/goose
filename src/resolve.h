@@ -205,10 +205,11 @@ inline void ResolveTypeNames(Ast &ast) {
             t->enu = d;
         } else {
             auto line = t->line;
-            auto cq = t->cq;
+            auto cq = t->cq, oq = t->oq;
             *t = *target;
             t->line = line;
             t->cq = t->cq || cq;   // `const Alias` keeps its qualifier.
+            t->oq = t->oq || oq;   // And `own Alias` its own.
         }
         t->aliasuse = true;
     }

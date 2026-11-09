@@ -939,7 +939,7 @@ struct TypeCheck {
 
     bool TypeEq(TypeExpr *a, TypeExpr *b) {
         if (a == b) return true;
-        if (a->kind != b->kind || a->cq != b->cq) return false;
+        if (a->kind != b->kind || a->cq != b->cq || a->oq != b->oq) return false;
         switch (a->kind) {
             case TY_INT:  return a->intstorage == b->intstorage && SameIndex(a, b);
             case TY_FLT:  return a->fltstorage == b->fltstorage;
@@ -1046,10 +1046,11 @@ struct TypeCheck {
 
     // Substitutes generic parameter names in t using the current lexical
     // bindings; returns t itself when nothing changed. A `const T` keeps its
-    // qualifier whatever T is bound to.
+    // qualifier whatever T is bound to, and so does an `own T`.
     TypeExpr *Subst(TypeExpr *t) {
         auto n = SubstRaw(t);
-        return t->cq && !n->cq ? ast.ConstOf(n) : n;
+        if (t->cq && !n->cq) n = ast.ConstOf(n);
+        return t->oq && !n->oq ? ast.OwnOf(n) : n;
     }
 
     TypeExpr *SubstRaw(TypeExpr *t) {
@@ -1098,6 +1099,7 @@ struct TypeCheck {
                 if (sub == t->sub) return t;
                 auto n = ast.SliceOf(sub, t->line);
                 n->cq = t->cq;
+                n->oq = t->oq;
                 return n;
             }
             case TY_REF: {
@@ -1115,6 +1117,7 @@ struct TypeCheck {
                     *n->ref = *sub->ref;
                     n->ref->optional = true;
                     n->cq = sub->cq;
+                    n->oq = sub->oq;
                     return n;
                 }
                 auto n = ast.NewType(TY_REF, t->line);
@@ -1122,6 +1125,7 @@ struct TypeCheck {
                 *n->ref = *t->ref;
                 n->ref->sub = sub;
                 n->cq = t->cq;
+                n->oq = t->oq;
                 return n;
             }
             case TY_VARIANT: {
@@ -1252,6 +1256,15 @@ struct TypeCheck {
     void CheckfreeCallee(Node *at, SFunction *callee);
     bool HoldsPlainRef(TypeExpr *t);
     bool HasDefault(TypeExpr *t, string &why);
+
+    // Ownership (docs/design/ownership.md). A type holds an obligation where
+    // it is `own` or holds an `own` value by value; a slot of such a type can
+    // be emptied where every `own` value in it is an optional reference or a
+    // slice, whose null or empty value holds nothing.
+    bool HoldsOwn(TypeExpr *t);
+    bool OwnEmptyable(TypeExpr *t);
+    void ValidateOwn(TypeExpr *t, Line l, int pos);
+    void ValidateOwnField(TypeExpr *ft, const Field &f, string_view owner, Line l, bool root);
 
     // Serialization (docs/design/serialization.md): what to_bytes will write
     // out, and the stricter question of what from_bytes can verify its way
