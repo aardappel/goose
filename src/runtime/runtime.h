@@ -227,6 +227,7 @@ GS_API GS_NORETURN void gs_exit(int64_t code);
    reported as the fault handler reports an overrun into the guard gap. */
 GS_API GS_NORETURN void gs_stack_overflow(const void *at);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
+GS_API GS_NORETURN void gs_idxufail(uint64_t i, int64_t n, const char *file, int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
 GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
@@ -249,6 +250,11 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_IDX(i, n, f, l) \
     ((uint64_t)(i) < (uint64_t)(n) ? (i) \
                                    : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
+/* The unsigned-index form: a u64 above i64.max is a large index, not a
+   negative one, so its failing value is printed unsigned. */
+#define GS_IDXU(i, n, f, l) \
+    ((uint64_t)(i) < (uint64_t)(n) ? (int64_t)(i) \
+                                   : (gs_idxufail((uint64_t)(i), (n), (f), (l)), (int64_t)0))
 
 /* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
    in debug builds, an optimizer hint in release. */

@@ -503,7 +503,9 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // (including its unsigned comparison for negative/large indices).
             auto x = GenPure(an[1]);
             auto i = T();
-            L("int64_t ", i, " = GS_IDX(", x, ", ", lv.lenlv, ", ", LocArgs(ln), ");");
+            if (IsUnsignedT(an[1]->exprtype))
+                L("int64_t ", i, " = GS_IDXU(", x, ", ", lv.lenlv, ", ", LocArgs(ln), ");");
+            else L("int64_t ", i, " = GS_IDX(", x, ", ", lv.lenlv, ", ", LocArgs(ln), ");");
             L("*(gs_i64 *)", Top(lv.flstk), " = ", i, ";");
             L(TopW(lv.flstk), " += 8;");
             L(lv.fl, ".len++;");
