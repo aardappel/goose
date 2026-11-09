@@ -1127,6 +1127,7 @@ class Runner:
             "shape_strip_fixed": f"{strip} 4", "shape_strip_div": f"{strip} 4",
             "shape_sum_dot": sums, "shape_sum_count": sums, "shape_sum_f32": sums,
             "shape_sum_range": sums, "shape_sum_spec": sums, "keep_sum_reads": None,
+            "shape_sum_whole": sums, "shape_sum_ragged": sums, "shape_sum_fixed": sums,
             "shape_bound_count": f"{bound} 8", "shape_bound_any": f"{bound} 8",
             "shape_bound_all": f"{bound} 8", "shape_bound_for": f"{bound} 6",
             "shape_bound_grow": f"{bound} 8",
@@ -1148,6 +1149,19 @@ class Runner:
         if "gs_divu32_q(" not in body or re.search(r"\bgs_(?:div|mod)_u32\(", body):
             self.fail("loop shapes shape_strip_div", "a division not by the divisor's magic number")
             valid = False
+        # From 0 to a constant multiple of the block size, the blocks run every
+        # iteration and there is no loop for the rest (CodeGen::GenBlocked,
+        # #210); any other count, constant or not, keeps it.
+        tails = {
+            "shape_sum_whole": False, "shape_sum_fixed": False, "shape_sum_ragged": True,
+            "shape_sum_count": True, "shape_sum_dot": True, "shape_strip_fixed": True,
+        }
+        for name, want in tails.items():
+            got = bool(re.search(r"^\s*for \(; ", texts.get(name, ""), re.MULTILINE))
+            if got != want:
+                self.fail(f"loop shapes {name}",
+                          f"loop for the rest: got {got}, want {want}")
+                valid = False
         # A && or || condition is a chain of branches (CodeGen::GenBranch):
         # neither the 0/1 flag the right operand sets inside an `if`, which
         # a value keeps, nor the two flags combined with & or | of a loop that
