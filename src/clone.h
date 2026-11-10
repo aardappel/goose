@@ -173,6 +173,8 @@ inline Node *SliceExpr::Clone1(Ast &ast) const {
     sl->hi = CloneOrNull(ast, hi);
     sl->lo_from_end = lo_from_end;
     sl->hi_from_end = hi_from_end;
+    sl->is_window = is_window;
+    sl->win_len = win_len;
     sl->cmpview = cmpview;
     return sl;
 }
@@ -296,6 +298,10 @@ inline Node *VarDecl::Clone1(Ast &ast) const {
     vd->isglobal = isglobal;
     vd->byref = byref;
     vd->results = results;
+    vd->cheader = cheader;
+    vd->target_attr = target_attr;
+    vd->cname = cname;
+    vd->cheader_fileidx = cheader_fileidx;
     vd->names = names;
     vd->type = ast.CloneExpansionType(type);
     CloneNodes(ast, inits, vd->inits);

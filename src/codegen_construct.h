@@ -535,7 +535,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         if (!lenlv.empty()) L(lenlv, " = 0;");
         return;
     }
-    if (auto se = Is<SliceExpr>(n); se && et->kind == TY_ARRAY) {
+    if (auto se = Is<SliceExpr>(n); se && !se->is_window && et->kind == TY_ARRAY) {
         // A slice expression constructing an array copies the range.
         Loc slv;
         slv.val = true;

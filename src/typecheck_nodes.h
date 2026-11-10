@@ -505,6 +505,7 @@ inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     TypeCheck::DestScope ds(tc, TypeCheck::Dest {});
+    if (is_window) return tc.ContainerRead(tc.CheckLValue(this));
     auto lv = tc.LValueBase(obj, cmpview);
     tc.DerefLValue(lv, obj);
     tc.SliceProvenance(lv, obj);

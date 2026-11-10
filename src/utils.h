@@ -54,6 +54,26 @@ template<typename... Ts> string cat(const Ts &...args) {
     return s;
 }
 
+string DirOf(const string &path);
+string RelativeTo(const string &path, const string &dir);
+
+inline string ForwardSlashes(string path) {
+    for (auto &c : path) if (c == '\\') c = '/';
+    return path;
+}
+
+inline string AbsolutePath(const string &path) {
+    std::error_code ec;
+    auto abs = filesystem::absolute(filesystem::path(path), ec);
+    return ec ? path : abs.lexically_normal().string();
+}
+
+inline bool FileExists(const string &path) {
+    auto f = fopen(path.c_str(), "rb");
+    if (f) fclose(f);
+    return f != nullptr;
+}
+
 // Where a diagnostic is: a file of the program (an index in Ast::sources), the
 // 1-based line and byte column it starts at, and where it ends, one past its
 // last byte. A column of 0 is a line alone; an end on line 0 is unknown.

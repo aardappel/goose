@@ -21,12 +21,6 @@ struct BuildOptions {
     string exe;               // -o: the executable/library; "" puts it beside the root source
 };
 
-inline string AbsolutePath(const string &path) {
-    std::error_code ec;
-    auto abs = filesystem::absolute(filesystem::path(path), ec);
-    return ec ? path : abs.lexically_normal().string();
-}
-
 // GOOSE_HOME/build/prog/<stem>-<hash of the root's absolute path>/: where a
 // program's C, objects and logs go.
 inline string ProgramBuildDir(const string &rootfile) {

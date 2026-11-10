@@ -424,7 +424,8 @@ struct Optimizer {
                                    u->child->exprtype->kind != TY_REF)
             n = u->child;
         auto d = Is<Dot>(n);
-        return Is<Ident>(n) || (d && d->IsField()) || Is<Index>(n);
+        auto se = Is<SliceExpr>(n);
+        return Is<Ident>(n) || (d && d->IsField()) || Is<Index>(n) || (se && se->is_window);
     }
 
     // A path to a value in storage that a view can see into.
@@ -710,6 +711,7 @@ struct Inliner {
         for (auto &c : nv->components) c = Remap(c);
         auto fit = o.facts.find(v);
         if (fit != o.facts.end()) o.facts[nv] = fit->second;
+        if (nv->initexpr) nv->initexpr = Cp(nv->initexpr);
         return nv;
     }
 
@@ -731,11 +733,13 @@ struct Inliner {
     // Remap owns all copied-variable state, including the write/address facts
     // that later folds use, for ordinary and recursive base-case inlining.
     VarDecl *BindArg(VarDef *pv, Node *arg, Line ln) {
-        if (Optimizer::AsLiteral(arg) && Optimizer::Unwritten(o.facts, pv) &&
+        if ((pv->constlit ||
+             (Optimizer::AsLiteral(arg) && Optimizer::Unwritten(o.facts, pv))) &&
             !(keepcaptured && pv->captured)) {
             subst[pv] = arg;
             return nullptr;
         }
+        if (pv->c_const_expr) return nullptr;
         auto vd = ast.New<VarDecl>(ln, pv->isvar);
         vd->names.push_back(pv->name);
         vd->defs.push_back(Remap(pv));
@@ -801,6 +805,7 @@ inline Node *Optimizer::TryInline(Call *c) {
     auto K = c->spec;
     auto &info = inlineinfo[K];
     if (!K->live || !K->body) return nullptr;
+    if (curspec ? curspec->target_attr != K->target_attr : !K->target_attr.empty()) return nullptr;
     auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
     // An `inline fn` passes the size rules wherever inlining is on.
     auto small = (K->sf->isinline && nc > 0) || info.nodecount < nc || info.nodecount * K->uses < ncuhere;
@@ -899,6 +904,11 @@ inline Node *Defer::Cp1(Inliner &inl) const { return inl.ast.New<Defer>(line, in
 
 inline Node *Ident::Cp1(Inliner &inl) const {
     if (vdef) {
+        if (vdef->c_const_expr) {
+            auto r = vdef->c_const_expr->Clone(inl.ast);
+            r->exprtype = exprtype;
+            return r;
+        }
         // A parameter bound to a constant argument substitutes right here.
         auto it = inl.subst.find(vdef);
         if (it != inl.subst.end()) {
@@ -964,6 +974,8 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->poolcheck = poolcheck;
     c->qtype = qtype;
     c->shaderblob = shaderblob;
+    c->target_mask = target_mask;
+    c->target_const = target_const;
     c->rettypes = rettypes;
     c->fmtspecs = fmtspecs;
     c->fmtcontexts = fmtcontexts;
@@ -989,6 +1001,8 @@ inline Node *SliceExpr::Cp1(Inliner &inl) const {
     if (hi) c->hi = inl.Cp(hi);
     c->lo_from_end = lo_from_end;
     c->hi_from_end = hi_from_end;
+    c->is_window = is_window;
+    c->win_len = win_len;
     c->cmpview = cmpview;
     return c;
 }
@@ -1293,6 +1307,9 @@ inline Node *Call::Opt(Optimizer &o) {
                                                            : o.OptIn(this, args[i]);
     if (fvbody) o.OptBlock(fvbody);
     if (defaultinit) defaultinit = o.Opt(defaultinit);
+    if (builtin == B_TARGET_HAS && target_const >= 0) {
+        return o.NewBool(this, target_const != 0);
+    }
     if (builtin == B_ASSERT) {
         if (auto b = Is<BoolLit>(FirstArg()); b && b->val) {
             o.folded++;
@@ -1312,6 +1329,11 @@ inline Node *Index::Opt(Optimizer &o) {
 }
 
 inline Node *SliceExpr::Opt(Optimizer &o) {
+    if (is_window) {
+        obj = o.Viewed(this) || (lo && !Optimizer::CodeFree(lo)) ? o.OptViewed(obj) : o.Opt(obj);
+        if (lo) lo = o.Opt(lo);
+        return this;
+    }
     obj = o.OptViewed(obj);
     if (lo) lo = o.Opt(lo);
     if (hi) hi = o.Opt(hi);

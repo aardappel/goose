@@ -489,19 +489,41 @@ struct Parser {
             }
             case T_EXTERN: {
                 // `extern "lib" {` opens a block of declarations bound from
-                // a shared library (§7.10), which the string alone does not
-                // tell from a declaration's symbol: the parse reads past it
-                // and hands the declaration what it consumed.
-                ExternPrefix pre { CurLine(), lex.doc, "", "" };
+                // a shared library (§7.10) or C header, which the string alone
+                // does not tell from a declaration's symbol: the parse reads
+                // past it and hands the declaration what it consumed.
+                ExternPrefix pre { CurLine(), lex.doc, "", "", "", "", false };
                 auto depth = lex.DepthBefore();
                 auto startp = lex.attr.data();
                 lex.Next();
                 if (lex.tok == T_STRLIT) {
-                    pre.cname = lex.sval;
+                    if (IsHeaderSpec(lex.sval)) pre.cheader = lex.sval;
+                    else pre.cname = lex.sval;
                     lex.Next();
                 }
+                if (lex.tok == T_IDENT && lex.attr == "target") {
+                    if (pre.cheader.empty())
+                        Error("target clause requires a C header spec before it");
+                    lex.Next();
+                    if (lex.tok != T_STRLIT) {
+                        Error("expected string literal after target");
+                    } else {
+                        pre.target_attr = lex.sval;
+                        if (pre.target_attr.empty())
+                            Error("target string cannot be empty");
+                        lex.Next();
+                    }
+                }
                 if (lex.tok == T_LCURLY) {
-                    ParseExternBlock(pre.cname, depth, startp);
+                    ParseExternBlock(pre, depth, startp);
+                    return;
+                }
+                if (lex.tok == T_TYPE) {
+                    ast.topdecls.push_back(ParseHeaderAliasDecl(pre));
+                    return;
+                }
+                if (lex.tok == T_CONST) {
+                    ast.topdecls.push_back(ParseHeaderConstDecl(pre));
                     return;
                 }
                 ast.topdecls.push_back(ParseFnDecl(false, &pre));
@@ -693,23 +715,109 @@ struct Parser {
         string_view doc;    // The documentation above the declaration (Lexer::doc).
         string cname;       // The deprecated `extern "sym" fn`'s symbol, or empty.
         string dylib;       // The block's library; empty outside a block.
+        string cheader;     // C header (`<header.h>` or `"local.h"`).
+        string target_attr; // Optional `target "..."` feature list.
+        bool inblock = false;
     };
 
+    AliasDecl *ParseHeaderAliasDecl(const ExternPrefix &pre) {
+        if (pre.cheader.empty())
+            Error("type declaration inside extern requires a C header spec");
+        auto line = pre.inblock ? CurLine() : pre.line;
+        auto doc = pre.inblock ? lex.doc : pre.doc;
+        Expect(T_TYPE, "type alias declaration");
+        auto al = new SAlias();
+        ast.aliases.push_back(al);
+        al->line = line;
+        al->doc = doc;
+        al->name = ParseDeclName("type alias declaration");
+        al->ns = curns;
+        al->qname = ast.QualifiedName(al->ns, al->name);
+        CheckFreshTypeName(al->ns, al->name);
+        if (lex.tok == T_LT) Error("type aliases cannot be generic");
+        Expect(T_ASSIGN, "type alias declaration");
+        al->type = ParseType();
+        string cname;
+        if (IsNext(T_ASSIGN)) {
+            if (lex.tok != T_STRLIT) {
+                Error("expected string literal for C type name after '='");
+            } else {
+                cname = lex.sval;
+                if (cname.empty()) Error("C type name cannot be empty");
+                lex.Next();
+            }
+        }
+        Expect(T_SEMI, "type alias declaration");
+        al->end = PrevEnd();
+        al->c_repr = cname.empty() ? string(al->name) : cname;
+        al->c_header = pre.cheader;
+        al->target_attr = pre.target_attr;
+        al->c_fileidx = fileidx;
+        ast.NS(al->ns).aliasmap[al->name] = al;
+        return Finish(New<AliasDecl>(line, al));
+    }
+
+    VarDecl *ParseHeaderConstDecl(const ExternPrefix &pre) {
+        if (pre.cheader.empty())
+            Error("const declaration inside extern requires a C header spec");
+        auto line = pre.inblock ? CurLine() : pre.line;
+        auto doc = pre.inblock ? lex.doc : pre.doc;
+        Expect(T_CONST, "extern const declaration");
+        auto vd = New<VarDecl>(line, false);
+        vd->isconst = true;
+        vd->isglobal = true;
+        vd->ns = curns;
+        vd->doc = doc;
+        vd->cheader = pre.cheader;
+        vd->target_attr = pre.target_attr;
+        vd->cheader_fileidx = fileidx;
+        auto name = ParseDeclName("extern const declaration");
+        vd->names.push_back(name);
+        if (!IsNext(T_COLON)) {
+            Error("extern const declaration requires an explicit integer type: const NAME: i32;");
+        } else {
+            vd->type = ParseType();
+        }
+        string cname;
+        if (IsNext(T_ASSIGN)) {
+            if (lex.tok != T_STRLIT) {
+                Error("extern const takes an optional C macro name string literal, not a value initializer");
+            } else {
+                cname = lex.sval;
+                if (cname.empty()) Error("C constant name cannot be empty");
+                lex.Next();
+            }
+        }
+        vd->cname = cname.empty() ? string(name) : cname;
+        Expect(T_SEMI, "extern const declaration");
+        auto &ns = ast.NS(curns);
+        auto it = ns.globalmap.find(name);
+        if (it != ns.globalmap.end())
+            Error(cat("global name already declared: ", QualifiedStr(curns, name)));
+        else
+            ns.globalmap[name] = vd;
+        ast.globals.push_back(vd);
+        return Finish(vd);
+    }
+
     // `extern "lib" { ... }` (§7.10): declarations bound from the shared
-    // library `lib` as the program starts. Each member is an extern fn with
-    // the block's library and goes into topdecls as the declaration it is;
-    // the dump prints the block back around the run of them (Ast::Dump).
-    // An error in a member loses that member, and the parse goes on at the
-    // next member a skip of the rest finds (SkipBody), or past the block.
-    void ParseExternBlock(const string &lib, int depth, const char *startp) {
-        if (lib.empty()) Error("an extern block names the library it binds from: extern \"lib\" {");
+    // library `lib` or C header as the program starts.
+    void ParseExternBlock(const ExternPrefix &block_pre, int depth, const char *startp) {
+        if (block_pre.cname.empty() && block_pre.cheader.empty())
+            Error("an extern block names the library it binds from: extern \"lib\" {");
         Expect(T_LCURLY, "extern block");
         auto broken = false;
         while (lex.DepthBefore() > depth && lex.tok != T_RCURLY && lex.tok != T_EOF) {
-            ExternPrefix pre { CurLine(), lex.doc, "", lib };
+            ExternPrefix pre { CurLine(), lex.doc, "", block_pre.cname, block_pre.cheader, block_pre.target_attr, true };
             auto memberp = lex.attr.data();
             ParseMembers(broken, depth, startp, [&](Ast::DeclMark &kept) {
-                ast.topdecls.push_back(ParseFnDecl(false, &pre));
+                if (lex.tok == T_TYPE) {
+                    ast.topdecls.push_back(ParseHeaderAliasDecl(pre));
+                } else if (lex.tok == T_CONST) {
+                    ast.topdecls.push_back(ParseHeaderConstDecl(pre));
+                } else {
+                    ast.topdecls.push_back(ParseFnDecl(false, &pre));
+                }
                 kept = ast.Mark();
             });
             // The skip stops before a keyword only a declaration starts
@@ -731,11 +839,14 @@ struct Parser {
         sf->doc = pre ? pre->doc : lex.doc;
         sf->isnested = nested;
         sf->outer = curfn;
-        auto inblock = pre && !pre->dylib.empty();
+        auto inblock = pre && pre->inblock;
         if (pre) {
             sf->isextern = true;
             sf->cname = pre->cname;
             sf->dylib = pre->dylib;
+            sf->cheader = pre->cheader;
+            sf->target_attr = pre->target_attr;
+            sf->cheader_fileidx = fileidx;
             if (inblock && lex.tok == T_STRLIT)
                 Error(cat("a member's symbol follows its signature: fn name(...) = \"", lex.sval,
                           "\"; (§7.10)"));
@@ -822,7 +933,10 @@ struct Parser {
             Expect(T_LPAREN, "function declaration");
             while (lex.tok != T_RPAREN) {
                 Param p;
+                p.is_const = IsNext(T_CONST);
                 p.isvar = IsNext(T_VAR);
+                if (p.is_const && p.isvar)
+                    Error("parameter cannot be both const and var");
                 p.line = CurLine();
                 p.name = ExpectIdent("parameter list");
                 for (auto &prev : sf->params)
@@ -1639,7 +1753,13 @@ struct Parser {
             auto sl = New<SliceExpr>(line, obj);
             sl->lo = lo;
             sl->lo_from_end = lo_from_end;
-            if (lex.tok != T_RBRACKET) {
+            if (lex.tok == T_PLUS) {
+                if (lo_from_end) Error("'^' bounds cannot be combined with '..+'");
+                Role(R_UNARY);
+                lex.Next();
+                sl->is_window = true;
+                sl->hi = ParseExpr();
+            } else if (lex.tok != T_RBRACKET) {
                 if (lex.tok == T_XOR) Role(R_UNARY);
                 sl->hi_from_end = IsNext(T_XOR);
                 sl->hi = ParseExpr();

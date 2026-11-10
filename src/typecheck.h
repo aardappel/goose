@@ -909,6 +909,8 @@ struct TypeCheck {
         } else if (auto b = Is<Binary>(n)) {
             ConstExprNames(b->left, what, f);
             ConstExprNames(b->right, what, f);
+        } else if (auto c = Is<AsCast>(n)) {
+            ConstExprNames(c->child, what, f);
         } else if (auto d = Is<Dot>(n)) {
             if (auto obj = Is<Ident>(d->obj)) f(obj, what);
         }
@@ -2243,6 +2245,7 @@ struct TypeCheck {
         vector<pair<string_view, FnValBind>> fnvals;
         vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.
         vector<int> litparams;          // Literal arguments to type variables (§7.7).
+        vector<ConstArgBind> const_args;
         FnSpec *env = nullptr;          // Lexical parent for nested functions.
         // The parameters the call's arguments bind, in order; the rest take
         // their defaults (§7.1).
@@ -2413,8 +2416,9 @@ struct TypeCheck {
                            Call *call = nullptr);
     bool SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec);
     bool ExternValueOk(TypeExpr *t, string &why);
-    bool ExternParamOk(TypeExpr *t, string &why);
+    bool ExternParamOk(TypeExpr *t, string &why, bool is_header = false);
     bool DylibValueOk(SFunction *sf, TypeExpr *t, string &why);
+    bool IsCConstImmExpr(Node *n);
     void CheckExternSpec(FnSpec *spec);
     void CheckExport(SFunction *sf);
     int ClassDepth(VarDef *r);
@@ -2831,6 +2835,7 @@ struct TypeCheck {
         // The parts of holders emptied on every path here (Kill), part of
         // the flow state, which a branch joins and a loop's head takes.
         vector<Kill> kills;
+        vector<string> guarded_targets;
     };
     BodyState cur;
     // The states of the bodies being checked around this one, outermost
@@ -3045,6 +3050,126 @@ struct TypeCheck {
     // (RequireAssigned).
     set<VarDef *> failedglobals;
 
+    string ActiveGuardedTargets() {
+        string g;
+        int fi = RealFrameIndex();
+        int bi = frames[fi].bodyidx;
+        auto &bs = bi < (int)outerbodies.size() ? *outerbodies[bi] : cur;
+        for (auto &s : bs.guarded_targets) MergeTargetAttrs(g, s);
+        return g;
+    }
+
+    string ValidateTargetString(string_view spec, Line ln, const char *where,
+                                int &const_val, uint32_t &mask) {
+        const_val = 1;
+        mask = 0;
+        string isa_features;
+        string arch_tok;
+        bool has_any = false;
+        size_t pos = 0;
+        while (pos <= spec.size()) {
+            auto comma = spec.find(',', pos);
+            if (comma == string_view::npos) comma = spec.size();
+            auto tok = spec.substr(pos, comma - pos);
+            while (!tok.empty() && tok.front() == ' ') tok.remove_prefix(1);
+            while (!tok.empty() && tok.back() == ' ') tok.remove_suffix(1);
+            if (tok.empty()) {
+                Error(ln, cat(where, " requires a non-empty comma-separated feature list"));
+                return {};
+            }
+            has_any = true;
+            auto *info = LookupTargetFeature(tok);
+            if (!info) {
+                Error(ln, cat(where, ": unknown target feature \"", tok, "\""));
+                return {};
+            }
+            if (info->kind == 0) {
+                arch_tok = string(tok);
+                if (tok != HostTargetArch()) const_val = 0;
+            } else if (info->kind == 1) {
+                if (tok != HostTargetOS()) const_val = 0;
+            } else {
+                string_view feat_arch = info->kind == 2 ? "x86_64" : "aarch64";
+                if (!arch_tok.empty() && arch_tok != feat_arch)
+                    Error(ln, cat(where, ": feature \"", tok, "\" is not valid on architecture \"",
+                                  arch_tok, "\""));
+                if (feat_arch != HostTargetArch()) {
+                    const_val = 0;
+                } else {
+                    MergeTargetAttrs(isa_features, tok);
+                    bool baseline = (feat_arch == "x86_64" && tok == "sse2") ||
+                                    (feat_arch == "aarch64" && tok == "neon");
+                    if (!baseline) mask |= info->mask;
+                }
+            }
+            if (comma == spec.size()) break;
+            pos = comma + 1;
+        }
+        if (!has_any)
+            Error(ln, cat(where, " requires a non-empty comma-separated feature list"));
+        if (const_val != 0 && mask != 0) const_val = -1;
+        return isa_features;
+    }
+
+    void EvalStaticTargetCond(Node *cond, int &const_val, string &isa_features) {
+        const_val = -1;
+        isa_features.clear();
+        if (!cond) return;
+        if (auto c = Is<Call>(cond)) {
+            if (auto id = Is<Ident>(c->callee); id && GlobalLeaf(id->name) == "target_has" &&
+                c->tyargs.empty() && !c->trailing && c->args.size() == 1) {
+                auto sl = Is<StrLit>(c->args[0]);
+                if (!sl) return;
+                uint32_t m = 0;
+                isa_features = ValidateTargetString(sl->val, c->line, "target_has", const_val, m);
+                c->builtin = B_TARGET_HAS;
+                c->target_const = const_val;
+                c->target_mask = m;
+                c->exprtype = ast.booltype;
+                c->args[0]->exprtype = cu8slice;
+            }
+            return;
+        }
+        if (auto u = Is<Unary>(cond); u && u->op == T_NOT) {
+            int sub_val = -1;
+            string sub_isa;
+            EvalStaticTargetCond(u->child, sub_val, sub_isa);
+            if (sub_val == 0) const_val = 1;
+            else if (sub_val == 1) const_val = 0;
+            return;
+        }
+        if (auto b = Is<Binary>(cond); b && (b->op == T_ANDAND || b->op == T_OROR)) {
+            int lv = -1, rv = -1;
+            string lisa, risa;
+            EvalStaticTargetCond(b->left, lv, lisa);
+            EvalStaticTargetCond(b->right, rv, risa);
+            if (b->op == T_ANDAND) {
+                if (lv == 0 || rv == 0) const_val = 0;
+                else if (lv == 1 && rv == 1) const_val = 1;
+                if (lv != 0 && rv != 0) {
+                    MergeTargetAttrs(isa_features, lisa);
+                    MergeTargetAttrs(isa_features, risa);
+                }
+            } else {
+                if (lv == 1 || rv == 1) const_val = 1;
+                else if (lv == 0 && rv == 0) const_val = 0;
+            }
+        }
+    }
+
+    void PropagateTargetAttrs() {
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto sp : ast.fnspecs) {
+                for (auto &[callee, guarded] : sp->target_edges) {
+                    if (!callee || callee->target_attr.empty()) continue;
+                    if (MergeTargetAttrs(sp->target_attr, callee->target_attr, guarded))
+                        changed = true;
+                }
+            }
+        }
+    }
+
     TypeCheck(Ast &_ast, bool _library = false, bool _nomain = false) : ast(_ast), library(_library), nomain(_nomain) {
         // A checked program records values for about two thirds as many
         // nodes as it parsed to, clones included, so this is the size the
@@ -3074,6 +3199,9 @@ struct TypeCheck {
                 vd->isglobal = true;
                 vd->globalindex = globalindex++;
                 vd->reusable = g->reusable;
+                vd->cheader = g->cheader;
+                vd->cname = g->cname;
+                vd->cheader_fileidx = g->cheader_fileidx;
                 g->defs.push_back(vd);
             }
         }
@@ -3085,6 +3213,35 @@ struct TypeCheck {
             if (st->generics.empty()) GetStructInst(ast.StructOf(st, {}, st->line));
         for (auto en : ast.enums)
             if (en->generics.empty()) GetEnumInst(ast.EnumOf(en, {}, true, en->line));
+        for (auto al : ast.aliases) {
+            if (!al->target_attr.empty()) {
+                int cv = -1;
+                uint32_t m = 0;
+                ValidateTargetString(al->target_attr, al->line, "extern target", cv, m);
+            }
+            if (al->c_repr.empty()) continue;
+            ValidateType(al->type, al->line, VT_LOCAL);
+            if (ClassOf(al->type) != SC_FIXED || !IsFlat(al->type))
+                Error(al->line, cat("type ", al->name, ": boundary-mapped C type requires a flat "
+                                    "fixed-size Goose backing type"));
+            else if (ZeroSizeKind(al->type))
+                Error(al->line, cat("type ", al->name, ": boundary-mapped C type cannot have "
+                                    "zero size"));
+        }
+        for (auto sf : ast.functions) {
+            if (!sf->target_attr.empty()) {
+                int cv = -1;
+                uint32_t m = 0;
+                ValidateTargetString(sf->target_attr, sf->line, "extern target", cv, m);
+            }
+        }
+        for (auto g : ast.globals) {
+            if (!g->target_attr.empty()) {
+                int cv = -1;
+                uint32_t m = 0;
+                ValidateTargetString(g->target_attr, g->line, "extern target", cv, m);
+            }
+        }
         // And the sizes in every function's signature, for its parameters' and
         // type parameters' names, and in every generic type's fields.
         for (auto sf : ast.functions) SignatureNames(sf->params, sf->rets, sf->generics);
@@ -3172,6 +3329,7 @@ struct TypeCheck {
         CheckRoot([&] { VerifyLiterals(); });
         CheckRoot([&] { ReportRedundantCasts(); });
         CheckRoot([&] { CheckDefers(); });
+        PropagateTargetAttrs();
         if (ast.exemplars) CheckExemplars();
     }
 
@@ -3230,6 +3388,7 @@ struct TypeCheck {
     void CheckUnreached(SFunction *sf) {
         if (!sf->specs.empty() || sf->isthread || sf->isnested || sf->brokensig) return;
         if (sf->IsGeneric()) return;
+        for (auto &p : sf->params) if (p.is_const) return;
         set<string_view> names = { sf->name };
         auto foreign = false;
         if (sf->body) ScanForeignFrom(sf->body, names, foreign);
