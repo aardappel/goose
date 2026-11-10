@@ -11,8 +11,8 @@ trusted fn conn_take(c: Conn) -> own Conn& { return conns.push(c); }
 trusted fn conn_release<F>(h: own Conn&) { F(h); }
 fn main() {
     var c = Conn { fd: 1, scratch: buf_take(1) };
-    var d = c;
-    var e = c;
+    var d: Conn = c;
+    var e: Conn = c;
     buf_drop(take(d.scratch));
     buf_drop(take(e.scratch));
 }

@@ -14,7 +14,7 @@ trusted fn free_node<F>(h: own Node&) { F(h); live -= 1; }
 // A list is freed head first, each node handing over the one it owns: the
 // loop leaves with cur found null, which is nothing left to consume.
 fn free_list(h: own Node?) {
-    var cur = h;
+    var cur: own Node? = h;
     while cur {
         var rest: own Node? = null;
         free_node(cur) { rest .= take(it.next); };

@@ -2523,8 +2523,8 @@ copied, and on every path through the function holding it exactly one thing
 * returning it from a function whose result is declared `own`;
 * storing it where the type says `own`: a field of a struct literal, an
   element pushed onto an array, a `replace`;
-* binding it to another variable: `let b = a;` moves, and `a` holds nothing
-  afterwards;
+* binding it to a variable whose declaration writes the type:
+  `let b: own Conn& = a;` moves, and `a` holds nothing afterwards;
 * a `defer` that does one of these, which claims it for every exit of the
   block the `defer` is in.
 
@@ -2532,6 +2532,15 @@ Every other use *borrows* it as its plain type: reading and writing through
 it, passing it to a parameter declared `Conn&` or left untyped, comparing
 it. A borrow discharges nothing. `own` is checked and then erased: there are
 no destructors, and no code runs at a scope exit.
+
+A declaration without a type takes over a value that nothing holds yet, such
+as the result of `open(1)` below. One that a variable holds it does not
+take: `let b = a;` is an error, because nothing in it would say which of
+three things is meant, and each has a spelling. `let b: own Conn& = a;`
+moves, `let b .= a;` borrows, and `let c = copy(a);` copies what `a` refers
+to, where that holds no own value itself. A function whose result type is
+inferred is held to the same: it returns a handle it was given only by
+declaring `-> own Conn&`.
 
 The pools give and take such handles beside their plain operations:
 

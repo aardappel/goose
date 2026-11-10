@@ -959,8 +959,15 @@ Where the implementation departs from sections 4 and 6:
 * **Borrowing is by type.** 4.2 lists the uses that borrow. As built, any
   use of an `own` value at a destination whose type holds no `own` value
   reads it as its plain type, and a destination whose type does hold one
-  consumes it. An untyped parameter therefore borrows, and `let m = h;`
-  moves. This is what makes an `own u64` handle from C usable at all.
+  consumes it. An untyped parameter therefore borrows. This is what makes an
+  `own u64` handle from C usable at all.
+* **A move is written.** A destination with no type written takes over only
+  a value that nothing holds yet: `let h = pool.take(v)`. Where a variable
+  holds the value, `let m = h;` and a function with an inferred result
+  returning `h` are errors that name the spellings: `let m: own T& = h`
+  moves, `let m .= h` borrows, `copy(h)` copies the pointee. Having the
+  untyped `let` move where the untyped parameter borrows left two readings
+  of one shape, with nothing at either to tell them apart.
 * **`trusted fn` covers three things, not one.** 4.6 and section 6 speak of
   the trusted *end* of an obligation. A pool needs its *beginning* as well
   (a plain `T&` returned as `own T&`) and the *overwrite* of a slot that

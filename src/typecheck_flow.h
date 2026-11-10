@@ -2757,11 +2757,27 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 // one of a reference to such a value is that reference,
                 // which CheckValue keeps.
                 if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
-                // A declaration without a type takes an own value over: a
-                // move (docs/design/ownership.md 4.3).
+                // A declaration without a type takes over an own value
+                // that nothing holds yet (docs/design/ownership.md 4.3),
+                // and none that a variable holds (OwnVarNamed).
                 if (!ann && v.type && !v.isnull && !v.emptyarr && (ownused || v.type->oq) &&
-                    HoldsOwn(v.type))
+                    HoldsOwn(v.type)) {
+                    if (auto src = OwnVarNamed(vd->inits[i]); src && !v.pointee) {
+                        auto decl = cat(vd->isvar ? "var " : "let ", vd->names[i]);
+                        auto isref = IsPlainRef(v.type);
+                        auto copies = isref && !HoldsOwn(v.type->ref->sub);
+                        Error(vd->inits[i],
+                              cat(decl, " = ", src->name, " does not say what becomes of the own "
+                                  "value ", src->name, " holds: write ", decl, ": ",
+                                  TypeStr(v.type), " = ", src->name, " to move it",
+                                  copies ? ", " : " or ", decl, " .= ", src->name,
+                                  " to borrow it",
+                                  copies ? cat(", or copy(", src->name, ") for a copy of what "
+                                               "it refers to")
+                                         : string()));
+                    }
                     ConsumeOwn(vd->inits[i], v.pointee);
+                }
             }
         }
         if (IsUntypedEmptyArray(v.type) && !ann) {

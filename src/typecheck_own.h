@@ -228,6 +228,19 @@ inline bool TypeCheck::OwnPlace(Node *n) {
     return Is<Dot>(n) || Is<Index>(n);
 }
 
+// The own variable n names, if it is one: what a destination with no type
+// written does not take over (CheckVarDecl, CheckInferredResult). Nothing at
+// `let m = h` would say whether h moves, is borrowed or is copied, so each of
+// the three is spelled; a value no variable holds yet can only move.
+inline VarDef *TypeCheck::OwnVarNamed(Node *n) {
+    while (auto u = Is<Unary>(n)) {
+        if (!u->synth) break;
+        n = u->child;
+    }
+    auto id = Is<Ident>(n);
+    return id && id->vdef && id->vdef->owned ? id->vdef : nullptr;
+}
+
 // The value of n, which holds an obligation, passes to the destination that
 // took it: a variable's is consumed, a fresh value's is the destination's
 // from here on, and storage gives one up only through take(). `pointee`:

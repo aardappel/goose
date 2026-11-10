@@ -940,9 +940,15 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
         Error(n, "cannot infer the element type of []: an omitted result type is taken from "
                  "the value returned (§7.1); declare the function's result type");
     if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
-    // An own value returned is the caller's from here on.
-    if (v.type && !v.isnull && !v.emptyarr && (ownused || v.type->oq) && HoldsOwn(v.type))
+    // An own value returned is the caller's from here on: one nothing holds
+    // yet, where the result type is inferred (OwnVarNamed).
+    if (v.type && !v.isnull && !v.emptyarr && (ownused || v.type->oq) && HoldsOwn(v.type)) {
+        if (auto src = OwnVarNamed(n); src && !v.pointee)
+            Error(n, cat("the result type of ", tspec->sf->name, " is inferred, which does not "
+                         "say that the own value ", src->name, " holds moves out: declare it "
+                         "(-> ", TypeStr(v.type), ")"));
         ConsumeOwn(n, v.pointee);
+    }
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
     NoRelRefCopy(n, v.type);

@@ -12,7 +12,7 @@ var chains = slot_pool<Chain> {};
 fn push(head: own Node?, k: i64) -> own Node& { nodes.take(Node { key: k, next: head }) }
 
 fn free_list(h: own Node?) {
-    var cur = h;
+    var cur: own Node? = h;
     while cur {
         var rest: own Node? = null;
         nodes.release(cur) { rest .= take(it.next); };

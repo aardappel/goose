@@ -2021,12 +2021,18 @@ scope exit, apart from the one length check below.
   destination whose type holds an own value consumes it: an argument for an
   `own` parameter, the value returned for an `own` result, the initializer
   of an own field or of a pushed element, the initializer of a declaration
-  without a plain type annotation, the new value of `replace`. A `defer`
+  whose annotation holds an own value, the new value of `replace`. A `defer`
   whose body consumes a variable declared outside it claims the variable for
   every exit of the block the `defer` is in. Any other use reads the value
   as its plain type and consumes nothing. Where paths join, a variable's
   states agree; a loop body does not consume a variable declared outside it
   without giving it a value again.
+* **No type written.** A declaration without an annotation, and a result
+  type that is inferred (§7.1), take over an own value that no variable
+  holds: a call's result, a literal, a `take`. Given a variable that holds
+  one, each is an error: the move is written with the type
+  (`let b: own T& = a`, `-> own T&`), the borrow as `let b .= a`. A block's
+  value moves as it is, since a block has no result type to write.
 * **Empty values.** A variable of type `own T?` or `own T[:]` known to hold
   null or the empty run owes nothing: after a `null` or `[]`, after
   `take`, and where a condition found it null.

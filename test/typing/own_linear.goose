@@ -36,9 +36,9 @@ fn borrows() {
 
 fn moves() {
     let a = make(2);
-    let b = a;                         // a move: a holds nothing from here on
+    let b: own Node& = a;              // a move, written as one: a holds nothing from here on
     let c = pass(pass(b));
-    var d = c;
+    var d: own Node& = c;
     drop_node(d);
     d .= make(3);                      // a var that holds nothing takes a new value
     print("moves ", d.v);
@@ -53,7 +53,7 @@ fn branches(k: i64) -> i64 {
     }
     let v = match k {
         1 => { drop_node(h); 10 },
-        2, 3 => { let m = h; drop_node(m); 20 },
+        2, 3 => { let m: own Node& = h; drop_node(m); 20 },
         _ => { drop_node(h); 30 },
     };
     return v;

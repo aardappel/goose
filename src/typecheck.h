@@ -2582,6 +2582,7 @@ struct TypeCheck {
     void UseOwn(VarDef *vd, const Node *at);
     void ConsumeVar(VarDef *vd, Node *at);
     void ConsumeOwn(Node *n, bool pointee = false);
+    VarDef *OwnVarNamed(Node *n);
     bool OwnPlace(Node *n);
     Val BorrowOwn(Node *n, Val v);
     void NoteOwnFresh(Node *n, const Val &v);
