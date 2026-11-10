@@ -997,6 +997,15 @@ Where the implementation departs from sections 4 and 6:
   it runs (`index_of` with a message). `handle_of`, which would make an
   `own` handle from any reference or index, was not provided: it is the
   forge that makes the exactly-once claim false.
+* **The plain operations are closed to elements that own.** 4.6 leaves
+  `free` beside `release`. With both open, `free` of a slot whose element
+  still owned a run compiled, and the next `take` overwrote the run's only
+  handle. The pools' plain operations now begin with
+  `const assert !holds_own<T>`: a query and a statement
+  ([const_for.md 11.3 and 11.7](const_for.md#117-const-assert)) added for
+  this, since a library had no way to refuse an instantiation with a message
+  of its own. A `slice_pool` of such elements is refused outright, where
+  before every operation on one failed somewhere in its body.
 * **Owned relative links are in.** 4.6 and section 9 defer them. They took
   forty lines, since a link loads as the reference it stands for, and they
   are how Goose's pool structures link: four bytes, and the type names the

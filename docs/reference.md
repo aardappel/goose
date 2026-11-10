@@ -77,9 +77,9 @@ uses.
 [Appendix A](#appendix-a-keywords-and-operators). A few words are keywords
 only in one position and names everywhere else: `from` after a `return`
 value, `upto` after an unsigned type in a type, `inline` and `checkfree`
-before `fn`, `fields`, `variants` and `types` in a `const for` header, and
-`has_default` and `same` in a `const if` condition. `in` is a keyword
-throughout.
+before `fn`, `fields`, `variants` and `types` in a `const for` header,
+`has_default`, `same` and `holds_own` in a `const if` or `const assert`
+condition, and `assert` after `const`. `in` is a keyword throughout.
 
 **Integer literals** are decimal (`42`) or hexadecimal (`0xFF`). The whole
 unsigned 64-bit range is accepted: a value above `i64.max` is a `u64`
@@ -2668,7 +2668,16 @@ fn main() {
 
 A handle that was stored in a field no longer tells the checker which pool
 it came from, so `release` checks that when it runs and aborts on a handle of
-another pool, as [`index_of`](#members) does when given a message.
+another pool, as [`index_of`](#members) does when given a message. A relative
+link keeps the pool in its type: a handle taken out of one is known to be
+that pool's, and storing another pool's handle in it is a compile error.
+
+A pool whose elements hold own values has the owning operations only. Its
+`alloc_ref`, `free`, `recycle_all` and their kin are compile errors, since a
+slot freed by index would be reused with whatever its element still owned;
+the library says so with `const assert !holds_own<T>`. What remains outside
+the checker is the pool's own bookkeeping: `items` and `free_slots` are
+ordinary fields, and code that writes them directly can still lose a slot.
 
 **Arrays.** A growable array may hold elements with own fields. `push` moves
 an element in and `pop` moves one out; `clear`, `pop_n`, `resize`, `copy`
@@ -3240,13 +3249,15 @@ float converts, and booleans and strings take `==` and `!=` only. A local, a
 call, a field read or anything else computed at runtime is an error, not a
 runtime branch.
 
-The queries are valid in a `const if` condition only. `has_default<A>` is
+The queries are valid in such a condition only. `has_default<A>` is
 `true` exactly when the field an accessor `A` from `fields<T>` stands for
 declares a written `= …`, a default equal to the type's zero included;
 nothing is evaluated. `same<T1, T2>` is `true` when the two types are
 identical after substitution, `const` qualification included, so
 `same<V, Shape.Dot>` picks a variant and `same<T, i64>` a generic
-instantiation.
+instantiation. `holds_own<T>` is `true` when a value of the type carries an
+obligation or has a part that does ([section 14](#owning-handles)): an
+`own` type, a struct with an own field, an array of either.
 
 The branch not chosen is parsed but never checked, which is the point: a
 `const if` over a field can write to it in one branch and leave it alone in
@@ -3256,6 +3267,29 @@ nested block, not an expansion: `break`, `continue` and `return` in it mean
 what they mean in an `if`. In a constructor the chosen entries join the
 initializer list, and in a `match` the chosen arms join the arm list, so a
 `const for` over `variants<E>` can leave some variants to written arms.
+
+`const assert c, "message";` is the statement that requires such a condition
+instead of choosing by it. Where the condition is false in a specialization
+the compile fails with the message, reported at the call that made the
+specialization. It is how a generic function says what it cannot be
+instantiated with:
+
+```goose
+fn fill<T>(dst: T[:], v: T) {
+    const assert !holds_own<T>, "fill copies v, which a T that holds own values does not allow";
+    for i in dst.len { dst[i] = v; }
+}
+
+fn main() {
+    var xs = [0, 0, 0];
+    fill(xs, 7);
+    print(xs);
+}
+```
+
+```
+[7, 7, 7]
+```
 
 Spec §6.5, `docs/design/const_for.md` section 11.
 
@@ -4429,7 +4463,8 @@ varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`.
 (after a `return` value), `upto` (after an unsigned type in a type),
 `inline`, `checkfree` and `trusted` (before `fn`, `recursive`, `simd` or
 `thread_fn`), `own` (before a type), `fields`, `variants` and `types` (in a `const for` header),
-`has_default` and `same` (in a `const if` condition).
+`has_default`, `same` and `holds_own` (in a `const if` or `const assert`
+condition), `assert` (after `const`).
 
 **Operators**, tightest first; the precedence is Rust's:
 

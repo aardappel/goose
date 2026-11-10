@@ -886,6 +886,8 @@ inline Node *ConstFor::Cp1(Inliner &) const { assert(false); return nullptr; }
 inline Node *ConstFor::Opt(Optimizer &) { assert(false); return nullptr; }
 inline Node *ConstIf::Cp1(Inliner &) const { assert(false); return nullptr; }
 inline Node *ConstIf::Opt(Optimizer &) { assert(false); return nullptr; }
+inline Node *ConstAssert::Cp1(Inliner &) const { assert(false); return nullptr; }
+inline Node *ConstAssert::Opt(Optimizer &) { assert(false); return nullptr; }
 inline Node *ConstQuery::Cp1(Inliner &) const { assert(false); return nullptr; }
 inline Node *ConstQuery::Opt(Optimizer &) { assert(false); return nullptr; }
 inline Node *BoolLit::Cp1(Inliner &inl) const { return inl.ast.New<BoolLit>(line, val); }

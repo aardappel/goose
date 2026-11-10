@@ -353,12 +353,22 @@ inline void DumpFragments(string &s, int ind, const Block *body, bool armfragmen
     }
 }
 
+inline void ConstAssert::Dump(string &s, int ind) const {
+    s += "const assert ";
+    DumpOperand(s, cond, ind);
+    s += ", ";
+    msg->Dump(s, ind);
+}
+
 inline void ConstQuery::Dump(string &s, int) const {
     if (query == Q_SAME) {
         s += "same<";
         types[0]->Dump(s);
         s += ", ";
         types[1]->Dump(s);
+    } else if (query == Q_HOLDS_OWN) {
+        s += "holds_own<";
+        types[0]->Dump(s);
     } else {
         Append(s, "has_default<", name);
     }

@@ -616,9 +616,14 @@ inline Val ConstIf::Check(TypeCheck &tc, TypeExpr *) {
     tc.Error(this, "const if is only valid in statement, constructor initializer or match arm lists");
 }
 
+inline Val ConstAssert::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "const assert is only valid as a statement");
+}
+
 inline Val ConstQuery::Check(TypeCheck &tc, TypeExpr *) {
-    tc.Error(this, cat(query == Q_SAME ? "same" : "has_default",
-                       " is only valid in a const if condition"));
+    tc.Error(this, cat(query == Q_SAME ? "same" : query == Q_HOLDS_OWN ? "holds_own"
+                                                                       : "has_default",
+                       " is only valid in a const if or const assert condition"));
 }
 
 inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {

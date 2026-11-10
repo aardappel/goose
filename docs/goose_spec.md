@@ -2559,11 +2559,18 @@ unify as constant arithmetic unifies them and compare at that type; an
 integer beside a float converts (§6.3); booleans and strings take `==` and
 `!=` only. A value computed at runtime, a local, a literal parameter (§7.7)
 or a field read is an error, never a runtime branch. The queries, valid in
-a `const if` condition only, are `has_default<A>`, `true` exactly when the
+such a condition only, are `has_default<A>`, `true` exactly when the
 field an accessor `A` from `fields<T>` stands for declares a written
-`= ...`, and `same<T1, T2>`, `true` when two types are identical after
-substitution, qualifiers included. The names `has_default` and `same` are
-contextual there and identifiers elsewhere.
+`= ...`; `same<T1, T2>`, `true` when two types are identical after
+substitution, qualifiers included; and `holds_own<T>`, `true` when the type
+holds an own value (§5.5). The names `has_default`, `same` and `holds_own`
+are contextual there and identifiers elsewhere.
+
+**Specialization-time assertion.** `const assert c, "message";` is a
+statement whose condition is one a `const if` takes. Where it is false in a
+specialization, the program is rejected with the message; where it is true
+the statement is nothing. `assert` is contextual after `const`, unless `=`
+or `:` follows it, which declares a constant of that name.
 
 ```goose
 fn missing<T>(seen: bool[:]) {
@@ -5227,7 +5234,9 @@ constfor    := "const" "for" "<" identlist ">" "in" source blockexpr   // §6.5;
 source      := ("fields" | "variants" | "types") tyargs                // initializer or arm
              | "[" exprlist? "]"                                       // list in those lists
 constif     := "const" "if" expr blockexpr ("else" (constif | blockexpr))?  // §6.5; likewise
-                                                 // expr: constants, has_default<A>, same<T, U>
+                                                 // expr: constants, has_default<A>, same<T, U>,
+                                                 // holds_own<T>
+constassert := "const" "assert" expr "," STRING ";"   // §6.5; expr as a constif's
 
 expr        := control | binary
 control     := ifexpr | matchexpr | blockexpr | loops | jumps

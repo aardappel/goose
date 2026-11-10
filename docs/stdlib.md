@@ -809,8 +809,11 @@ and moves it to its block to be emptied, a released one owning nothing; it
 leaves the pool empty, which a local pool of own-holding elements must be
 where its scope ends. A pool whose elements own slots of the same pool
 cannot be emptied that way (its links would dangle as it shrinks), so it is
-a global. The plain operations stay available and unchecked: `free` of a
-slot whose element still owns something is a leak the checker does not see.
+a global. For such elements the plain operations are compile errors
+(`const assert !holds_own<T>`): a slot freed by index would be reused with
+whatever its element still owned. For elements that own nothing they stay
+beside the owning ones, unchecked. The fields `items` and `free_slots` are
+bookkeeping no code outside the pool should write.
 
 ## slice_pool
 

@@ -273,7 +273,9 @@ module.exports = grammar({
     variable_declaration: $ => seq(
       optional(seq('reusable', optional(seq('[', ']')))),
       choice('let', 'var', 'const'),
-      sep1(field('name', $._qualified_name), ','),
+      // `assert` is a keyword after `const` (const_assert_statement), and
+      // still a name a declaration there can give.
+      sep1(field('name', choice($._qualified_name, alias('assert', $.identifier))), ','),
       optional(seq(':', field('type', $._type))),
       optional(seq(choice('=', '.='), sep1(field('value', $._expression), ','))),
       ';',
@@ -405,6 +407,7 @@ module.exports = grammar({
       $.function_declaration,
       $.const_for_statement,
       $.const_if_statement,
+      $.const_assert_statement,
       $.guard_statement,
       $.defer_statement,
       $.assignment_statement,
@@ -486,9 +489,20 @@ module.exports = grammar({
 
     _const_if_head: $ => seq('const', 'if', field('condition', $._const_condition)),
 
+    // A condition that holds in every specialization, or the compile fails
+    // with the message: `const assert c, "message";`.
+    const_assert_statement: $ => seq(
+      'const',
+      'assert',
+      field('condition', $._const_condition),
+      ',',
+      field('message', $.string_literal),
+      ';',
+    ),
+
     // A condition is the expression grammar with the queries as primaries.
-    // A query is parsed here only, so `has_default` and `same` are
-    // identifiers elsewhere. A parenthesized condition without a query
+    // A query is parsed here only, so `has_default`, `same` and `holds_own`
+    // are identifiers elsewhere. A parenthesized condition without a query
     // parses as an ordinary parenthesized expression too; the dynamic
     // precedence keeps the condition's reading.
     _const_condition: $ => choice(
@@ -508,9 +522,10 @@ module.exports = grammar({
 
     _const_parenthesized_expression: $ => seq('(', $._const_condition, ')'),
 
-    // `has_default<A>` of a fields<T> accessor binding, `same<T1, T2>` of two types.
+    // `has_default<A>` of a fields<T> accessor binding, `same<T1, T2>` of two
+    // types, `holds_own<T>` of one.
     const_query: $ => seq(
-      field('name', alias(choice('has_default', 'same'), $.identifier)),
+      field('name', alias(choice('has_default', 'same', 'holds_own'), $.identifier)),
       '<',
       commaSep1($._type),
       '>',

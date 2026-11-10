@@ -51,8 +51,9 @@ struct Parser {
     // if/while/for/match/guard scrutinee position, so `if x {` is unambiguous.
     bool no_struct_lit = false;
 
-    // Inside a `const if` condition, where `has_default<` and `same<` begin
-    // queries (const_for.md §11.1); elsewhere those names are identifiers.
+    // Inside the condition of a `const if` or a `const assert`, where
+    // `has_default<`, `same<` and `holds_own<` begin queries (const_for.md
+    // §11.1); elsewhere those names are identifiers.
     bool constcond = false;
     struct CondScope {
         Parser &p;
@@ -1720,7 +1721,7 @@ struct Parser {
             case T_LBRACKET: return ParseArrayLit(line);
             case T_IDENT: case T_COLONCOLON: {
                 if (constcond && lex.tok == T_IDENT && lex.PeekTok() == T_LT &&
-                    (lex.attr == "has_default" || lex.attr == "same"))
+                    (lex.attr == "has_default" || lex.attr == "same" || lex.attr == "holds_own"))
                     return ParseConstQuery(line);
                 auto name = ParseQualifiedName("expression");
                 auto nameend = PrevEnd();
@@ -1895,16 +1896,21 @@ struct Parser {
     }
 
     // A query of a `const if` condition (const_for.md §11.3): `has_default<A>`
-    // of an accessor binding, or `same<T1, T2>` of two types. Not a call: the
-    // angle brackets hold what is known during specialization.
+    // of an accessor binding, `same<T1, T2>` of two types, or `holds_own<T>`
+    // of one. Not a call: the angle brackets hold what is known during
+    // specialization.
     Node *ParseConstQuery(Line line) {
-        auto kind = lex.attr == "same" ? Q_SAME : Q_HAS_DEFAULT;
+        auto kind = lex.attr == "same" ? Q_SAME
+                  : lex.attr == "holds_own" ? Q_HOLDS_OWN : Q_HAS_DEFAULT;
         lex.Next();
         auto q = New<ConstQuery>(line, kind, string_view {});
         Role(R_ANGLE_OPEN);
         Expect(T_LT, "const if query");
         if (kind == Q_HAS_DEFAULT) {
             q->name = ExpectIdent("has_default");
+        } else if (kind == Q_HOLDS_OWN) {
+            q->types.push_back(ParseType());
+            if (lex.tok == T_COMMA) Error("holds_own takes exactly one type");
         } else {
             q->types.push_back(ParseType());
             Expect(T_COMMA, "same, which takes two types");
@@ -1913,6 +1919,39 @@ struct Parser {
         }
         ExpectClosingAngle("const if query");
         return Finish(q);
+    }
+
+    // `const assert` begins a compile-time assertion, unless `assert` is the
+    // name of a constant the statement declares.
+    bool AtConstAssert() {
+        if (lex.tok != T_CONST || lex.PeekTok() != T_IDENT) return false;
+        Lexer ahead = lex;
+        ahead.Next();
+        if (ahead.attr != "assert") return false;
+        auto after = ahead.PeekTok();
+        return after != T_ASSIGN && after != T_COLON;
+    }
+
+    // `const assert c, "message";` (const_for.md §11.7): c is a condition as
+    // a `const if` takes one.
+    Node *ParseConstAssert() {
+        auto line = CurLine();
+        Expect(T_CONST, "const assert");
+        lex.Next();
+        Node *cond;
+        {
+            CondScope cs(*this);
+            cond = ParseExpr();
+        }
+        Expect(T_COMMA, "const assert, which takes a message after its condition");
+        if (lex.tok != T_STRLIT)
+            Error(cat("const assert takes a string literal as its message, found '", TokStr(),
+                      "'"));
+        auto msg = New<StrLit>(CurLine(), lex.sval, lex.smultiline);
+        lex.Next();
+        Finish(msg);
+        Expect(T_SEMI, "const assert");
+        return Finish(New<ConstAssert>(line, cond, msg));
     }
 
     // `const if c { ... } else const if d { ... } else { ... }`, each branch
@@ -2109,6 +2148,10 @@ struct Parser {
                 }
                 if (lex.tok == T_CONST && lex.PeekTok() == T_IF) {
                     b->stmts.push_back(ParseConstIf(false));
+                    return true;
+                }
+                if (AtConstAssert()) {
+                    b->stmts.push_back(ParseConstAssert());
                     return true;
                 }
                 auto vd = ParseVarDecl(false);

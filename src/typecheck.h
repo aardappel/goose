@@ -361,11 +361,14 @@ struct TypeCheck {
                             const char *what = "const for source");
     void ExpandConstFor(ConstFor *cf, const function<void(ExpansionClone &)> &emit);
     Block *ExpandStatements(ConstFor *cf);
+    // What the condition being evaluated is one of, for its errors.
+    const char *constcondition = "const if condition";
     bool ConstCondition(Node *n);
     bool ConstComparison(Binary *b);
     bool ConstQueryValue(ConstQuery *q);
     ConstIfBranch *SelectBranch(ConstIf *ci);
     Block *ExpandSelection(ConstIf *ci);
+    Block *ExpandAssertion(ConstAssert *ca);
     void ExpandInitializers(vector<FieldInit> &inits);
     void ExpandArms(vector<MatchArm> &arms);
     bool IsValuelessTail(const Node *n);

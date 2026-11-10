@@ -355,6 +355,10 @@ inline Node *ConstQuery::Clone1(Ast &ast) const {
     return q;
 }
 
+inline Node *ConstAssert::Clone1(Ast &ast) const {
+    return ast.New<ConstAssert>(line, cond->Clone(ast), (StrLit *)msg->Clone(ast));
+}
+
 inline Node *ConstIf::Clone1(Ast &ast) const {
     auto ci = ast.New<ConstIf>(line);
     ci->armfragments = armfragments;
@@ -469,6 +473,8 @@ inline void ConstFor::Children(const function<void(Node *)> &f) const {
 }
 
 inline void ConstQuery::Children(const function<void(Node *)> &) const {}
+
+inline void ConstAssert::Children(const function<void(Node *)> &f) const { f(cond); }
 
 inline void ConstIf::Children(const function<void(Node *)> &f) const {
     for (auto &br : branches) {

@@ -3,7 +3,7 @@
 Status: implemented. V1 supports the four sources below in statement lists,
 constructor initializer lists, and `match` arm lists. `const if`, which
 selects fragments in those same lists on compile-time predicates, is
-section 11.
+section 11, and `const assert`, which requires one, section 11.7.
 
 This design replaces a family of compiler-provided field visitors with one
 expansion construct inside ordinary Goose functions. The compiler supplies a
@@ -762,6 +762,14 @@ arguments, array sizes by their value, `const` qualification counts, and a
 reference type differs from its pointee. A variants binding `V` is a type, so
 `same<V, Shape.Dot>` selects a variant, as `N == "Dot"` does by name.
 
+**`holds_own<T>`** takes one type, resolved as `same`'s are and required to
+be concrete. It is `true` when a value of the type carries an obligation or
+has a part that does, in the sense of
+[ownership.md](ownership.md#10-implementation-status): an `own` type, a
+struct with an own field, an array of either. It is what a library needs to
+keep an operation that copies an element, or reuses its storage, away from
+elements that own something, and was added for the pools' plain operations.
+
 Queries are boolean constants, so they compose with the connectives and may
 even be compared with `==`, though there is no reason to.
 
@@ -967,7 +975,36 @@ Regression fixtures follow section 9's layout as `test/typing/const_if_*.goose`,
   can set a runtime flag the same way.
 * **The default's value.** Defaults may contain runtime work and are not
   executed during expansion (section 10); `T { .. }` is the way to the value.
-* **A compile-time assertion.** `const assert c;` with this condition
-  language is a natural sibling and a separate small addition.
 * **Top-level selection.** Conditional declarations need the separate design
   section 10 already requires for top-level `const for`.
+
+### 11.7 `const assert`
+
+```goose
+fn free<T>(pool: slot_pool<T>&, i: i64) {
+    const assert !holds_own<T>, "slot_pool.free: an element that holds own values is given up with release";
+    ...
+}
+```
+
+`const assert c, "message";` is a statement. Its condition is one section
+11.2 describes, queries included, evaluated in each specialization of the
+function it is written in. Where it is true the statement is nothing; where
+it is false the compile fails with the message, which is a string literal.
+The error is an ordinary one raised inside a specialization, so it carries
+the instantiation trace, and one in the standard library is reported at the
+user's call, as every error there is.
+
+It is the sibling section 11.6 anticipated, added when the pools needed it:
+a library function that must not be instantiated for some types had only
+ways to fail obscurely, deep in its body. A `const if` whose branch cannot
+compile says the same less clearly and with the wrong message.
+
+* It is a statement of a function body only, the one list a requirement on a
+  specialization belongs in.
+* `assert` is contextual after `const`. `const assert = 1;` and
+  `const assert: i64 = 1;` still declare a constant of that name.
+* The message is not optional: the condition language is too small for a
+  failed condition to explain itself.
+* A parsed-only node: the checker replaces it by an empty block, as it
+  replaces a `const if` by the branch chosen, so no later pass sees one.

@@ -1,7 +1,7 @@
 // First-fit runs with coalescing and stable backing storage. Freeing marks a
 // run reusable; existing views remain valid and can observe replacement values.
-// Elements must be fixed-size. alloc_slice/realloc_slice require defaults;
-// realloc_slice/alloc_copy require normally copyable values.
+// Elements must be fixed-size and hold no own values. alloc_slice/realloc_slice
+// require defaults; realloc_slice/alloc_copy require normally copyable values.
 // Treat nodes/tree as bookkeeping and do not shrink or replace items directly.
 
 import slice_pool_internal;
@@ -37,6 +37,7 @@ fn slice_pool_detail::finish<T>(p: slice_pool<T>&, idx: i64, n: i64, old_idx: i6
 }
 
 inline fn alloc_slice<T>(p: slice_pool<T>&, n: i64) -> T[:] {
+    const assert !holds_own<T>, "slice_pool.alloc_slice: a run of elements that hold own values is not supported: keep them in a slot_pool, one handle each";
     let count = p.items.check_length(n, "slice_pool.alloc_slice: invalid slice length");
     let idx = if count == 0 || p.nodes.len == 0 { p.items.len } else { slice_pool_detail::place(p.nodes, p.tree, p.items.len, count) };
     if idx < 0 || idx > p.items.len { abort("slice_pool.alloc_slice: span tree is corrupt"); }
@@ -45,12 +46,14 @@ inline fn alloc_slice<T>(p: slice_pool<T>&, n: i64) -> T[:] {
     return p.items[idx..end];
 }
 fn free_slice<T>(p: slice_pool<T>&, s: T[:]) {
+    const assert !holds_own<T>, "slice_pool.free_slice: a run of elements that hold own values is not supported: keep them in a slot_pool, one handle each";
     let idx = p.items.range_index(s, "slice_pool.free_slice: slice is not from this pool");
     slice_pool_detail::release_run(p.nodes, p.tree, idx, s.len);
 }
 
 // Initialize directly from source values, including overlapping views of items.
 inline fn alloc_copy<T>(p: slice_pool<T>&, src: T[:]) -> T[:] {
+    const assert !holds_own<T>, "slice_pool.alloc_copy: a run of elements that hold own values is not supported: keep them in a slot_pool, one handle each";
     let count = p.items.check_length(src.len, "slice_pool.alloc_copy: invalid slice length");
     let idx = if count == 0 || p.nodes.len == 0 { p.items.len } else { slice_pool_detail::place(p.nodes, p.tree, p.items.len, count) };
     if idx < 0 || idx > p.items.len { abort("slice_pool.alloc_copy: span tree is corrupt"); }
@@ -63,6 +66,7 @@ inline fn alloc_copy<T>(p: slice_pool<T>&, src: T[:]) -> T[:] {
     return p.items[idx..end];
 }
 fn realloc_slice<T>(p: slice_pool<T>&, s: T[:], n: i64) -> T[:] {
+    const assert !holds_own<T>, "slice_pool.realloc_slice: a run of elements that hold own values is not supported: keep them in a slot_pool, one handle each";
     let count = p.items.check_length(n, "slice_pool.realloc_slice: invalid slice length");
     let idx = p.items.range_index(s, "slice_pool.realloc_slice: slice is not from this pool");
     if count <= s.len {
@@ -98,6 +102,7 @@ trusted fn resize<T>(p: slice_pool<T>&, s: own T[:], n: i64) -> own T[:] {
 
 // Retain values and backing storage; every element belongs to one free run.
 fn recycle_all<T>(p: slice_pool<T>&) {
+    const assert !holds_own<T>, "slice_pool.recycle_all: a run of elements that hold own values is not supported: keep them in a slot_pool, one handle each";
     if p.nodes.len == 0 && p.items.len == 0 { return; }
     while p.nodes.len < 2 { p.nodes.push(slice_pool_detail::node { .. }); }
     p.tree = slice_pool_detail::tree { root: 1, height: 0, chain: 0 };

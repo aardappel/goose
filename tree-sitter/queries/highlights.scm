@@ -65,6 +65,8 @@
 
 ; The queries of a const if condition, keywords there only.
 (const_query name: (identifier) @keyword)
+; `assert` after `const`: elsewhere it is the builtin's name.
+(const_assert_statement "assert" @keyword)
 
 [
   "fn"

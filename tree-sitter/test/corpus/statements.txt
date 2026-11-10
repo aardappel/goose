@@ -266,6 +266,46 @@ fn f() {
           (int_literal))))))
 
 ========================================
+Const assert
+========================================
+
+fn f() {
+    const assert !holds_own<T> && same<T, i64>, "f takes a plain i64";
+    const assert = 1;
+    assert(true);
+}
+
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (const_assert_statement
+        (binary_expression
+          (unary_expression
+            (const_query
+              (identifier)
+              (named_type
+                (identifier))))
+          (const_query
+            (identifier)
+            (named_type
+              (identifier))
+            (primitive_type)))
+        (string_literal
+          (string_content)))
+      (variable_declaration
+        (identifier)
+        (int_literal))
+      (expression_statement
+        (call_expression
+          (identifier)
+          (argument_list
+            (boolean_literal)))))))
+
+========================================
 Loops and jumps
 ========================================
 

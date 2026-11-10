@@ -14,6 +14,9 @@ inline void ConstFor::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: unexpanded 
 inline string ConstIf::CgX(CodeGen &cg) { cg.Fail(line, "internal: unexpanded const if"); }
 inline void ConstIf::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: unexpanded const if"); }
 inline void ConstIf::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: unexpanded const if"); }
+inline string ConstAssert::CgX(CodeGen &cg) { cg.Fail(line, "internal: unexpanded const assert"); }
+inline void ConstAssert::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: unexpanded const assert"); }
+inline void ConstAssert::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: unexpanded const assert"); }
 inline string ConstQuery::CgX(CodeGen &cg) { cg.Fail(line, "internal: unexpanded const if query"); }
 inline void ConstQuery::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: unexpanded const if query"); }
 inline void ConstQuery::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: unexpanded const if query"); }

@@ -843,6 +843,7 @@ enum NodeKind : uint8_t {
     NK_ConstFor,
     NK_ConstIf,
     NK_ConstQuery,
+    NK_ConstAssert,
     NK_Return,
     NK_Break,
     NK_Continue,
@@ -1382,15 +1383,15 @@ NODE(ConstFor)
     ConstFor(Line l) : Node(l, NKind) {}
 NODE_END
 
-// A compile-time query, valid in a `const if` condition only (const_for.md
-// §11.3): `has_default<A>` of a fields<T> accessor binding, or `same<T1, T2>`
-// of two types.
-enum QueryKind { Q_HAS_DEFAULT, Q_SAME };
+// A compile-time query, valid in the condition of a `const if` or a
+// `const assert` only (const_for.md §11.3): `has_default<A>` of a fields<T>
+// accessor binding, `same<T1, T2>` of two types, or `holds_own<T>` of one.
+enum QueryKind { Q_HAS_DEFAULT, Q_SAME, Q_HOLDS_OWN };
 
 NODE(ConstQuery)
     QueryKind query;
     string_view name;               // has_default: the accessor binding, as written.
-    vector<TypeExpr *> types;       // same: the two types.
+    vector<TypeExpr *> types;       // same: the two types. holds_own: the one.
     // Filled by cloning under an expansion, as a Dot's accessor is: the
     // field the binding stands for, in its owning struct or variant type.
     TypeExpr *owner = nullptr;
@@ -1412,6 +1413,16 @@ NODE(ConstIf)
     vector<ConstIfBranch> branches;
     bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
     ConstIf(Line l) : Node(l, NKind) {}
+NODE_END
+
+// `const assert c, "message";` (const_for.md §11.7): a statement whose
+// condition, of the kind a `const if` takes, holds in every specialization of
+// the function it is written in; where it does not, the compile fails there
+// with the message.
+NODE(ConstAssert)
+    Node *cond;
+    StrLit *msg;
+    ConstAssert(Line l, Node *_cond, StrLit *_msg) : Node(l, NKind), cond(_cond), msg(_msg) {}
 NODE_END
 
 NODE(Return)

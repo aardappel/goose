@@ -172,7 +172,7 @@ static bool CompareResult(TType op, int cmp) {
 // (ConstIntValue's binary case); an integer beside a float converts (§6.3);
 // booleans and strings take `==` and `!=` only.
 inline bool TypeCheck::ConstComparison(Binary *b) {
-    auto what = "const if condition";
+    auto what = constcondition;
     ConstNames(b->left, what);
     ConstNames(b->right, what);
     Val l, r;
@@ -229,16 +229,21 @@ inline bool TypeCheck::ConstQueryValue(ConstQuery *q) {
         for (auto &f : fields) if (f.name == q->field) return f.defaultval != nullptr;
         Error(q, cat("internal: has_default of unknown field ", q->field));
     }
+    auto what = q->query == Q_SAME ? "same" : "holds_own";
     TypeExpr *ts[2];
-    for (size_t i = 0; i < 2; i++) {
+    for (size_t i = 0; i < q->types.size(); i++) {
         auto raw = q->types[i];
         ConstNamesIn(raw);
         auto t = Subst(raw);
         // Validation reports an unknown name before it could pass as a generic.
         if (t->kind != TY_FN) ValidateType(t, q->line, VT_POINTEE);
-        if (HasGenerics(t)) Error(q, cat("same requires concrete types, got ", TypeStr(t)));
+        if (HasGenerics(t)) Error(q, cat(what, " requires concrete types, got ", TypeStr(t)));
         ts[i] = t;
     }
+    // Whether a value of the type carries an obligation, or has a part that
+    // does (docs/design/ownership.md 4.1): what a copy of it, or storage
+    // reused under it, would lose track of.
+    if (q->query == Q_HOLDS_OWN) return ts[0]->kind != TY_FN && HoldsOwn(ts[0]);
     return TypeEq(ts[0], ts[1]);
 }
 
@@ -262,7 +267,7 @@ inline bool TypeCheck::ConstCondition(Node *n) {
             default: break;
         }
     }
-    auto what = "const if condition";
+    auto what = constcondition;
     if (Is<Ident>(n) || Is<IntLit>(n) || Is<FltLit>(n) || Is<StrLit>(n) || Is<Unary>(n) ||
         Is<Binary>(n)) {
         ConstNames(n, what);
@@ -290,6 +295,18 @@ inline Block *TypeCheck::ExpandSelection(ConstIf *ci) {
     out->origin = ci->Origin();
     out->expansiontrace = ci->expansiontrace;
     if (auto br = SelectBranch(ci)) out->stmts.push_back(br->body);
+    return out;
+}
+
+// A `const assert` in this specialization (const_for.md §11.7): nothing,
+// where its condition holds, and the error its message words where it does
+// not, which the instantiation trace takes to the call that made it so.
+inline Block *TypeCheck::ExpandAssertion(ConstAssert *ca) {
+    Saved<const char *> what(constcondition, "const assert condition");
+    if (!ConstCondition(ca->cond)) Error(ca, ca->msg->val);
+    auto out = ast.New<Block>(ca->line);
+    out->origin = ca->Origin();
+    out->expansiontrace = ca->expansiontrace;
     return out;
 }
 
