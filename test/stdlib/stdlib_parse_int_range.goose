@@ -24,4 +24,11 @@ fn main() {
     show("-0");                                        // 0 true
     show("-");                                         // 0 false
     show("12x");                                       // 0 false
+    show("10", 0);                                     // 0 false
+    show("10", 1);                                     // 0 false
+    show("10", -1);                                    // 0 false
+    show("10", 37);                                    // 0 false
+    show("10", 64);                                    // 0 false
+    show("ff", 36);                                    // 555 true
+    show("ff", 37);                                    // 0 false
 }

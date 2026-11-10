@@ -1116,8 +1116,9 @@ fn make_heap<A, F>(xs: A&) {
 // appended to `out`, any u8 array that grows (u8[>..], or a limited u8[..k]).
 // Base ten is the builtin text of the integer, the runtime's digit loop
 // writing straight into `out`; other bases divide by the `base` parameter,
-// a real division per digit.
+// a real division per digit. A base outside 2..36 is a contract violation.
 fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8) {
+    if base < 2 || base > 36 { abort("format_uint: base out of range"); }
     if base == 10 {
         if width > 1 {
             var n = 1;
@@ -1155,8 +1156,10 @@ fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8) {
 }
 
 // The sign goes in front of any padding: -0042. The magnitude is taken in
-// unsigned arithmetic, which holds i64.min's.
+// unsigned arithmetic, which holds i64.min's. A base outside 2..36 is a
+// contract violation.
 fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8) {
+    if base < 2 || base > 36 { abort("format_int: base out of range"); }
     if v < 0 {
         out.push('-');
         format_uint(out, 0 - v as! u64, base, width - 1, padc);
@@ -1340,8 +1343,10 @@ fn parse_digit(c: u8, base: i64) -> i64 {
     return d;
 }
 
-// An optionally signed whole-string integer; false on anything else, including a value outside i64.
+// An optionally signed whole-string integer; false on anything else,
+// including a value outside i64 or a base outside 2..36.
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
+    if base < 2 || base > 36 { return 0, false; }
     var i = 0;
     var neg = false;
     if s.len > 0 && (s[0] == '-' || s[0] == '+') {
@@ -1370,13 +1375,12 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
 }
 
 // A whole-string integer with an optional '+'; false on anything else,
-// including '-' and a value outside u64.
+// including '-' or a value outside u64, or a base outside 2..36.
 fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool {
+    if base < 2 || base > 36 { return 0, false; }
     var i = 0;
     if s.len > 0 && s[0] == '+' { i = 1; }
     if i >= s.len { return 0, false; }
-    // `base` converts only once a digit is below it, so a base below 1
-    // fails as parse_int's does rather than converting out of range.
     let max: u64 = 18446744073709551615;
     var v: u64 = 0;
     while i < s.len {
