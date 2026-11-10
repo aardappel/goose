@@ -202,11 +202,6 @@ inline void TypeCheck::ConsumeVar(VarDef *vd, Node *at) {
     switch (o.state) {
         case OS_HELD: case OS_EMPTY: break;
         case OS_CONSUMED:
-            // The same node, checked again (a call's argument, ResolveCall).
-            if (o.at == at) {
-                moved();
-                return;
-            }
             Error(at, cat(vd->name, " was consumed", OwnWhere(o.at), " already: an own value is "
                           "consumed once"));
         case OS_CLAIMED:

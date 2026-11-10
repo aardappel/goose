@@ -380,12 +380,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         auto rt = rv.type;
         if (IsPlainRef(rt)) rt = rt->ref->sub;
         if (d.args[0] == 'e') {
-            auto av = DecayRef(CheckV(args[1], nullptr));
+            auto av = DecayRef(Probe(args[1]));
             // The element's own type is what completes the array (JudgeCastAt).
             JudgeCastAt(args[1], nullptr, av);
             CompletePending(rt, PendingElemFrom(av, args[1]), c->line);
         } else if (d.args[0] == 'a') {
-            auto av = DecayRef(CheckV(args[1], nullptr));
+            auto av = DecayRef(Probe(args[1]));
             CompletePending(rt, PendingElemFromSeq(av, c), c->line);
         } else if (d.kind == B_FORMAT) {
             CompletePending(rt, ast.inttypes[IS_U8], c->line);

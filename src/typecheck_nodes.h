@@ -451,9 +451,15 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     tc.ForgetCastAlt(this);
     if (op == T_DOTEQ || op == T_DOTNEQ) return tc.CheckRefIdentity(this);
     if (op == T_ANDAND || op == T_OROR) return tc.CheckLogical(this);
+    // An == of an array and a slice checks its operands again, as slices
+    // (CheckBinaryResult): from here, where they may do anything to the flow.
+    TypeCheck::FlowMark entry;
+    auto marked = (op == T_EQ || op == T_NEQ) &&
+                  (TypeCheck::MayAffectFlow(left) || TypeCheck::MayAffectFlow(right));
+    if (marked) entry = tc.MarkFlow();
     auto lv = tc.Operand(left);
     auto rv = tc.Operand(right);
-    return tc.CheckBinaryResult(this, lv, rv);
+    return tc.CheckBinaryResult(this, lv, rv, marked ? &entry : nullptr);
 }
 
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {

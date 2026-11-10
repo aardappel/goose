@@ -1917,7 +1917,7 @@ inline Val TypeCheck::CheckLogical(Binary *b) {
     return v;
 }
 
-inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
+inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv, const FlowMark *entry) {
     NoUntypedEmptyArray(lv, b->left, TName(b->op));
     NoUntypedEmptyArray(rv, b->right, TName(b->op));
     auto lt = LoadType(lv.type), rt = LoadType(rv.type);
@@ -1960,15 +1960,19 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
             };
             if (!TypeEq(lt, rt) && elemof(lt) && elemof(rt) &&
                 TypeEq(elemof(lt), elemof(rt))) {
-                if (lt->kind != TY_SLICE) {
-                    b->left = WholeSlice(b->left);
-                    lv = Operand(b->left);
-                    lt = LoadType(lv.type);
-                }
+                auto wrapleft = lt->kind != TY_SLICE;
+                if (wrapleft) b->left = WholeSlice(b->left);
                 if (rt->kind != TY_SLICE) b->right = WholeSlice(b->right);
                 // The adaptation can turn a copied fixed-array operand into
                 // a retained view. Recheck the RHS with that view live, as
-                // call arguments are rechecked after parameter adaptation.
+                // call arguments are rechecked after parameter adaptation:
+                // both operands from where the first began, where either
+                // may have done anything to the flow (Binary::Check).
+                if (entry) RewindFlow(*entry);
+                if (wrapleft || entry) {
+                    lv = Operand(b->left);
+                    lt = LoadType(lv.type);
+                }
                 rv = Operand(b->right);
                 rt = LoadType(rv.type);
             }

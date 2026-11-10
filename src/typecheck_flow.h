@@ -968,6 +968,15 @@ inline void TypeCheck::RestoreFlow(const FlowState &f) {
     cur.kills = f.kills;
 }
 
+inline TypeCheck::FlowMark TypeCheck::MarkFlow() {
+    return { SaveFlow(), cur.ownfresh.size() };
+}
+
+inline void TypeCheck::RewindFlow(const FlowMark &m) {
+    RestoreFlow(m.flow);
+    if (cur.ownfresh.size() > m.fresh) cur.ownfresh.resize(m.fresh);
+}
+
 inline TypeCheck::FlowState TypeCheck::JoinFlow(const FlowState &a, const FlowState &b) {
     auto narrow = [&](TypeExpr *an, TypeExpr *bn) {
         return !a.reachable ? bn : !b.reachable ? an : an && bn ? an : nullptr;
@@ -3001,7 +3010,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     }
     if (IsPendingArray(target)) {
         // `var x = []; x = other;` completes x from the assigned array.
-        auto av = DecayRef(CheckV(a->rhs, nullptr));
+        auto av = DecayRef(Probe(a->rhs));
         CompletePending(target, PendingElemFromSeq(av, a), a->line);
     }
     // An uninitialized local's first assignment constructs it; every other

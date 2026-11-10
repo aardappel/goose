@@ -1516,6 +1516,66 @@ struct TypeCheck {
 
     FlowState SaveFlow();
     void RestoreFlow(const FlowState &f);
+    // Where the check of a node begins: the flow there, and how many own
+    // values nothing had taken yet (BodyState::ownfresh). A node checked more
+    // than once -- a call's arguments, for their types and then against
+    // their parameters -- is checked from where it began each time
+    // (RewindFlow), so that what its checks do to the flow is done once:
+    // assigning a `let` and consuming an own value are not things a second
+    // check can do again. What a check learns that is no flow -- types,
+    // roots, the growths logged -- stays.
+    struct FlowMark {
+        FlowState flow;
+        size_t fresh = 0;
+    };
+    FlowMark MarkFlow();
+    void RewindFlow(const FlowMark &m);
+    // Checks a node again whose first check began at `pre`, leaving the flow
+    // as it is now: what the node does to it, its first check did.
+    template<typename F> void Recheck(const FlowMark &pre, F check) {
+        auto after = SaveFlow();
+        auto &f = cur.ownfresh;
+        vector<Node *> since(f.begin() + (ptrdiff_t)std::min(pre.fresh, f.size()), f.end());
+        RewindFlow(pre);
+        check();
+        RestoreFlow(after);
+        f.resize(std::min(pre.fresh, f.size()));
+        f.insert(f.end(), since.begin(), since.end());
+    }
+    // Checks n only to learn what it is, ahead of the check that takes its
+    // value, which finds the flow as it is here.
+    Val Probe(Node *n) {
+        auto pre = MarkFlow();
+        auto v = CheckV(n, nullptr);
+        RewindFlow(pre);
+        return v;
+    }
+    // Whether checking n may do anything to the flow: an expression of
+    // names, literals, fields, elements and operators does nothing to it,
+    // and anything else -- a call, a control construct, a literal that may
+    // take an own value over -- may.
+    static bool MayAffectFlow(const Node *n) {
+        if (!n) return false;
+        switch (n->nkind) {
+            case NK_IntLit: case NK_FltLit: case NK_BoolLit: case NK_StrLit: case NK_NullLit:
+            case NK_Ident: case NK_SelfRef:
+                return false;
+            case NK_Unary: return MayAffectFlow(((const Unary *)n)->child);
+            case NK_AsCast: return MayAffectFlow(((const AsCast *)n)->child);
+            case NK_Dot: return MayAffectFlow(((const Dot *)n)->obj);
+            case NK_Binary:
+                return MayAffectFlow(((const Binary *)n)->left) ||
+                       MayAffectFlow(((const Binary *)n)->right);
+            case NK_Index:
+                return MayAffectFlow(((const Index *)n)->obj) ||
+                       MayAffectFlow(((const Index *)n)->idx);
+            case NK_SliceExpr: {
+                auto s = (const SliceExpr *)n;
+                return MayAffectFlow(s->obj) || MayAffectFlow(s->lo) || MayAffectFlow(s->hi);
+            }
+            default: return true;
+        }
+    }
     // The frames whose variables code in frame fi can name, ascending: it,
     // the ones it is lexically nested in, the global initializers', and
     // those the function values bound in `spec`, or in the specialization
@@ -2029,10 +2089,20 @@ struct TypeCheck {
     // Whether a construct with destination type `dest` makes its value a
     // copy of the branch taken (CheckBranchCopy): where it has none.
     static bool CopiesBranch(TypeExpr *dest) { return !dest || dest->kind == TY_VOID; }
+    // Where the check of each control construct among a call's arguments
+    // began, by its position: such an argument may be checked once more
+    // ahead of phase 2 (BindBranchByRef).
+    using ArgMarks = vector<pair<size_t, FlowMark>>;
+    static const FlowMark *MarkOf(const ArgMarks &marks, size_t i) {
+        for (auto &m : marks) if (m.first == i) return &m.second;
+        return nullptr;
+    }
     void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
-                           const vector<TypeExpr *> &paramtypes, SFunction *sf, int skip = -1,
+                           const vector<TypeExpr *> &paramtypes, SFunction *sf,
+                           const ArgMarks &premarks, int skip = -1,
                            size_t end = SIZE_MAX);
-    void BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr *declared);
+    void BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr *declared,
+                         const FlowMark *pre);
     Val CheckInferredResult(Node *&n, FnSpec *tspec);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
@@ -2091,7 +2161,7 @@ struct TypeCheck {
     void RetypeVal(Val &v, TypeExpr *ct);
     Val CheckRefIdentity(Binary *b);
     Val CheckLogical(Binary *b);
-    Val CheckBinaryResult(Binary *b, Val &lv, Val &rv);
+    Val CheckBinaryResult(Binary *b, Val &lv, Val &rv, const FlowMark *entry);
     Val NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bool trial);
     void DecidedComparison(Binary *b, const Val &lv, const Val &rv, TypeExpr *lt, TypeExpr *rt);
     Val NumericUnary(Unary *u, const Val &v, bool trial);
@@ -2300,7 +2370,7 @@ struct TypeCheck {
     FnValBind LocalFnValue(const vector<SFunction *> &fns, FnSpec *env);
     Val CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected);
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name, Val *preval,
-                    Node *&prenode, bool entryreach, bool *nomatch = nullptr,
+                    Node *&prenode, const FlowMark &entry, bool *nomatch = nullptr,
                     TypeExpr *expected = nullptr);
     void MatchCandidates(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Val> &argvals,
                          vector<MatchInfo> &tied, vector<MatchInfo> &converting, string *failures,
@@ -2310,7 +2380,7 @@ struct TypeCheck {
                         vector<Val> &argvals, const function<bool(vector<Val> &)> &resolves);
     void RecheckArgs(Call *c, vector<SFunction *> &cands, MatchInfo &mi, FnSpec *denv,
                      vector<Node *> &argnodes, int skip, const function<void()> &atskip,
-                     bool entryreach);
+                     const FlowMark &entry);
     // A call checked as an operand of a call that is `discovering` is checked
     // again, in full, in that call's phase 2, so its own phase 2 waits for
     // that check: run at every level of a nesting, it would double the
@@ -2322,7 +2392,8 @@ struct TypeCheck {
         auto &p = cur.nodepath;
         return c != nowait && p.size() > 1 && p.back().node == c && p[p.size() - 2].discovering;
     }
-    void CheckWaitingArg(Call *c, Node *a, bool entryreach);
+    void CheckWaitingArg(Call *c, Node *a, const FlowMark *pre, bool rewound = false);
+    void TakeArgsAsChecked(Call *c, vector<Node *> &argnodes, const FlowMark &entry);
     void CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach);
     // `defaults`: the call may leave out parameters that have a default
     // (§7.1), which ResolveCall then passes. Tag dispatch and rendering
@@ -2350,7 +2421,8 @@ struct TypeCheck {
     bool BindTypes(TypeExpr *pt, TypeExpr *at, vector<pair<string_view, TypeExpr *>> &b);
     TypeExpr *SubstOwn(TypeExpr *pt, vector<pair<string_view, TypeExpr *>> &b);
     Val TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Node *> &argnodes,
-                    vector<Val> &argvals, string_view name, bool entryreach);
+                    vector<Val> &argvals, string_view name, const FlowMark &entry,
+                    const ArgMarks &premarks);
 
     // ------------------------------------------------------------------
     // Specialization: find or create the FnSpec for a resolved call and
@@ -2530,8 +2602,8 @@ struct TypeCheck {
     void CallMayPropagate(Node *at, FnSpec *spec, string_view name);
     Val CheckTake(Call *c, vector<Node *> &args);
     Val CheckReplace(Call *c, vector<Node *> &args);
-    // A check that is made again discards what it did to the obligations
-    // (ResolveCall's first look at its arguments): the state to return to.
+    // The obligations as they are, to tell what a `defer` body consumed
+    // (CheckDefer) and take them back to.
     struct OwnSnapshot {
         vector<pair<VarDef *, OwnFlow>> vars;
         size_t fresh = 0;
