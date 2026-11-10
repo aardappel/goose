@@ -29,6 +29,7 @@
 - [8. Recommendation and order](#8-recommendation-and-order)
 - [9. Open questions](#9-open-questions)
 - [10. Implementation status](#10-implementation-status)
+  - [10.1 What is left open](#101-what-is-left-open)
 - [References](#references)
 
 </details>
@@ -952,7 +953,8 @@ both pools, owned relative links, and a sample
 built are in [reference §14](../reference.md#owning-handles) and
 [spec §5.5](../goose_spec.md#55-owning-handles-experimental). Not built: the
 affine form (4.5), release as a shrink (4.8), `clear_all`, `handle_of`, and
-all of section 5.
+all of section 5. What the build leaves open, and in which order to take it
+up, is [10.1](#101-what-is-left-open).
 
 Where the implementation departs from sections 4 and 6:
 
@@ -1017,10 +1019,55 @@ Where the implementation departs from sections 4 and 6:
   the same pool cannot shrink (§5.1), so it cannot be a local.
 * **Runs of `own`-holding elements are rejected**, where a trusted fn would
   end one: nothing in the text could say each element was emptied.
-* **Size.** About 1,600 lines of C++ (700 of them the new
-  `typecheck_own.h`), 70 lines of Goose in the two pools, and 80 error
+* **Arguments are checked from where the call began.** Consuming was the
+  first effect on the flow that a second check of an argument could not
+  repeat unnoticed, and call resolution checks arguments twice. A `let`
+  assigned in a block was the other, and had been rejecting valid programs:
+  `print(id(once() { x = 1; }))`. Every check that is made again now starts
+  from the flow its first began in, and a call's body is checked after its
+  arguments, so whatever linear state coroutines add needs no care of its
+  own there.
+* **Size.** About 1,850 lines of C++ (720 of them the new
+  `typecheck_own.h`), 90 lines of Goose in the two pools, and 90 error
   fixtures, against section 6's "the largest new piece: `defer`'s flow work
   was 196 lines".
+
+### 10.1 What is left open
+
+In the order they should be taken up:
+
+* **The pool's bookkeeping is open to every function.** The owning
+  operations, and the `const assert` on the plain ones, leave one way to
+  free a slot that nobody released: `items` and `free_slots` are ordinary
+  fields, and `pool.free_slots.push(0)` compiles anywhere. As built, the
+  guarantee is "exactly once, unless code outside the pool writes its
+  fields", which is not a sentence a checker should need. It is the price of
+  pools having moved from the compiler (`reusable`) into a library, and
+  closing it takes something the language has done without so far: a way to
+  say that a struct's fields are written only by the functions declared
+  with it, or only by `trusted` ones. Reads can stay open, which is all that
+  `in pool.items` types, `index_of` and the samples' `items.len` need. A
+  coroutine frame will ask for the same thing, so this is the first piece
+  of a second version rather than a refinement of this one.
+* **A handle stored as a pointer is checked as the program runs.** An
+  `own T?` field has no pool in its type, so `release` of a handle read out
+  of one compares it against the pool (a subtraction, a remainder and a
+  compare, in the specializations that need it and no others) and aborts on
+  a handle of another pool. A relative link has neither the check nor the
+  abort, since its type names the pool. The check stays, as the cost of
+  something that did not exist before. Should it show in a benchmark, or the
+  abort surprise, the thing to design is a pointer with the link's static
+  identity: `T& in pool.items`, eight bytes and no base to add, which the
+  checker ties to an array as it ties a relative link.
+* **Locals.** A global pool does three things a local one cannot. A type
+  cannot name a local pool, so its stored handles are pointers, checked as
+  the program runs. Its scope exit knows the array and not the pool, so it
+  ends by `release_all` even where every slot was released. And a pool
+  whose elements own slots of the same pool cannot shrink (§5.1), so it
+  cannot be a local at all. The first is the root of the three and has
+  nothing to do with `own`. Global pools are enough for the experience this
+  branch is for; what locals need is to be worked out before the feature
+  leaves it.
 
 ## References
 
