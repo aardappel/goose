@@ -126,6 +126,25 @@ fn main() {
     let wf9 = wrap_angle(waf[4]);
     let wf8 = wrap_angle(waf[5]);
     print(wf9 >= -pif && wf9 < pif, " ", wf8 >= -pif && wf8 < pif);   // true true
+    // A small negative angle comes back unchanged, and a turn either side of
+    // PI lands in range.
+    var wn: f64[>..] = [-1e-20, -1.0, -3.0, PI + TAU, -PI - TAU];
+    let n0 = wrap_angle(wn[0]);
+    let n1 = wrap_angle(wn[1]);
+    let n2 = wrap_angle(wn[2]);
+    let np = wrap_angle(wn[3]);
+    let nm = wrap_angle(wn[4]);
+    print(n0 == wn[0], " ", n1 == wn[1], " ", n2 == wn[2], " ", np >= -PI && np < PI, " ",
+          nm >= -PI && nm < PI);   // true true true true true
+    var wnf: f32[>..] = [-0.001, -1.0, -3.0, PI + TAU, -PI - TAU, -0.0];
+    let nf0 = wrap_angle(wnf[0]);
+    let nf1 = wrap_angle(wnf[1]);
+    let nf2 = wrap_angle(wnf[2]);
+    let nfp = wrap_angle(wnf[3]);
+    let nfm = wrap_angle(wnf[4]);
+    let onef: f32 = 1.0;
+    print(nf0 == wnf[0], " ", nf1 == wnf[1], " ", nf2 == wnf[2], " ", nfp >= -pif && nfp < pif,
+          " ", nfm >= -pif && nfm < pif, " ", copysign(onef, wrap_angle(wnf[5])) == -onef);   // true true true true true true
     // Every wrapped value lies in [-PI, PI), at both widths.
     var ok = true;
     for i in 0..2000 {
