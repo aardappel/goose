@@ -131,6 +131,17 @@ Literals:
 * Float: with `.` and/or a decimal exponent (`1.5`, `2.5e-3`); C99-style hex
   floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
   fraction only when a digit follows, so `1..2` lexes as a range.
+* Numeric separators: integer and float literals may contain underscores
+  (`_`) between digits for readability, including in integer, fractional,
+  and exponent parts. This also applies to hexadecimal literals and
+  hexadecimal floats with binary exponents. Each underscore must appear
+  between two digits of the same digit sequence. Leading, trailing, and
+  consecutive underscores are invalid, as are separators adjacent to a
+  radix prefix, decimal point, exponent marker, or exponent sign.
+  Examples: `1_000_000`, `0xFF_AA`, `3.141_592`, `1e1_0`, and
+  `0x1.8p1_0` are valid; `1__0`, `1_`, `0x_1`, and `1e_1` are invalid.
+  Underscores do not affect the numeric value, and `goose format`
+  preserves them.
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
 * Raw string `"""..."""`: no escapes, and the next `"""` ends it. On one
   line, its text is what lies between the delimiters (`"""a "quoted"
