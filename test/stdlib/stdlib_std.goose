@@ -344,6 +344,13 @@ fn lengths() {
     var lim: i64[..4] = [1];
     push_n(lim, 2, 2);
     print(lim.len, lim[2]);                                                    // 32
+    var ins: i64[>..<] = [];
+    insert_at(ins, 0, 10);
+    insert_at(ins, 1, 30);
+    insert_at(ins, 1, 20);
+    insert_at(ins, 0, 5);
+    insert_at(ins, ins.len, 40);
+    print(ins[0], ins[1], ins[2], ins[3], ins[4], " ", ins.len);
 }
 
 fn strings() {
