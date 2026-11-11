@@ -23,6 +23,20 @@
 // about the growth says it (§1.3(4)) -- "push into" for push -- or "" where
 // it grows none. That array is the receiver, or under BF_OUTARG the `out`
 // array a call may pass as its second argument.
+//
+// Display help: each entry also carries `sig`, `ret`, `ty` and `doc`, the
+// language server's hover, signature help and completion text. `sig` is the
+// ident-call spelling, receiver first for members; dot forms strip the
+// first parameter mechanically, so a separate dot signature is never
+// authored. Display types are `i64` (any int), `bool`, `T`
+// (element/value), `T&`, `T[:]`, `u8[:]`, `const u8[:]`, `u8[>..]`,
+// `T[>..]`, `T[>..<]` and `T[]`; a bare name (`a`, `out`, `dst`, `src`,
+// `x`, `v`, `c`, `worker`, `path`, `msg` for a growable u8 array) where no
+// single type fits. `…` means zero or more further arguments of the previous
+// shape, `= ...` that the argument may be omitted. One signature per
+// builtin: the fullest form, shorter forms documented in `doc`; `ret` is
+// the fullest form's returns. No `sig` parameter type contains a comma, so
+// top-level comma splitting is exact by construction.
 #pragma once
 
 namespace goose {
@@ -67,52 +81,52 @@ inline int RecvKindOf(TypeExpr *t) {
     return 0;
 }
 
-//        enum            name                min max  args  rets recv            grows          flags
+//        enum            name                min max  args  rets recv            grows          flags                                     sig                                        ret             ty          doc
 #define BUILTINS \
-    F(B_PRINT,            "print",            0, 99,   "",   "",  0,              "",            0) \
-    F(B_STR,              "str",              0, 99,   "",   "",  0,              "",            0) \
-    F(B_FORMAT,           "format",           1, 99,   "",   "",  BR_GROWABLE,    "format into", BF_MEMBER | BF_WRITE) \
-    F(B_ASSERT,           "assert",           1,  1,   "",   "",  0,              "",            0) \
-    F(B_ABORT,            "abort",            1,  1,   "",   "",  0,              "",            0) \
-    F(B_EXIT,             "exit",             1,  1,   "",   "",  0,              "",            0) \
-    F(B_HARDWARE_THREADS, "hardware_threads", 0,  0,   "",   "i", 0,              "",            0) \
-    F(B_THREAD_SPAWN,     "thread_spawn",     1, 99,   "",   "i", 0,              "",            0) \
-    F(B_THREAD_SPAWN_CONTAINED, "thread_spawn_contained", 1, 99, "", "i", 0,       "",            0) \
-    F(B_THREAD_WAIT,      "thread_wait",      1,  2,   "",   "",  0,              "append to",   BF_OUTARG) \
-    F(B_QPUT,             "qput",             1,  1,   "",   "",  0,              "",            0) \
-    F(B_QGET,             "qget",             0,  1,   "",   "",  0,              "",            BF_TYARGS) \
-    F(B_QPOLL,            "qpoll",            0,  0,   "",   "",  0,              "",            BF_TYARGS) \
-    F(B_QLIMIT,           "qlimit",           1,  1,   "",   "",  0,              "",            BF_TYARGS) \
-    F(B_DEFAULT,          "default",          0,  0,   "",   "",  0,              "",            BF_TYARGS) \
-    F(B_COPY,             "copy",             1,  1,   "",   "",  0,              "",            0) \
-    F(B_MOVE_FROM,        "move_from",        2,  2,   "",   "",  BR_SLICE,       "",            BF_MEMBER | BF_WRITE) \
-    F(B_TO_BYTES,         "to_bytes",         1,  2,   "",   "",  BR_ANY,         "append to",   BF_MEMBER | BF_OUTARG) \
-    F(B_BYTES_OF,         "bytes_of",         1,  1,   "",   "",  BR_ANY,         "",            BF_MEMBER) \
-    F(B_FROM_BYTES,       "from_bytes",       1,  1,   "",   "",  0,              "",            BF_TYARGS) \
-    F(B_EMBED_SHADER,     "embed_shader",     1, 99,   "",   "",  0,              "",            0) \
-    F(B_EMBED_FILE,       "embed_file",       1,  1,   "",   "",  0,              "",            0) \
-    F(B_FILE,             "src_file",         0,  0,   "",   "",  0,              "",            0) \
-    F(B_LINE,             "src_line",         0,  0,   "",   "i", 0,              "",            0) \
-    F(B_LEN,              "len",              1,  1,   "",   "i", BR_ANY,         "",            BF_MEMBER | BF_PROPERTY) \
-    F(B_CAP,              "cap",              1,  1,   "",   "i", BR_LIMITED,     "",            BF_MEMBER | BF_PROPERTY) \
-    F(B_INDEX_OF,         "index_of",         2,  2,   "",   "i", BR_INDEXABLE,   "",            BF_MEMBER) \
-    F(B_RANGE_INDEX,      "range_index",      2,  3,   "",   "i", BR_INDEXABLE,   "",            BF_MEMBER) \
-    F(B_CHECK_LENGTH,     "check_length",     2,  3,   "i",  "i", BR_GROW | BR_GROWSHRINK, "",     BF_MEMBER) \
-    F(B_PUSH,             "push",             2,  2,   "e",  "r", BR_GROWABLE,    "push into",   BF_MEMBER | BF_WRITE) \
-    F(B_APPEND,           "append",           2,  2,   "a",  "",  BR_GROWABLE,    "append to",   BF_MEMBER | BF_WRITE) \
-    F(B_POP,              "pop",              1,  1,   "",   "e", BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS) \
-    F(B_POP_N,            "pop_n",            2,  2,   "i",  "",  BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS) \
-    F(B_RESIZE,           "resize",           2,  3,   "",   "",  BR_SHRINKABLE,  "resize",      BF_MEMBER | BF_WRITE | BF_SHRINKS) \
-    F(B_CLEAR,            "clear",            1,  1,   "",   "",  BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS) \
-    F(B_ALLOC_INDEX,      "alloc_index",      2,  2,   "e",  "i", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_REUSABLE) \
-    F(B_ALLOC_REF,        "alloc_ref",        2,  2,   "e",  "r", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_REUSABLE) \
-    F(B_FREE,             "free",             2,  2,   "i",  "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_REUSABLE) \
-    F(B_ALLOC_SLICE,      "alloc_slice",      2,  2,   "",   "s", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_SLICEPOOL) \
-    F(B_REALLOC_SLICE,    "realloc_slice",    3,  3,   "",   "s", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_SLICEPOOL) \
-    F(B_FREE_SLICE,       "free_slice",       2,  2,   "",   "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_SLICEPOOL)
+    F(B_PRINT,            "print",            0, 99,   "",   "",  0,              "",            0,                                          "a, b, …",                                 "",             "",         "Writes the arguments' text and a newline to standard output, as a single write, so lines from different threads never interleave. Takes any number of arguments of any type, inserting nothing between them; a value renders through its type's `format` overload where one exists.") \
+    F(B_STR,              "str",              0, 99,   "",   "",  0,              "",            0,                                          "a, b, …",                                 "u8[>..]",     "",         "The arguments' text as a fresh `u8[>..]`, built directly at its destination. Takes any number of arguments of any type, inserting nothing between them.") \
+    F(B_FORMAT,           "format",           1, 99,   "",   "",  BR_GROWABLE,    "format into", BF_MEMBER | BF_WRITE,                       "out, a, b, …",                            "",             "",         "Appends the arguments' text to `out`, a growable `u8` array: limited, grow-only or grow-shrink. Takes any number of arguments of any type after `out`, inserting nothing between them. A user `format` overload takes the calls it matches; the builtin takes the rest.") \
+    F(B_ASSERT,           "assert",           1,  1,   "",   "",  0,              "",            0,                                          "c",                                         "",             "",         "Aborts unless `c` holds. `c` is a `bool` or an optional, which is narrowed past the call.") \
+    F(B_ABORT,            "abort",            1,  1,   "",   "",  0,              "",            0,                                          "msg: u8[:]",                              "",             "",         "Aborts with the message `msg`. Never returns, so the code after it is unreachable; not catchable.") \
+    F(B_EXIT,             "exit",             1,  1,   "",   "",  0,              "",            0,                                          "code: i64",                               "",             "",         "Ends the program with `code` as its exit code. Never returns; not catchable.") \
+    F(B_HARDWARE_THREADS, "hardware_threads", 0,  0,   "",   "i", 0,              "",            0,                                          "",                                          "i64",          "",         "A sensible worker count, never more than the data stacks allow.") \
+    F(B_THREAD_SPAWN,     "thread_spawn",     1, 99,   "",   "i", 0,              "",            0,                                          "worker, args…",                           "i64",          "",         "Starts `worker`, a `thread_fn`, with `args…`; its worker id, never reused. The worker's arguments must be flat.") \
+    F(B_THREAD_SPAWN_CONTAINED, "thread_spawn_contained", 1, 99, "", "i", 0,       "",            0,                                          "worker, args…",                           "i64",          "",         "Starts a worker whose aborts end only that worker; its worker id. A failed check or `abort` releases everything a return would, and the message goes to the first `thread_wait(id, msg)` instead of stderr. `exit`, stack overflow and main-thread aborts still end the program.") \
+    F(B_THREAD_WAIT,      "thread_wait",      1,  2,   "",   "",  0,              "append to",   BF_OUTARG,                                  "id: i64, msg = ...",                      "bool",         "",         "Blocks until worker `id` has ended and its storage is released; `false` if it was contained and aborted. With `msg`, a growable `u8` array, the first such wait appends the contained worker's abort message, with its source location.") \
+    F(B_QPUT,             "qput",             1,  1,   "",   "",  0,              "",            0,                                          "v",                                         "bool",         "",         "Puts `v` on the queue for its type; `false`, at once, if the queue is full. Queue elements must be flat. As a statement the result is ignored.") \
+    F(B_QGET,             "qget",             0,  1,   "",   "",  0,              "",            BF_TYARGS,                                  "ms: i64 = ...",                           "T, bool",      "<T>",      "Takes the next `T` from its typed queue, blocking. With `ms`, waits at most that many milliseconds, else `T`'s zero value and `false`; without it returns just the `T`. `T` is explicit and must be flat.") \
+    F(B_QPOLL,            "qpoll",            0,  0,   "",   "",  0,              "",            BF_TYARGS,                                  "",                                          "T, bool",      "<T>",      "Takes a `T` from its typed queue if there is one; else `T`'s zero value and `false`. `T` is explicit and must be flat.") \
+    F(B_QLIMIT,           "qlimit",           1,  1,   "",   "",  0,              "",            BF_TYARGS,                                  "n: i64",                                    "",             "<T>",      "Lets the queue for `T` hold at most `n` messages; past that `qput` returns `false` at once. `T` is explicit and must be flat.") \
+    F(B_DEFAULT,          "default",          0,  0,   "",   "",  0,              "",            BF_TYARGS,                                  "",                                          "T",            "<T>",      "The value a fixed-size `T` has before anything is written to it, declared field defaults applied.") \
+    F(B_COPY,             "copy",             1,  1,   "",   "",  0,              "",            0,                                          "x",                                         "T",            "",         "A fresh copy of the stored value `x` names, for the destinations that never copy implicitly. `x` is a value or a reference, not a slice or a temporary; root owners cannot be copied.") \
+    F(B_MOVE_FROM,        "move_from",        2,  2,   "",   "",  BR_SLICE,       "",            BF_MEMBER | BF_WRITE,                       "dst, src: T[:]",                          "",             "",         "Copies `src` into `dst`, slices of equal length with fixed-size elements; aborts before writing if they differ. Overlap-safe: the original source values are copied even where the slices overlap; the source is not cleared. Unavailable for elements holding self-relative references.") \
+    F(B_TO_BYTES,         "to_bytes",         1,  2,   "",   "",  BR_ANY,         "append to",   BF_MEMBER | BF_OUTARG,                      "a, out = ...",                            "u8[>..]",     "",         "A framed image of `a`: a varint byte count, then its element region. One argument returns it as a fresh `u8[>..]`; with `out`, a growable `u8` array, appends it there and returns nothing.") \
+    F(B_BYTES_OF,         "bytes_of",         1,  1,   "",   "",  BR_ANY,         "",            BF_MEMBER,                                  "a",                                         "const u8[:]",  "",         "The element region of `a` alone, as a read-only view: nothing copied, no framing. The view is never writable, since bytes written through it would be links the checker never proved.") \
+    F(B_FROM_BYTES,       "from_bytes",       1,  1,   "",   "",  0,              "",            BF_TYARGS,                                  "b: u8[:]",                                  "T[>..], bool", "<T[>..]>", "A verified array from the untrusted image `b`; `false` and an empty array if it is not one. Builds `T[>..]`, `T[>..<]` and `T[]`, except a `T[>..<]` of elements holding relative references. Verifies safety, not integrity: edited bytes still describe a well-formed structure.") \
+    F(B_EMBED_SHADER,     "embed_shader",     1, 99,   "",   "",  0,              "",            0,                                          "path, …",                                   "const u8[:]",  "",         "`embed_shader(\"x.frag\")` compiles the shader file at that path, relative to the calling file; `embed_shader(\"stage\", source, …)` compiles the given GLSL, joined as lines, for stage `\"vert\"`, `\"frag\"` or `\"comp\"`. Either returns the compiled blob as `const u8[:]` into static data. Arguments are string literals, or `let` globals holding one; each distinct shader compiles once.") \
+    F(B_EMBED_FILE,       "embed_file",       1,  1,   "",   "",  0,              "",            0,                                          "path",                                      "const u8[:]",  "",         "The file at `path`, relative to the calling file, read when the program is compiled; its bytes as `const u8[:]` into static data. `path` is a string literal or a `let` global holding one; each distinct file is read once.") \
+    F(B_FILE,             "src_file",         0,  0,   "",   "",  0,              "",            0,                                          "",                                          "const u8[:]",  "",         "The base name of the source file containing the call, as `const u8[:]`. In a parameter default, the call that left the argument out is reported instead.") \
+    F(B_LINE,             "src_line",         0,  0,   "",   "i", 0,              "",            0,                                          "",                                          "i64",          "",         "The 1-based line of the call. In a parameter default, the call that left the argument out is reported instead.") \
+    F(B_LEN,              "len",              1,  1,   "",   "i", BR_ANY,         "",            BF_MEMBER | BF_PROPERTY,                    "a",                                         "i64",          "",         "The element count, of every array kind and slices. A property: `a.len`, not a call.") \
+    F(B_CAP,              "cap",              1,  1,   "",   "i", BR_LIMITED,     "",            BF_MEMBER | BF_PROPERTY,                    "a",                                         "i64",          "",         "The capacity, of `T[..k]` and `T[..]`. A property: `a.cap`, not a call.") \
+    F(B_INDEX_OF,         "index_of",         2,  2,   "",   "i", BR_INDEXABLE,   "",            BF_MEMBER,                                  "a, r: T&",                                  "i64",          "",         "The index of the element `r` refers to, of arrays with fixed-size elements. `r` must provably point into this very array.") \
+    F(B_RANGE_INDEX,      "range_index",      2,  3,   "",   "i", BR_INDEXABLE,   "",            BF_MEMBER,                                  "a, s: T[:], msg: u8[:] = ...",             "i64",          "",         "The start of `s`, a slice wholly contained in `a`, of arrays with fixed-size elements; checked at runtime where provenance does not prove it. An empty slice returns zero. `msg`, a string literal, replaces the runtime's abort message.") \
+    F(B_CHECK_LENGTH,     "check_length",     2,  3,   "i",  "i", BR_GROW | BR_GROWSHRINK, "",     BF_MEMBER,                                  "a, n: i64, msg: u8[:] = ...",             "i64",          "",         "Validates `n` against the data-stack reservation, of grow-only and grow-shrink arrays with fixed-size elements; returns it without changing the array. Rejects negative counts and counts whose elements alone would exceed the reservation. Neither allocates storage nor promises an append fits. `msg`, a string literal, replaces the runtime's abort message.") \
+    F(B_PUSH,             "push",             2,  2,   "e",  "r", BR_GROWABLE,    "push into",   BF_MEMBER | BF_WRITE,                       "a, v: T",                                   "T&",           "",         "One element, constructed in place from `v`, of limited, grow-only and grow-shrink arrays; a reference to it. Exceeding a limited array's capacity aborts.") \
+    F(B_APPEND,           "append",           2,  2,   "a",  "",  BR_GROWABLE,    "append to",   BF_MEMBER | BF_WRITE,                       "a, src",                                    "",             "",         "The elements of `src` — an array, slice or array literal of `T` — copied into `a`, of limited, grow-only and grow-shrink arrays. Exceeding a limited array's capacity aborts.") \
+    F(B_POP,              "pop",              1,  1,   "",   "e", BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS,         "a",                                         "T",            "",         "Removes and returns the last element, of limited and grow-shrink arrays, and grow-only ones where nothing is still rooted in them. Shrinking below empty aborts.") \
+    F(B_POP_N,            "pop_n",            2,  2,   "i",  "",  BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS,         "a, n: i64",                                 "",             "",         "Drops the last `n` elements, of limited and grow-shrink arrays, and grow-only ones where nothing is still rooted in them. Shrinking below empty aborts.") \
+    F(B_RESIZE,           "resize",           2,  3,   "",   "",  BR_SHRINKABLE,  "resize",      BF_MEMBER | BF_WRITE | BF_SHRINKS,         "a, n: i64, v: T = ...",                   "",             "",         "Grows with copies of `v`, or shrinks, of limited and grow-shrink arrays, and grow-only ones where nothing is still rooted in them. `resize(n)` shrinks only: growing without `v` aborts. A negative `n` aborts; exceeding a limited array's capacity aborts.") \
+    F(B_CLEAR,            "clear",            1,  1,   "",   "",  BR_SHRINKABLE,  "",            BF_MEMBER | BF_WRITE | BF_SHRINKS,         "a",                                         "",             "",         "Empties the array, of limited and grow-shrink arrays, and grow-only ones where nothing is still rooted in them.") \
+    F(B_ALLOC_INDEX,      "alloc_index",      2,  2,   "e",  "i", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_REUSABLE,        "a, v: T",                                   "i64",          "",         "Deprecated: use `slot_pool`. The index of a slot holding `v`, of `reusable` pools: a freed slot if there is one, else a fresh push.") \
+    F(B_ALLOC_REF,        "alloc_ref",        2,  2,   "e",  "r", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_REUSABLE,        "a, v: T",                                   "T&",           "",         "Deprecated: use `slot_pool`. The same as `alloc_index`, as a reference.") \
+    F(B_FREE,             "free",             2,  2,   "i",  "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_REUSABLE,        "a, i: i64",                                 "",             "",         "Deprecated: use `slot_pool`. Records slot `i` for reuse; aborts if `i` is out of range. Releases no memory: every element stays a live value of its type.") \
+    F(B_ALLOC_SLICE,      "alloc_slice",      2,  2,   "",   "s", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_SLICEPOOL,       "a, n: i64",                                 "T[:]",         "",         "Deprecated: use `slice_pool`. `n` elements from the first free span that holds them, else from the end of the array, which grows; every returned element is reset to its default.") \
+    F(B_REALLOC_SLICE,    "realloc_slice",    3,  3,   "",   "s", BR_GROW,        "allocate in", BF_MEMBER | BF_WRITE | BF_SLICEPOOL,       "a, s: T[:], n: i64",                       "T[:]",         "",         "Deprecated: use `slice_pool`. `s` resized to `n` elements, in place where it can be, else freed and copied. A grown slice may move, so elements holding self-relative references are rejected.") \
+    F(B_FREE_SLICE,       "free_slice",       2,  2,   "",   "",  BR_GROW,        "",            BF_MEMBER | BF_WRITE | BF_SLICEPOOL,       "a, s: T[:]",                                "",             "",         "Deprecated: use `slice_pool`. Records the run `s` for reuse.")
 
 enum BuiltinKind {
-    #define F(k, n, lo, hi, a, r, rv, gr, fl) k,
+    #define F(k, n, lo, hi, a, r, rv, gr, fl, sig, ret, ty, doc) k,
     BUILTINS
     #undef F
     B_COUNT
@@ -127,10 +141,14 @@ struct BuiltinDef {
     int recv;                  // BuiltinRecv mask for members.
     const char *grows;         // What a growth by it is called; "" = grows nothing.
     int flags;
+    const char *sig;   // Display params as an ident call spells them, receiver first for members; "" = none.
+    const char *ret;   // Display return types; "" = void.
+    const char *ty;    // Display type arguments, e.g. "<T>"; "" = none.
+    const char *doc;   // Markdown help: summary, then args/returns/constraints. Plain text, no `//` prefixes.
 };
 
 inline const BuiltinDef builtindefs[] = {
-    #define F(k, n, lo, hi, a, r, rv, gr, fl) { k, n, lo, hi, a, r, rv, gr, fl },
+    #define F(k, n, lo, hi, a, r, rv, gr, fl, sig, ret, ty, doc) { k, n, lo, hi, a, r, rv, gr, fl, sig, ret, ty, doc },
     BUILTINS
     #undef F
 };
