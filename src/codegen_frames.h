@@ -573,7 +573,8 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
         } else if (IsBytesT(pt)) {
             add(cat("uint8_t *", pn));
         } else if (IsLargeFixed(pt)) {
-            // The caller makes an independent value copy on a data stack.
+            // The caller makes an independent value copy on a data stack, or
+            // hands over a variable it never reads again (MovableArg).
             // Passing its address avoids the C ABI's native-stack copy.
             add(cat(CT(pt), " *", pn));
             if (decls) fvptr.insert(vd);

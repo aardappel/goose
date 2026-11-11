@@ -26,6 +26,7 @@
 #include "optimize_loops.h"
 #include "optimize_reassoc.h"
 #include "bce.h"
+#include "liveness.h"
 #include "codegen.h"
 #include "codegen_types.h"
 #include "codegen_frames.h"

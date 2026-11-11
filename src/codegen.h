@@ -1358,6 +1358,12 @@ struct CodeGen {
     string ExternProto(FnSpec *sp);
     vector<Node *> CallArgNodes(Call *c, size_t nparams);
     void EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &args, bool later);
+    // The last uses of each spec's variables (liveness.h), made on first
+    // asking, and the argument nodes of the call EmitArg is emitting.
+    map<FnSpec *, unique_ptr<Liveness>> liveness;
+    bool LastUse(const Ident *id);
+    const vector<Node *> *callargs = nullptr;
+    bool MovableArg(FnSpec *sp, Node *n, TypeExpr *pt, size_t i);
     void EmitFvArg(const VarDef *fv, vector<string> &args);
     vector<string> EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<Dst> *alldst);
     bool NeedsReprefix(const Dst &d, TypeExpr *rt);

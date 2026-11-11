@@ -204,6 +204,12 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         args.push_back(t);
         return;
     }
+    // A variable of this function's own at its last use: the callee takes
+    // its storage, which nothing reads again, rather than a copy (§7.2).
+    if (IsLargeFixed(pt) && MovableArg(sp, node, pt, i)) {
+        args.push_back(cat("&", GenX(node)));
+        return;
+    }
     // A value read before later arguments that run statements lands in a
     // temp, as one passed by its address always does; otherwise C copies
     // the expression's value into the parameter at the call (GenOperandVal).
@@ -216,6 +222,39 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
     if (IsLargeFixed(pt)) args.push_back(cat("&", value));
     else if (splitroots.count(sp->params[i])) PushRootMembers(args, pt, value);
     else PushArg(args, pt, false, value);
+}
+
+inline bool CodeGen::LastUse(const Ident *id) {
+    if (!curspec || !curspec->body) return false;
+    auto &l = liveness[curspec];
+    if (!l) l = std::make_unique<Liveness>(curspec);
+    return l->last.count(id) > 0;
+}
+
+// An argument whose storage the callee can have for its by-pointer
+// parameter (IsLargeFixed) in place of the copy it is owed: a variable of
+// this function at its last use (Liveness), whose storage is this
+// function's to give -- a local in its frame or on a data stack, or a
+// parameter, which arrives as a pointer to a copy the caller made for it --
+// that nothing else reaches: not a global, captured or a pool, not bound to
+// a writable reference, and named by no other argument of the call, nor
+// reached through one (MayReachLocal), which would see the callee's writes.
+// A result is written to its destination -- which may be this variable,
+// `x = f(x)` -- once it is complete, but one built in place
+// (NeedsResultLocation) is written piece by piece while the callee may
+// still read its argument.
+inline bool CodeGen::MovableArg(FnSpec *sp, Node *n, TypeExpr *pt, size_t i) {
+    auto id = Is<Ident>(n);
+    if (!id || !id->vdef || !curspec || !callargs) return false;
+    for (auto rt : sp->rets) if (NeedsResultLocation(rt)) return false;
+    auto v = id->vdef;
+    if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
+        !v->type || !TEq(v->type, pt) || splitroots.count(v))
+        return false;
+    if (v->isparam ? !fvptr.count(v) : fvptr.count(v) > 0) return false;
+    for (size_t j = 0; j < callargs->size(); j++)
+        if (j != i && MayReachLocal((*callargs)[j], v)) return false;
+    return LastUse(id);
 }
 
 // A free variable of the callee, from the caller's frame (or passed on).
@@ -275,7 +314,12 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     // Whether the arguments after each one run statements (EmitArg).
     vector<bool> later(an.size() + 1, false);
     for (size_t i = an.size(); i-- > 0;) later[i] = later[i + 1] || HasStmts(an[i]);
-    for (size_t i = 0; i < an.size(); i++) EmitArg(sp, i, an[i], args, later[i + 1]);
+    auto outerargs = callargs;
+    for (size_t i = 0; i < an.size(); i++) {
+        callargs = &an;
+        EmitArg(sp, i, an[i], args, later[i + 1]);
+    }
+    callargs = outerargs;
     for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
     vector<string> retex(sp->rets.size());
     for (size_t i = 0; i < sp->rets.size(); i++) {
@@ -643,10 +687,13 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     // become the C arguments every arm passes, read before the switch (the
     // cases agree on those parameters' types).
     vector<vector<string>> shared(an.size());
+    auto outerargs = callargs;
     for (size_t i = 0; i < an.size(); i++) {
+        callargs = &an;
         if ((int)i == pos) scrutinee();
         else EmitArg(sp0, i, an[i], shared[i], true);
     }
+    callargs = outerargs;
     // Shared return channels.
     vector<string> retex(sp0->rets.size());
     vector<string> dststk(sp0->rets.size());
