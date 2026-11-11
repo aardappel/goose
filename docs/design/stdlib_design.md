@@ -816,7 +816,8 @@ Both are diverging calls: code after them is unreachable, so a branch that
 ends in one gives no value (§6.4). `abort` prints `goose runtime error:
 <msg>` and exits nonzero, like the checked aborts of §9.3; `exit` flushes
 and exits with the code. The library uses `abort` for contract violations
-that are not plain `assert`s (an unknown base in `format_int`).
+that are not plain `assert`s (an unknown base in `format_int` or
+`format_uint`).
 
 ### 8.4 `extern fn` (spec §7.10)
 

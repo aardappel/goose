@@ -1,0 +1,2 @@
+goose runtime error: format_int: base out of range
+stdlib_format_int_base_37.goose:5)
