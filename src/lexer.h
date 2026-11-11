@@ -120,6 +120,7 @@ struct Lexer {
     bool iuns = false;               // T_INTLIT above i64.max: a u64 constant.
     double fval = 0;                 // T_FLTLIT value.
     string sval;                     // T_STRLIT decoded value.
+    string numbuf;                   // Scratch buffer for INTLIT/FLTLIT digits
     bool smultiline = false;         // T_STRLIT: a """ string spanning lines.
     int tokline = 1;
     const char *toklinestart = nullptr;
@@ -379,64 +380,83 @@ struct Lexer {
 
             default: {
                 if (isdigit((uint8_t)c)) {
+                    numbuf.clear();
+                    auto ScanDigits = [&](bool ishex) {
+                        auto isdig = [ishex](uint8_t ch) { return ishex ? (bool)isxdigit(ch) : (bool)isdigit(ch); };
+                        while (isdig((uint8_t)*p) || *p == '_') {
+                            if (*p == '_') {
+                                if (!isdig((uint8_t)p[-1]) || !isdig((uint8_t)p[1]))
+                                    Error("invalid numeric separator");
+                            } else {
+                                  numbuf += *p;
+                            }
+                            p++;
+                        }
+                    };
                     if (c == '0' && (*p == 'x' || *p == 'X')) {
                         p++;
+                        numbuf += "0x";
                         auto numstart = p;
-                        while (isxdigit((uint8_t)*p)) p++;
+                        ScanDigits(true);
                         if (p == numstart) Error("hex digits expected after 0x");
                         // C99-style hex floats: 0x1.8p3 (binary exponent required).
                         auto ishexfloat = false;
                         if (*p == '.' && isxdigit((uint8_t)p[1])) {
                             ishexfloat = true;
+                            numbuf += '.';
                             p++;
-                            while (isxdigit((uint8_t)*p)) p++;
+                            ScanDigits(true);
                         }
                         if (*p == 'p' || *p == 'P') {
                             ishexfloat = true;
+                            numbuf += 'p';
                             p++;
-                            if (*p == '+' || *p == '-') p++;
+                            if (*p == '+' || *p == '-') { numbuf += *p; p++;}
                             if (!isdigit((uint8_t)*p)) Error("exponent digits expected in hex float");
-                            while (isdigit((uint8_t)*p)) p++;
+                            ScanDigits(false);
                         } else if (ishexfloat) {
                             Error("hex float requires a p exponent");
                         }
                         if (ishexfloat) {
-                            fval = strtod(string(start, p).c_str(), nullptr);
+                            fval = strtod(numbuf.c_str(), nullptr);
                             Set(T_FLTLIT);
                             return;
                         }
                         errno = 0;
-                        ival = (int64_t)strtoull(string(numstart, p).c_str(), nullptr, 16);
+                        ival = (int64_t)strtoull(numbuf.c_str(), nullptr, 16);
                         if (errno) Error("hex literal too large for 64 bits");
                         iuns = ival < 0;
                         Set(T_INTLIT);
                         return;
                     }
-                    while (isdigit((uint8_t)*p)) p++;
+                    numbuf += c;
+                    ScanDigits(false);
                     // A '.' only makes this a float if a digit follows; "1..2" must
                     // lex as int, "..", int.
                     auto isfloat = *p == '.' && isdigit((uint8_t)p[1]);
                     if (isfloat) {
+                        numbuf += '.';
                         p++;
-                        while (isdigit((uint8_t)*p)) p++;
+                        ScanDigits(false);
                     }
                     if ((*p == 'e' || *p == 'E') &&
                         (isdigit((uint8_t)p[1]) ||
                          ((p[1] == '+' || p[1] == '-') && isdigit((uint8_t)p[2])))) {
                         isfloat = true;
-                        p += 2;
-                        while (isdigit((uint8_t)*p)) p++;
+                        numbuf += 'e';
+                        p ++;
+                        if (*p == '+' || *p == '-') { numbuf += *p; p++; }
+                        ScanDigits(false);
                     }
-                    auto text = string(start, p);
                     if (isfloat) {
-                        fval = strtod(text.c_str(), nullptr);
+                        fval = strtod(numbuf.c_str(), nullptr);
                         Set(T_FLTLIT);
                     } else {
                         // Decimal literals cover the full u64 range; a value
                         // above i64.max is a u64 constant (§2).
                         errno = 0;
-                        ival = (int64_t)strtoull(text.c_str(), nullptr, 10);
-                        if (errno) Error(cat("integer literal too large for 64 bits: ", text));
+                        ival = (int64_t)strtoull(numbuf.c_str(), nullptr, 10);
+                        if (errno) Error(cat("integer literal too large for 64 bits: ", numbuf));
                         iuns = ival < 0;
                         Set(T_INTLIT);
                     }
