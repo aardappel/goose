@@ -3819,6 +3819,24 @@ string literal or a `let` global holding one, and each distinct file is
 read once. `embed_shader` does the same for GLSL, compiling it for the
 graphics module ([stdlib.md](stdlib.md#shaders)). Spec §12.
 
+### src_file and src_line
+
+`src_file()` is the base name of the source file that contains the call, as a
+`const u8[:]`. `src_line()` is that call's 1-based line. Both read the call
+node the parser already stamps. A default is parsed in the function that
+declares it, and a call that leaves the argument out is reported instead, so
+
+```goose
+fn info(text: u8[:], file: u8[:] = src_file(), row: i64 = src_line()) {}
+```
+
+sees the caller's file and line. An argument the caller writes is kept.
+A call to `src_file()` or `src_line()` in the body of `info` names `info`'s own
+file and the line that call is written on. The base name is the last path
+segment, not the path an abort prints. A local of either name hides
+the builtin, as a local hides any function. Spec §12,
+`docs/design/call_location.md`.
+
 ---
 
 ## 22. Threads
@@ -4200,6 +4218,7 @@ standard library, written in Goose under `stdlib/` and documented in
 | `qput(v)`, `qget<T>()`, `qpoll<T>()`, `qlimit<T>(n)` | the typed queues | [22](#22-threads) |
 | `to_bytes(a)`, `to_bytes(a, out)`, `bytes_of(a)`, `from_bytes<T[>..]>(b)` | serialization | [23](#23-serialization) |
 | `embed_file(path)`, `embed_shader(…)` | a file's bytes, or a compiled shader, read at compile time | [21](#embed_file) |
+| `src_file()`, `src_line()` | the call's file name and line; a default reports the call that omitted it | [21](#src_file-and-src_line) |
 
 The array members, `.len`, `.cap`, `.push`, `.append`, `.pop`, `.pop_n`,
 `.resize`, `.clear`, `.index_of`, `.range_index`, `.check_length`, `.move_from` are in

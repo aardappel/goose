@@ -15,6 +15,21 @@ namespace goose {
 // growths and shrinks; what it cannot express gets dedicated code below.
 inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv) {
     c->builtin = d.kind;
+    // src_file() and src_line() name the call they are checked as. A
+    // parameter default is parsed at the declaration; the frame
+    // InParamDefault pushed carries the call that left the argument out.
+    // The innermost such frame wins (EachDefaultInPlace follows where the
+    // call was written, not a body checked from the default). A function
+    // of the same name is not this builtin, so its line stays where it
+    // was parsed.
+    if (d.kind == B_FILE || d.kind == B_LINE) {
+        auto took = false;
+        EachDefaultInPlace([&](Frame &fr) {
+            if (took) return;
+            took = true;
+            if (fr.defaultfn) c->line = fr.callline;
+        });
+    }
     if (c->trailing) Error(c, cat(d.name, " takes no function value"));
     if (!(d.flags & BF_TYARGS) && !c->tyargs.empty())
         Error(c, cat(d.name, " takes no type arguments"));
@@ -151,6 +166,17 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 lastcallrets.push_back(b2);
             }
             return first;
+        }
+        case B_FILE: {
+            // The base name of the file that contains this call (codegen).
+            // In a parameter default the line is the call that left the
+            // argument out, set above.
+            c->rettypes.push_back(cu8slice);
+            Val v;
+            v.type = cu8slice;
+            v.Set(nullptr, true);
+            v.writable = false;
+            return v;
         }
         case B_EMBED_SHADER:
         case B_EMBED_FILE: {

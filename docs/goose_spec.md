@@ -4639,6 +4639,8 @@ The language's own functions:
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
 | `embed_shader(path)` or `embed_shader(stage, source, …) -> const u8[:]` | compile-time GLSL compilation to a static shader blob; graphics extension, detailed in the implementation notes, section 3.14 |
 | `embed_file(path) -> const u8[:]` | the bytes of a file, read when the program is compiled, as a view of static data; `path` is a string literal (or a `let`/`const` global holding one), relative to the file with the call; each distinct file is read once |
+| `src_file() -> const u8[:]` | the base name of the file that contains the call, a view of static data. In a default, the call that left the argument out (`docs/design/call_location.md`) |
+| `src_line() -> i64` | the 1-based line of that same call |
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):

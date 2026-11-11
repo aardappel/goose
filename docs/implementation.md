@@ -3365,8 +3365,9 @@ leftover generics may follow as few as the parameters without a default.
 Each parameter left out has the type that the arguments and explicit type
 arguments give it, so a default decides no type variable and plays no part
 in ranking. `AddParamDefaults` clones each missing default into
-`Call::args` where its argument would be (`firstdefault`, `ndefaults`). It
-checks the default as a written argument is checked: in the discovery
+`Call::args` where its argument would be (`firstdefault`, `ndefaults`).
+It checks the default as a written
+argument is checked: in the discovery
 phase for the specialization's key, where `UnifyArg` must accept it at its
 parameter's type, and against its parameter in phase 2. But it checks the
 default in a frame of its own (`InParamDefault`, the `DefaultScope` a
@@ -3378,6 +3379,10 @@ field default gets):
 * its lookups hide every local of the calling code;
 * its effects and the values live around it are the caller's, as a
   written argument's are.
+
+A `src_file()` or `src_line()` resolved in that frame takes the frame's
+call line, the call that left the argument out
+(`docs/design/call_location.md`).
 
 `DefaultScopeName` rejects a name that the declaration's own scope would
 make a parameter or a type parameter bound to a function value. For a
