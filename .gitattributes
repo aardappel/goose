@@ -7,3 +7,7 @@
 
 # Checks that a """ string's line breaks come out as \n from a CRLF file.
 test/syntax/raw_strings_crlf.goose -text
+
+# Mark files that by default we don't want to see in diffs:
+# runtime_inline.h is composed from src/runtime/
+src/runtime_inline.h linguist-generated
