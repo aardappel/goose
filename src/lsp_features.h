@@ -98,8 +98,7 @@ inline void AppendBuiltinDisplayRet(string &h, const BuiltinDef &b, const Builti
     Append(h, b.flags & BF_PROPERTY ? ": " : " -> ", form.ret);
 }
 
-// Completion and unresolved-name help offer every valid form, rather
-// than assigning one return list to incompatible optional-argument forms.
+// All display forms, for completion and unresolved-name help.
 inline string BuiltinDisplay(const BuiltinDef &b, bool dot) {
     string h;
     for (auto &form : b.forms) {
@@ -1216,6 +1215,7 @@ inline bool SignatureHelp(Workspace &ws, const Json &params, JsonOut &j) {
     }
     auto &fns = *found;
     auto b = fns.empty() ? LookupBuiltin(GlobalLeaf(name)) : nullptr;
+    if (b && (b->flags & BF_PROPERTY)) b = nullptr;
     if (fns.empty() && !b) return false;
     auto activesig = 0;
     if (auto resolved = SpecializedCall(an, span->call))
@@ -1247,9 +1247,20 @@ inline bool SignatureHelp(Workspace &ws, const Json &params, JsonOut &j) {
         }
         j.Key("parameters");
         j.BeginArray();
+        auto offset = ws.signatureoffsets ? Utf16Col(label, label.find('(') + 1) : 0;
         for (auto p : form.params) {
             j.BeginObject();
-            j.Member("label", p);
+            if (ws.signatureoffsets) {
+                auto end = offset + Utf16Col(p, p.size());
+                j.Key("label");
+                j.BeginArray();
+                j.Int(offset);
+                j.Int(end);
+                j.EndArray();
+                offset = end + 2;
+            } else {
+                j.Member("label", p);
+            }
             j.EndObject();
         }
         j.EndArray();

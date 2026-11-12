@@ -54,6 +54,7 @@ struct Workspace {
     // protocol has no way to ask, so its initialization options list them
     // (`commands`).
     set<string> clientcommands;
+    bool signatureoffsets = false; // Client supports UTF-16 parameter-label offsets.
     // The refresh requests the client takes (`workspace/codeLens/refresh`,
     // `workspace/semanticTokens/refresh`, `workspace/inlayHint/refresh`),
     // and the id of the last request the server sent.

@@ -146,6 +146,11 @@ struct Server {
                 for (auto &c : commands->arr)
                     if (c.kind == Json::STRING) ws.clientcommands.insert(c.str);
             auto caps = p.Get("capabilities");
+            auto tcaps = caps ? caps->Get("textDocument") : nullptr;
+            auto scaps = tcaps ? tcaps->Get("signatureHelp") : nullptr;
+            auto icaps = scaps ? scaps->Get("signatureInformation") : nullptr;
+            auto pcaps = icaps ? icaps->Get("parameterInformation") : nullptr;
+            ws.signatureoffsets = JsonBool(pcaps ? pcaps->Get("labelOffsetSupport") : nullptr);
             auto wcaps = caps ? caps->Get("workspace") : nullptr;
             for (auto feature : { "codeLens", "semanticTokens", "inlayHint" }) {
                 auto fcaps = wcaps ? wcaps->Get(feature) : nullptr;

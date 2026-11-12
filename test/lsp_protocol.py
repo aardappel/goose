@@ -163,7 +163,10 @@ def check_lsp_protocol(exe, base):
     # The client has the commands of the VS Code extension's that code
     # lenses name.
     client.request("initialize", {"processId": None, "rootUri": uri_of(fixtures),
-                                  "capabilities": {"workspace": {f: {"refreshSupport": True} for f in REFRESHED}},
+                                  "capabilities": {
+                                      "workspace": {f: {"refreshSupport": True} for f in REFRESHED},
+                                      "textDocument": {"signatureHelp": {"signatureInformation": {
+                                          "parameterInformation": {"labelOffsetSupport": True}}}}},
                                   "initializationOptions": {"entryFiles": [str(main)],
                                                             "commands": ["goose.run", "goose.showInstantiations"]}})
     client.send("initialized", {}, request=False)
@@ -535,6 +538,18 @@ def check_lsp_protocol(exe, base):
             for s in signatures:
                 if "activeParameter" in s and not 0 <= s["activeParameter"] < max(1, len(s.get("parameters", []))):
                     fail(f"builtin {marker} per-signature active parameter is out of bounds", got)
+                encoded = s["label"].encode("utf-16-le")
+                for i, p in enumerate(s.get("parameters", [])):
+                    offsets = p.get("label")
+                    if not isinstance(offsets, list) or len(offsets) != 2:
+                        fail(f"builtin {marker} parameter label has no offsets", s)
+                    start, end = offsets
+                    if not 0 <= start < end <= len(encoded) // 2:
+                        fail(f"builtin {marker} parameter label offsets are invalid", s)
+                    prefix = encoded[:start * 2].decode("utf-16-le")
+                    suffix = encoded[end * 2:].decode("utf-16-le")
+                    if not prefix.endswith("(" if i == 0 else ", ") or not suffix.startswith((", ", ")")):
+                        fail(f"builtin {marker} parameter highlight misses its label", s)
 
         def completions(marker, token, want):
             got = ask("completion", marker, token)
@@ -576,6 +591,9 @@ def check_lsp_protocol(exe, base):
             signature("queue_timed", "100", qget, 1, 0)
             signature("global_bytes", "xs)", image, 0, 0)
             signature("global_bytes_out", "out)", image, 1, 1)
+            signature("bytes_over_arity", "out)", image, 1, 1)
+            signature("bytes_trailing_comma", ")", image, 1, 1)
+            signature("global_append", "xs,", [(2, ())], 0, 0)
             # UFCS keeps the receiver as the first signature parameter.
             signature("member_bytes", ")", image, 0, 0)
             signature("member_bytes_out", "out)", image, 1, 1)
@@ -604,8 +622,11 @@ def check_lsp_protocol(exe, base):
                            "unchecked_push", "unchecked_len"):
                 token = "len" if marker in ("property_as_call", "unchecked_len") else "push"
                 got = ask("hover", marker, token)
-                if header(got).startswith("builtin "):
+                if not got or header(got).startswith("builtin "):
                     fail(f"builtin fallback claims {marker}", got)
+            got = ask("signatureHelp", "property_as_call", ")")
+            if got is not None:
+                fail("a property is offered as a callable builtin", got)
         finally:
             close_doc(path)
 

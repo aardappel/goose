@@ -379,16 +379,13 @@ The runner checks more than exit status and runtime output:
 `lsp_protocol.py` first runs `--probe`. A client in the runner then initializes
 the server with `test/lsp/basics.goose` as its entry file and the VS Code
 extension's commands. It opens the file, waits for diagnostics (there should be
-none), and sends the queries specified by its `// lsp:` lines. These check:
+none), and runs its `// lsp:` queries. Coverage includes:
 
 * Hover text; definitions at a position, in a file, or absent; document symbols;
   and signature help with the active parameter.
-* `builtins.goose`: exact builtin hover result-list boundaries, checked member
-  returns, conditional `qget`/`to_bytes` signature forms and arity selection,
-  requested `from_bytes` array kinds, completion forms, and variadic parameter
-  index bounds. Opaque receivers and code beyond an exemplar's failed check
-  must not turn colliding fields into builtin methods; a compatible receiver
-  checked before an argument fails can still receive generic builtin help.
+* Builtin return types, arity-dependent signature/completion forms,
+  parameter-label ranges, variadic bounds, and field/member disambiguation
+  in checked, opaque and partially checked code (`builtins.goose`).
 * Semantic token types at a position, including positions with no token; reference
   counts; and renames that either make the expected number of edits or are refused.
   Each rename edit must change only the name's leaf.
