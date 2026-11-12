@@ -1395,14 +1395,25 @@ fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool {
     return v, true;
 }
 
-// A decimal float with optional sign, fraction and exponent, correctly
-// rounded; false otherwise.
+// A decimal float with optional sign, fraction and exponent, or the inf,
+// -inf and nan that print writes; correctly rounded, false otherwise.
 fn parse_flt(s: u8[:]) -> f64, bool {
     var i = 0;
     var neg = false;
     if s.len > 0 && (s[0] == '-' || s[0] == '+') {
         neg = s[0] == '-';
         i = 1;
+    }
+    // The non-finite spellings print and format write: inf and -inf, and
+    // nan, which they never write negative.
+    if i < s.len {
+        let rest = s[i..];
+        if rest == "inf" {
+            return if neg { -1.0 / 0.0 } else { 1.0 / 0.0 }, true;
+        }
+        if i == 0 && rest == "nan" {
+            return 0.0 / 0.0, true;
+        }
     }
     // The significant digits as one integer, with the decimal exponent
     // adjusted for the digits after the point, so the value is
