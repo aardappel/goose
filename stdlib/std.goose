@@ -1395,14 +1395,55 @@ fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool {
     return v, true;
 }
 
-// A decimal float with optional sign, fraction and exponent, correctly
-// rounded; false otherwise.
+// s is exactly word, ASCII letters of either case.
+fn float_text::equals_ignore_case(s: u8[:], word: u8[:]) -> bool {
+    if s.len != word.len { return false; }
+    for k in word.len {
+        if (s[k] | 32) != word[k] { return false; }
+    }
+    return true;
+}
+
+// s[at..] is "nan" or strtod's "nan(n-char-sequence)": letters, digits and
+// underscores between the parentheses, in either case.
+fn float_text::nan_at(s: u8[:], at: i64) -> bool {
+    let n = s.len - at;
+    if n < 3 || !float_text::equals_ignore_case(s[at..at + 3], "nan") { return false; }
+    if n == 3 { return true; }
+    if s[at + 3] != '(' || s[s.len - 1] != ')' { return false; }
+    for k in at + 4..s.len - 1 {
+        let c = s[k];
+        let lower = c | 32;
+        if !(lower >= 'a' && lower <= 'z') && !(c >= '0' && c <= '9') && c != '_' {
+            return false;
+        }
+    }
+    return true;
+}
+
+// A decimal float with optional sign, fraction and exponent, or one of the
+// non-finite spellings inf, infinity and nan, correctly rounded; false
+// otherwise.
 fn parse_flt(s: u8[:]) -> f64, bool {
     var i = 0;
     var neg = false;
     if s.len > 0 && (s[0] == '-' || s[0] == '+') {
         neg = s[0] == '-';
         i = 1;
+    }
+    // The spellings print and format write, and C's strtod reads, for the
+    // non-finite values: inf and infinity, of either sign, and nan, with
+    // strtod's optional payload in parentheses.
+    if i < s.len {
+        let c = s[i] | 32;
+        if c == 'i' {
+            if float_text::equals_ignore_case(s[i..], "inf")
+               || float_text::equals_ignore_case(s[i..], "infinity") {
+                return if neg { -1.0 / 0.0 } else { 1.0 / 0.0 }, true;
+            }
+        } else if c == 'n' && float_text::nan_at(s, i) {
+            return 0.0 / 0.0, true;
+        }
     }
     // The significant digits as one integer, with the decimal exponent
     // adjusted for the digits after the point, so the value is
