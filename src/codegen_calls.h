@@ -168,12 +168,13 @@ inline vector<Node *> CodeGen::CallArgNodes(Call *c, size_t nparams) {
 }
 
 // One argument by the parameter's calling convention; appends to args.
-inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &args,
-                             bool later) {
+inline bool CodeGen::EmitArg(FnSpec *sp, const vector<Node *> &an, size_t i,
+                             vector<string> &args, bool later) {
+    auto node = an[i];
     auto pt = sp->argtypes[i];
     if (IsPoolParam(sp, i)) {
         PushArg(args, pt, true, GenPrefVal(node));
-        return;
+        return false;
     }
     if (IsResz(pt)) {
         // By-value resizable argument: construct into a fresh slot and
@@ -184,7 +185,7 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         GenConstruct(node, stk, pt, RzLenLv(pt, h));
         args.push_back(h);
         args.push_back(stk);
-        return;
+        return false;
     }
     if (IsBytesT(pt)) {
         // By-value nonfixed argument: construct into a fresh slot (§7.2).
@@ -192,7 +193,7 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         auto base = BytesTemp(stk);
         GenConstruct(node, stk, pt);
         args.push_back(base);
-        return;
+        return false;
     }
     // A relative reference parameter takes the argument's offset (§3.9). The
     // `in pool` form's is the same in the callee's copy; a self-relative one
@@ -202,7 +203,30 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         L(CT(pt), " ", t, ";");
         EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, true, RelValue(node));
         args.push_back(t);
-        return;
+        return false;
+    }
+    // A variable of this function's own at its only use: the callee takes
+    // its storage, which nothing reads again, rather than a copy (§7.2).
+    // Named nowhere else, it is neither another argument nor where the
+    // call's results go.
+    if (PtrAbi(pt) && MovableArg(sp, node, pt)) {
+        args.push_back(cat("&", GenX(node)));
+        return false;
+    }
+    // A variable no one else can write while the callee runs, for a
+    // parameter the callee only reads: the callee reads it where it lies.
+    // The caller may still write it, as the call's result.
+    if (!later && PtrAbi(pt) && ParamUnwritten(sp, i) && StableArg(node, pt)) {
+        args.push_back(cat("&", GenX(node)));
+        return true;
+    }
+    if (DiesAtCall(node, pt)) {
+        // Built in a temporary of its own, which the callee may have.
+        auto tv = T();
+        FixedLocal(pt, tv);
+        GenAny(node, FreshLv(tv, pt));
+        args.push_back(cat("&", tv));
+        return false;
     }
     // A value read before later arguments that run statements lands in a
     // temp, as one passed by its address always does; otherwise C copies
@@ -211,11 +235,228 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
     // passes the members it holds now.
     auto x = GenXD(node, pt);
     auto named = splitroots.count(sp->params[i]) && !NamedRootDesc(x).empty();
-    auto value = !named && (later || IsLargeFixed(pt) || (HasStmts(node) && !IsCName(x)))
+    auto value = !named && (later || PtrAbi(pt) || (HasStmts(node) && !IsCName(x)))
                  ? Snapshot(pt, x) : x;
-    if (IsLargeFixed(pt)) args.push_back(cat("&", value));
+    if (PtrAbi(pt)) args.push_back(cat("&", value));
     else if (splitroots.count(sp->params[i])) PushRootMembers(args, pt, value);
     else PushArg(args, pt, false, value);
+    return false;
+}
+
+// A variable named once in its function, outside any loop it is not
+// declared in, and not in a deferred body or a nested function, which may
+// run later or more than once: nothing reads it after that one use. There
+// is no other use to order it against, and no reference into the variable
+// without naming it. An Ident reached twice through a shared subtree counts
+// twice. Last uses after earlier ones, or on one branch, are not found.
+inline const set<const Ident *> &CodeGen::SingleUses(FnSpec *sp) {
+    auto it = singleuses.find(sp);
+    if (it != singleuses.end()) return it->second;
+    struct U { int n = 0; const Ident *id = nullptr; int useloop = 0; int declloop = 0; };
+    unordered_map<const VarDef *, U> u;
+    int loops = 0;
+    function<void(Node *, int, bool)> walk = [&](Node *n, int loop, bool hidden) {
+        if (!n) return;
+        if (auto id = Is<Ident>(n); id && id->vdef) {
+            auto &e = u[id->vdef];
+            e.n += hidden ? 2 : 1;
+            e.id = id;
+            e.useloop = loop;
+        }
+        if (auto vd = Is<VarDecl>(n))
+            for (auto v : vd->defs) u[v].declloop = loop;
+        if (auto m = Is<MatchExpr>(n))
+            for (auto &a : m->arms) if (a.binder) u[a.binder].declloop = loop;
+        auto inner = loop;
+        if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n)) inner = ++loops;
+        if (auto f = Is<ForLoop>(n)) {
+            if (f->vdef) u[f->vdef].declloop = inner;
+            if (f->idxdef) u[f->idxdef].declloop = inner;
+        }
+        auto h = hidden || Is<Defer>(n) || Is<FunVal>(n) || Is<FnDecl>(n);
+        RunChildren(n, [&](Node *c) { walk(c, inner, h); });
+    };
+    if (sp->body) walk(sp->body, 0, false);
+    auto &out = singleuses[sp];
+    for (auto &[v, e] : u)
+        if (e.n == 1 && e.useloop == e.declloop) out.insert(e.id);
+    return out;
+}
+
+// An argument whose storage the callee can have for its by-pointer
+// parameter (PtrAbi) in place of the copy it is owed: a variable of this
+// function at its only use (SingleUses), whose storage is this function's
+// to give -- a local in its frame or on a data stack, or a parameter, which
+// arrives as a pointer to a copy the caller made for it unless it is one
+// its callers may lend a variable of their own for (ParamUnwritten) -- that
+// nothing else reaches: not a global, captured or a pool, and not bound to
+// a writable reference. A result built in place (NeedsResultLocation) is
+// written piece by piece while the callee may still read its argument, so
+// such a callee gets a copy.
+inline bool CodeGen::MovableArg(FnSpec *sp, Node *n, TypeExpr *pt) {
+    auto id = Is<Ident>(n);
+    if (!id || !id->vdef || !curspec) return false;
+    for (auto rt : sp->rets) if (NeedsResultLocation(rt)) return false;
+    auto v = id->vdef;
+    if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
+        !v->type || !TEq(v->type, pt) || splitroots.count(v) || refalias.count(v))
+        return false;
+    if (v->isparam ? !fvptr.count(v) : fvptr.count(v) > 0) return false;
+    if (v->isparam) {
+        auto pi = std::find(curspec->params.begin(), curspec->params.end(), v);
+        if (pi == curspec->params.end() ||
+            ParamUnwritten(curspec, (size_t)(pi - curspec->params.begin())))
+            return false;
+    }
+    return SingleUses(curspec).count(id) > 0;
+}
+
+// A by-pointer parameter whose storage the callee never writes, so that it
+// can be the caller's own variable: not `var` (§4.4), never written through
+// a writable reference, nor captured, and no assignment, `++` or `&` in the
+// body rooted at it -- which the optimizer's rewrites, a tail recursion's
+// rebinding of the parameters (optimize_tre.h) among them, may make.
+inline bool CodeGen::ParamUnwritten(FnSpec *sp, size_t i) {
+    auto it = unwrittenparams.find(sp);
+    if (it == unwrittenparams.end()) {
+        vector<bool> ok(sp->params.size(), false);
+        for (size_t p = 0; p < sp->params.size(); p++) {
+            auto v = sp->params[p];
+            // One handed on to a `var` parameter takes a copy of its own,
+            // so that it can be handed on with no other (ConsumedParam).
+            ok[p] = sp->body && !sp->sf->isextern && v && !v->isvar && !v->captured &&
+                    !v->refwrite && !v->reusable && PtrAbi(sp->argtypes[p]) &&
+                    !IsPoolParam(sp, p) && !ConsumedParam(sp, v);
+        }
+        auto written = [&](Node *lv) {
+            auto v = Reassociator::RootVar(lv);
+            for (size_t p = 0; p < sp->params.size(); p++)
+                if (v && v == sp->params[p]) ok[p] = false;
+        };
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n) return;
+            if (auto a = Is<Assign>(n)) written(a->lval);
+            else if (auto x = Is<IncDec>(n)) written(x->lval);
+            else if (auto u = Is<Unary>(n); u && u->op == T_BITAND) written(u->child);
+            RunChildren(n, walk);
+        };
+        if (sp->body) walk(sp->body);
+        it = unwrittenparams.emplace(sp, ok).first;
+    }
+    return i < it->second.size() && it->second[i];
+}
+
+// A variable of this function holding a value of the parameter's type, as
+// a C object of its own (a by-reference binding has a reference type), that
+// only this function's own statements can write: not a global, not one a
+// nested function or function value reaches, never bound to a writable
+// reference (§4.4). While its function waits on a call, nothing writes it.
+inline bool CodeGen::StableArg(Node *n, TypeExpr *pt) {
+    auto id = Is<Ident>(n);
+    if (!id || !id->vdef || !curspec) return false;
+    auto v = id->vdef;
+    if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
+        v->istemp || v->resulttemp || !v->type || !TEq(v->type, pt))
+        return false;
+    // A parameter arrives as a pointer to its storage; any other variable
+    // is one in this frame or on a data stack.
+    return v->isparam || !fvptr.count(v);
+}
+
+// A read-only by-pointer parameter that this spec hands, at its only use
+// (SingleUses), to a parameter that changes it: a `var` one, or one its own
+// callee consumes so. Its callers then give it storage of its own rather
+// than lend a variable (ParamUnwritten), and MovableArg may hand that on.
+// Within a recursive cycle, a spec still being looked at consumes nothing
+// yet, which only costs a copy. Whether the hand-off then happens is
+// MovableArg's to say at the call; where it does not, the copy is made
+// there instead of at this spec's callers.
+inline bool CodeGen::ConsumedParam(FnSpec *sp, const VarDef *v) {
+    if (!sp || !sp->body || !v || v->isvar || !v->isparam) return false;
+    auto it = consumedparams.find(sp);
+    if (it != consumedparams.end()) return it->second.count(v) > 0;
+    consumedparams[sp];   // In progress: nothing yet.
+    auto &single = SingleUses(sp);
+    set<const VarDef *> found;
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || Is<FunVal>(n) || Is<FnDecl>(n) || Is<Defer>(n)) return;
+        if (auto c = Is<Call>(n); c && c->spec && c->builtin < 0 && !c->spec->sf->isextern) {
+            auto an = CallArgNodes(c, c->spec->params.size());
+            for (size_t i = 0; i < an.size(); i++) {
+                auto id = Is<Ident>(an[i]);
+                auto p = c->spec->params[i];
+                if (!id || !id->vdef || !id->vdef->isparam || id->vdef->isvar || !p ||
+                    !PtrAbi(c->spec->argtypes[i]) || !single.count(id))
+                    continue;
+                if (std::find(sp->params.begin(), sp->params.end(), id->vdef) == sp->params.end())
+                    continue;
+                if (p->isvar || ConsumedParam(c->spec, p)) found.insert(id->vdef);
+            }
+        }
+        RunChildren(n, walk);
+    };
+    walk(sp->body);
+    auto &out = consumedparams[sp];
+    out = found;
+    return out.count(v) > 0;
+}
+
+// §7.3 for a fixed result of an inlined body (OpenIbNrvo has the
+// variable-size ones): where the destination is fresh, nothing reads it
+// before the block's value is complete there, so the local the returns hand
+// back (NamedResult: no other return reads it) can live there from its
+// declaration on. A chain of inlined setters then works in one variable.
+inline const VarDef *CodeGen::OpenIbFixed(InlineBlock *ib, const Dst &d) {
+    if (d.k != DK_LVALUE || !d.fresh || d.pool || !d.t || !PtrAbi(d.t) ||
+        NeedsResultLocation(d.t))
+        return nullptr;
+    if (!ib->spec || ib->spec->rets.size() != 1 || !TEq(ib->spec->rets[0], d.t)) return nullptr;
+    auto vd = NamedResult(ib->body, ib->sf, 1, 0);
+    if (!vd || !vd->type || !TEq(vd->type, d.t) || ibfixed.count(vd) || refalias.count(vd) ||
+        vd->reusable)
+        return nullptr;
+    // A deferred body runs after a return of another value has overwritten
+    // the local's storage, and may read the local. A `return ... from` past
+    // this block (to the function, or to an inlined body around it) builds
+    // its value in place at a destination that may be this very storage
+    // (the function's gs_r0, say), reading the local as it goes; NamedResult
+    // only looks at the returns to this block.
+    auto unsafe = false;
+    vector<SFunction *> inner { ib->sf };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || unsafe) return;
+        if (Is<Defer>(n)) unsafe = true;
+        if (auto r = Is<Return>(n);
+            r && std::find(inner.begin(), inner.end(), r->target) == inner.end())
+            unsafe = true;
+        auto nested = Is<InlineBlock>(n);
+        if (nested) inner.push_back(nested->sf);
+        RunChildren(n, walk);
+        if (nested) inner.pop_back();
+    };
+    walk(ib->body);
+    if (unsafe) return nullptr;
+    ibfixed[vd] = d.s;
+    return vd;
+}
+
+// An argument whose value is built where the caller puts it, in a
+// temporary nothing else holds, which the callee can then have: a call's
+// result (EmitSpecCall's or EmitDispatch's own temporary), an inlined body's
+// value (OpenIbFixed) or a struct literal (LeafAny), received as the type it
+// was checked as. One adapted on the way (AdtFrom), or reaching a
+// relative-reference type's slot, is left to the ordinary snapshot.
+inline bool CodeGen::DiesAtCall(Node *n, TypeExpr *pt) {
+    if (!PtrAbi(pt) || NeedsResultLocation(pt)) return false;
+    // An inlined call's value and a literal are built where they are put
+    // (OpenIbFixed, LeafAny).
+    if ((Is<InlineBlock>(n) || Is<StructLit>(n)) && !AdtFrom(n))
+        return n->exprtype && TEq(n->exprtype, pt);
+    auto c = Is<Call>(n);
+    if (!c || c->builtin >= 0 || c->fvbody || AdtFrom(n)) return false;
+    if (c->dispatch.empty() && (!c->spec || c->spec->sf->isextern)) return false;
+    return c->rettypes.size() == 1 && TEq(c->rettypes[0], pt) && c->exprtype &&
+           TEq(c->exprtype, pt);
 }
 
 // A free variable of the callee, from the caller's frame (or passed on).
@@ -275,7 +516,10 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     // Whether the arguments after each one run statements (EmitArg).
     vector<bool> later(an.size() + 1, false);
     for (size_t i = an.size(); i-- > 0;) later[i] = later[i + 1] || HasStmts(an[i]);
-    for (size_t i = 0; i < an.size(); i++) EmitArg(sp, i, an[i], args, later[i + 1]);
+    // Whether an argument is a variable of the caller's that the callee
+    // reads where it lies (EmitArg), which a result must not overwrite.
+    auto lent = false;
+    for (size_t i = 0; i < an.size(); i++) lent |= EmitArg(sp, an, i, args, later[i + 1]);
     for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
     vector<string> retex(sp->rets.size());
     for (size_t i = 0; i < sp->rets.size(); i++) {
@@ -344,9 +588,16 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
             args.push_back(stk);
         } else if ((int)i != ki.cret) {
             // A reference the destination loads through lands in a
-            // temporary first (EmitCallInto).
+            // temporary first (EmitCallInto). The callee builds a PtrAbi
+            // result in place (GenNormalReturn), so only a fresh destination
+            // takes one directly. An argument the callee reads where it
+            // lies (StableArg) may be that destination, which a result
+            // written before the callee's last read of it would change.
+            auto ptrabi = PtrAbi(rt) && !NeedsResultLocation(rt);
             if (dd.k == DK_LVALUE && !NeedsDeref(rt, dd.t) &&
-                (!NeedsResultLocation(rt) || (dd.t && TEq(rt, dd.t)))) {
+                (ptrabi || (lent && !NeedsResultLocation(rt))
+                    ? dd.fresh && dd.t && TEq(rt, dd.t)
+                    : !NeedsResultLocation(rt) || (dd.t && TEq(rt, dd.t)))) {
                 retex[i] = dd.s;
                 args.push_back(cat("&", dd.s));
             } else {
@@ -643,9 +894,15 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     // become the C arguments every arm passes, read before the switch (the
     // cases agree on those parameters' types).
     vector<vector<string>> shared(an.size());
+    // Read before the switch, they count as read before later arguments
+    // that run statements, so none is lent (EmitArg): the arms' results
+    // may go wherever their destination is.
     for (size_t i = 0; i < an.size(); i++) {
         if ((int)i == pos) scrutinee();
-        else EmitArg(sp0, i, an[i], shared[i], true);
+        else {
+            [[maybe_unused]] auto lent = EmitArg(sp0, an, i, shared[i], true);
+            assert(!lent);
+        }
     }
     // Shared return channels.
     vector<string> retex(sp0->rets.size());
@@ -728,7 +985,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             }
             auto pt = sp->argtypes[i];
             if (IsResz(pt)) Fail(c->line, "resizable by-value dispatch payloads are unsupported");
-            if (IsLargeFixed(pt)) args.push_back(cat("&", varg));
+            if (PtrAbi(pt)) args.push_back(cat("&", varg));
             else PushArg(args, pt, IsPoolParam(sp, i), varg);
         }
         for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);

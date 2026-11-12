@@ -333,7 +333,7 @@ inline void CodeGen::CollectSpecs() {
         si.located = ast.StdlibFile(sp->sf->line.fileidx) && !sp->sf->isexport &&
                      sp->sf != ast.MainFunction();
         for (size_t i = 0; i < sp->rets.size(); i++)
-            if (si.cret < 0 && IsFix(sp->rets[i]) && !IsLargeFixed(sp->rets[i]) &&
+            if (si.cret < 0 && IsFix(sp->rets[i]) && !PtrAbi(sp->rets[i]) &&
                 !NeedsResultLocation(sp->rets[i]))
                 si.cret = (int)i;
         for (auto t : sp->needs)
@@ -572,9 +572,11 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
             if (decls) vstk[vd] = cat(pn, "_stk");
         } else if (IsBytesT(pt)) {
             add(cat("uint8_t *", pn));
-        } else if (IsLargeFixed(pt)) {
-            // The caller makes an independent value copy on a data stack.
-            // Passing its address avoids the C ABI's native-stack copy.
+        } else if (PtrAbi(pt)) {
+            // The caller makes an independent value copy (on a data stack
+            // when it is large), or hands over a temporary of its own that
+            // dies at the call or a variable it never reads again
+            // (MovableArg). Passing its address avoids the C ABI's copy.
             add(cat(CT(pt), " *", pn));
             if (decls) fvptr.insert(vd);
         } else {

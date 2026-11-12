@@ -1252,7 +1252,7 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
             // Advance past the value; a size fn may be emitted on demand.
             Append(b, "    p += ", SizeX(pt, cat("a", i)).c_str(), ";\n");
             args.push_back(cat("a", i));
-        } else if (IsLargeFixed(pt)) {
+        } else if (PtrAbi(pt)) {
             // The spawn packet belongs exclusively to this worker, so its
             // fixed argument bytes are already the callee's private copy.
             Append(b, "    ", CT(pt), " *a", i, " = (", CT(pt), " *)p; p += ",

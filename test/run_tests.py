@@ -1793,6 +1793,33 @@ def main():
         else:
             r.ok(f"member parameters {f.name}")
     r.show_task(member_params)
+    # A large fixed variable at its only use is the callee's argument itself
+    # (CodeGen::SingleUses, MovableArg); one read again, or read through a
+    # reference or a deferred body, or used in a loop it is declared outside
+    # of, is copied first. At -O0, which inlines nothing.
+    def last_use_moves():
+        f = HERE / "codegen" / "last_use_moves.goose"
+        cfile = gendir / "last_use_moves-shapes.c"
+        code, out, err = r.goose("-O0", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"last-use moves {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        def given(fn, var):
+            return re.search(rf"\b{fn}_g\(&\(\*{var}_g\)[,)]", text) is not None
+        # ("spoil", "d") is pass_on's parameter handed on.
+        moved = [("bump", "a"), ("spoil", "dl"), ("spoil", "d")]
+        copied = [("bump", "b"), ("spoil", "c"), ("bump", "c"), ("spoil", "e"),
+                  ("both", "h"), ("spoil", "j"), ("pass_on", "m"), ("read_after", "m"),
+                  ("spoil", "n"), ("spoil", "q"), ("spoil", "w"), ("spoil", "ix"),
+                  ("spoil", "px"), ("spoil", "sx"), ("spoil", "dx"), ("spoil2", "cx")]
+        wrong = [f"{fn}({v}) not given" for fn, v in moved if not given(fn, v)]
+        wrong += [f"{fn}({v}) given" for fn, v in copied if given(fn, v)]
+        if wrong:
+            r.fail(f"last-use moves {f.name}", ", ".join(wrong))
+        else:
+            r.ok(f"last-use moves {f.name}")
+    r.show_task(last_use_moves)
     # Root descriptors expose ordinary component metadata to top caching and
     # loop-view hoisting, even when Goose leaves the helper out of line.
     def root_owner_caches():

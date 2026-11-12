@@ -343,7 +343,7 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     auto arg = pool                ? PrefArg(lv, ln)
                : pt->kind == TY_REF ? RefArg(lv, pt->ref->sub, ln)
                                     : LoadLoc(lv, pt, ln);
-    if (IsLargeFixed(pt)) arg = cat("&", Snapshot(pt, arg));
+    if (PtrAbi(pt)) arg = cat("&", Snapshot(pt, arg));
     MarkFlush();
     auto &ki = sinfo[sp];
     // The callee's stacks start above everything live here, the builder's
@@ -355,7 +355,7 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     if (ki.needssp) NoteStackCall(sp, ln);
     vector<string> args;
     PushArg(args, sp->argtypes[0], outpool, r);
-    if (IsLargeFixed(pt)) args.push_back(arg);
+    if (PtrAbi(pt)) args.push_back(arg);
     else PushArg(args, pt, pool, arg);
     if (ki.needssp) args.push_back(SpTop());
     if (ki.located) args.push_back(CallerLoc(ln));

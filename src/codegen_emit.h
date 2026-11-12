@@ -1061,8 +1061,16 @@ inline void CodeGen::EmitExports() {
         for (size_t i = 0; i < sp->argtypes.size(); i++) {
             auto arg = Unique(cat("gs_export_arg", i));
             Append(params, params.empty() ? "" : ", ", CT(sp->argtypes[i]), " ", arg);
-            PushArg(argv, sp->argtypes[i], IsPoolParam(sp, i), arg);
+            // The host passes by C value; a parameter the callee takes by
+            // pointer gets the wrapper's own copy (PtrAbi).
+            if (PtrAbi(sp->argtypes[i])) argv.push_back(cat("&", arg));
+            else PushArg(argv, sp->argtypes[i], IsPoolParam(sp, i), arg);
         }
+        // A result the callee writes through an out-pointer lands in a local
+        // the wrapper returns by C value.
+        auto outres = !sp->rets.empty() && !returnslice && si.cret != 0
+                      ? Unique("gs_export_result") : string();
+        if (!outres.empty()) argv.push_back(cat("&", outres));
         for (auto &a : argv) Append(args, args.empty() ? "" : ", ", a);
         auto outlen = Unique("gs_export_len");
         if (returnslice) Append(params, params.empty() ? "" : ", ", "gs_i64 *", outlen);
@@ -1085,6 +1093,10 @@ inline void CodeGen::EmitExports() {
                    "    return (const uint8_t *)", value, ".data;\n");
         } else if (sp->rets.empty()) {
             Append(code, "    ", si.cname, "(", args, ");\n");
+        } else if (!outres.empty()) {
+            Append(code, "    ", CT(sp->rets[0]), " ", outres, ";\n",
+                   "    ", si.cname, "(", args, ");\n",
+                   "    return ", outres, ";\n");
         } else {
             Append(code, "    return ", si.cname, "(", args, ");\n");
         }
