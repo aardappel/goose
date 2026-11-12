@@ -1,8 +1,10 @@
-// std's scalar helpers, math's and vec's functions are checkfree, so a
+// std's scalar helpers, math's, vec's, mat's and quat's functions are checkfree, so a
 // checkfree function can call them (spec §7.14) at every type they take.
 import std;
 import math;
 import vec;
+import mat;
+import quat;
 
 struct P { x: i64 }
 var nodes: P[>..] = [];
@@ -49,6 +51,12 @@ checkfree fn vectors(v: double3, w: float2) {
           length(w));                                                  // 1.0 25.0 0.0 2.5 25.0 5.0
 }
 
+checkfree fn transforms(m: float4x4, q: doubleq) {
+    let p = transform_point(mul(inverse(m), m), float3 { 1.0, 2.0, 3.0 });
+    let r = quat_cast(mat3_cast(slerp(q, doubleq_identity, 0.5)));
+    print(p.x, " ", determinant(transpose(m)), " ", length_sq(r) > 0.999);   // 1.0 8.0 true
+}
+
 fn main() {
     floats(-2.0, 0.75);
     ints([7, -4]);    // 7 1 1 2 1 8, then 4 -1 -1 -2 -1 1, then -4 7 2 1 200 2
@@ -56,4 +64,5 @@ fn main() {
     nodes.push(P { 20 });
     print(ids(1 as NodeId, 0 as NodeId));   // 10 + 20 + 20: 50
     vectors(double3 { 3.0, 4.0, 0.0 }, float2 { 3.0, 4.0 });
+    transforms(scale(float3 { 2.0, 2.0, 2.0 }), doubleq { 0.0, 0.0, 1.0, 0.0 });
 }

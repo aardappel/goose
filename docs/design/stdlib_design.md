@@ -273,6 +273,8 @@ constant (§2): `format(out, 'x')` appends `120`, and a byte is appended with
 | `stdlib/math.goose` | — | libm as `extern fn`, `PI`/`TAU`, `radians`/`degrees`, `is_nan`/`is_inf` | `extern fn` |
 | `stdlib/dictionary.goose` | `std` | `dictionary<K, V>` and its functions | `default<T>()` |
 | `stdlib/vec.goose` | `std`, `math` | `vec2/3/4<T>`, `float*`, `double*`, `int*`, vector functions | — |
+| `stdlib/mat.goose` | `vec`, `math` | `float2x2`…`double4x4` (fixed arrays of columns), transforms, cameras | §6.1 elementwise math on fixed arrays |
+| `stdlib/quat.goose` | `mat`, `vec`, `math` | `quat<T>`, `floatq`, `doubleq`, rotations, slerp, conversions to and from matrices | — |
 | `stdlib/os.goose` | `std` | files, stdio, arguments, environment, time, sleep, entropy | `extern fn`, runtime C in `src/runtime/runtime_os.h` |
 
 `import std;` must be written explicitly; nothing is imported
