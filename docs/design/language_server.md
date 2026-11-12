@@ -413,7 +413,7 @@ tree, and its `Format` in `format.h` is pure, which the server calls).
 | Feature | Answered from | Needs |
 |---|---|---|
 | Diagnostics on change | the analysis of each root the file belongs to | B, C, E, F; D1 and D2 for more than the first error |
-| Hover | the clone at the position: `exprtype`, a `VarDef`'s type, `DumpInstance` of a `Call::spec`, a declaration's signature and doc, a builtin's table entry (`sig`/`ret`/`doc`) | A, H |
+| Hover | the clone at the position: `exprtype`, a `VarDef`'s type, `DumpInstance` of a `Call::spec`, a declaration's signature and doc, a builtin's display forms and doc with the checked call's full return list (`exprtype` when `rettypes` is empty) | A, H |
 | Go to definition | `Ident::vdef` (local or global `VarDef`), `fnref` or `Call::spec->sf`, `Dot::fieldidx` into the `SStruct`, `variantconst`, a `TypeExpr`'s `SStruct`/`SEnum`/`SAlias`, an `Import`'s file | A |
 | References, rename | every clone's `Ident`, `Dot`, `Call`, `TypeName` resolving to the declaration, reduced to source nodes by `Origin()`; rename edits the leaf name of each reference and of the declaration | A; across the roots that reach the file |
 | Call hierarchy | the function named at the position, found as for go to definition; its incoming calls are the references that are the callee of a call, grouped by the function declared around each; its outgoing calls are the callees in its body (those in its nested functions are left to them), grouped by the function each resolves to | A (ends, to find the function around a call) |
@@ -421,7 +421,7 @@ tree, and its `Format` in `format.h` is pure, which the server calls).
 | Workspace symbols | the declaration tables of every root | |
 | Completion of names | the parse tree: the bindings of the blocks enclosing the position (`VarDecl`, parameters, `for` and `match` binders, nested functions), then the namespace's globals, functions, types, the builtins table and the keywords; works in generic bodies, which have no clone | A |
 | Completion after `.` | the incomplete `Dot`'s object type from its clone: the instance's fields, the enum's variants, the functions whose first parameter accepts the type (UFCS), the builtins table's members by receiver kind (`BR_` masks); without a clone, every field and function name | D1 (the incomplete `Dot`) |
-| Signature help | the overloads of the callee's name (`Namespace::functionmap`) and the builtins table's display signatures (`sig`/`ret`/`doc`), from the parse alone; the active parameter by commas | A |
+| Signature help | the overloads of the callee's name (`Namespace::functionmap`) and the builtins table's structured parameter/return forms; builtin form selected by supplied arity, active parameter by commas, with variadic arguments staying on the final display parameter | A |
 | Semantic tokens | the parse tree and the symbol tables: function, type, type parameter, variant, field, namespace, parameter, variable (`let` read-only), with no clone needed | A |
 | Inlay hints | a `let` without a type: its `VarDef::type` in the clone (the first specialization's, where they differ); parameter names at calls from `Call::spec->sf` | A |
 | Folding, selection ranges | node ends | A (ends) |
@@ -431,6 +431,16 @@ tree, and its `Format` in `format.h` is pure, which the server calls).
 Inside a generic function nothing instantiates, the features answer from
 an exemplar instantiation (§11): the function checked with each type
 parameter bound to a fresh opaque type, as far as that check gets.
+
+Builtin display forms store parameter labels directly; neither signature help
+nor dot-member rendering parses a display string. `qget` and `to_bytes` have
+separate forms for their arity-dependent returns, and `from_bytes<A>` names
+the requested array type rather than one array kind. A member-call hover uses
+the call's results, not the callee `Dot`'s type. A builtin id recorded during
+a failed check is not a completed resolution: dot-name fallback requires a
+checked, compatible receiver type and matching call/property syntax, and says
+it is not checked. An opaque or unavailable receiver keeps the ordinary
+unresolved hover, so a field named `push` does not become array-method help.
 
 ## 7. The extension
 

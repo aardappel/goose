@@ -383,6 +383,12 @@ none), and sends the queries specified by its `// lsp:` lines. These check:
 
 * Hover text; definitions at a position, in a file, or absent; document symbols;
   and signature help with the active parameter.
+* `builtins.goose`: exact builtin hover result-list boundaries, checked member
+  returns, conditional `qget`/`to_bytes` signature forms and arity selection,
+  requested `from_bytes` array kinds, completion forms, and variadic parameter
+  index bounds. Opaque receivers and code beyond an exemplar's failed check
+  must not turn colliding fields into builtin methods; a compatible receiver
+  checked before an argument fails can still receive generic builtin help.
 * Semantic token types at a position, including positions with no token; reference
   counts; and renames that either make the expected number of edits or are refused.
   Each rename edit must change only the name's leaf.

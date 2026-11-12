@@ -174,6 +174,9 @@ def check_lsp_protocol(exe, base):
             "uri": uri_of(path), "languageId": "goose", "version": 1, "text": text}}, request=False)
         return client.diagnostics_for(uri_of(path))
 
+    def close_doc(path):
+        client.send("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}}, request=False)
+
     def queries(path, text, diags):
         """Asks what the fixture's `// lsp:` lines say to ask, and checks the
         answers; its `error` lines are the lines its diagnostics must be at,
@@ -486,6 +489,128 @@ def check_lsp_protocol(exe, base):
         etext = exemplar.read_text(encoding="utf-8")
         queries(exemplar, etext, open_fixture(exemplar, etext))
 
+    # Builtin returns and overloads are checked through their protocol
+    # structure, not documentation prose or an incidental full signature.
+    def builtin_checks():
+        path = fixtures / "builtins.goose"
+        body = path.read_text(encoding="utf-8")
+        bdoc = {"textDocument": {"uri": uri_of(path)}}
+        lines = body.splitlines()
+
+        def ask(method, marker, token):
+            at, line = next((at, line) for at, line in enumerate(lines) if line.endswith("// " + marker))
+            return client.request("textDocument/" + method, {
+                **bdoc, "position": {"line": at, "character": line.index(token)}})
+
+        def header(got):
+            value = (got or {}).get("contents", {}).get("value", "")
+            match = re.search(r"```[^\n]*\n(.*?)\n```", value, re.DOTALL)
+            return match.group(1) if match else ""
+
+        def returns(label):
+            # The entire suffix is compared: `i64, bool` must not pass a
+            # check for the one-result `i64` form.
+            suffix = label.partition(" -> ")[2]
+            if "(" not in label:
+                suffix = label.partition(": ")[2]
+            return tuple(part.strip() for part in suffix.split(",")) if suffix else ()
+
+        def hover(marker, name, want, member=False):
+            got = ask("hover", marker, name)
+            label = header(got)
+            prefix = "builtin " + ("." if member else "") + name + "("
+            if not (label.startswith(prefix) or label.startswith(prefix[:-1] + "<")) or returns(label) != want:
+                fail(f"builtin {marker} hover returns are not {want}", got)
+
+        def signature(marker, token, want, selected, active):
+            got = ask("signatureHelp", marker, token)
+            signatures = (got or {}).get("signatures", [])
+            shapes = [(len(s.get("parameters", [])), returns(s["label"])) for s in signatures]
+            if (shapes != want or got.get("activeSignature") != selected or
+                    got.get("activeParameter") != active):
+                fail(f"builtin {marker} signature forms/selection", got)
+            params = signatures[selected].get("parameters", [])
+            if not 0 <= active < max(1, len(params)):
+                fail(f"builtin {marker} active parameter is out of bounds", got)
+            for s in signatures:
+                if "activeParameter" in s and not 0 <= s["activeParameter"] < max(1, len(s.get("parameters", []))):
+                    fail(f"builtin {marker} per-signature active parameter is out of bounds", got)
+
+        def completions(marker, token, want):
+            got = ask("completion", marker, token)
+            items = {item["label"]: item for item in (got or {}).get("items", [])}
+            for name, forms in want.items():
+                labels = items.get(name, {}).get("detail", "").splitlines()
+                shapes = []
+                for label in labels:
+                    params = label.partition("(")[2].partition(")")[0]
+                    shapes.append((len(params.split(",")) if params else 0, returns(label)))
+                if shapes != forms:
+                    fail(f"builtin {name} completion forms", items.get(name))
+
+        queries(path, body, open_fixture(path, body))
+        try:
+            for marker, name, want in (
+                    ("hardware", "hardware_threads", ("i64",)),
+                    ("source_line", "src_line", ("i64",)),
+                    ("queue_put", "qput", ("bool",)),
+                    ("wait", "thread_wait", ("bool",)),
+                    ("spawn_many", "thread_spawn", ("i64",)),
+                    ("queue_blocking", "qget", ("i64",)),
+                    ("queue_timed", "qget", ("i64", "bool")),
+                    ("global_bytes", "to_bytes", ("u8[>..]",)),
+                    ("global_bytes_out", "to_bytes", ()),
+                    ("decode", "from_bytes", ("i64[]", "bool"))):
+                hover(marker, name, want)
+            for marker, name, want in (
+                    ("member_push", "push", ("i64&",)),
+                    ("member_pop", "pop", ("i64",)),
+                    ("member_bytes", "to_bytes", ("u8[>..]",)),
+                    ("member_bytes_out", "to_bytes", ()),
+                    ("partial_push", "push", ("T&",))):
+                hover(marker, name, want, member=True)
+
+            qget = [(0, ("T",)), (1, ("T", "bool"))]
+            image = [(1, ("u8[>..]",)), (2, ())]
+            signature("queue_blocking", ")", qget, 0, 0)
+            signature("queue_timed", "100", qget, 1, 0)
+            signature("global_bytes", "xs)", image, 0, 0)
+            signature("global_bytes_out", "out)", image, 1, 1)
+            # UFCS keeps the receiver as the first signature parameter.
+            signature("member_bytes", ")", image, 0, 0)
+            signature("member_bytes_out", "out)", image, 1, 1)
+            signature("member_push", "1)", [(2, ("T&",))], 0, 1)
+            signature("member_pop", ")", [(1, ("T",))], 0, 0)
+            signature("member_resize_short", "2)", [(2, ()), (3, ())], 0, 1)
+            signature("member_resize", "0)", [(2, ()), (3, ())], 1, 2)
+            signature("decode", "image[..]", [(1, ("A", "bool"))], 0, 0)
+            # Zero arguments preserve print's minimum arity without pinning
+            # its documentation; later arguments must stay in its final slot.
+            signature("print_empty", ")", [(1, ())], 0, 0)
+            signature("print_many", "valid)", [(1, ())], 0, 0)
+            for marker in ("spawn_many", "contained_many"):
+                signature(marker, "4)", [(2, ("i64",))], 0, 1)
+            completions("queue_blocking", "qget", {
+                "qget": qget, "to_bytes": image, "print": [(1, ())]})
+            completions("member_bytes", "to_bytes", {
+                "to_bytes": [(0, ("u8[>..]",)), (1, ())],
+                "push": [(1, ("T&",))], "len": [(0, ("i64",))]})
+
+            got = ask("hover", "checked_field", "push")
+            if header(got) != "push: i64":
+                fail("a checked field named push loses its field type", got)
+            for marker in ("checked_field", "stopped_field", "opaque_field", "opaque_call",
+                           "scalar_collision", "method_as_field", "property_as_call",
+                           "unchecked_push", "unchecked_len"):
+                token = "len" if marker in ("property_as_call", "unchecked_len") else "push"
+                got = ask("hover", marker, token)
+                if header(got).startswith("builtin "):
+                    fail(f"builtin fallback claims {marker}", got)
+        finally:
+            close_doc(path)
+
+    builtin_checks()
+
     # Roots as files open and close (docs/design/language_server.md §4),
     # judged by the diagnostics an editor has once a request has had the
     # analyses due run, and by the queries answering. A module with an
@@ -494,9 +619,6 @@ def check_lsp_protocol(exe, base):
     # a root again; two programs reaching it report its error once, and it
     # stays when one stops importing it.
     lib, app, app2 = (fixtures / f"roots_{n}.goose" for n in ("lib", "app", "app2"))
-
-    def close_doc(path):
-        client.send("textDocument/didClose", {"textDocument": {"uri": uri_of(path)}}, request=False)
 
     def change_doc(path, body):
         client.send("textDocument/didChange", {"textDocument": {"uri": uri_of(path), "version": 2},

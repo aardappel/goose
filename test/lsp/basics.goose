@@ -42,17 +42,6 @@ fn main() {
 // Called by nothing.
 fn spare(x) { x }
 
-fn builtins_exercise() {
-    var w: i64[>..] = [];
-    w.push(1);
-    w.resize(4, 0);
-    let n = w.len;
-    let t = qget<i64>();
-    let u, ok = qget<i64>(100);
-    print(n, t, u, ok);
-    thread_wait(0);
-}
-
 // lsp: hover 31:15 "fn add<T>(a: T, b: T) -> T"
 // lsp: hover 31:15 "Adds two numbers."
 // lsp: hover 31:21 "x: i64"
@@ -65,15 +54,8 @@ fn builtins_exercise() {
 // lsp: hover 35:22 "Shape.Square"
 // lsp: hover 33:11 "let sum: i64"
 // lsp: hover 36:19 "fn helper::twice(x: i64) -> i64"
-// lsp: hover 38:7 "builtin .push(v: T)"
-// lsp: hover 38:7 "constructed in place"
+// lsp: hover 38:7 "builtin .push"
 // lsp: hover 39:13 "builtin .len: i64"
-// lsp: hover 39:13 "element count"
-// lsp: hover 33:5 "builtin print(a, b, …)"
-// lsp: hover 33:5 "single write"
-// lsp: complete 33:5 has print "builtin print(a, b, …)"
-// lsp: complete 38:7 has push "builtin .push(v: T) -> T&"
-// lsp: complete 39:13 has len "builtin .len: i64"
 // lsp: definition 31:15 -> 15:4
 // lsp: definition 31:21 -> 10:5
 // lsp: definition 30:13 -> 8:8
@@ -146,12 +128,3 @@ fn builtins_exercise() {
 // lsp: outgoing 29:4 -> add@31,32 area@35 twice@36
 // lsp: outgoing 22:4 -> -
 // lsp: incoming 33:11 -> none
-// lsp: hover 47:7 "builtin .push(v: T)"
-// lsp: hover 47:7 "constructed in place"
-// lsp: hover 50:13 "builtin qget<T>(ms: i64 = ...) -> i64"
-// lsp: hover 50:13 "blocking"
-// lsp: signature 48:14 "builtin resize(a, n: i64, v: T = ...)" 1
-// lsp: signature 50:23 "builtin qget<T>(ms: i64 = ...) -> T, bool" 0
-// lsp: hover 51:17 "builtin qget<T>(ms: i64 = ...) -> i64, bool"
-// lsp: hover 51:17 "blocking"
-// lsp: signature 51:30 "builtin qget<T>(ms: i64 = ...) -> T, bool" 0
