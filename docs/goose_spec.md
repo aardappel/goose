@@ -127,10 +127,17 @@ Literals:
 
 * Integer: decimal and `0x` hex; the full unsigned 64-bit range is accepted
   (a value above `i64.max` is a `u64` constant, §6.2). Character
-  literals `'a'` are integer constants.
+  literals `'a'` are integer constants. An underscore (`_`) may separate
+  digits for readability when it lies between two digits of the same digit
+  run (`1_000_000`, `0xFF_AA`); `1__0`, `1_`, and `0x_1` are lexical errors.
+  The separator is not part of the value.
 * Float: with `.` and/or a decimal exponent (`1.5`, `2.5e-3`); C99-style hex
   floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
   fraction only when a digit follows, so `1..2` lexes as a range.
+  Separators may appear in the integer part, fraction, and exponent,
+  including a hex float's binary exponent (`3.141_592`, `1_000e3`,
+  `0x1.A_Bp3`, `1e1_0`, `0x1.8p1_0`); `1.0_` and `0x1.8_p3` are errors.
+  `goose format` preserves the author's separators.
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
 * Raw string `"""..."""`: no escapes, and the next `"""` ends it. On one
   line, its text is what lies between the delimiters (`"""a "quoted"
