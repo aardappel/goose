@@ -1,0 +1,11 @@
+arith true true true true true
+bit true true true true
+cmp true true true true true true
+mirror true
+shift true true
+f32 true true true true
+f32cmp true
+cfold true true true true true
+cfbit true true true
+cfcmp true true true true true true
+cff32 true
