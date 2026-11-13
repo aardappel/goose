@@ -243,6 +243,38 @@ fn ref_sum_count(i: i64, n: i64) -> f64 {
     return s;
 }
 
+// From 0 to a constant multiple of the block size, the blocks run every
+// iteration, and there is no loop for the rest (#210): a count, and a fixed
+// array. A constant that is not one keeps it, as a count or length known only
+// at run time does (shape_sum_count, shape_sum_dot, shape_strip_fixed).
+fn shape_sum_whole(i: i64) -> f64 {
+    var s = 0.1;
+    for j in 64 { s += term(i, j) * 3.0; }
+    return s;
+}
+
+fn shape_sum_ragged(i: i64) -> f64 {
+    var s = 0.1;
+    for j in 61 { s += term(i, j) * 3.0; }
+    return s;
+}
+
+fn shape_sum_fixed(a: f64[16]&) -> f64 {
+    var s = 0.0;
+    for x in a { s += x * 1.5; }
+    return s;
+}
+
+fn ref_sum_fixed(a: f64[16]&) -> f64 {
+    var s = 0.0;
+    var k = 0;
+    while k < 16 {
+        s += a[k] * 1.5;
+        k++;
+    }
+    return s;
+}
+
 fn shape_sum_f32(xs: f32[:]) -> f32 {
     var s: f32 = 0.0;
     for x in xs { s += x * 1.5 + 0.25; }
@@ -650,6 +682,11 @@ fn again(xs: f64[:], ys: f64[:], fs: f32[:], m: i64[37]&, node: Node&, longs: i6
     print(shape_sum_spec(xs, 1.0, 9.0) + shape_sum_spec(ys, 0.1, 0.3) +
           shape_sum_spec(xs[1..], 2.0, 4.0) + shape_sum_spec(ys[1..], 0.0, 1.0) +
           shape_sum_spec(xs[2..], 5.0, 6.0));
+    var a: f64[16] = [0.0; 16];
+    for &x, k in a { x = k * 0.37 + 0.1; }
+    print(shape_sum_whole(1) + shape_sum_whole(2) + shape_sum_ragged(1) + shape_sum_ragged(2));
+    print(shape_sum_fixed(a) + shape_sum_fixed(a) * 2.0 + shape_sum_fixed(a) * 3.0 +
+          shape_sum_fixed(a) * 4.0 + shape_sum_fixed(a) * 5.0);
 }
 
 fn main() {
@@ -692,6 +729,8 @@ fn main() {
         for d in divisors { check("strip div", n, shape_strip_div(us, d) == ref_strip_div(us, d)); }
         check("dot", n, shape_sum_dot(xs, ys) == ref_dot(xs, ys));
         check("sum count", n, shape_sum_count(n, n) == ref_sum_count(n, n));
+        check("sum whole", n, shape_sum_whole(n) == ref_sum_count(n, 64));
+        check("sum ragged", n, shape_sum_ragged(n) == ref_sum_count(n, 61));
         check("f32", n, shape_sum_f32(fs) == ref_sum_f32(fs));
         check("range sum", n, shape_sum_range(-n, n * 2 / 3) == ref_sum_range(-n, n * 2 / 3));
         check("reads", n, keep_sum_reads(xs) == ref_sum_reads(xs));
@@ -714,6 +753,9 @@ fn main() {
     var m: i64[37] = [0; 37];
     for &x, i in m { x = i * i - 5; }
     print(shape_strip_fixed(m), " ", ref_fixed(m));
+    var fx: f64[16] = [0.0; 16];
+    for &x, i in fx { x = i * i - 5.5; }
+    check("sum fixed", 0, shape_sum_fixed(fx) == ref_sum_fixed(fx));
 
     var node = Node { v: 0, links: [] };
     for n in 9 {
