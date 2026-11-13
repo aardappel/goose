@@ -501,8 +501,14 @@ inline void CodeGen::GenBodyCopy(Block *bodyb, int si, size_t first) {
 // the value of every `i % k` the body takes. An in-order sum (sumred)
 // computes the block's k terms into a local array, then adds them to the sum
 // one after another, as the loop would have.
+//
+// `exact`: the range starts at 0 and ends at a constant multiple of k, so the
+// last block ends on the end and the `ctr < hi` tail after it runs zero
+// times. Leaving the tail out keeps GCC from diagnosing the dead loop
+// (-Waggressive-loop-optimizations) and removes C that is provably
+// unreachable.
 inline void CodeGen::GenBlocked(ForLoop *f, int k, const string &more, const string &step,
-                                const function<void()> &bind, const string &cond) {
+                                const function<void()> &bind, const string &cond, bool exact) {
     auto lp = OpenLoop(f->body, nullptr, { f->vdef, f->idxdef }, Dst {});
     auto si = lp.si;
     cscopes[si].straight = StraightCode(f->body);
@@ -551,12 +557,14 @@ inline void CodeGen::GenBlocked(ForLoop *f, int k, const string &more, const str
     cscopes[si].defers.clear();
     cscopes[si].usedcnt = false;
     cscopes[si].cntlbl = Lbl();
-    L("for (; ", cond, "; ", step, ") {");
-    ind++;
-    bind();
-    GenBodyCopy(f->body, si);
-    ind--;
-    L("}");
+    if (!exact) {
+        L("for (; ", cond, "; ", step, ") {");
+        ind++;
+        bind();
+        GenBodyCopy(f->body, si);
+        ind--;
+        L("}");
+    }
     CloseLoop(lp);
 }
 

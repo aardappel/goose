@@ -1127,6 +1127,12 @@ class Runner:
             "shape_strip_fixed": f"{strip} 4", "shape_strip_div": f"{strip} 4",
             "shape_sum_dot": sums, "shape_sum_count": sums, "shape_sum_f32": sums,
             "shape_sum_range": sums, "shape_sum_spec": sums, "keep_sum_reads": None,
+            "shape_exact_sum_1000": sums, "shape_exact_sum_1001": sums,
+            "shape_exact_sum_8": sums, "shape_exact_sum_4": sums, "shape_exact_sum_0": sums,
+            "shape_exact_range_1000": sums, "shape_exact_range_1001": sums,
+            "shape_exact_strip_1000": f"{strip} 8", "shape_exact_strip_1001": f"{strip} 8",
+            "shape_exact_strip_8": f"{strip} 8", "shape_exact_strip_4": f"{strip} 8",
+            "shape_exact_strip_0": f"{strip} 8",
             "shape_bound_count": f"{bound} 8", "shape_bound_any": f"{bound} 8",
             "shape_bound_all": f"{bound} 8", "shape_bound_for": f"{bound} 6",
             "shape_bound_grow": f"{bound} 8",
@@ -1148,6 +1154,25 @@ class Runner:
         if "gs_divu32_q(" not in body or re.search(r"\bgs_(?:div|mod)_u32\(", body):
             self.fail("loop shapes shape_strip_div", "a division not by the divisor's magic number")
             valid = False
+        # A loop from zero over a constant multiple of its block size ends
+        # exactly on the last block, so the `for (; ...)` tail after the block
+        # loop is dead and codegen leaves it out. A count that is not a
+        # multiple keeps its tail.
+        tails = {
+            "shape_exact_sum_1000": False, "shape_exact_sum_1001": True,
+            "shape_exact_sum_8": False, "shape_exact_sum_4": True, "shape_exact_sum_0": False,
+            "shape_exact_range_1000": False, "shape_exact_range_1001": True,
+            "shape_exact_strip_1000": False, "shape_exact_strip_1001": True,
+            "shape_exact_strip_8": False, "shape_exact_strip_4": True,
+            "shape_exact_strip_0": False,
+        }
+        for name, want in tails.items():
+            got = "for (; " in texts.get(name, "")
+            if got != want:
+                self.fail(f"loop shapes {name}",
+                          f"remainder loop {'present' if got else 'missing'}, "
+                          f"want {'present' if want else 'absent'}")
+                valid = False
         # A && or || condition is a chain of branches (CodeGen::GenBranch):
         # neither the 0/1 flag the right operand sets inside an `if`, which
         # a value keeps, nor the two flags combined with & or | of a loop that

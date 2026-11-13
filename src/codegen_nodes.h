@@ -1017,9 +1017,15 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         if (auto k = cg.BlockSize(this)) {
             auto lit = r ? Is<IntLit>(r->lo) : nullptr;
             auto fromzero = !r || (lit && !lit->uns && lit->val == 0);
+            // A range from zero whose end is a constant multiple of k ends
+            // exactly on the last block, so the tail after the block loop is
+            // dead. A count loop's `iter` is its end here.
+            auto end = r ? r->hi : iter;
+            auto e = Is<IntLit>(end);
+            auto exact = fromzero && e && !e->uns && e->val >= 0 && e->val % k == 0;
             cg.L(ict, " ", ctr, " = ", lov, ";");
             cg.GenBlocked(this, k, cg.AtLeastLeft(ct, hiv, ctr, k, fromzero), step, bind,
-                          cat(ctr, " < ", hiv));
+                          cat(ctr, " < ", hiv), exact);
             return;
         }
         cg.GenLoopBody(bind, body, d,
@@ -1183,7 +1189,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         if (auto k = cg.BlockSize(this); k && (lenbound < 0 || lenbound >= 2 * k)) {
             cg.L("int64_t ", gi, " = 0;");
             cg.GenBlocked(this, k, cat("(", v.len, ") - ", gi, " >= ", k), cat(gi, "++"), bind,
-                          cat(gi, " < (", v.len, ")"));
+                          cat(gi, " < (", v.len, ")"), false);
             return;
         }
     }
