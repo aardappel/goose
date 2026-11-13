@@ -9,6 +9,8 @@
 - [slot_pool](#slot_pool)
 - [slice_pool](#slice_pool)
 - [vec](#vec)
+- [mat](#mat)
+- [quat](#quat)
 - [math](#math)
 - [os](#os)
 - [ffi](#ffi)
@@ -24,8 +26,8 @@
 
 </details>
 
-The standard library has eighteen modules under `stdlib/`: `std`,
-`dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, `os`, `ffi`, `binary`,
+The standard library has twenty modules under `stdlib/`: `std`,
+`dictionary`, `slot_pool`, `slice_pool`, `vec`, `mat`, `quat`, `math`, `os`, `ffi`, `binary`,
 `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, `ui`, and `exception`.
 Import each module by name,
 for example `import std;`. The compiler locates the library in its source
@@ -105,7 +107,7 @@ The library uses these conventions:
   `T` the reference type. `stable_sort` sorts an array of `in pool` links,
   but its temporary array cannot hold copies of self-relative links (spec
   §3.9).
-* The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `math`, and `os` names are global;
+* The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `mat`, `quat`, `math`, and `os` names are global;
   `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
   `physics`, `ui` and `exception` use their own namespaces, and so do the
   helpers `std` and `json` read and write float text with, in `float_text`,
@@ -918,6 +920,114 @@ also broadcast a scalar in either order: `v * 2.0`, `v / length(v)`,
 scalar converts to the component type, so an `f64` variable scaling a
 `float3` needs an explicit `as f32`. Per-component
 `min`/`max` is written out (`min(a.x, b.x)`).
+
+## mat
+
+Square matrices for 2D and 3D transforms, over `vec`'s vectors. The names
+are GLSL's, and glm's where GLSL has none.
+
+```goose
+type float2x2 = float2[2]   float3x3 = float3[3]   float4x4 = float4[4]   // and double2x2/3x3/4x4
+let float4x4_identity                              // all six aliases
+
+fn mul<T>(a: vec4<T>[4], b: vec4<T>[4]) -> vec4<T>[4]   // GLSL a * b: b, then a
+fn mul<T>(m: vec4<T>[4], v: vec4<T>) -> vec4<T>         // GLSL m * v
+fn mul<T>(v: vec4<T>, m: vec4<T>[4]) -> vec4<T>         // GLSL v * m
+fn transpose<T>(m: vec4<T>[4]) -> vec4<T>[4]            // these for all three sizes
+fn determinant<T>(m: vec4<T>[4]) -> T
+fn inverse<T>(m: vec4<T>[4]) -> vec4<T>[4]
+fn outer_product<T>(c: vec4<T>, r: vec4<T>) -> vec4<T>[4]
+fn row<T>(m: vec4<T>[4], i: i64) -> vec4<T>             // a column is m[i]
+fn to3x3<T>(m: vec4<T>[4]) -> vec3<T>[3]                // GLSL mat3(m4); also to2x2(3x3)
+fn to4x4<T>(m: vec3<T>[3]) -> vec4<T>[4]                // GLSL mat4(m3); also to3x3(2x2)
+
+// 3D, as 4x4s
+fn translate<T>(t: vec3<T>) -> vec4<T>[4]     fn scale<T>(s: vec3<T>) -> vec4<T>[4]
+fn rotate<T>(axis: vec3<T>, angle: T) -> vec4<T>[4]     // also rotate_x/y/z(angle)
+fn perspective<T>(fovy: T, aspect: T, near: T, far: T) -> vec4<T>[4]
+fn ortho<T>(left, right, bottom, top, near, far: T) -> vec4<T>[4]
+fn ortho<T>(left, right, bottom, top: T) -> vec4<T>[4]  // near -1, far 1: for 2D
+fn look_at<T>(eye: vec3<T>, target: vec3<T>, up: vec3<T>) -> vec4<T>[4]
+fn transform_point<T>(m: vec4<T>[4], p: vec3<T>) -> vec3<T>    // w = 1, divided by w
+fn transform_vector<T>(m: vec4<T>[4], v: vec3<T>) -> vec3<T>   // w = 0
+// 2D, as homogeneous 3x3s
+fn translate<T>(t: vec2<T>) -> vec3<T>[3]     fn scale<T>(s: vec2<T>) -> vec3<T>[3]
+fn rotate<T>(angle: T) -> vec3<T>[3]                    // counterclockwise
+fn transform_point<T>(m: vec3<T>[3], p: vec2<T>) -> vec2<T>    // and transform_vector
+```
+
+The functions are all `checkfree` (spec §7.14) except `row`.
+
+A matrix is a fixed array of its columns, as in GLSL: `m[i]` is column
+`i`, `m[3]` a 4x4's translation, and `m[i].y` the element in row 1 of it.
+A 4x4's bytes are what a std140 or std430 block holds for a GLSL `mat4`
+(a 2x2's are std430's `mat2`); a `mat3` pads each column to 16 bytes, so
+send a 3x3 as `to4x4(m)` and read it as a `mat4`.
+The language's elementwise operators (spec §6.1) give `a + b`, `a - b`,
+`-m` and `m * 2.0`, as GLSL does. But **`a * b` of two matrices is
+elementwise as well** (GLSL's `matrixCompMult`); the product is `mul`.
+
+The builders return a transform, as `gfx`'s do; glm's `translate(m, t)` is
+`mul(m, translate(t))`. `mul(a, b)` applies `b` first, so a model matrix is
+`mul(translate(p), mul(rotate(axis, angle), scale(s)))`.
+`rotate` turns counterclockwise looking down the axis toward the origin,
+and normalizes the axis. `perspective`, `ortho` and `look_at` are
+right-handed, into SDL_GPU's clip space as `gfx`'s are: y up and depth
+from 0 at `near` to 1 at `far` (glm's `perspectiveRH_ZO`, `orthoRH_ZO`,
+`lookAtRH`). The four-argument `ortho` is the six-argument one with near
+-1 and far 1, so a 2D scene's z = 0 is at depth 0.5 with room on both
+sides; glm's, made for GL's depth range, is not. `look_at` is NaN where
+`up` is parallel to the direction of view.
+
+The functions are generic over `f32` and `f64`, and the argument types
+pick one, never the type the result is assigned to. A literal adapts to
+the other arguments, but a typed `f64` such as `radians(60.0)` makes the
+call `f64` and an `f32` beside it widens: `perspective(radians(60.0),
+aspect, 0.1, 100.0)` is a `double4x4` even with `aspect: f32`. Write
+`radians(60.0 as f32)` for a `float4x4`, and `rotate_z(0.5 as f32)` where
+every argument is a literal.
+
+## quat
+
+Quaternions for 3D rotations, with glm's names, and their conversions to
+and from `mat`'s matrices, which `quat` imports.
+
+```goose
+struct quat<T> { x: T, y: T, z: T, w: T }          // w the scalar part
+type floatq = quat<f32>     doubleq = quat<f64>
+let floatq_identity         let doubleq_identity
+
+fn mul<T>(a: quat<T>, b: quat<T>) -> quat<T>            // b, then a
+fn rotate<T>(q: quat<T>, v: vec3<T>) -> vec3<T>
+fn angle_axis<T>(angle: T, axis: vec3<T>) -> quat<T>
+fn to_angle_axis<T>(q: quat<T>) -> T, vec3<T>
+fn rotation<T>(from: vec3<T>, to: vec3<T>) -> quat<T>  // the shortest arc
+fn quat_look_at<T>(direction: vec3<T>, up: vec3<T>) -> quat<T>
+fn slerp<T>(a: quat<T>, b: quat<T>, t: T) -> quat<T>    // and nlerp
+fn from_euler<T>(e: vec3<T>) -> quat<T>                 fn euler_angles<T>(q: quat<T>) -> vec3<T>
+fn mat3_cast<T>(q: quat<T>) -> vec3<T>[3]               // and mat4_cast
+fn compose<T>(t: vec3<T>, q: quat<T>, s: vec3<T>) -> vec4<T>[4]   // scale, rotate, move
+fn quat_cast<T>(m: vec3<T>[3]) -> quat<T>               // or a 4x4
+fn conjugate<T>(q: quat<T>) -> quat<T>                  fn inverse<T>(q: quat<T>) -> quat<T>
+fn dot, length, length_sq, normalize                    // as vec's
+```
+
+The functions are all `checkfree` (spec §7.14), and generic over `f32` and
+`f64` as `mat`'s are. A rotation is a unit quaternion. `a + b`, `-q` and
+`q * 2.0` are the language's elementwise operators, and so is **`a * b`:
+the Hamilton product is `mul`**. `angle_axis` turns as `mat`'s
+`rotate(axis, angle)` does and normalizes the axis (note the argument
+order, glm's, against `rotate`'s). `from_euler` and `euler_angles` are
+glm's `quat(vec3)` and `eulerAngles`: x, then y, then z, in radians. At a
+yaw of ±π/2, where pitch and roll turn about one axis, `euler_angles`
+splits the turn between them as rounding falls, but the three angles
+always rebuild the rotation, which glm's do not. `quat_cast` of a rotation
+matrix gives `q` or `-q`, the same rotation; a matrix with a scale in it
+gives a quaternion that is not unit length. `compose(t, q, s)` is
+`mul(translate(t), mul(mat4_cast(q), scale(s)))` without the products, the
+usual model matrix of an object's position, orientation and scale.
+`quat_look_at`, like `look_at`, is NaN where `up` is parallel to
+`direction`.
 
 ## math
 
