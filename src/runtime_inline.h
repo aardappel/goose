@@ -425,6 +425,38 @@ R"GSRT(/* math's mul_add (runtime_ext.h): x * y + z, rounded once where the code
 #define GS_MUL_ADD_MODE GS_MUL_ADD_BASE
 
 )GSRT"
+R"GSRT(/* Windows commits a data stack's pages as they are first touched, from the
+   fault handler (runtime_impl.h, gs_fault_filter). On a loaded machine the
+   exception that reaches it can come with the thread's AVX state recorded as
+   all zero although the C library's memcpy was in the middle of its vector
+   loop: resumed, the copy stores 16 zero bytes of every 32 from the new page
+   on. By then the live registers are zero too, so the handler cannot put
+   them back. So a copy, move or fill the library may do with 32-byte
+   registers first writes one byte of each page it reaches, a store with no
+   vector state live, which takes any commit there; the byte keeps its value,
+   and the copy then writes it as it would. Copies of a constant size the
+   compiler writes out itself use 16-byte registers (32-byte ones only inside
+   a simd function's AVX versions), and a fill of zeros loses only zeros, so
+   neither needs it. -DGS_NO_FIRST_TOUCH leaves the touches out, for
+   measuring them. */
+#if defined(_WIN32) && !defined(GS_NO_FIRST_TOUCH)
+static void gs_first_touch(void *d, size_t n) {
+    for (uintptr_t a = (uintptr_t)d, p = a; p < a + n; p = (p | 4095) + 1) {
+        volatile uint8_t *q = (volatile uint8_t *)p;
+        *q = *q;
+    }
+}
+#if defined(__clang__) || defined(__GNUC__)
+#define GS_TOUCHED(d, n) \
+    (!__builtin_constant_p(n) && (size_t)(n) >= 32 ? gs_first_touch((d), (size_t)(n)) : (void)0)
+#else
+#define GS_TOUCHED(d, n) ((size_t)(n) >= 32 ? gs_first_touch((d), (size_t)(n)) : (void)0)
+#endif
+#else
+#define GS_TOUCHED(d, n) ((void)0)
+#endif
+
+)GSRT"
 R"GSRT(/* The generated code's memcpy and memset of zeros. Most move or clear the
    1 to 32 bytes of a field, an element or a reference, a constant size the
    optimizing backends turn into a few moves. TinyCC calls the C library for
@@ -449,7 +481,7 @@ R"GSRT(/* The generated code's memcpy and memset of zeros. Most move or clear th
      : GS_KSZ(n, 9, 16) ? (void)(GS_CP(uint64_t, d, s, 0), GS_CP(uint64_t, d, s, (n) - 8)) \
      : GS_KSZ(n, 17, 32) ? (void)(GS_CP(uint64_t, d, s, 0), GS_CP(uint64_t, d, s, 8), \
                                   GS_CP(uint64_t, d, s, (n) - 16), GS_CP(uint64_t, d, s, (n) - 8)) \
-     : (void)memcpy((d), (s), (n)))
+     : (GS_TOUCHED(d, n), (void)memcpy((d), (s), (n))))
 #define GS_MEMZERO(d, n) \
     (GS_KSZ(n, 8, 8) ? (void)(GS_AT(uint64_t, d, 0) = 0) \
      : GS_KSZ(n, 4, 4) ? (void)(GS_AT(uint32_t, d, 0) = 0) \
@@ -462,7 +494,7 @@ R"GSRT(/* The generated code's memcpy and memset of zeros. Most move or clear th
                                   GS_AT(uint64_t, d, (n) - 16) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
      : (void)memset((d), 0, (n)))
 #else
-#define GS_MEMCPY(d, s, n) memcpy((d), (s), (n))
+#define GS_MEMCPY(d, s, n) (GS_TOUCHED(d, n), (void)memcpy((d), (s), (n)))
 #define GS_MEMZERO(d, n) memset((d), 0, (n))
 #endif
 
@@ -517,13 +549,23 @@ static void gs_memcpy(void *dst, const void *src, size_t n) {
         GS_MEMCPY(d + n - 16, s + n - 16, 16);
         return;
     }
+    GS_TOUCHED(d, n);
     memcpy(dst, src, n);
 }
 
 )GSRT"
 R"GSRT(static void gs_memmove(void *dst, const void *src, size_t n) {
-    if (n) memmove(dst, src, n);
+    if (!n) return;
+    GS_TOUCHED(dst, n);
+    memmove(dst, src, n);
 }
+
+)GSRT"
+R"GSRT(/* The generated code's other moves and fills, touched as GS_MEMCPY's copies
+   are (a move's runs may overlap, which a byte keeping its value does not
+   disturb). */
+#define GS_MEMMOVE(d, s, n) (GS_TOUCHED(d, n), (void)memmove((d), (s), (n)))
+#define GS_MEMSET(d, c, n) (GS_TOUCHED(d, n), (void)memset((d), (c), (n)))
 
 )GSRT"
 R"GSRT(/* Whether n bytes at a and b are equal: two overlapping loads per side up
@@ -3888,6 +3930,7 @@ R"GSRT(/* Appends n bytes to the u8[>..] a builder reference points at: the
    the header's count grows. */
 static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
     if (n <= 0) return;
+    GS_TOUCHED(b.stk->top, n);   /* runtime.h: a vector copy faults nowhere */
     memcpy(b.stk->top, p, (size_t)n);
     b.stk->top += n;
     b.hdr->len += n;

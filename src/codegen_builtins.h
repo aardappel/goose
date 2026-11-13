@@ -456,7 +456,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 int fillbyte = 0;
                 if (!cur.empty() && !relref && UniformFillByte(an[2], elem, fillbyte)) {
                     auto bytes = cat("(", nn, " - ", ol, ") * ", esz);
-                    L("memset(", cur, ", ", fillbyte, ", (size_t)(", bytes, "));");
+                    L("GS_MEMSET(", cur, ", ", fillbyte, ", (size_t)(", bytes, "));");
                     L(cur, " += ", bytes, ";");
                 } else {
                     auto iv = T();
@@ -749,7 +749,7 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
         GenAny(src, Dst { DK_STACK, lv.stk, st });
         L("int64_t ", nn, " = *(gs_u32 *)(", base, " + 4);");
         L("int64_t ", bytes, " = ", nn, " * ", FixedSize(elem), ";");
-        L("memmove(", base, ", ", base, " + 8, (size_t)", bytes, ");");
+        L("GS_MEMMOVE(", base, ", ", base, " + 8, (size_t)", bytes, ");");
         L(TopW(lv.stk), " = ", base, " + ", bytes, ";");
         L(v.lenlv, " += ", nn, ";");
         return;

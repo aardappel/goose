@@ -641,7 +641,7 @@ inline void CodeGen::LandValue(const string &stk, const string &top0, const stri
     ind++;
     auto n = T();
     L("int64_t ", n, " = (int64_t)(", Top(stk), " - ", start, ");");
-    L("memmove(", top0, ", ", start, ", (size_t)", n, ");");
+    L("GS_MEMMOVE(", top0, ", ", start, ", (size_t)", n, ");");
     L(TopW(stk), " = ", top0, " + ", n, ";");
     if (t && IsFrameObj(t)) {
         auto th = FoTailHdr(t, lenlv);
@@ -1036,7 +1036,7 @@ inline void CodeGen::EmitPrefixPatch(const string &pref, IntStorage ls, const st
     auto tmp = T(), ms = T();
     L("uint8_t ", tmp, "[10];");
     L("int64_t ", ms, " = gs_uleb_write(", tmp, ", (uint64_t)(", count, "));");
-    L("memmove((", elems, ") + ", ms, " - 1, ", elems, ", (size_t)(", Top(stk), " - (",
+    L("GS_MEMMOVE((", elems, ") + ", ms, " - 1, ", elems, ", (size_t)(", Top(stk), " - (",
       elems, ")));");
     L("GS_MEMCPY(", pref, ", ", tmp, ", (size_t)", ms, ");");
     L(TopW(stk), " += ", ms, " - 1;");
