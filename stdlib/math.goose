@@ -91,15 +91,17 @@ checkfree fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 }
 
 // An angle in radians brought into [-PI, PI) by whole turns: PI itself
-// wraps to -PI, as a floored remainder would. The last step catches a
-// quotient that rounded across a turn. NaN for an infinity or a NaN.
+// wraps to -PI, as a floored remainder would. A huge input is reduced modulo
+// the float value of TAU, not the true 2*pi, so only the range holds for it.
+// fmod is exact for any finite x, where a quotient rounds and leaves a
+// remainder off by many turns. NaN for an infinity or a NaN.
 checkfree fn wrap_angle(x: f64) -> f64 {
-    var r = x - TAU * floor((x + PI) / TAU);
+    var r = x % TAU;
     if r >= PI { r -= TAU; } else if r < -PI { r += TAU; }
     r
 }
 checkfree fn wrap_angle(x: f32) -> f32 {
-    var r = x - TAU * floor((x + PI) / TAU);
+    var r = x % TAU;
     if r >= PI { r -= TAU; } else if r < -PI { r += TAU; }
     r
 }
