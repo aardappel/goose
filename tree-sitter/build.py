@@ -23,6 +23,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from check_queries import check_queries
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
@@ -86,6 +88,7 @@ def main():
         return 0
 
     ok = subprocess.run([ts, "test"], cwd=HERE).returncode == 0
+    check_queries(ts)
     for rel in parse_repository(ts):
         print(f"FAIL {rel}")
         ok = False

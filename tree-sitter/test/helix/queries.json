@@ -1,0 +1,64 @@
+{
+  "highlights": {
+    "captures": {
+      "namespace": ["demo", "std"],
+      "variable.parameter": ["value", "other", "element"],
+      "variable.other.member": ["items", "item"],
+      "function": ["foreign", "inspect", "cleanup"],
+      "function.method": ["visit"],
+      "type": ["Store", "Result", "Count"],
+      "type.parameter": ["T"],
+      "type.enum.variant": ["Value", "Empty"],
+      "type.builtin": ["i32", "u32"],
+      "variable.builtin": ["it"],
+      "keyword": ["same", "fields"],
+      "keyword.storage.modifier": ["root", "extern"],
+      "keyword.control.conditional": ["if"],
+      "keyword.control.repeat": ["for"],
+      "keyword.control": ["defer"],
+      "constant.numeric.integer": ["1_000"],
+      "constant.numeric.float": ["1.25"],
+      "constant.builtin.boolean": ["true"],
+      "constant.character": ["'a'"],
+      "constant.character.escape": ["\\n"],
+      "comment.block": ["/* Nested /* block */ comment. */"]
+    }
+  },
+  "indents": {
+    "captures": {
+      "indent": [
+        "extern \"example\" {\n    fn foreign(value: i32) -> i32;\n}",
+        "{\n        foreign(other);\n    }",
+        "{ element: i32 => element + it }"
+      ],
+      "outdent": ["}", ")"]
+    }
+  },
+  "textobjects": {
+    "captures": {
+      "function.around": ["fn foreign(value: i32) -> i32;", "{ element: i32 => element + it }"],
+      "function.inside": ["{ element: i32 => element + it }"],
+      "class.around": ["enum Result<T> { Value { item: T }, Empty }"],
+      "class.inside": ["{", "}"],
+      "parameter.inside": ["value: T", "other: i32", "element: i32"],
+      "parameter.around": [","],
+      "comment.around": ["/* Nested /* block */ comment. */"]
+    }
+  },
+  "tags": {
+    "captures": {
+      "name": ["demo", "Store", "Result", "Count", "limit", "foreign", "inspect"],
+      "definition.function": ["fn foreign(value: i32) -> i32;"],
+      "definition.constant": ["const limit = 1_000;"]
+    },
+    "absent": {
+      "name": ["flag", "fraction", "letter", "text", "empty"]
+    }
+  },
+  "rainbows": {
+    "captures": {
+      "rainbow.scope": ["<T>", "same<T, i32>", "extern \"example\" {\n    fn foreign(value: i32) -> i32;\n}"],
+      "rainbow.bracket": ["<", ">", "{", "}"]
+    }
+  }
+}

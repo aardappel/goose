@@ -20,6 +20,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  tree-sitter:
+    name: Tree-sitter grammar and editor queries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check grammar and queries
+        run: python tree-sitter/build.py --check
+      - name: Check generated parser is current
+        run: git diff --exit-code -- tree-sitter/src/parser.c tree-sitter/src/tree_sitter/parser.h
+
   test:
     name: ${{ matrix.os }} / baseline
     runs-on: ${{ matrix.os }}

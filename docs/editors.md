@@ -88,8 +88,13 @@ scope = "source.goose"
 file-types = ["goose"]
 roots = [".git"]
 comment-token = "//"
+block-comment-tokens = { start = "/*", end = "*/" }
 indent = { tab-width = 4, unit = "    " }
 language-servers = ["goose"]
+
+[[grammar]]
+name = "goose"
+source = { path = "/absolute/path/to/goose/tree-sitter" }
 ```
 
 (`config` is what Helix sends as the initialization options.)
@@ -98,9 +103,24 @@ Helix shows diagnostics, hover (`space k`), go to definition (`gd`),
 references (`gr`), rename (`space r`), document and workspace symbols
 (`space s`, `space S`), signature help and completion as you type, and
 inlay hints with `display-inlay-hints = true` under `[editor.lsp]` in
-`config.toml`. Helix highlights with tree-sitter grammars, and Goose has
-none. Helix also has no semantic tokens, folding or code lenses, so Goose
-files are shown without colors.
+`config.toml`. Helix has no semantic tokens, folding or code lenses.
+
+For syntax highlighting, build the grammar from a Goose checkout and install
+the Helix queries (replace the paths as appropriate):
+
+```sh
+hx --grammar build
+mkdir -p ~/.config/helix/runtime/queries/goose
+cp /absolute/path/to/goose/tree-sitter/queries/helix/*.scm \
+    ~/.config/helix/runtime/queries/goose/
+hx --health goose
+```
+
+The generated parser is checked in, so building it requires a C compiler but
+not Node.js. The queries also provide indentation, function/class/parameter/
+comment text objects, syntax-based symbols and rainbow brackets. Restart
+Helix after installing or updating the grammar and queries; update them
+together when pulling a newer Goose checkout.
 
 ## Emacs
 
