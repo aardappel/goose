@@ -276,8 +276,8 @@ rule rather than an optimization.
 * **`checkfree fn`** demands that no bounds check, slice check, index-type
   conversion or pool `free(i)` check remains anywhere in the function's
   text after elimination, in every specialization, every `simd` version
-  and every inlined copy. Every callee must be `checkfree` too, so the
-  guarantee is transitive. Its error names the check that remained and
+  and every inlined copy. What it calls is judged where it runs inside it,
+  so the guarantee is transitive. Its error names the check that remained and
   why, in the terms a programmer can act on: "nothing shows `u <
   dist.len`; `u` is a `u32 in nodes`, so `assert(dist.len >= nodes.len)`
   where neither changes after it would settle it". It changes nothing about

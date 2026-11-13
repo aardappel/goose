@@ -3735,12 +3735,9 @@ conversion, and `DivisorKey` and `Speculatable` treat one as the check it
 is.
 
 `checkfree` (spec §7.14) is a parse-time flag on `SFunction`, inherited by
-nested functions. The typechecker's half is the call rule
-(`CheckfreeCallee`), applied at a direct call, to each case of a dispatch
-and each `format` overload a print reaches, and, at a block call, to the
-function the block was written in. All of these are judged against the
-function whose text the call is in (`TextFn`: a block's frame names its
-writer). The bounds-check pass does the rest (§5.11).
+nested functions. The typechecker does nothing else with it: what runs
+inside a `checkfree` function, its callees and blocks included, is judged
+by the bounds-check pass after inlining (§5.11).
 
 ### 3.14 Arithmetic, constants, and the rest
 
@@ -5036,13 +5033,24 @@ judged, sets `AsCast::nobc`, and states the completed check's facts.
 **checkfree.** A kept check belongs to the source text it is written in, as
 for `--bce-test`. The source lines that each `checkfree` function spans
 (`CheckfreeSpans`) cover every specialization and every inlined copy of the
-function, and whatever the optimizer restated the check as. A caller's
-argument inlined into the callee's block still belongs to the caller. Each
-kept check on such a line is recorded once, with the reason it was kept
-(`KeptInCheckfree`, `KeptWhy`): a value read out of storage, a `u64`
-variable, a term the domain cannot relate, the lower or the upper bound,
-and, for an index of another array, the length relation an `assert` would
-state. The driver reports them all as errors (`CheckfreeReport`). Under
+function, and whatever the optimizer restated the check as. What else runs
+inside a `checkfree` function is judged by where it runs. `VerifiedSpecs`
+scans the bodies after inlining for the specializations that code inside
+one calls (calls, dispatch cases and the `format` overloads a print reaches,
+not a thread spawn), each with the chain of calls to it (`verified`). Code
+is inside one where the body being judged is verified (`judging`) or an
+`InlineBlock` around it came from a `checkfree` function (`inlined`,
+`ChainOf`); a callee's copy inlined anywhere else is not. An inlined call's
+parameter bindings (`VarDecl::inline_arg`) are the caller's code, so their
+initializers are judged and scanned without the `InlineBlock` they open.
+Each kept check is recorded once per line and reason, with the reason it
+was kept (`KeptInCheckfree`, `KeptWhy`): a value read out of storage, a
+`u64` variable, a term the domain cannot relate, the lower or the upper
+bound, and, for an index of another array, the length relation an `assert`
+would state. Outside a `checkfree` function's own lines the message names
+the chain of calls, and the function whose lines hold the check where that
+is another (a block, or what was inlined; `fnspans`). The driver reports
+them all as errors (`CheckfreeError`). Under
 `--no-bce` nothing is judged, and the driver warns about that where the
 program has a `checkfree` function outside the standard library.
 

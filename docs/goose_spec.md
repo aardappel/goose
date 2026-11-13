@@ -3636,12 +3636,17 @@ block written inside a `checkfree` function is checked as part of it.
   into index and bound types (§3.11) count. The other aborts of §9.3 are
   still allowed, `assert` in particular, which is how such a function
   states its preconditions once, outside its loops.
-* **What it calls.** Every call in a `checkfree` function is to a
-  `checkfree` function (directly, through a case function's dispatch or a
-  function value naming one, or a `format` overload a `print` reaches), a
-  builtin or an `extern fn`; a block it calls must be written in a
-  `checkfree` function. `inline` does not exempt a callee: a call that
-  stays a call runs the callee's own checks.
+* **What it calls.** What runs inside a `checkfree` function is held to
+  the same rule without being declared `checkfree`: the functions it calls
+  (directly, through a case function's dispatch or a function value naming
+  one, or a `format` overload a `print` reaches), what those call in turn,
+  and a block it calls, wherever that was written. Such code is judged
+  where it runs inside one: a call that stays a call by the callee's own
+  body, under the facts all its callers establish, and a copy inlined into
+  such code there. A copy inlined elsewhere may keep its checks. Builtins
+  and `extern fn`s have no checks of Goose's, and a thread a `checkfree`
+  function starts does not run inside it. The error names the calls from
+  the `checkfree` function to the check.
 * **What it may rely on.** It may rely on the analysis's facts, including
   those from call sites (§10.5). So a new caller that does not establish
   what an entry relied on can make a `checkfree` function fail to compile;

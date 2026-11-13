@@ -150,28 +150,137 @@ struct BCE {
     int idxelided = 0, idxtotal = 0, slelided = 0, sltotal = 0;
     map<pair<int, int>, pair<int, int>> lineout;   // (file, line) -> (elided, kept).
 
-    // checkfree (docs/design/index_types.md): the source lines each checkfree
-    // function's text spans, nested functions and blocks included, and every
-    // check kept on one of them, with why, once per line and reason. A check
-    // belongs to the text it was written in, as for --bce-test: every
-    // specialization of it, every inlined copy and whatever the optimizer
-    // restated it as.
+    // checkfree (docs/design/index_types.md): no bounds check runs while a
+    // checkfree function does. A check belongs to the text it was written in,
+    // as for --bce-test, so a checkfree function's own text, nested functions
+    // and blocks included, is judged in every specialization, every inlined
+    // copy and whatever the optimizer restated a check as: checkfreespans are
+    // the lines it spans. What it calls is judged where it runs inside one:
+    // the standalone body of each specialization that code inside one calls
+    // (`verified`, each with the chain of calls to it from a checkfree one),
+    // and a copy inlined into such code, but not one inlined elsewhere. Every
+    // check kept is recorded with why, once per line and reason.
     struct Span { SFunction *sf; int file, lo, hi; };
     vector<Span> checkfreespans;
-    struct KeptCheck { Line line; string why; };
+    map<FnSpec *, vector<FnSpec *>> verified;
+    FnSpec *judging = nullptr;       // Whose body the judging walk is in; null for a global's.
+    vector<InlineBlock *> inlined;   // The inlined bodies the walk is in, outermost first.
+    vector<Span> fnspans;            // Every function's lines, for naming a check's writer.
+    struct KeptCheck { Line line; string why, msg; };
     vector<KeptCheck> checkfreefails;
 
+    static Span SpanOf(SFunction *sf) {
+        auto hi = sf->line.line;
+        function<void(Node *)> last = [&](Node *n) {
+            if (!n) return;
+            if (n->line.fileidx == sf->line.fileidx) hi = std::max(hi, n->line.line);
+            n->Children(last);
+        };
+        last(sf->body);
+        return { sf, sf->line.fileidx, sf->line.line, hi };
+    }
+
+    // The innermost function among spans whose text holds line l.
+    static const Span *InnermostSpan(const vector<Span> &spans, Line l) {
+        const Span *in = nullptr;
+        for (auto &sp : spans)
+            if (sp.file == l.fileidx && l.line >= sp.lo && l.line <= sp.hi &&
+                (!in || sp.hi - sp.lo < in->hi - in->lo))
+                in = &sp;
+        return in;
+    }
+
     void CheckfreeSpans() {
-        for (auto sf : ast.functions) {
-            if (!sf->checkfree || !sf->body) continue;
-            auto hi = sf->line.line;
-            function<void(Node *)> last = [&](Node *n) {
-                if (!n) return;
-                if (n->line.fileidx == sf->line.fileidx) hi = std::max(hi, n->line.line);
-                n->Children(last);
+        for (auto sf : ast.functions)
+            if (sf->checkfree && sf->body) checkfreespans.push_back(SpanOf(sf));
+    }
+
+    // Code in body in[0] (null for a global's), inside the bodies inlined
+    // into it down to in.back(): the chain of calls from a checkfree function
+    // to it, or empty where it does not run inside one. A standalone body
+    // runs where it is called from, an inlined copy where it was inlined to,
+    // and a checkfree function's own body inside itself.
+    vector<FnSpec *> ChainOf(const vector<FnSpec *> &in) {
+        vector<FnSpec *> chain;
+        size_t k = 0;
+        if (auto it = in[0] ? verified.find(in[0]) : verified.end(); it != verified.end()) {
+            chain = it->second;
+        } else {
+            for (k = 1; k < in.size() && !(in[k] && in[k]->sf->checkfree); k++) {}
+            if (k == in.size()) return chain;
+            chain.push_back(in[k]);
+        }
+        for (auto i = k + 1; i < in.size(); i++) if (in[i]) chain.push_back(in[i]);
+        return chain;
+    }
+
+    // Adds to `verified` what code under n calls where that code runs inside
+    // a checkfree function: a call's callee, a dispatch's cases and the
+    // format overloads a print reaches. A thread spawned does not run inside
+    // its spawner.
+    void ScanVerified(Node *n, vector<FnSpec *> &in, vector<FnSpec *> &todo) {
+        if (!n) return;
+        if (auto ib = Is<InlineBlock>(n)) {
+            for (auto st : ib->body->stmts)
+                if (auto vd = InlineArg(st)) for (auto i : vd->inits) ScanVerified(i, in, todo);
+            in.push_back(ib->spec);
+            for (auto st : ib->body->stmts) if (!InlineArg(st)) ScanVerified(st, in, todo);
+            ScanVerified(ib->body->tail, in, todo);
+            in.pop_back();
+            return;
+        }
+        if (auto c = Is<Call>(n)) {
+            auto reach = [&](FnSpec *sp) {
+                if (!sp->live || !sp->body || verified.count(sp)) return;
+                auto chain = ChainOf(in);
+                if (chain.empty()) return;
+                chain.push_back(sp);
+                verified[sp] = std::move(chain);
+                todo.push_back(sp);
             };
-            last(sf->body);
-            checkfreespans.push_back({ sf, sf->line.fileidx, sf->line.line, hi });
+            if (c->spec && c->builtin < 0) reach(c->spec);
+            for (auto d : c->dispatch) reach(d);
+            for (auto &fs : c->fmtspecs) reach(fs.second);
+        }
+        RunChildren(n, [&](Node *ch) { ScanVerified(ch, in, todo); });
+    }
+
+    // A parameter binding at the top of an inlined body: its argument is the
+    // caller's code, and runs where the caller does.
+    static VarDecl *InlineArg(Node *st) {
+        auto vd = Is<VarDecl>(st);
+        return vd && vd->inline_arg ? vd : nullptr;
+    }
+
+    // Whether the walk is in vd's inits as an argument of the innermost
+    // inlined body.
+    bool InInlineArg(VarDecl *vd) {
+        if (!vd->inline_arg || inlined.empty()) return false;
+        for (auto st : inlined.back()->body->stmts) if (st == vd) return true;
+        return false;
+    }
+
+    void VerifiedSpecs() {
+        vector<FnSpec *> todo, in;
+        for (auto sp : ast.fnspecs)
+            if (sp->live && sp->body && sp->sf->checkfree) {
+                verified[sp] = { sp };
+                todo.push_back(sp);
+            }
+        // Calls from a checkfree function's copies inlined elsewhere, then
+        // from each body verified, as it is found.
+        for (auto sp : ast.fnspecs)
+            if (sp->live && sp->body && !verified.count(sp)) {
+                in = { sp };
+                ScanVerified(sp->body, in, todo);
+            }
+        ast.ForEachRootTree([&](Node *n) {
+            in = { nullptr };
+            ScanVerified(n, in, todo);
+        });
+        for (size_t i = 0; i < todo.size(); i++) {
+            in = { todo[i] };
+            ScanVerified(todo[i]->body, in, todo);
         }
     }
 
@@ -2636,17 +2745,34 @@ struct BCE {
     }
 
     void KeptInCheckfree(Line l, const string &why) {
-        // The innermost function whose text holds the line.
-        const Span *in = nullptr;
-        for (auto &sp : checkfreespans)
-            if (sp.file == l.fileidx && l.line >= sp.lo && l.line <= sp.hi &&
-                (!in || sp.hi - sp.lo < in->hi - in->lo))
-                in = &sp;
-        if (!in) return;
-        auto msg = cat("checkfree fn ", in->sf->qname, " keeps a bounds check: ", why);
+        // One error per check, however many checkfree functions reach it.
         for (auto &f : checkfreefails)
-            if (f.line.fileidx == l.fileidx && f.line.line == l.line && f.why == msg) return;
-        checkfreefails.push_back({ l, msg });
+            if (f.line.fileidx == l.fileidx && f.line.line == l.line && f.why == why) return;
+        string msg;
+        if (auto own = InnermostSpan(checkfreespans, l)) {
+            msg = cat("checkfree fn ", own->sf->qname, " keeps a bounds check: ", why);
+        } else {
+            // The calls from a checkfree function to the check, then whose
+            // text it is when that is another's: a block the body was passed,
+            // or a check the optimizer placed at its caller's line.
+            vector<FnSpec *> in { judging };
+            for (auto ib : inlined) in.push_back(ib->spec);
+            auto path = ChainOf(in);
+            if (path.empty()) return;
+            msg = cat("checkfree fn ", path[0]->sf->qname);
+            for (size_t i = 1; i < path.size(); i++)
+                msg += cat(i == 1 ? " calls " : ", which calls ", path[i]->sf->qname);
+            if (path.size() > 1) msg += ", which";
+            msg += " keeps a bounds check";
+            if (fnspans.empty())
+                for (auto sf : ast.functions) if (sf->body) fnspans.push_back(SpanOf(sf));
+            auto writer = InnermostSpan(fnspans, l);
+            if (!writer) msg += " in code written in a global initializer";
+            else if (writer->sf != path.back()->sf)
+                msg += cat(" in code written in fn ", writer->sf->qname);
+            msg += cat(": ", why);
+        }
+        checkfreefails.push_back({ l, why, msg });
     }
 
     // Index (or converted value) x against the length lent of obj, or for a
@@ -2688,7 +2814,7 @@ struct BCE {
         for (auto &f : checkfreefails) {
             Diagnostic d;
             d.where = LocOf(f.line);
-            d.message = f.why;
+            d.message = f.msg;
             d.text = ast.DiagnosticText(d);
             if (!e.msg.empty()) e.msg += "\n";
             e.msg += d.text;
@@ -3303,6 +3429,7 @@ struct BCE {
 
     void RunSpec(FnSpec *sp) {
         if (!sp->body) return;   // An extern fn (§7.10).
+        judging = sp;
         SetupSpec(sp);
         for (auto &[v, ok] : gge0) if (ok) ge0.insert(v);
         // Whole-body kill summary: which places and variables any path can
@@ -3538,6 +3665,7 @@ struct BCE {
             if (IsIndexT(t) && t->ix->arr) indexarrays.insert(t->ix->arr);
         CheckfreeSpans();
         BuildCallGraph();
+        VerifiedSpecs();
         ComputeEffects();
         ValidateGlobalInvariants();
         // Callers first: a specialization's entry facts come from its call
@@ -3545,6 +3673,7 @@ struct BCE {
         for (auto it = calleesfirst.rbegin(); it != calleesfirst.rend(); ++it)
             if ((*it)->live && (*it)->body) RunSpec(*it);
         // Global initializers: judged with no surrounding context.
+        judging = nullptr;
         SetupRootTrees();
         mode = M_JUDGE;
         ast.ForEachRootTree([&](Node *n) {
@@ -4303,6 +4432,7 @@ inline bool InlineBlock::BceWalk(BCE &b) {
         b.Walk(body);
         return true;
     }
+    b.inlined.push_back(this);
     // A trailing return to this block is its one normal exit and needs no
     // havoc; earlier ones join the end from other states.
     auto &stmts = body->stmts;
@@ -4322,12 +4452,13 @@ inline bool InlineBlock::BceWalk(BCE &b) {
     if (body->tail) early = early || ReturnsTo(body->tail, sf);
     if (!early) {
         b.Walk(body);
-        return true;
+    } else {
+        auto entry = b.flow;
+        b.Walk(body);
+        b.flow = std::move(entry);
+        b.StripKills(body);
     }
-    auto entry = b.flow;
-    b.Walk(body);
-    b.flow = std::move(entry);
-    b.StripKills(body);
+    b.inlined.pop_back();
     return true;
 }
 
@@ -4365,7 +4496,14 @@ inline bool Defer::BceWalk(BCE &b) {
 }
 
 inline bool VarDecl::BceWalk(BCE &b) {
-    for (auto i : inits) b.Walk(i);
+    if (b.InInlineArg(this)) {
+        auto ib = b.inlined.back();
+        b.inlined.pop_back();
+        for (auto i : inits) b.Walk(i);
+        b.inlined.push_back(ib);
+    } else {
+        for (auto i : inits) b.Walk(i);
+    }
     if (defs.size() == 1 && inits.size() == 1 && defs[0]) {
         auto v = defs[0];
         auto lt = b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_ARRAY

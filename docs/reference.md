@@ -2617,11 +2617,12 @@ Spec §3.11, `docs/design/index_types.md`.
 `checkfree` asks the compiler to reject the program if a bounds check is
 left anywhere in the function's text after bounds-check elimination, in
 every specialization and every copy inlined into a caller. It changes
-nothing about what the program computes. Every call in such a function
-must be to another `checkfree` function, a builtin or an `extern fn`, and
-a block it calls must be written in a `checkfree` function. The other
-aborts remain, in particular `assert`, which such a function uses to state
-its preconditions once, outside its loops:
+nothing about what the program computes. What such a function calls, and
+a block it calls, is held to the same rule where it runs inside it, without
+being declared `checkfree`: a helper that indexes nothing needs no
+annotation, and one that keeps a check is an error naming the calls that
+lead to it. The other aborts remain, in particular `assert`, which such a
+function uses to state its preconditions once, outside its loops:
 
 ```goose
 var nodes: i32[>..] = [];

@@ -477,7 +477,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     c->SetArgNodes(argnodes);
     c->spec = spec;
     CheckCalleeRelative(c, spec, argvals);
-    CalleesReturn(c, { spec }, argsreach);
+    CalleesReturn({ spec }, argsreach);
     return CallResult(c, spec, argvals);
 }
 
@@ -541,14 +541,13 @@ inline void TypeCheck::CheckWaitingArg(Call *c, Node *a, bool entryreach) {
 }
 
 // What a call's callees do once its arguments are checked again: one, or a
-// dispatch's cases, alternatives of one call (TryDispatch). The checkfree
-// rule holds for each, the optionals any may rebind are rebound, and the
-// call returns where any of them may -- one whose record is not read yet,
-// a back edge's in its cycle's first round, may.
-inline void TypeCheck::CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach) {
+// dispatch's cases, alternatives of one call (TryDispatch). The optionals
+// any may rebind are rebound, and the call returns where any of them may --
+// one whose record is not read yet, a back edge's in its cycle's first
+// round, may.
+inline void TypeCheck::CalleesReturn(const vector<FnSpec *> &specs, bool argsreach) {
     auto mayreturn = false;
     for (auto sp : specs) {
-        CheckfreeCallee(c, sp->sf);
         ApplyCalleeRebinds(sp);
         auto rec = RecordOf(sp);
         mayreturn = mayreturn || !rec || rec->mayreturn;
@@ -1323,7 +1322,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     }, entryreach);
     // Like an ordinary call's, the cases' rebinds follow the argument checks.
     for (auto spec : c->dispatch) CheckCalleeRelative(c, spec, argvals);
-    CalleesReturn(c, c->dispatch, argsreach);
+    CalleesReturn(c->dispatch, argsreach);
     // The cases are alternatives of one call, like a match's arms: the result
     // is only as long-lived, exact and writable as every case's result. A case
     // checked without recording a root for a result only returns null there or
@@ -2614,24 +2613,6 @@ inline void TypeCheck::AddNeed(FnSpec *s, FnSpec *t) {
     if (!s || s == t || !s->needs.insert(t).second) return;
     for (auto &e : s->neededges)
         NeedOnPath(s, t, e.first, (int)e.second.size(), [&](int i) { return e.second[i]; });
-}
-
-// checkfree (§7.14): what runs while a checkfree function does is its own
-// text, inlined or not, and what it calls, which must be checkfree in turn.
-// The text is the innermost frame's: a block's is the function it was
-// written in. A C function has no bounds checks of Goose's to run.
-inline SFunction *TypeCheck::TextFn() {
-    for (auto i = frames.size(); i-- > 0;)
-        if (frames[i].sf) return frames[i].sf;
-    return nullptr;
-}
-
-inline void TypeCheck::CheckfreeCallee(Node *at, SFunction *callee) {
-    auto t = TextFn();
-    if (!t || !t->checkfree || !callee || callee->checkfree || callee->isextern) return;
-    Error(at, cat("checkfree fn ", t->qname, " calls ", callee->qname, ", which is not "
-                  "checkfree: the bounds checks left in it would run inside ", t->qname,
-                  " (§7.14)"));
 }
 
 // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
@@ -3977,14 +3958,8 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
     env->sf = named ? named->sf : nullptr;
     env->lexparent = fb.env;
     // A block runs inside the function calling it, as text of the function
-    // it was written in: a checkfree caller takes only one written in a
-    // checkfree function (§7.14).
+    // it was written in.
     auto writer = named ? named->sf : CurRealFrame().sf;
-    if (auto t = TextFn(); t && t != writer && t->checkfree && !(writer && writer->checkfree))
-        Error(c, cat("checkfree fn ", t->qname, " calls a block written in ",
-                     writer ? cat("fn ", writer->qname) : string("a global initializer"),
-                     ", which is not checkfree: the bounds checks left in it would run "
-                     "inside ", t->qname, " (§7.14)"));
     Frame f;
     f.sf = writer;
     f.spec = CurRealFrame().spec;

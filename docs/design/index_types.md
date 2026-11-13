@@ -361,21 +361,41 @@ preconditions once, outside its loops.
 
 ### 6.2 Calls
 
-Every call in a `checkfree` body is to a `checkfree` function, a builtin or
-an `extern`.
-* **Indirect calls.** A call through a function value counts as a call to
+The guarantee is transitive: no bounds check runs while a `checkfree`
+function is executing. What it calls is held to that without being declared
+`checkfree`, and is judged where it runs inside one:
+* **Calls.** A call that stays a call runs the callee's own body, which is
+  judged under the facts all its callers establish (§6.3), and so is what
+  that calls in turn. A call through a function value counts as a call to
   each function it may be. `print`, `str` and `format` count as calls to the
-  user `format` overloads they reach.
-* **Nested code.** Nested functions declared in a `checkfree` function are
-  `checkfree` themselves. A trailing block is part of the body, and the
-  function it is passed to must be `checkfree` too.
-* **No inlining exception.** `inline` does not exempt a callee. Inlining is a
-  request the implementation may not grant (§7.13, and never at `-O0`), and
-  a call that stays a call runs the callee's own checks inside the loop.
+  user `format` overloads they reach. Builtins and `extern`s have no checks
+  of Goose's, and a thread spawned does not run inside its spawner.
+* **Inlined copies.** A copy inlined into a `checkfree` function, or into a
+  callee running inside one, is judged as it is there. A copy inlined into
+  other code may keep its checks. So a helper whose check only a
+  `checkfree` caller's facts settle compiles where it is inlined, but not at
+  `-O0`, where it stays a call that every caller's facts reach.
+* **Arguments.** A caller's argument expressions are the caller's code,
+  also where the call is inlined: `sq(a[i])` keeps a check in the caller, not
+  in a `checkfree fn sq`.
+* **Nested code and blocks.** Nested functions declared in a `checkfree`
+  function are `checkfree` themselves. A block runs inside the function it
+  is passed to, so one passed to a `checkfree` function from anywhere is
+  judged as running inside it.
 
-So the guarantee is transitive: no bounds check runs while a `checkfree`
-function is executing. Small helpers called from hot loops (`swap`, `min`,
-`max`, vector math) are expected to be `checkfree` themselves.
+The error names the calls from the `checkfree` function down to the check,
+and whose text the check is when that is not the last function's (a block
+or an inlined copy):
+
+```
+checkfree fn sum_all calls twice, which calls get, which keeps a bounds check: nothing shows i < a.len
+checkfree fn each keeps a bounds check in code written in fn main: nothing shows x >= 0
+```
+
+`checkfree` on a function is a promise about its own text: no check in any
+copy, whoever calls it. Requiring it of every callee instead would put it on
+every small helper (`swap`, `min`, `max`, vector math) whether or not it
+indexes anything.
 
 ### 6.3 Where its facts come from
 
@@ -613,9 +633,9 @@ fixtures, three parse-error fixtures and six programs with blessed output.
     one through a reference parameter;
   * an invalid named array: a local, a grow-shrink array, a `let`, a
     sequential array; a signed index type; the missing parentheses;
-  * `checkfree`: a call to an unannotated function, a block written outside
-    one, an index read out of an array, an index of another array without
-    the length relation, and `checkfree extern`.
+  * `checkfree`: a check kept two calls down, one in a block written
+    outside it, an index read out of an array, an index of another array
+    without the length relation, and `checkfree extern`.
 * **Programs** (blessed output, run at -O0 and -O2, natively and through the
   JIT):
   * `test/typing/index_types.goose`: loads, joins, widths, calls, ADT
@@ -627,6 +647,9 @@ fixtures, three parse-error fixtures and six programs with blessed output.
     other-typed arrays, by the operation and through a callee;
   * `test/optimizer/checkfree_bfs.goose`: §7 with an inlined `checkfree`
     helper, checked against a plain-integer version of the same BFS;
+  * `test/optimizer/checkfree_callees.goose`: callees, a block, a `format`
+    overload and std's comparator forms, none declared `checkfree`, and
+    checks kept in a `checkfree` function's arguments;
   * `test/codegen/index_type_abort.goose` and `bound_type_abort.goose`: the
     conversions' aborts and their messages.
 * **Fuzzing.** `bench/bce_fuzz.py` (400 programs, seed 7) still finds no
