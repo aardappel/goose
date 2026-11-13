@@ -229,15 +229,29 @@ def check_lsp_protocol(exe, base):
                 if not any(s["name"] == name and s["kind"] == kinds[symkind] for s in got or []):
                     fail(f"symbol {name} ({symkind})", got)
             elif kind == "signature":
-                pos, want, active = re.match(r'(\S+) "(.*)" (\d+)$', rest).groups()
+                if rest.endswith(" none"):
+                    pos = rest[:-5]
+                    got = client.request("textDocument/signatureHelp", {**doc, "position": position(pos)})
+                    if got:
+                        fail(f"signature {pos} is not none", got)
+                    continue
+                pos, want, active, param_label, only = re.match(
+                    r'(\S+) "([^"]*)" (\d+)(?: "([^"]*)")?( only)?$', rest).groups()
                 got = client.request("textDocument/signatureHelp", {**doc, "position": position(pos)})
                 if (not got or got["signatures"][got["activeSignature"]]["label"] != want or
-                        got["activeParameter"] != int(active)):
+                        got["activeParameter"] != int(active) or (only and len(got["signatures"]) != 1)):
                     fail(f"signature {pos}", got)
+                if param_label is not None:
+                    sig = got["signatures"][got["activeSignature"]]
+                    if (got["activeParameter"] >= len(sig["parameters"]) or
+                            sig["parameters"][got["activeParameter"]]["label"] != param_label or
+                            not sig.get("documentation", {}).get("value")):
+                        fail(f"signature {pos} param {param_label}", got)
             elif kind == "complete":
-                # `has NAME` / `lacks NAME`: labels; optional text checks detail.
+                # `has NAME` / `lacks NAME`: labels; optional text checks detail and doc.
                 # `inserts NAME`: the item inserts that spelling, as a client would.
-                pos, mode, name, detail = re.match(r'(\S+) (has|lacks|inserts) (\S+)(?: "(.*)")?$', rest).groups()
+                pos, mode, name, detail, doc_sub = re.match(
+                    r'(\S+) (has|lacks|inserts) (\S+)(?: "([^"]*)")?(?: "([^"]*)")?$', rest).groups()
                 got = client.request("textDocument/completion", {**doc, "position": position(pos)})
                 items = {item["label"]: item for item in (got or {}).get("items", [])}
                 if mode == "inserts":
@@ -249,12 +263,15 @@ def check_lsp_protocol(exe, base):
                     fail(f"completion {pos} {mode} {name}", sorted(items))
                 if detail and detail not in items[name].get("detail", ""):
                     fail(f"completion {pos} {name}'s detail lacks {detail}", items[name])
+                if doc_sub and doc_sub not in items[name].get("documentation", {}).get("value", ""):
+                    fail(f"completion {pos} {name}'s documentation lacks {doc_sub}", items[name])
             elif kind == "token":
-                # `none`: no token at the place.
+                # `none`: no token at the place; `type+mod1+mod2` or `type+none` checks modifiers too.
                 pos, want = rest.split()
                 got = client.request("textDocument/semanticTokens/full", doc)
                 legend = ["namespace", "type", "struct", "enum", "enumMember", "typeParameter",
                           "parameter", "variable", "property", "function", "method"]
+                mod_legend = ["declaration", "readonly", "defaultLibrary"]
                 data = got["data"]
                 tokens = {}
                 line = char = 0
@@ -262,10 +279,17 @@ def check_lsp_protocol(exe, base):
                     dline, dchar, length, ttype, mods = data[i:i + 5]
                     line += dline
                     char = char + dchar if dline == 0 else dchar
-                    tokens[(line, char)] = legend[ttype]
+                    tokens[(line, char)] = (legend[ttype], [mod_legend[b] for b in range(3) if mods & (1 << b)])
                 p = position(pos)
-                if tokens.get((p["line"], p["character"]), "none") != want:
-                    fail(f"token {pos} is not {want}", {"at": p, "got": tokens.get((p["line"], p["character"]))})
+                tok = tokens.get((p["line"], p["character"]))
+                if not tok:
+                    got_tok = "none"
+                elif "+" in want:
+                    got_tok = "+".join([tok[0]] + (tok[1] or ["none"]))
+                else:
+                    got_tok = tok[0]
+                if got_tok != want:
+                    fail(f"token {pos} is not {want}", {"at": p, "got": tok})
             elif kind == "references":
                 pos, want = rest.split()
                 got = client.request("textDocument/references",
@@ -485,6 +509,11 @@ def check_lsp_protocol(exe, base):
                      HERE / "errors_tc" / "recovery" / "exemplar_unchecked.goose"):
         etext = exemplar.read_text(encoding="utf-8")
         queries(exemplar, etext, open_fixture(exemplar, etext))
+    # Builtin functions and array properties: hover, definition, signature help,
+    # completion, semantic tokens, and inlay hints.
+    builtins = fixtures / "builtins.goose"
+    buitext = builtins.read_text(encoding="utf-8")
+    queries(builtins, buitext, open_fixture(builtins, buitext))
 
     # Roots as files open and close (docs/design/language_server.md §4),
     # judged by the diagnostics an editor has once a request has had the

@@ -331,8 +331,8 @@ def check_format_sweep(exe, dirs):
     out, err = r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
     if r.returncode != 0:
         raise RuntimeError(f"format --verify (exit {r.returncode}):\n{out}{err}")
-    broken = {"test/lsp/broken_decls.goose", "test/lsp/complete.goose", "test/lsp/exemplar.goose",
-              "test/syntax/lexer_tokens.goose"}
+    broken = {"test/lsp/broken_decls.goose", "test/lsp/builtins.goose", "test/lsp/complete.goose",
+              "test/lsp/exemplar.goose", "test/syntax/lexer_tokens.goose"}
     repo = Path(__file__).resolve().parent.parent
     for line in out.splitlines():
         if not line.startswith("skip "):
