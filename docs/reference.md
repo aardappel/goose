@@ -91,6 +91,14 @@ A `.` begins a fraction only when a digit follows it, so `1..2` is a range
 and `1.` is not a number. C99 hexadecimal floats with a binary exponent are
 accepted too: `0x1.8p3` is 12.0.
 
+Numeric literals may contain underscores (`_`) between digits for readability,
+including in the integer, fractional and exponent parts. Each underscore must
+appear between two digits of the same digit sequence; consecutive, leading
+and trailing underscores are not allowed. For example, `3.141_592`,
+`1_000e3`, `0x1.A_Bp3` and `0x1.8p1_0` are valid, while `1__0`, `1_`,
+`0x_1` and `1e_1` are invalid. Underscores do not affect the numeric value,
+and `goose format` preserves them.
+
 **String literals** are `"…"` with the escapes `\n \t \r \0 \\ \" \'` and
 `\xNN` (two hexadecimal digits). A literal is static read-only data, of type
 `const u8[:]` ([section 6](#6-strings-and-text)).
