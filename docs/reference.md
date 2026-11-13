@@ -85,11 +85,18 @@ throughout.
 unsigned 64-bit range is accepted: a value above `i64.max` is a `u64`
 constant. A character literal `'a'` is an integer constant holding the
 byte's value, and it accepts the same escapes as a string literal.
+Underscores (`_`) may appear as digit separators for readability. A separator
+must sit between two digits of the same digit run (`1_000_000`, `0xFF_AA`);
+`1__0`, `1_`, and `0x_1` are errors. The separators are not part of the
+value, and `goose format` keeps them as written.
 
 **Float literals** have a `.`, an exponent, or both: `1.5`, `2.5e-3`, `1e9`.
 A `.` begins a fraction only when a digit follows it, so `1..2` is a range
 and `1.` is not a number. C99 hexadecimal floats with a binary exponent are
-accepted too: `0x1.8p3` is 12.0.
+accepted too: `0x1.8p3` is 12.0. Separators may appear in the integer part,
+the fraction, and the exponent, including a hex float's binary exponent
+(`3.141_592`, `1_000e3`, `0x1.A_Bp3`, `1e1_0`, `0x1.8p1_0`). Forms such as
+`1.0_` and `0x1.8_p3` are errors.
 
 **String literals** are `"…"` with the escapes `\n \t \r \0 \\ \" \'` and
 `\xNN` (two hexadecimal digits). A literal is static read-only data, of type
