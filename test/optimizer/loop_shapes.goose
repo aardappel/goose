@@ -319,6 +319,115 @@ fn ref_sum_spec(xs: f64[:], lo: f64, hi: f64) -> f64 {
     return s;
 }
 
+// --- constant counts that end on a block ----------------------------------------
+
+// A loop from zero over a constant count that is a multiple of its block size
+// ends exactly on its last block, so the tail codegen would emit after the
+// block loop is dead. These functions have the literal count in the loop; a
+// count passed in as a parameter is not an IntLit at codegen time.
+//
+// shape_exact_*_1000/8/0 have no tail after the block loop, while 1001 and 4
+// keep one. The runner checks both the shape and the tail's absence.
+
+fn shape_exact_sum_1000() -> f64 {
+    var s = 0.0;
+    for i in 1000 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn shape_exact_sum_1001() -> f64 {
+    var s = 0.0;
+    for i in 1001 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn shape_exact_sum_8() -> f64 {
+    var s = 0.0;
+    for i in 8 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn shape_exact_sum_4() -> f64 {
+    var s = 0.0;
+    for i in 4 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn shape_exact_sum_0() -> f64 {
+    var s = 0.0;
+    for i in 0 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn shape_exact_range_1000() -> f64 {
+    var s = 0.0;
+    for i in 0..1000 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn shape_exact_range_1001() -> f64 {
+    var s = 0.0;
+    for i in 0..1001 { s += i * 0.25 + 1.5 + i * 0.5 - 0.75; }
+    return s;
+}
+
+fn ref_exact_sum(n: i64) -> f64 {
+    var s = 0.0;
+    var i = 0;
+    while i < n {
+        s += i * 0.25 + 1.5 + i * 0.5 - 0.75;
+        i++;
+    }
+    return s;
+}
+
+fn shape_exact_strip_1000() -> i64 {
+    var acc: i64[8] = [0; 8];
+    for i in 1000 { acc[i % 8] += i * 3 + 1; }
+    return exact_strip_total(acc);
+}
+
+fn shape_exact_strip_1001() -> i64 {
+    var acc: i64[8] = [0; 8];
+    for i in 1001 { acc[i % 8] += i * 3 + 1; }
+    return exact_strip_total(acc);
+}
+
+fn shape_exact_strip_8() -> i64 {
+    var acc: i64[8] = [0; 8];
+    for i in 8 { acc[i % 8] += i * 3 + 1; }
+    return exact_strip_total(acc);
+}
+
+fn shape_exact_strip_4() -> i64 {
+    var acc: i64[8] = [0; 8];
+    for i in 4 { acc[i % 8] += i * 3 + 1; }
+    return exact_strip_total(acc);
+}
+
+fn shape_exact_strip_0() -> i64 {
+    var acc: i64[8] = [0; 8];
+    for i in 0 { acc[i % 8] += i * 3 + 1; }
+    return exact_strip_total(acc);
+}
+
+fn exact_strip_total(acc: i64[8]) -> i64 {
+    var r = 0;
+    for a in acc { r = r * 31 + a; }
+    return r;
+}
+
+fn ref_exact_strip(n: i64) -> i64 {
+    var acc: i64[8] = [0; 8];
+    var i = 0;
+    while i < n {
+        let lane = i - (i / 8) * 8;
+        acc[lane] += i * 3 + 1;
+        i++;
+    }
+    return exact_strip_total(acc);
+}
+
 // --- loops over limited arrays ----------------------------------------------------
 
 struct Node { v: i64, links: i64[..8] }
@@ -650,6 +759,16 @@ fn again(xs: f64[:], ys: f64[:], fs: f32[:], m: i64[37]&, node: Node&, longs: i6
     print(shape_sum_spec(xs, 1.0, 9.0) + shape_sum_spec(ys, 0.1, 0.3) +
           shape_sum_spec(xs[1..], 2.0, 4.0) + shape_sum_spec(ys[1..], 0.0, 1.0) +
           shape_sum_spec(xs[2..], 5.0, 6.0));
+    print(shape_exact_sum_1000() + shape_exact_sum_1000() * 2 + shape_exact_sum_1001() +
+          shape_exact_sum_1001() * 2 + shape_exact_sum_8() + shape_exact_sum_8() * 2 +
+          shape_exact_sum_4() + shape_exact_sum_4() * 2 + shape_exact_sum_0() +
+          shape_exact_sum_0() * 2);
+    print(shape_exact_range_1000() + shape_exact_range_1000() * 2 + shape_exact_range_1001() +
+          shape_exact_range_1001() * 2);
+    print(shape_exact_strip_1000() + shape_exact_strip_1000() * 2 + shape_exact_strip_1001() +
+          shape_exact_strip_1001() * 2 + shape_exact_strip_8() + shape_exact_strip_8() * 2 +
+          shape_exact_strip_4() + shape_exact_strip_4() * 2 + shape_exact_strip_0() +
+          shape_exact_strip_0() * 2);
 }
 
 fn main() {
@@ -700,6 +819,18 @@ fn main() {
         check("down jumps", n, shape_down_jumps(n - 2) == ref_down_jumps(n - 2));
         check("down twice", n, keep_down_twice(n - 2) == ref_down_twice(n - 2));
     }
+    check("exact sum 1000", 1000, shape_exact_sum_1000() == ref_exact_sum(1000));
+    check("exact sum 1001", 1001, shape_exact_sum_1001() == ref_exact_sum(1001));
+    check("exact sum 8", 8, shape_exact_sum_8() == ref_exact_sum(8));
+    check("exact sum 4", 4, shape_exact_sum_4() == ref_exact_sum(4));
+    check("exact sum 0", 0, shape_exact_sum_0() == ref_exact_sum(0));
+    check("exact range 1000", 1000, shape_exact_range_1000() == ref_exact_sum(1000));
+    check("exact range 1001", 1001, shape_exact_range_1001() == ref_exact_sum(1001));
+    check("exact strip 1000", 1000, shape_exact_strip_1000() == ref_exact_strip(1000));
+    check("exact strip 1001", 1001, shape_exact_strip_1001() == ref_exact_strip(1001));
+    check("exact strip 8", 8, shape_exact_strip_8() == ref_exact_strip(8));
+    check("exact strip 4", 4, shape_exact_strip_4() == ref_exact_strip(4));
+    check("exact strip 0", 0, shape_exact_strip_0() == ref_exact_strip(0));
     print(shape_strip_lanes(bytes), " ", shape_strip_count(39, 1000), " ", shape_strip_range(39),
           " ", shape_strip_u8(255), " ", shape_strip_return(longs), " ", shape_strip_structs(ps));
     print(shape_sum_dot(xs, ys), " ", shape_sum_count(5, 39), " ", shape_sum_f32(fs));

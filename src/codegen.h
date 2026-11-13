@@ -1297,7 +1297,7 @@ struct CodeGen {
     string AtLeastLeft(TypeExpr *ct, const string &hi, const string &ctr, int k, bool fromzero);
     void GenBodyCopy(Block *bodyb, int si, size_t first = 0);
     void GenBlocked(ForLoop *f, int k, const string &more, const string &step,
-                    const function<void()> &bind, const string &cond);
+                    const function<void()> &bind, const string &cond, bool exact);
 
     // ------------------------------------------------------------------
     // Exits delivering a value: where the receiver expects it (§7.3, §7.9).
