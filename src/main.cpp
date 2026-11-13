@@ -11,6 +11,7 @@
 #include "parser.h"
 #include "resolve.h"
 #include "builtins.h"
+#include "contracts.h"
 #include "gfx.h"
 #include "typecheck.h"
 #include "typecheck_types.h"

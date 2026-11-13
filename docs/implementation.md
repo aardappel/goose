@@ -4773,6 +4773,14 @@ evaluation of the fill value. Neither `pop_n` nor `resize` states anything
 when evaluating its count moved the receiver (`recvmoved`), since the
 receiver was resolved before the count ran.
 
+An `assert`, or a contract clause's check (`contracts.h`, which is an
+assert with a message), loses its check, condition and all (`Call::nobc`),
+where the facts already settle its condition (`CondHolds`). Only
+comparisons of plain operands joined by `&&` are judged: integer variables,
+constants, the lengths of named places, and sums and differences of those.
+No such condition can abort or have effects, so dropping its evaluation
+changes nothing. Either way its condition is a fact past it.
+
 A completed check is also a fact (`CheckedFacts`): the program continues
 past `a[i]` only with `0 <= i < len`, and past `a[lo..hi]` only with
 `0 <= lo <= hi <= len`. So a repeated index, or an index inside an earlier

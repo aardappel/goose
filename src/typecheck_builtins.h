@@ -57,6 +57,13 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             CheckCond(args[0]);
             NarrowCond(args[0], true);  // assert(r) narrows onwards (§3.8).
             return VoidVal();
+        case B_CONTRACT:
+            // A contract clause's check (contracts.h), which narrows onwards
+            // like an assert.
+            CheckCond(args[0]);
+            CheckArg(args[1], u8slice);
+            NarrowCond(args[0], true);
+            return VoidVal();
         case B_ABORT: case B_EXIT:
             // Both end the program (§9.3), so the code after them is
             // unreachable.
