@@ -5,7 +5,9 @@ import vec;
 // initialize first, whatever order the files were parsed in.
 let ORIGIN = float3_0;
 
-fn main() {
+// checkfree: what it calls of the module must keep no bounds check, so checkfree
+// code may call it too (spec §7.14).
+checkfree fn main() {
     print(ORIGIN.x, ORIGIN.y, ORIGIN.z);                          // 0.00.00.0
     let a = float3 { 1.0, 2.0, 3.0 };
     let b = float3 { 4.0, 5.0, 6.0 };

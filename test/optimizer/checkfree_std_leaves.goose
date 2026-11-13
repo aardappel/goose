@@ -1,7 +1,6 @@
 // checkfree (§7.14) through the standard library's scalar functions: they
-// hold no index, so they are checkfree and a checkfree function may call
-// them. float_text::bits_of reads a bytes_of view of an f64[1], whose length
-// is the constant 8.
+// hold no index, so a checkfree function may call them. float_text::bits_of
+// reads a bytes_of view of an f64[1], whose length is the constant 8.
 import std;
 import math;
 

@@ -395,7 +395,9 @@ checkfree fn each keeps a bounds check in code written in fn main: nothing shows
 `checkfree` on a function is a promise about its own text: no check in any
 copy, whoever calls it. Requiring it of every callee instead would put it on
 every small helper (`swap`, `min`, `max`, vector math) whether or not it
-indexes anything.
+indexes anything. The standard library makes no such promises; its tests
+call what [stdlib.md](../stdlib.md) documents as check-free from `checkfree`
+functions.
 
 ### 6.3 Where its facts come from
 

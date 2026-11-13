@@ -3,7 +3,9 @@
 import math;
 import std;
 
-fn main() {
+// checkfree: what it calls of the module must keep no bounds check, so checkfree
+// code may call it too (spec §7.14).
+checkfree fn main() {
     let x: f32 = 2.25;
     print(sqrt(16.0), " ", sqrt(x));                                              // 4.0 1.5
     print(floor(2.7), " ", ceil(2.1), " ", round(2.5), " ", trunc(-2.7));         // 2.0 3.0 3.0 -2.0
