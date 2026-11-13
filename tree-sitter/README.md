@@ -41,7 +41,11 @@ python tree-sitter/build.py --check   # also run the corpus and parse every .goo
 The tree-sitter CLI is the version `package.json` pins. `build.py` installs it
 into `node_modules/` on first use, so Node.js is the only requirement.
 
-`--check` parses every `.goose` file in the repository. Each must parse, except
+`--check` also compiles the Helix queries and checks their captures against
+`test/helix/queries.goose` and its JSON expectations. This does not exercise
+Helix's rendering or indentation algorithm.
+
+It parses every `.goose` file in the repository. Each must parse, except
 the files that are deliberately malformed, which are listed in `MALFORMED` in
 `build.py`: the error and recovery tests, and the token soup in
 `test/syntax/lexer_tokens.goose`. When the compiler's syntax changes, update
@@ -71,20 +75,8 @@ require('nvim-treesitter.parsers').get_parser_configs().goose = {
 Then run `:TSInstall goose` and copy `queries/highlights.scm` to
 `~/.config/nvim/queries/goose/highlights.scm`.
 
-**Helix** (`languages.toml`):
-
-```toml
-[[language]]
-name = "goose"
-scope = "source.goose"
-file-types = ["goose"]
-comment-token = "//"
-block-comment-tokens = { start = "/*", end = "*/" }
-
-[[grammar]]
-name = "goose"
-source = { path = "/path/to/goose/tree-sitter" }
-```
-
-Then run `hx --grammar build` and copy `queries/highlights.scm` to
-`~/.config/helix/runtime/queries/goose/highlights.scm`.
+**Helix**: see the [editor setup](../docs/editors.md#helix) for the language
+server, grammar and query installation. Use `queries/helix/*.scm`, rather than
+the shared Neovim-style highlight query: Helix uses different capture names.
+These queries provide highlighting, indentation, text objects, symbols and
+rainbow brackets.
