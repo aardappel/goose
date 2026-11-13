@@ -5086,7 +5086,9 @@ Construction rules (§4.2) write stacks front-to-back. Windows commits on
 fault: the runtime's handler commits a chunk from whichever page
 was touched, so an allocation that skips ahead without writing (a large
 limited-array capacity) needs no explicit commit, and nothing depends on
-touch order. macOS and Linux map the usable region read/write and let the
+touch order. A read below the highest committed page commits only its own
+page, so a stale view of a run that `slice_pool`'s `trim` discarded does
+not take back its neighbors. macOS and Linux map the usable region read/write and let the
 kernel supply physical pages on touch. Fresh pages, including pages
 discarded by `trim_memory`, arrive zeroed from the OS. Reused stack memory
 is not zeroed. This is harmless, since uninitialized slots are unreachable
