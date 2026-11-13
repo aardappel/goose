@@ -376,7 +376,7 @@ writes. A `const` array or read-only slice cannot be sorted (spec §9.5).
 
 ```goose
 fn push_n<A, T>(xs: A&, v: T, n: i64)           // n pushes
-fn insert_at<A, T>(xs: A&, i: i64, v: T)        // shifts [i..) up; needs push
+fn insert_at<A, T>(xs: A&, i: i64, v: T)        // shifts [i..) up; needs push; asserts 0 <= i <= xs.len
 fn remove_at<A>(xs: A&, i: i64) -> T            // shifts down; needs pop
 fn swap_remove<A>(xs: A&, i: i64) -> T          // O(1), reorders
 fn retain<A, F>(xs: A&)                         // keeps x with F(x), in order; needs resize

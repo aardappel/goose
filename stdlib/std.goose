@@ -952,6 +952,7 @@ fn stable_sort<T, F>(xs: T[:]) {
 fn push_n<A, T>(xs: A&, v: T, n: i64) { for i in n { xs.push(v); } }
 
 fn insert_at<A, T>(xs: A&, i: i64, v: T) {
+    assert(i >= 0 && i <= xs.len);
     xs.push(v);
     var j = xs.len - 1;
     while j > i {

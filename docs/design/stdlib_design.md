@@ -521,7 +521,7 @@ unspecified order.
 
 ```goose
 fn push_n<A, T>(xs: A&, v: T, n: i64)            // n pushes; grow-only arrays' answer to resize
-fn insert_at<A, T>(xs: A&, i: i64, v: T)         // shifts [i..) up; needs push
+fn insert_at<A, T>(xs: A&, i: i64, v: T)         // shifts [i..) up; needs push; asserts 0 <= i <= xs.len
 fn remove_at<A>(xs: A&, i: i64) -> T             // shifts down; needs pop; returns the element
 fn swap_remove<A>(xs: A&, i: i64) -> T           // O(1), reorders
 fn retain<A, F>(xs: A&)                          // keeps x with F(x), stable; needs resize
