@@ -1,0 +1,15 @@
+targets true false
+records true false false true
+record calls true false true false true false
+controls true true false false false
+ranges true
+adt targets true
+adt true false false
+adt calls true false true false true false
+variant true
+varint adt targets true
+varint adt true false
+varint adt calls true false true false true false
+mixed targets true false
+mixed true false
+mixed calls true false true false true false
