@@ -11,3 +11,6 @@ test/syntax/raw_strings_crlf.goose -text
 # Mark files that by default we don't want to see in diffs:
 # runtime_inline.h is composed from src/runtime/
 src/runtime_inline.h linguist-generated
+# parser.c and parser.h are generated from tree-sitter/grammar.js
+tree-sitter/src/parser.c linguist-generated
+tree-sitter/src/tree_sitter/parser.h linguist-generated

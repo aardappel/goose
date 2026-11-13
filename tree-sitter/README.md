@@ -21,7 +21,14 @@ order, for example), but it should never reject a program the compiler accepts.
 | `build.py` | Generates the parser, and checks it. |
 
 The parser itself (`src/parser.c`, `src/grammar.json`, `src/node-types.json`,
-`src/tree_sitter/`) is generated from `grammar.js` and not checked in. Run
+`src/tree_sitter/`) is generated from `grammar.js`. Of those, only
+`src/parser.c` and `src/tree_sitter/parser.h` are checked in, because Zed
+needs them: it fetches a grammar with git at the commit an extension names,
+and compiles `src/parser.c` and `src/scanner.c` there with `src/` on the
+include path, without running the tree-sitter CLI. Zed does this on the
+user's machine when they install a dev extension. For an extension published
+to Zed's registry, the registry's CI does it once, and users download the
+compiled grammar. Run
 `build.py` before pointing an editor at this directory.
 
 ## Development
