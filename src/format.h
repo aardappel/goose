@@ -264,6 +264,26 @@ inline vector<Item> Collect(const string &src, const vector<pair<const char *, u
     return items;
 }
 
+inline string CompactComment(string_view text, int col = 0) {
+    auto trim = [](string_view s) {
+        auto b = s.find_first_not_of(" \t\r");
+        if (b == string_view::npos) return string_view {};
+        return s.substr(b, s.find_last_not_of(" \t\r") - b + 1);
+    };
+    auto first = text.find('\n'), last = text.rfind('\n');
+    if (first == string_view::npos || first == last ||
+        text.find('\n', first + 1) != last || trim(text.substr(0, first)) != "/*" ||
+        trim(text.substr(last + 1)) != "*/")
+        return "";
+    auto body = trim(text.substr(first + 1, last - first - 1));
+    if (body.empty() || !((body[0] >= 'A' && body[0] <= 'Z') ||
+                          (body[0] >= 'a' && body[0] <= 'z')) ||
+        body.find("/*") != string_view::npos || body.find("*/") != string_view::npos)
+        return "";
+    auto compact = cat("/* ", body, " */");
+    return Width(compact, col) <= 100 ? compact : "";
+}
+
 // The lines after the first of a multi-line raw string or block comment,
 // moved `delta` columns: spaces added in front of each line that is not
 // empty, or taken from the front of each. `applied` is the shift made: 0
@@ -489,6 +509,10 @@ inline vector<OutLine> Lines(const vector<Item> &items, const unordered_map<int,
             if (it.text.find('\n') != string_view::npos) {
                 int applied;
                 auto s = Shift(it.text, delta, it.kind != Item::TOKEN, applied);
+                if (it.kind == Item::BLOCK_COMMENT) {
+                    auto compact = CompactComment(it.text, col);
+                    if (!compact.empty()) s = compact;
+                }
                 L.text += s;
                 col = EndCol(s, col);
                 delta = applied;
@@ -657,7 +681,8 @@ inline void LexForCheck(const string &src, vector<CheckTok> &toks, vector<string
                     Append(c, c.empty() && l == p ? "" : "\n", string_view(lb, (size_t)(lend - lb)));
                     l = le < q ? le + 1 : le;
                 }
-                comments.push_back(c);
+                auto compact = CompactComment(c);
+                comments.push_back(compact.empty() ? c : compact);
                 p = q;
             } else {
                 p++;
