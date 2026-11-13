@@ -544,7 +544,7 @@ fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, pad: u8)
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)   // fixed decimals
 fn parse_int(s: u8[:]) -> i64, bool              // optional sign, base 10, whole string
 fn parse_int(s: u8[:], base: i64) -> i64, bool
-fn parse_flt(s: u8[:]) -> f64, bool              // sign, fraction, exponent; correctly rounded
+fn parse_flt(s: u8[:]) -> f64, bool              // sign, fraction, exponent, or inf/infinity/nan; correctly rounded
 fn compare(a: u8[:], b: u8[:]) -> i64            // bytewise lexicographic: -1, 0, 1
 fn trim(s: u8[:]) -> u8[:]                       // ASCII whitespace; a sub-slice, no copy
 fn trim_start(s: u8[:]) -> u8[:]

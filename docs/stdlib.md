@@ -416,7 +416,7 @@ fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, the exact value rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64 or base 2..36
 fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool       // optional '+', whole string; false on '-' or outside u64 or base 2..36
-fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent; correctly rounded
+fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent, or inf/infinity/nan; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
@@ -445,11 +445,12 @@ strings; the functions here add control over the output, and parsing. In
 base 10, `format_int` and `format_uint` write the same text as `format`
 (after any padding) and run as fast. `format_int` and `format_uint` abort
 when `base` is outside 2..36; `parse_int` and `parse_uint` return `false`
-for such a base. `parse_flt` gives the double nearest to
-the decimal, as C's `strtod` does, so a float's text from `print` or
-`format` reads back as the same value. Strings are `u8` arrays: input is a
-`u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
-`u8[..k]`.
+for such a base. `parse_flt` gives the double nearest to the decimal, as C's
+`strtod` does, so a float's text from `print` or `format` reads back as the
+same value. It reads `strtod`'s `inf`, `infinity` and `nan` spellings too, in
+either case and with an optional sign, so `parse_flt(str(x))` is `x` for
+every float `print` can write. Strings are `u8` arrays: input is a `u8[:]`,
+output goes to a `u8[>..]&` builder, and storage is a `u8[]` or `u8[..k]`.
 
 `split_once` cuts s at the first sep, as Go's `strings.Cut` does: the part
 before and the part after, read-only slices into s, and `true`. When sep is

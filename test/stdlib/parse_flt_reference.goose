@@ -6,7 +6,8 @@
 // off. The two must agree to the bit, and on the flag, for every input:
 // edge cases, then a few hundred thousand generated ones biased to what the
 // parser decides on (signs, points, exponents, lengths around 16 to 19
-// digits, runs of 0 and 9, a stray byte).
+// digits, runs of 0 and 9, a stray byte). Neither set has a non-finite
+// spelling; stdlib_std.goose covers those.
 import std;
 
 fn reference_parse_flt(s: u8[:]) -> f64, bool {
@@ -83,8 +84,8 @@ fn reference_parse_flt(s: u8[:]) -> f64, bool {
     return v, true;
 }
 
-// Equal values, and a zero's sign too: what tells two results apart, as
-// parse_flt never makes a NaN.
+// Equal values, and a zero's sign too: what tells two results apart. No
+// input here is a nan spelling, so neither parser makes a NaN.
 fn same(a: f64, b: f64) -> bool {
     if a != b { return false; }
     return a != 0.0 || (1.0 / a < 0.0) == (1.0 / b < 0.0);
