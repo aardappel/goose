@@ -59,11 +59,78 @@ inline string DeclDetail(const SStruct *st) {
 inline string DeclDetail(const SEnum *en) { return cat("enum ", en->qname, GenericsText(en->generics)); }
 inline string DeclDetail(const SAlias *al) { return cat("type ", al->qname, " = ", TypeText(al->type)); }
 
-// A builtin as its calls show it: `name(N arguments)`.
-inline string BuiltinCallText(const BuiltinDef &b) {
-    return cat(b.name, "(", b.minargs == b.maxargs ? to_string(b.minargs) : cat(b.minargs, "..", b.maxargs),
-               " arguments)");
+inline string BuiltinParamLabel(const BuiltinParam &p) {
+    string s = p.name;
+    if (*p.type) Append(s, ": ", p.type);
+    if (p.variadic) s += "...";
+    return s;
 }
+
+inline string BuiltinFormHeader(const BuiltinDef &b, const BuiltinForm &f) {
+    auto s = cat("builtin fn ", b.name, f.tyargs, "(");
+    for (int i = 0; i < f.nparams; i++) {
+        if (i) s += ", ";
+        s += BuiltinParamLabel(f.params[i]);
+    }
+    s += ")";
+    if (*f.rets) Append(s, " -> ", f.rets);
+    return s;
+}
+
+inline const BuiltinForm *MatchBuiltinForm(const BuiltinDoc &d, size_t nargs) {
+    for (int i = 0; i < d.nforms; i++) {
+        auto &f = d.forms[i];
+        if (nargs >= (size_t)f.minargs && nargs <= (size_t)f.MaxArgs()) return &f;
+    }
+    return nullptr;
+}
+
+inline string BuiltinHeader(const BuiltinDef &b) {
+    if (b.flags & BF_PROPERTY) return cat("builtin .", b.name, ": i64");
+    auto &doc = BuiltinDocByKind(b.kind);
+    string s;
+    for (int i = 0; i < doc.nforms; i++) Append(s, i ? "\n" : "", BuiltinFormHeader(b, doc.forms[i]));
+    return s;
+}
+
+inline bool BuiltinCallLine(const BuiltinDef &b, const BuiltinForm &f, const Call *c, string &out) {
+    auto args = c->ArgNodes();
+    if (!(b.flags & BF_TYARGS) && args.empty()) return false;
+    string s = b.name;
+    if (b.flags & BF_TYARGS) {
+        auto targ = b.kind == B_QLIMIT ? c->qtype : (c->rettypes.empty() ? nullptr : c->rettypes[0]);
+        if (!targ) return false;
+        Append(s, "<", TypeText(targ), ">");
+    }
+    s += "(";
+    for (size_t i = 0; i < args.size(); i++) {
+        if (i) s += ", ";
+        if (i == 0 && (b.kind == B_THREAD_SPAWN || b.kind == B_THREAD_SPAWN_CONTAINED)) {
+            auto wid = Is<Ident>(args[0]);
+            if (!wid || !wid->fnref) return false;
+            s += wid->fnref->qname;
+        } else {
+            if (!args[i]->exprtype || args[i]->exprtype->kind == TY_VOID) return false;
+            s += TypeText(args[i]->exprtype);
+        }
+    }
+    s += ")";
+    vector<TypeExpr *> rets = c->rettypes;
+    if (rets.empty() && c->exprtype && c->exprtype->kind != TY_VOID) rets.push_back(c->exprtype);
+    if (*f.rets && rets.empty()) return false;
+    if (!rets.empty()) {
+        s += " -> ";
+        for (size_t i = 0; i < rets.size(); i++) Append(s, i ? ", " : "", TypeText(rets[i]));
+    }
+    out = std::move(s);
+    return true;
+}
+
+inline string BuiltinCompletionDetail(const BuiltinDef &b) {
+    if (b.flags & BF_PROPERTY) return cat("builtin .", b.name, ": i64");
+    return BuiltinFormHeader(b, BuiltinDocByKind(b.kind).forms[0]);
+}
+
 
 // A function's declaration as its header line, defaults elided.
 inline string FnHeader(const SFunction *sf) {
@@ -206,7 +273,7 @@ inline const Call *ResolvedCall(const Located &loc, const Occurrence &occ) {
 }
 
 inline const SFunction *CalleeOf(const Call *c) {
-    if (!c) return nullptr;
+    if (!c || c->builtin >= 0) return nullptr;
     if (c->spec) return c->spec->sf;
     if (!c->dispatch.empty() && c->dispatch[0]) return c->dispatch[0]->sf;
     return nullptr;
@@ -235,7 +302,16 @@ inline const Dot *ResolvedDot(const Analysis &an, const Occurrence &occ) {
 inline const Call *SpecializedCall(const Analysis &an, const Call *call) {
     auto c = an.Find(call, [](const Node *n) {
         auto x = Is<Call>(n);
-        return x && x->spec;
+        return x && x->builtin < 0 && x->spec;
+    });
+    return c ? Is<Call>(c) : nullptr;
+}
+
+// The first clone of a call the check resolved to a builtin.
+inline const Call *ResolvedBuiltinCall(const Analysis &an, const Call *call) {
+    auto c = an.Find(call, [](const Node *n) {
+        auto x = Is<Call>(n);
+        return x && x->builtin >= 0;
     });
     return c ? Is<Call>(c) : nullptr;
 }
@@ -437,6 +513,46 @@ inline HoverText OverloadsHover(const vector<SFunction *> &fns) {
     return h;
 }
 
+// A builtin: its header(s) and documentation.
+inline HoverText BuiltinHover(const BuiltinDef &b) {
+    return { BuiltinHeader(b), BuiltinDocByKind(b.kind).doc, {} };
+}
+
+// A checked call to a builtin: the matched form's header, concrete
+// specializations across clones, and documentation.
+inline HoverText BuiltinCallHover(const Located &loc, const Occurrence &occ, const BuiltinDef &b) {
+    auto &an = *loc.an;
+    auto &doc = BuiltinDocByKind(b.kind);
+    HoverText h;
+    h.doc = doc.doc;
+    auto span = loc.fi->CallAt(occ.start);
+    const BuiltinForm *matched = span ? MatchBuiltinForm(doc, span->call->ArgNodes().size()) : nullptr;
+    h.header = matched ? BuiltinFormHeader(b, *matched) : BuiltinHeader(b);
+    if (!span || !matched) return h;
+    vector<string> lines;
+    const Node *firstclone = nullptr;
+    auto add = [&](const Node *n) {
+        auto c = Is<Call>(n);
+        if (!c || c->builtin != b.kind) return;
+        string line;
+        if (!BuiltinCallLine(b, *matched, c, line)) return;
+        if (!firstclone) firstclone = c;
+        if (find(lines.begin(), lines.end(), line) == lines.end()) lines.push_back(std::move(line));
+    };
+    add(span->call);
+    if (auto it = an.clones.find(span->call); it != an.clones.end())
+        for (auto cl : it->second) add(cl);
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i == 4) {
+            Append(h.extra, "\n... ", lines.size() - 4, " more");
+            break;
+        }
+        Append(h.extra, h.extra.empty() ? "" : "\n", lines[i]);
+    }
+    if (firstclone) NoteExemplar(h, an, firstclone);
+    return h;
+}
+
 inline HoverText HoverIdent(const Located &loc, const Occurrence &occ) {
     HoverText h;
     auto &an = *loc.an;
@@ -466,12 +582,7 @@ inline HoverText HoverIdent(const Located &loc, const Occurrence &occ) {
     if (occ.callee) {
         auto call = ResolvedCall(loc, occ);
         if (auto sf = CalleeOf(call)) return FnHover(sf);
-        if (call && call->builtin >= 0) {
-            h.header = cat("builtin ", BuiltinCallText(builtindefs[call->builtin]));
-            if (call->exprtype && call->exprtype->kind != TY_VOID)
-                Append(h.header, " -> ", TypeText(call->exprtype));
-            return h;
-        }
+        if (call && call->builtin >= 0) return BuiltinCallHover(loc, occ, BuiltinByKind(call->builtin));
         if (call && call->fvbody) {
             h.header = cat("function value ", id->name);
             return h;
@@ -489,10 +600,8 @@ inline HoverText HoverIdent(const Located &loc, const Occurrence &occ) {
     }
     auto &fns = ast.LookupFunctions(id->name, id->ns);
     if (!fns.empty()) return OverloadsHover(fns);
-    if (auto b = LookupBuiltin(GlobalLeaf(id->name))) {
-        h.header = cat("builtin ", b->name);
-        return h;
-    }
+    if (auto b = LookupBuiltin(GlobalLeaf(id->name)); b && !(b->flags & BF_PROPERTY))
+        return BuiltinHover(*b);
     h.header = string(id->name);
     h.doc = NotChecked(an, occ.node);
     return h;
@@ -507,29 +616,42 @@ inline HoverText HoverDot(const Located &loc, const Occurrence &occ) {
         if (cd->variantconst) {
             h.header = VariantHeader(EnumOfVariant(ast, cd->variantconst), cd->variantconst);
             h.doc = DocText(cd->variantconst->doc);
-        } else if (cd->member >= 0) {
-            h.header = cat("builtin .", builtindefs[cd->member].name);
-            if (cd->exprtype && cd->exprtype->kind != TY_VOID) Append(h.header, ": ", TypeText(cd->exprtype));
-        } else {
+            NoteExemplar(h, an, cd);
+            return h;
+        } else if (cd->member >= 0 && (builtindefs[cd->member].flags & BF_PROPERTY)) {
+            auto &b = builtindefs[cd->member];
+            h.header = cat("builtin .", b.name, ": ",
+                           cd->exprtype && cd->exprtype->kind != TY_VOID ? TypeText(cd->exprtype) : string("i64"));
+            h.doc = BuiltinDocByKind(b.kind).doc;
+            NoteExemplar(h, an, cd);
+            return h;
+        } else if (cd->fieldidx >= 0) {
             auto f = FieldOfDot(cd);
             h.header = cat(f && f->isconst ? "let " : "", cd->name, ": ", TypeText(cd->exprtype));
             if (f) h.doc = DocText(f->doc);
+            NoteExemplar(h, an, cd);
+            return h;
         }
-        NoteExemplar(h, an, cd);
-        return h;
     }
     if (occ.callee) {
         auto call = ResolvedCall(loc, occ);
         if (auto sf = CalleeOf(call)) return FnHover(sf);
-        if (call && call->builtin >= 0) {
-            h.header = cat("builtin .", builtindefs[call->builtin].name);
-            if (call->exprtype && call->exprtype->kind != TY_VOID)
-                Append(h.header, " -> ", TypeText(call->exprtype));
-            return h;
-        }
+        if (call && call->builtin >= 0) return BuiltinCallHover(loc, occ, BuiltinByKind(call->builtin));
     }
-    auto &fns = MethodsOf(an, d);
-    if (occ.callee && !fns.empty()) return OverloadsHover(fns);
+    auto rt = an.TypeOf(d->obj);
+    while (rt && rt->kind == TY_REF && rt->ref->sub) rt = rt->ref->sub;
+    if (occ.callee) {
+        auto b = LookupBuiltin(d->name);
+        if (b && !(b->flags & BF_PROPERTY) && (b->flags & BF_MEMBER) && rt && rt->kind == TY_ARRAY)
+            return BuiltinHover(*b);
+        auto &fns = MethodsOf(an, d);
+        if (!fns.empty()) return OverloadsHover(fns);
+        if (rt && b && !(b->flags & BF_PROPERTY) && (!(b->flags & BF_MEMBER) || (RecvKindOf(rt) & b->recv)))
+            return BuiltinHover(*b);
+    } else if (rt) {
+        if (auto b = LookupBuiltin(d->name); b && (b->flags & BF_PROPERTY) && (RecvKindOf(rt) & b->recv))
+            return BuiltinHover(*b);
+    }
     h.header = cat(".", d->name);
     h.doc = NotChecked(an, occ.node);
     return h;
@@ -738,7 +860,10 @@ inline Place DefinitionOf(const Located &loc, const Occurrence &occ) {
             if (auto ci = ResolvedIdent(an, occ))
                 return ci->vdef ? PlaceOfVarDef(an, ci->vdef) : PlaceOfFn(an, ci->fnref);
             if (occ.callee)
-                if (auto sf = CalleeOf(ResolvedCall(loc, occ))) return PlaceOfFn(an, sf);
+                if (auto call = ResolvedCall(loc, occ)) {
+                    auto sf = CalleeOf(call);
+                    return sf ? PlaceOfFn(an, sf) : Place {};
+                }
             if (auto en = ast.LookupEnum(id->name, id->ns))
                 return PlaceOfName(an, en->line.fileidx, en->name, en->line);
             if (auto st = ast.LookupStruct(id->name, id->ns))
@@ -758,10 +883,19 @@ inline Place DefinitionOf(const Located &loc, const Occurrence &occ) {
                 if (cd->variantconst) return PlaceOfLine(an, cd->variantconst->line, cd->variantconst->name.size());
                 if (auto f = FieldOfDot(cd)) return PlaceOfLine(an, f->line, f->name.size());
             }
-            if (occ.callee)
-                if (auto sf = CalleeOf(ResolvedCall(loc, occ))) return PlaceOfFn(an, sf);
-            auto &fns = MethodsOf(an, d);
-            if (occ.callee && !fns.empty()) return PlaceOfFn(an, fns[0]);
+            if (occ.callee) {
+                if (auto call = ResolvedCall(loc, occ)) {
+                    auto sf = CalleeOf(call);
+                    return sf ? PlaceOfFn(an, sf) : Place {};
+                }
+                auto rt = an.TypeOf(d->obj);
+                while (rt && rt->kind == TY_REF && rt->ref->sub) rt = rt->ref->sub;
+                if (rt && rt->kind == TY_ARRAY)
+                    if (auto b = LookupBuiltin(d->name); b && !(b->flags & BF_PROPERTY) && (b->flags & BF_MEMBER))
+                        return {};
+                auto &fns = MethodsOf(an, d);
+                if (!fns.empty()) return PlaceOfFn(an, fns[0]);
+            }
             return {};
         }
         case Occurrence::TYPE: {
@@ -993,6 +1127,10 @@ inline int SemanticTokenOf(const Located &loc, const Occurrence &occ, int &modif
             if (occ.callee) {
                 auto call = ResolvedCall(loc, occ);
                 if (call && call->fvbody) return ST_VARIABLE;
+                auto b = LookupBuiltin(GlobalLeaf(id->name));
+                if ((call && call->builtin >= 0) ||
+                    (!call && ast.LookupFunctions(id->name, id->ns).empty() && b && !(b->flags & BF_PROPERTY)))
+                    modifiers = SM_DEFAULTLIBRARY;
                 return ST_FUNCTION;
             }
             if (ast.LookupEnum(id->name, id->ns)) return ST_ENUM;
@@ -1000,12 +1138,36 @@ inline int SemanticTokenOf(const Located &loc, const Occurrence &occ, int &modif
             return -1;
         }
         case Occurrence::DOT: {
+            auto d = Is<Dot>(occ.node);
             if (auto cd = ResolvedDot(an, occ)) {
                 if (cd->variantconst) return ST_ENUMMEMBER;
-                if (cd->member >= 0) return occ.callee ? ST_METHOD : ST_PROPERTY;
-                return ST_PROPERTY;
+                if (cd->member >= 0 && (builtindefs[cd->member].flags & BF_PROPERTY)) {
+                    modifiers = SM_DEFAULTLIBRARY | SM_READONLY;
+                    return ST_PROPERTY;
+                }
+                if (cd->fieldidx >= 0) return ST_PROPERTY;
             }
-            return occ.callee ? ST_METHOD : ST_PROPERTY;
+            auto rt = an.TypeOf(d->obj);
+            while (rt && rt->kind == TY_REF && rt->ref->sub) rt = rt->ref->sub;
+            if (occ.callee) {
+                auto call = ResolvedCall(loc, occ);
+                if (call && call->builtin >= 0) {
+                    modifiers = SM_DEFAULTLIBRARY;
+                } else if (!call && rt) {
+                    auto b = LookupBuiltin(d->name);
+                    if (b && !(b->flags & BF_PROPERTY)) {
+                        if ((b->flags & BF_MEMBER) && rt->kind == TY_ARRAY)
+                            modifiers = SM_DEFAULTLIBRARY;
+                        else if (MethodsOf(an, d).empty() && (!(b->flags & BF_MEMBER) || (RecvKindOf(rt) & b->recv)))
+                            modifiers = SM_DEFAULTLIBRARY;
+                    }
+                }
+                return ST_METHOD;
+            }
+            if (rt && (rt->kind == TY_ARRAY || rt->kind == TY_SLICE))
+                if (auto b = LookupBuiltin(d->name); b && (b->flags & BF_PROPERTY) && (RecvKindOf(rt) & b->recv))
+                    modifiers = SM_DEFAULTLIBRARY | SM_READONLY;
+            return ST_PROPERTY;
         }
     }
     return -1;
@@ -1066,6 +1228,27 @@ inline void WriteSignature(JsonOut &j, const SFunction *sf) {
     j.EndObject();
 }
 
+inline void WriteBuiltinSignature(JsonOut &j, const BuiltinDef &b, const BuiltinForm &f, const char *doc) {
+    j.BeginObject();
+    j.Member("label", BuiltinFormHeader(b, f));
+    if (doc && *doc) {
+        j.Key("documentation");
+        j.BeginObject();
+        j.Member("kind", "markdown");
+        j.Member("value", doc);
+        j.EndObject();
+    }
+    j.Key("parameters");
+    j.BeginArray();
+    for (int i = 0; i < f.nparams; i++) {
+        j.BeginObject();
+        j.Member("label", BuiltinParamLabel(f.params[i]));
+        j.EndObject();
+    }
+    j.EndArray();
+    j.EndObject();
+}
+
 inline bool SignatureHelp(Workspace &ws, const Json &params, JsonOut &j) {
     Located loc;
     if (!Locate(ws, params, loc)) return false;
@@ -1078,7 +1261,28 @@ inline bool SignatureHelp(Workspace &ws, const Json &params, JsonOut &j) {
     for (auto &c : loc.fi->calls) {
         if (c.start > loc.offset) break;
         if (loc.offset > c.end) continue;
-        auto p = text.find('(', c.start);
+        auto callee_end = (size_t)max<int64_t>(NodeExtent(*loc.fi, c.call->callee).second, (int64_t)c.start);
+        auto limit = min(c.end, text.size());
+        size_t p = string_view::npos;
+        int angle = 0, bracket = 0, inner_paren = 0;
+        for (size_t i = callee_end; i < limit; i++) {
+            auto ch = text[i];
+            if (ch == '[') {
+                bracket++;
+            } else if (ch == ']') {
+                if (bracket > 0) bracket--;
+            } else if (angle > 0) {
+                if (ch == '(') inner_paren++;
+                else if (ch == ')') { if (inner_paren > 0) inner_paren--; }
+                else if (ch == '<' && bracket == 0 && inner_paren == 0) angle++;
+                else if (ch == '>' && bracket == 0 && inner_paren == 0 && !(i > 0 && text[i - 1] == '-')) angle--;
+            } else if (ch == '<' && bracket == 0) {
+                angle++;
+            } else if (ch == '(') {
+                p = i;
+                break;
+            }
+        }
         if (p == string_view::npos || p >= loc.offset || p > c.end) continue;
         if (!span || c.start >= span->start) {
             span = &c;
@@ -1118,41 +1322,79 @@ inline bool SignatureHelp(Workspace &ws, const Json &params, JsonOut &j) {
             active++;
         }
     }
-    string_view name;
-    const vector<SFunction *> *found;
+    const vector<SFunction *> *found = nullptr;
+    const BuiltinDef *b = nullptr;
     auto ufcs = false;
     if (auto id = Is<Ident>(span->call->callee)) {
-        name = id->name;
-        found = &ast.LookupFunctions(name, id->ns);
+        found = &ast.LookupFunctions(id->name, id->ns);
+        b = LookupBuiltin(GlobalLeaf(id->name));
+        if (b && (b->flags & BF_PROPERTY)) b = nullptr;
     } else if (auto d = Is<Dot>(span->call->callee)) {
-        name = d->name;
-        found = &MethodsOf(an, d);
         ufcs = true;
+        auto rt = an.TypeOf(d->obj);
+        while (rt && rt->kind == TY_REF && rt->ref->sub) rt = rt->ref->sub;
+        auto candidate = LookupBuiltin(d->name);
+        if (candidate && (candidate->flags & BF_PROPERTY)) candidate = nullptr;
+        if (candidate && (candidate->flags & BF_MEMBER)) {
+            if (!rt || rt->kind != TY_ARRAY) found = &MethodsOf(an, d);
+            if (rt && (RecvKindOf(rt) & candidate->recv) &&
+                (rt->kind == TY_ARRAY || !found || found->empty()))
+                b = candidate;
+        } else {
+            found = &MethodsOf(an, d);
+            if (rt && (!found || found->empty()) && candidate) b = candidate;
+        }
     } else {
         return false;
     }
-    auto &fns = *found;
-    auto b = fns.empty() ? LookupBuiltin(GlobalLeaf(name)) : nullptr;
+    static const vector<SFunction *> nofns;
+    auto &fns = found ? *found : nofns;
     if (fns.empty() && !b) return false;
-    auto activesig = 0;
-    if (auto resolved = SpecializedCall(an, span->call))
-        for (size_t i = 0; i < fns.size(); i++)
-            if (fns[i] == resolved->spec->sf) activesig = (int)i;
+    struct SigMeta {
+        bool variadic = false;
+        int nparams = 0;
+    };
+    vector<SigMeta> sigs;
     j.BeginObject();
     j.Key("signatures");
     j.BeginArray();
-    for (auto sf : fns) WriteSignature(j, sf);
+    for (auto sf : fns) {
+        WriteSignature(j, sf);
+        sigs.push_back({ false, (int)sf->params.size() });
+    }
+    auto builtin_base = (int)sigs.size();
     if (b) {
-        j.BeginObject();
-        j.Member("label", BuiltinCallText(*b));
-        j.Key("parameters");
-        j.BeginArray();
-        j.EndArray();
-        j.EndObject();
+        const auto &doc = BuiltinDocByKind(b->kind);
+        for (int i = 0; i < doc.nforms; i++) {
+            const auto &f = doc.forms[i];
+            WriteBuiltinSignature(j, *b, f, doc.doc);
+            sigs.push_back({ f.Variadic(), f.nparams });
+        }
     }
     j.EndArray();
+    size_t nargs = max(span->call->ArgNodes().size(),
+                       active > 0 ? (size_t)(active + 1 + (ufcs ? 1 : 0)) : (ufcs ? (size_t)1 : (size_t)0));
+    auto activesig = 0;
+    if (auto resolved = SpecializedCall(an, span->call)) {
+        for (size_t i = 0; i < fns.size(); i++)
+            if (fns[i] == resolved->spec->sf) activesig = (int)i;
+    } else if (b && (ResolvedBuiltinCall(an, span->call) || fns.empty())) {
+        const auto &doc = BuiltinDocByKind(b->kind);
+        activesig = builtin_base;
+        for (int i = 0; i < doc.nforms; i++) {
+            const auto &f = doc.forms[i];
+            if (nargs >= (size_t)f.minargs && nargs <= (size_t)f.MaxArgs()) {
+                activesig = builtin_base + i;
+                break;
+            }
+        }
+    }
+    auto activeparam = active + (ufcs ? 1 : 0);
+    if (activesig >= 0 && activesig < (int)sigs.size() && sigs[(size_t)activesig].variadic &&
+        sigs[(size_t)activesig].nparams > 0 && activeparam >= sigs[(size_t)activesig].nparams)
+        activeparam = sigs[(size_t)activesig].nparams - 1;
     j.Member("activeSignature", (int64_t)activesig);
-    j.Member("activeParameter", (int64_t)(active + (ufcs ? 1 : 0)));
+    j.Member("activeParameter", (int64_t)activeparam);
     j.EndObject();
     return true;
 }
@@ -1231,7 +1473,8 @@ inline bool IsBuiltinUse(const Located &loc, const Occurrence &occ) {
     if (occ.kind == Occurrence::IDENT) {
         if (occ.callee)
             if (auto call = ResolvedCall(loc, occ); call && call->builtin >= 0) return true;
-        return LookupBuiltin(GlobalLeaf(Is<Ident>(occ.node)->name)) != nullptr;
+        auto b = LookupBuiltin(GlobalLeaf(Is<Ident>(occ.node)->name));
+        return b && !(b->flags & BF_PROPERTY);
     }
     if (occ.kind == Occurrence::DOT) {
         auto c = loc.an->Find(occ.node, [](const Node *n) {
@@ -1241,6 +1484,21 @@ inline bool IsBuiltinUse(const Located &loc, const Occurrence &occ) {
         if (c) return true;
         if (occ.callee)
             if (auto call = ResolvedCall(loc, occ); call && call->builtin >= 0) return true;
+        auto d = Is<Dot>(occ.node);
+        auto rt = loc.an->TypeOf(d->obj);
+        while (rt && rt->kind == TY_REF && rt->ref->sub) rt = rt->ref->sub;
+        if (rt) {
+            if (auto b = LookupBuiltin(d->name)) {
+                if (occ.callee) {
+                    if (!(b->flags & BF_PROPERTY) &&
+                        (((b->flags & BF_MEMBER) && rt->kind == TY_ARRAY) ||
+                         (MethodsOf(*loc.an, d).empty() && (!(b->flags & BF_MEMBER) || (RecvKindOf(rt) & b->recv)))))
+                        return true;
+                } else if ((b->flags & BF_PROPERTY) && (RecvKindOf(rt) & b->recv)) {
+                    return true;
+                }
+            }
+        }
     }
     return false;
 }
@@ -1600,21 +1858,40 @@ inline bool InlayHints(Workspace &ws, const Json &params, JsonOut &j) {
     for (auto &span : f.calls) {
         if (span.start > to) break;
         if (span.end < from) continue;
-        auto c = SpecializedCall(an, span.call);
-        if (!c) continue;
-        auto sf = c->spec->sf;
-        // A UFCS call's object is the first parameter's argument. A call
-        // checked in place, in a global's initializer, has the defaults of
-        // the parameters it leaves out after the arguments written.
+        auto emit_param_hint = [&](Node *arg, string_view pname) {
+            if (pname.empty()) return;
+            if (auto id = Is<Ident>(arg); id && LeafOf(id->name) == pname) return;
+            auto start = StartOf(f, arg);
+            if (start < 0 || (size_t)start < span.start || (size_t)start > span.end ||
+                (size_t)start < from || (size_t)start > to)
+                return;
+            WriteInlayHint(j, f.text, (size_t)start, cat(pname, ":"), IH_PARAMETER, true);
+        };
+        if (auto c = SpecializedCall(an, span.call)) {
+            auto sf = c->spec->sf;
+            // A UFCS call's object is the first parameter's argument. A call
+            // checked in place, in a global's initializer, has the defaults of
+            // the parameters it leaves out after the arguments written.
+            size_t first = Is<Dot>(span.call->callee) ? 1 : 0;
+            auto written = span.call->args.size() - (size_t)span.call->ndefaults;
+            for (size_t i = 0; i < written && i + first < sf->params.size(); i++)
+                emit_param_hint(span.call->args[i], sf->params[i + first].name);
+            continue;
+        }
+        auto bc = ResolvedBuiltinCall(an, span.call);
+        if (!bc) continue;
         size_t first = Is<Dot>(span.call->callee) ? 1 : 0;
         auto written = span.call->args.size() - (size_t)span.call->ndefaults;
-        for (size_t i = 0; i < written && i + first < sf->params.size(); i++) {
-            auto &p = sf->params[i + first];
-            auto arg = span.call->args[i];
-            if (auto id = Is<Ident>(arg); id && LeafOf(id->name) == p.name) continue;
-            auto start = StartOf(f, arg);
-            if (start < 0 || (size_t)start < from || (size_t)start > to) continue;
-            WriteInlayHint(j, f.text, (size_t)start, cat(p.name, ":"), IH_PARAMETER, true);
+        if (written < 2) continue;
+        const auto &doc = BuiltinDocByKind(bc->builtin);
+        auto form = MatchBuiltinForm(doc, first + written);
+        for (size_t i = 0; i < written; i++) {
+            if ((bc->builtin == B_THREAD_SPAWN || bc->builtin == B_THREAD_SPAWN_CONTAINED) && i + first >= 1) {
+                if (bc->spec && (i + first - 1) < bc->spec->sf->params.size())
+                    emit_param_hint(span.call->args[i], bc->spec->sf->params[i + first - 1].name);
+            } else if (form && (int)(i + first) < form->nparams && !form->params[i + first].variadic) {
+                emit_param_hint(span.call->args[i], form->params[i + first].name);
+            }
         }
     }
     j.EndArray();
@@ -1860,7 +2137,8 @@ inline void ScopeCompletions(const Located &loc, size_t offset, Completions &out
     for (auto &[nsname, ns] : ast.namespaces)
         NamespaceCompletions(nsname, ns, !nsname.empty() && nsname != filens, out);
     for (auto &b : builtindefs)
-        if (!(b.flags & BF_PROPERTY)) out.Add(b.name, CK_FUNCTION, 2, "builtin");
+        if (!(b.flags & BF_PROPERTY))
+            out.Add(b.name, CK_FUNCTION, 2, BuiltinCompletionDetail(b), BuiltinDocByKind(b.kind).doc);
     for (int t = T_IMPORT; t <= T_TF64; t++) out.Add(TName((TType)t), CK_KEYWORD, 3);
 }
 
@@ -1922,7 +2200,8 @@ inline void MemberCompletions(const Located &loc, size_t dotpos, Completions &ou
     auto builtins = [&](int recv) {
         for (auto &b : builtindefs)
             if ((b.flags & (BF_MEMBER | BF_PROPERTY)) && (b.recv & recv))
-                out.Add(b.name, b.flags & BF_PROPERTY ? CK_PROPERTY : CK_METHOD, 2, "builtin");
+                out.Add(b.name, b.flags & BF_PROPERTY ? CK_PROPERTY : CK_METHOD, 2,
+                        BuiltinCompletionDetail(b), BuiltinDocByKind(b.kind).doc);
     };
     auto type = object ? an.TypeOf(object->node) : nullptr;
     if (object && !type)
@@ -1953,16 +2232,27 @@ inline void MemberCompletions(const Located &loc, size_t dotpos, Completions &ou
         }
         fields(type->var->variant->fields, ftypes);
     }
-    // The functions a UFCS call can name from here (Ast::LookupMethods):
-    // those of the type's namespace, the call's and the global one.
-    auto enclosing = FunctionsAround(an, f, dotpos);
-    auto usens = enclosing.empty() ? NamespaceOfFile(ast, f.fileidx) : enclosing[0]->ns;
-    auto tns = NominalNs(type);
-    for (auto sf : ast.functions)
-        if (!sf->isnested && !sf->params.empty() && (sf->ns.empty() || sf->ns == usens || sf->ns == tns) &&
-            FirstParamTakes(sf->params[0].type, type))
-            out.Add(sf->name, CK_METHOD, 1, FnHeader(sf), sf->doc);
-    builtins(RecvKindOf(type));
+    auto usermethods = [&] {
+        // The functions a UFCS call can name from here (Ast::LookupMethods):
+        // those of the type's namespace, the call's and the global one.
+        auto enclosing = FunctionsAround(an, f, dotpos);
+        auto usens = enclosing.empty() ? NamespaceOfFile(ast, f.fileidx) : enclosing[0]->ns;
+        auto tns = NominalNs(type);
+        for (auto sf : ast.functions)
+            if (!sf->isnested && !sf->params.empty() && (sf->ns.empty() || sf->ns == usens || sf->ns == tns) &&
+                FirstParamTakes(sf->params[0].type, type))
+                out.Add(sf->name, CK_METHOD, 1, FnHeader(sf), sf->doc);
+    };
+    // The checker resolves array member calls to the builtin first (§7.1),
+    // but tries user methods before builtins on any other receiver; first
+    // insert wins a shared label.
+    if (type->kind == TY_ARRAY) {
+        builtins(RecvKindOf(type));
+        usermethods();
+    } else {
+        usermethods();
+        builtins(RecvKindOf(type));
+    }
 }
 
 inline bool Completion(Workspace &ws, const Json &params, JsonOut &j) {
