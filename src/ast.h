@@ -357,6 +357,10 @@ inline bool CarriesPool(const TypeExpr *t) {
 }
 // A machine integer: any integer type but varint, the storage-only encoding.
 inline bool IsIntT(const TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
+// An integer type whose values are unsigned (u8..u64, index types included).
+inline bool IsUnsignedT(const TypeExpr *t) {
+    return t && t->kind == TY_INT && IsUnsigned(t->intstorage);
+}
 inline bool IsVarintT(const TypeExpr *t) {
     return t && t->kind == TY_INT && t->intstorage == IS_VARINT;
 }

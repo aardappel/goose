@@ -947,8 +947,11 @@ inline void CodeGen::EmitGlobalInit() {
 // (at most, for a bound) the length of the array t names (§3.11).
 inline string CodeGen::IndexTypeCheck(const string &x, TypeExpr *t, Line ln) {
     auto n = GlobalLenLv(t->ix->arr);
-    if (!t->ix->upto) return cat("GS_IDX(", x, ", ", n, ", ", LocArgs(ln), ")");
-    return cat("((uint64_t)(", x, ") <= (uint64_t)(", n, ") ? (", x, ") : (gs_idxfail((int64_t)(",
+    auto uns = IsUnsignedT(t);
+    if (!t->ix->upto)
+        return cat(uns ? "GS_IDXU(" : "GS_IDX(", x, ", ", n, ", ", LocArgs(ln), ")");
+    return cat("((uint64_t)(", x, ") <= (uint64_t)(", n, ") ? (", x, ") : (",
+               uns ? "gs_idxufail((uint64_t)(" : "gs_idxfail((int64_t)(",
                x, "), (", n, "), ", LocArgs(ln), "), (int64_t)0))");
 }
 

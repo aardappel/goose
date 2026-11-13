@@ -1,1 +1,1 @@
-goose runtime error: index -1 out of bounds (length 1)
+goose runtime error: index 18446744073709551615 out of bounds (length 1)

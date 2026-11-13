@@ -674,6 +674,8 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
     auto statlen = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED
                        ? ArrSize(lv.t->arr) : -1;
     if (nobc || (il && statlen >= 0 && il->val >= 0 && il->val < statlen)) ix = idx;
+    else if (IsUnsignedT(idxnode->exprtype))
+        ix = cat("GS_IDXU(", idx, ", ", v.len, ", ", LocArgs(ln), ")");
     else ix = cat("GS_IDX((int64_t)(", idx, "), ", v.len, ", ", LocArgs(ln), ")");
     if (v.typedelems) {
         Loc r;
@@ -766,7 +768,9 @@ inline void CodeGen::EmitHoistedCheck(Index *ta, Index *ea, const string &c) {
     auto tl = LocLine(ta->line), el = LocLine(ea->line);
     auto file = tf == ef ? tf : cat("(", c, ") ? ", tf, " : ", ef);
     auto line = tl == el ? tl : cat("(", c, ") ? ", tl, " : ", el);
-    L("(void)GS_IDX((int64_t)(", idx, "), ", v.len, ", ", file, ", ", line, ");");
+    if (IsUnsignedT(ta->idx->exprtype))
+        L("(void)GS_IDXU(", idx, ", ", v.len, ", ", file, ", ", line, ");");
+    else L("(void)GS_IDX((int64_t)(", idx, "), ", v.len, ", ", file, ", ", line, ");");
 }
 
 inline CodeGen::Loc CodeGen::GenLoc(Node *n) {

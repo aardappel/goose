@@ -124,6 +124,11 @@ GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int l
     gs_failf(file, line, "index %lld out of bounds (length %lld)", (long long)i, (long long)n);
 }
 
+GS_API GS_NORETURN void gs_idxufail(uint64_t i, int64_t n, const char *file, int line) {
+    gs_failf(file, line, "index %llu out of bounds (length %lld)", (unsigned long long)i,
+             (long long)n);
+}
+
 GS_API GS_NORETURN void gs_divfail(const char *file, int line) {
     gs_failf(file, line, "division by zero");
 }
