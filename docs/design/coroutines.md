@@ -84,7 +84,9 @@ for each part, section 8 the order to build it in.
   yielded; `result(f)` reads a finished frame's result (4.3). Yield and
   resume values are flat data, not callbacks: a coroutine *tells* its
   resumer what it waits for, and the resumer, not a waker, decides what to
-  do about it (2.7).
+  do about it (2.7). A yield can name the answers it accepts
+  (`yield w as Done`), so the body handles only those and a wrong one
+  aborts at the `resume` that sent it (4.3, 6.10).
 * **Everything else is a library**: event loops, timers, channels,
   cancellation, structured concurrency, `select`, `run_blocking`,
   generators-as-iterators (4.13, 5). The language supplies the state
@@ -640,6 +642,28 @@ let w, suspended = resume(task, Event.Ready);   // runs to the next yield or to 
   resumer, and returns from `resume`. The next `resume(f, x)` continues
   after it, and `x` is the value of the `yield` expression. Without a
   `resume X` clause, `yield e;` is a statement.
+* `yield e as V` and `yield e as (V1, V2, …)` name the answers this yield
+  accepts, when `X` is an ADT: variants written bare, as match arms name
+  them (§8.1). With one variant the yield's value has the variant type
+  `X.V` (§8.2), so its payload is read directly (`let d = yield
+  Wait.Read { fd: fd } as Done;` then `d.n`); with a list it is an `X`
+  known to hold one of them, and a `match` over it is exhaustive over the
+  list alone. The `as` belongs to the yield; a conversion of the yielded
+  value is parenthesized (`yield (n as i32)`). A yield without `as`, and a
+  yield inside a called coroutine that ignores the resume value (4.4),
+  accepts every value of `X`.
+* The resume checks it. `resume(f, x)` tests `x`'s tag against the list of
+  the yield `f` is suspended at and aborts otherwise, naming both places
+  ("resumed `fill` with `Event.Timeout` at `loop.goose:31`; it waits at
+  `serve.goose:14`, which accepts `Ready`, `Hangup`, `Cancel`"). A wrong
+  answer therefore stops the scheduler that sent it instead of reaching a
+  catch-all in the body. When every yield in a coroutine's call tree has an
+  `as`, the union of the lists is a property of the frame type, and a
+  `resume` whose argument is a variant literal outside that union is a
+  compile error. Whether `x` fits the particular yield a frame is at is
+  known only at run time: the scheduler learned where each frame waits
+  from the yielded value and filed the frame by it (in `by_fd`, in a timer
+  heap), and the frame's type does not record that (6.10).
 * `result(f)` reads a finished frame's results (`let a, b = result(f);`
   for several). It aborts on a frame that has not finished.
 
@@ -934,13 +958,20 @@ L0: for (;;) {
 * **The resumer.** `resume(f, x)` is a direct call of the frame type's
   resume function, inlined into a loop that is its only caller by the
   existing policy. No thread-local, no runtime function, no table.
+* **The `as` check** (4.3) sits in the switch case of a yield that has
+  one, before the reload: `case 1: if (ev.tag != READY && ev.tag !=
+  HANGUP) gs_fail_resume(…);`, a mask test for a longer list. It is one
+  compare and branch on a path that already dispatches on the tag, and for
+  a single variant it replaces the test the body would otherwise make. The
+  abort names the `resume`'s location as other builtins' aborts do, and the
+  yield's, a constant per case.
 
 What it costs, per operation:
 
 | Operation | Cost |
 |---|---|
 | start (`serve { c }`) | the parameters stored, a zero tag |
-| `resume` | one direct call (often inlined), one switch, the loads of the locals live at that point |
+| `resume` | one direct call (often inlined), one switch, the loads of the locals live at that point; one tag test after a yield with `as` |
 | `yield` | the stores of the locals live after it, a tag store, the yield value in registers, a return |
 | finish | a tag store, the result store, a return |
 | a called coroutine | nothing per call when spliced; one extra switch per level per resume when nested |
@@ -1002,7 +1033,10 @@ coro fn fill(c: Conn&<u32 in conns>) -> bool resume Event {
     loop {
         let n = net::recv(c.fd, c.inbuf);
         if n != net::AGAIN { return n > 0; }
-        guard (yield Wait.Readable { fd: c.fd }) == Event.Ready else { return false; }
+        // A readiness wait is never answered by Timeout: a loop that sends
+        // one here aborts at its resume instead of reading as a hangup.
+        let ev = yield Wait.Readable { fd: c.fd } as (Ready, Hangup, Cancel);
+        guard ev == Event.Ready else { return false; }
     }
 }
 
@@ -1074,6 +1108,14 @@ What this shows about the fit:
   and then it is a queue.
 * The protocol logic (`http::respond`) is uncolored and testable without a
   socket.
+* `fill` and `flush` are the protocol's per-wait signatures: code above
+  them calls `fill(c)` and gets a `bool`, never seeing `Wait` or `Event`,
+  and their `as` lists record which answers each wait takes. A loop with
+  several resume sites (fds, timers, new connections) handles a yielded
+  `Wait` in one place with case functions (§8.2), an
+  `fn on_wait(r: Wait.Readable, i: i64)` per variant called as
+  `on_wait(w, i)`, and resumes every frame the same way whatever it waits
+  for.
 
 ## 6. Options, with pros and cons
 
@@ -1147,7 +1189,13 @@ conventional `io::Wait`/`io::Event` pair in the standard library that its
 reference loop consumes, so that library coroutines and loops interoperate,
 with the language itself indifferent. A loop with other needs defines its
 own types and adapts. This is the explicit trade of dynamic dispatch for
-flat data, and it is the same trade Goose makes everywhere else.
+flat data, and it is the same trade Goose makes everywhere else. A library
+coroutine that should commit to no protocol at all need not have one: it
+is an ordinary HOF over a waiting coroutine passed as a static function
+value, `fn tick<Sleep>(period_ns: i64) { loop { Sleep(period_ns); … } }`,
+which 4.6 lets call a `coro fn` value, and the application passes its own
+`coro fn` that yields in its own protocol. No adapter and no merged enum
+is written; the specialization joins the caller's frame like any block.
 
 **6.8 Fixed-size results and yields only (recommended) / nonfixed
 results.** A `[>..]` result is built at its destination by the call that
@@ -1161,7 +1209,76 @@ sketch's `suspend_fn` is the other obvious spelling. `yield` is universal.
 `resume`/`result` as builtins (like `thread_spawn`/`thread_wait`), reached
 by UFCS as members. The `resume X` header clause is the least settled part:
 alternatives are a marked parameter (`ev: resume Event`) or an attribute
-list. `await` as a keyword is deliberately absent: a call is a call.
+list. `await` as a keyword is deliberately absent: a call is a call. The
+narrowing of 4.3 borrows `as` from the checked conversion (`x as (u32 in
+a)` aborts when `x` does not fit, §3.11) because it is one: the resume
+value converted to a narrower type, failing at the resume. Alternatives
+are `yield e expect V` and a match-shaped `yield e -> (V1, V2)`.
+
+**6.10 Narrowing the resume value at the yield (recommended) / a declared
+wait-to-answer mapping / answer lists on the `Wait` variants / the whole
+union.** With one `resume X` per coroutine, every yield receives all of
+`X`, though only a few variants can sensibly arrive at any one of them.
+Being exhaustive over `X` does not make a `match` applicable, and a
+catch-all (`guard (yield w) == Event.Ready else { return false; }`)
+silently absorbs a scheduler that sends the wrong one. The
+[resume-conditions proposal][conditions] answers this by declaring per
+wait the one type that answers it (`resume if FileWontBlock ->
+net::Event;`), naming the condition at the resume (`resume<FileWontBlock>
+(task, ev)`), and fulfilling each condition in an `on_suspend` overload
+that the resume calls. Weighed against 1.2:
+
+* *The pairing is a run-time fact.* A scheduler files each suspended frame
+  by what it waits for (`by_fd`, a timer heap) and resumes it later from
+  there; the frame's type does not record which wait it is at. So
+  `resume<C>` on a coroutine with more than one condition checks the tag
+  at run time, and what it checks statically is that the proof has `C`'s
+  type and that `C` is one of the coroutine's conditions. A static check
+  takes typestate: frame types refined by condition as the element types
+  of the scheduler's tables, linear ownership so a refinement cannot go
+  stale through an alias, and a sum type again for any queue of mixed
+  frames. Every design checks the pairing at run time; what differs is
+  which side checks, and whether the body writes arms that cannot run.
+* *A resume per condition is a code path per condition.* `resume<C>` needs
+  `C` statically, so a scheduler that does not know a frame's wait
+  statically queries it and dispatches, one arm per condition. Completion
+  I/O (io_uring and IOCP answer every operation with its result code),
+  game ticks (every task resumed with the frame's `dt`) and broadcasts
+  (draining a server, replaying a trace in a test) each become an arm per
+  condition where `resume(f, x)` was one call, or fold their waits into one
+  condition answered by the shared type, which gives up the per-wait typing
+  the conditions were for.
+* *Few waits are 1:1 once failures count.* Cancel, Hangup, Timeout and
+  Shutdown answer most waits. A per-wait answer type repeats the shared
+  failures in each answer (the proposal's `FileResult { Ready, Hangup }`)
+  or moves them into builtins the language owns (its `cancel`).
+* *What the declarations add is already here.* A helper coroutine is a
+  per-wait signature: `coro fn readable(fd: i64) -> bool` has a name, a
+  payload, a typed result and a place for documentation, costs nothing to
+  call (4.4, 6.6), and hides `Wait` and `Event` from the code above it
+  (5). Handling each `Wait` variant once for several resume sites is a set
+  of case functions (§8.2), which is what the `on_suspend` overloads are,
+  called explicitly instead of found by the resume. The proposal itself is
+  typed algebraic effects (an operation `A -> B`, a handler per operation,
+  the continuation as an owned task) restricted to stackless frames, and it
+  brings their costs: a new kind of declaration, a set of conditions per
+  coroutine inferred through library call trees, and missing-handler
+  errors that point into library code.
+
+What is left is the one raw yield inside each helper, which `as` narrows
+(4.3): the body is typed per yield with no dead arms, the scheduler keeps
+one `resume(f, x)`, a wrong answer aborts at the resume rather than being
+absorbed, and an answer no yield accepts is a compile error when it is a
+literal. It needs no declaration beyond the clause, works with any
+existing enum (6.7's `io::Event` included), and is per yield, so one wait
+can accept less than another of the same kind. Lists on the `Wait`
+variants (`Readable { fd: i64 } -> Ready, Hangup, Cancel`) would write the
+pairing into the protocol type and narrow every yield of that variant
+alike, with the same resume check; they are the fallback if per-yield
+lists prove too scattered to document a protocol, at the cost of
+coroutine-only syntax on enums. The proposal's other parts, owned frames
+with `cancel` and coroutines inferred rather than declared, are separate
+questions: ownership.md §5 works out the first, 3.6 the second.
 
 ## 7. The community `suspend_fn` sketch
 
@@ -1216,17 +1333,19 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
    built and tests the claim of 1.1 that the per-event cost is a switch and
    a few loads. Replicate the patrol numbers on this machine too.
 3. **Checker.** Parse `coro fn`, the `yield`/`resume` clauses and the
-   `yield` expression; the frame type as a struct instance built from the
+   `yield` expression with its `as` list, typed as the variant or the
+   narrowed ADT (4.3); the frame type as a struct instance built from the
    parameters plus the hoisted locals (R3's syntactic liveness, reusing the
    shrink rules' `blockpos` scan); R1 and R2 by reusing `CycleCallTemps`,
    `CheckCycleInit` and `Node::nftemp` with yields as the marked calls; R4
    as the return check on roots at each yield; R5 to R8 as the simple
    rejections they are; the `resume`/`result` builtins specialized per
-   frame type and roots (4.11); error messages that name the local and the
-   yield.
+   frame type and roots (4.11), rejecting a literal answer that no yield's
+   `as` list accepts; error messages that name the local and the yield.
 4. **Codegen.** The frame struct beside the other generated types; one
    resume function per frame instantiation with the switch and labels,
-   copy-in/copy-out at the segment boundaries; splicing of called
+   copy-in/copy-out at the segment boundaries, the `as` test in each
+   yield's case (4.12); splicing of called
    coroutines first (it needs no second tag), the nested form after, chosen
    by the optimizer's inlining policy; `gs_sp` and the watermark
    discipline unchanged. `--frames` listing each frame's size and hoisted
@@ -1236,7 +1355,8 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
    HOFs, the R2 rejection of `exception::try` around a yield, a frame
    through a queue, a
    `from_bytes` of a frame pool, re-entry and finished-resume aborts in
-   debug.
+   debug, a wrong answer aborting at its resume with both locations, and a
+   `match` over a narrowed yield that needs no `_`.
 6. **Networking track** (independent of 1 to 5, and a prerequisite for the
    server): sockets, nonblocking I/O and a readiness poll in `os` or a new
    `net` module as `extern fn`s over the runtime, portable (`poll`) first,
@@ -1253,6 +1373,8 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
 
 * Whether the resume value should be declared in the header (`resume X`),
   marked on a parameter, or dropped in favor of `var` fields (6.3, 6.9).
+* Whether `as` lists should also be allowed on the `Wait` variants (6.10),
+  once there are protocols that want the pairing written in one place.
 * Whether parameters should be visible as frame fields at all, or the
   frame should be opaque apart from `resume` and `result`. Visible fields
   are convenient (the loop reads `tasks[i].c` to free the connection) and
@@ -1279,11 +1401,14 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
 Spec and implementation sections referred to above:
 [§1.2 memory model](../goose_spec.md#12-memory-model),
 [§1.3 the stack invariant](../goose_spec.md#13-the-stack-invariant),
+[§3.11 index types](../goose_spec.md#311-index-and-bound-types),
 [§4.3 in-place construction](../goose_spec.md#43-the-in-place-construction-guarantee),
 [§5.4 reusable arrays](../goose_spec.md#54-reusable-arrays-safe-allocation-escape-hatch),
 [§7.6 static function values](../goose_spec.md#76-static-function-values),
 [§7.8 recursion](../goose_spec.md#78-recursion),
 [§7.9 `return … from`](../goose_spec.md#79-return--from-long-distance-return),
+[§8.1 `match`](../goose_spec.md#81-match),
+[§8.2 case functions](../goose_spec.md#82-case-functions-match-as-an-overload-set),
 [§9.2 roots](../goose_spec.md#92-roots-and-the-depth-check),
 [§10.3 stack assignment](../goose_spec.md#103-stack-assignment-deterministic-recipe),
 [§11.2 concurrency](../goose_spec.md#112-concurrency),
@@ -1347,3 +1472,4 @@ Spec and implementation sections referred to above:
 [iouring]: https://kernel.dk/io_uring.pdf "Axboe: Efficient IO with io_uring"
 [wasm-switch]: https://github.com/WebAssembly/stack-switching "WebAssembly stack-switching proposal"
 [bitspittle]: https://github.com/bitspittle/goose/blob/suspend-fn-proposal/docs/design/suspend_fn.md "bitspittle: suspend_fn proposal"
+[conditions]: https://github.com/bkietz/goose-resume-conditions "bkietz: Goose coroutines with resume conditions"
