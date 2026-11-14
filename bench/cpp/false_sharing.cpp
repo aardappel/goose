@@ -41,6 +41,7 @@ static int64_t worker(int64_t iters) {
     for (int64_t i = 0; i < iters; i++) {
         counter += user(scratch, i & 3);
         sink.push_back(static_cast<uint8_t>(counter & 255));
+        scratch.clear();
         if (sink.size() == 4096) sink.clear();
     }
     return counter + static_cast<int64_t>(sink.size());

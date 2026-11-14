@@ -35,6 +35,7 @@ thread_fn worker(iters: i64) {
     for i in iters {
         counter += user(scratch, i & 3);
         sink.push((counter & 255) as u8);
+        scratch.resize(0);
         if sink.len == 4096 { sink.resize(0); }
     }
     qput(counter + sink.len);

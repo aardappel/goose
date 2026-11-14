@@ -13,6 +13,9 @@ const N: usize = 8; // BENCH_N
 
 thread_local! {
     static counter: Cell<i64> = const { Cell::new(0) };
+    // Goose reserves this worker's whole span for sink's dedicated stack
+    // up front, and growth never moves its base; reserve the same span
+    // here so the vector pays no per-growth reallocation either.
     static sink: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(4096));
 }
 
@@ -28,10 +31,6 @@ fn user(scratch: &mut Vec<u8>, i: i64) -> i64 {
 }
 
 fn worker(iters: i64) -> i64 {
-    // Goose reserves this worker's whole span for sink's dedicated stack
-    // up front, and growth never moves its base; reserve the same span
-    // here so the vector pays no per-growth reallocation either.
-    //let mut sink: Vec<u8> = Vec::with_capacity(4096);
     // The clears on the way out bound the deepest call chain's appends to
     // (3 & 3) + 1 = 4 bytes; sized once, so growth never moves the base.
     let mut scratch: Vec<u8> = Vec::with_capacity(4);
@@ -40,6 +39,7 @@ fn worker(iters: i64) -> i64 {
         counter.set(counter.get() + res);
         sink.with_borrow_mut(|v| {
             v.push((counter.get() & 255) as u8);
+            scratch.clear();
             if v.len() == 4096 {
                 v.clear();
             }
