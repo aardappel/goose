@@ -69,6 +69,13 @@ inline PackageSource ParsePackageSource(const string &text, const string &fromdi
     }
     if (s.ref.empty() || s.url.empty())
         throw CompileError { cat("the git source ", text, " needs a repository and a ref") };
+    if (s.url[0] == '-' || s.ref[0] == '-')
+        throw CompileError { cat("the git source ", text, " has a repository or ref starting "
+                                 "with '-', which git would take for an option") };
+    // No git ref starts with '.', and the ref names a directory in the cache.
+    if (s.ref[0] == '.')
+        throw CompileError { cat("the git source ", text, " has a ref starting with '.', "
+                                 "which no tag, branch or commit does") };
     return s;
 }
 
@@ -106,6 +113,10 @@ inline string GitCacheKey(const PackageSource &s) {
     auto safe = true;
     for (auto c : key)
         if (!(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-' || c == '/')) safe = false;
+    // A . or .. component would place the checkout outside pkg/.
+    auto components = cat("/", key, "/");
+    if (components.find("/./") != string::npos || components.find("/../") != string::npos)
+        safe = false;
     if (!safe || std::count(key.begin(), key.end(), '/') != 2 || key[0] == '/') {
         auto repo = key.substr(key.find_last_of('/') + 1);
         for (auto &c : repo) if (!(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-')) c = '_';
@@ -269,7 +280,8 @@ inline string FetchPackage(const PackageSource &s, const string &name) {
         auto progress = ProgressLive() ? "--progress" : "--no-progress";
         try {
             if (update) {
-                RunGit(git, { "-C", dir, "fetch", "-q", progress, "--depth", "1", s.url, s.ref });
+                RunGit(git, { "-C", dir, "fetch", "-q", progress, "--depth", "1", "--", s.url,
+                              s.ref });
                 RunGit(git, { "-C", dir, "checkout", "-q", "--detach", "FETCH_HEAD" });
                 RunGit(git, { "-C", dir, "submodule", "update", "-q", "--init", "--recursive",
                               "--depth", "1" });
@@ -279,14 +291,15 @@ inline string FetchPackage(const PackageSource &s, const string &name) {
                 try {
                     if (IsCommitHash(s.ref)) {
                         RunGit(git, { "init", "-q", tmp });
-                        RunGit(git, { "-C", tmp, "fetch", "-q", progress, "--depth", "1", s.url,
-                                      s.ref });
+                        RunGit(git, { "-C", tmp, "fetch", "-q", progress, "--depth", "1", "--",
+                                      s.url, s.ref });
                         RunGit(git, { "-C", tmp, "checkout", "-q", "--detach", "FETCH_HEAD" });
                         RunGit(git, { "-C", tmp, "submodule", "update", "-q", "--init",
                                       "--recursive", "--depth", "1" });
                     } else {
                         RunGit(git, { "clone", "-q", progress, "--depth", "1", "--branch", s.ref,
-                                      "--recurse-submodules", "--shallow-submodules", s.url, tmp });
+                                      "--recurse-submodules", "--shallow-submodules", "--", s.url,
+                                      tmp });
                     }
                 } catch (CompileError &) {
                     RemoveTree(tmp);

@@ -2763,7 +2763,7 @@ def main():
                 r.say(f"skip packages from git ({skipped})")
             else:
                 r.ok("packages from git: concurrent fetches, submodules, interrupted fetch, "
-                     "tag, commit, update, differing ref, offline")
+                     "tag, commit, update, differing ref, offline, cache path")
         except RuntimeError as e:
             r.fail("packages from git", str(e))
     r.show_task(git_packages)

@@ -4,7 +4,8 @@ commit, fetched into GOOSE_HOME (which run_tests.py points under build/),
 fetched again by `goose fetch --update` after the tag moved, rejected under
 `--offline` until fetched, and a library requiring the package at another ref
 than the root declares. Concurrent fetches share a cold cache, including a
-submodule and an abandoned checkout."""
+submodule and an abandoned checkout. A .. in a repository's path stays in the
+cache's pkg/."""
 import os
 import shutil
 import subprocess
@@ -189,6 +190,20 @@ def check_git_packages(exe, base, *, jit):
     run_git("tag", "retry", "HEAD", cwd=bare)
     concurrent_fetch(use_retry)
     expect(use_retry, "6")
+    # A . or .. in a repository's path does not move its checkout out of
+    # pkg/: GIT_ALLOW_PROTOCOL refuses the https fetch, after the lock beside
+    # the checkout is taken.
+    escaped = Path(home) / "gitpkg-escape.lock"
+    escaped.unlink(missing_ok=True)
+    use_escape = program("use_escape", [
+        'import gitpkg from "https://host.invalid/../..@gitpkg-escape";', "fn main() {}"])
+    failed = subprocess.run([exe, "fetch", use_escape], cwd=base, env=env,
+                            capture_output=True, timeout=60)
+    err = tc.decode(failed.stderr)
+    if failed.returncode != 1 or "cannot fetch the package gitpkg" not in err:
+        raise RuntimeError(f"expected a failed package fetch (exit {failed.returncode}):\n{err}")
+    if escaped.exists():
+        raise RuntimeError(f"a .. in the repository's path placed its checkout at {escaped}")
     # The tag moves; the cached checkout stays until --update.
     run_git("tag", "-f", "v1", "HEAD")
     run_git("fetch", "-q", "--tags", "--force", str(work), cwd=bare)
