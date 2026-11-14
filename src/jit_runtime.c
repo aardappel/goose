@@ -4,6 +4,9 @@
 #include "jit_runtime.h"
 #include <setjmp.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 
 static jmp_buf gs_jit_jump;
 static int gs_jit_status;
@@ -39,6 +42,13 @@ static const GooseJitSymbol gs_jit_symbols[] = {
     GS_JIT_SYMBOL(calloc)
     GS_JIT_SYMBOL(realloc)
     GS_JIT_SYMBOL(free)
+    /* The aligned allocator gs_chunk_alloc hands chunks out with. */
+#ifdef _WIN32
+    GS_JIT_SYMBOL(_aligned_malloc)
+    GS_JIT_SYMBOL(_aligned_free)
+#else
+    GS_JIT_SYMBOL(aligned_alloc)
+#endif
     GS_JIT_SYMBOL(abs)
 #define GS_JIT_MATH(fn) GS_JIT_SYMBOL(fn) GS_JIT_SYMBOL(fn##f)
     GS_JIT_MATH(sqrt)

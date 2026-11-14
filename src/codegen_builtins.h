@@ -1273,7 +1273,7 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     if (ki.needssp) args.push_back("0");
     // A worker has no caller: its function's failures report its declaration.
     if (ki.located) args.push_back(CallerLoc(sp->sf->line));
-    Append(b, "    gs_gl = calloc(1, sizeof(gs_globals_t));\n"
+    Append(b, "    gs_gl = gs_aligned_calloc(sizeof(gs_globals_t));\n"
               "    if (!gs_gl) gs_panic(\"out of memory copying globals\");\n");
     for (auto d : ThreadGlobals(sp)) {
         auto gn = gnames[d];

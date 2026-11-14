@@ -154,7 +154,7 @@ static void waiting_worker(uint8_t *args) {
    worker's storage is released as on a return. */
 static void aborting_worker(uint8_t *args) {
     exercise_stacks(args);
-    gs_gl = calloc(1, 64);
+    gs_gl = gs_aligned_calloc(64);
     check(gs_gl != NULL, "allocate a globals instance");
     gs_abort(GS_E_ASSERT, __FILE__, __LINE__);
 }

@@ -1766,7 +1766,7 @@ int Main(int argc, char **argv) {
                 Append(out, RuntimeSections({ "runtime.h", "runtime_impl.h", "runtime_threads.h" }),
                        cg.head, RuntimeSections({ "runtime_ext.h", "runtime_os.h" }), cg.result);
             if (embedded)
-                Append(out, "\nvoid gs_jit_cleanup(void) { free(gs_stks); gs_stks = NULL; "
+                Append(out, "\nvoid gs_jit_cleanup(void) { gs_aligned_free(gs_stks); gs_stks = NULL; "
                             "gs_nstks = 0; }\n");
             return out;
         };
