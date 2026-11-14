@@ -3764,8 +3764,10 @@ let a = area(s);     // s: Shape — dispatches on the tag, like a match
 * Calling the overload set with the ADT type (or a reference to it)
   performs tag dispatch (a jump table). Exhaustiveness is checked as for
   `match`: every variant must have exactly one applicable overload, and the
-  return types must agree. All arms construct any nonfixed result in the
-  same destination (§4.3). The overloads' parameter types choose copy or
+  return types must agree. An overload taking the ADT itself in that
+  position is an ordinary candidate, not a case: `f(k: Shape, x: f64)`
+  called as `f(s, 2)` is that call, with its integer converted (§7.1).
+  All arms construct any nonfixed result in the same destination (§4.3). The overloads' parameter types choose copy or
   reference as match binders do (`Shape.Circle` vs `Shape.Circle&`), with
   the same rules: a fixed-mode or resizable scrutinee, even behind a
   reference, dispatches only to by-value variant parameters (§3.5), and a

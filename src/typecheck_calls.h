@@ -1144,7 +1144,12 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     // once, before the tag picks the case, so the cases get every argument
     // written, and none of their defaults (§8.2): only `defaults` tries
     // with them, to say so. A case converting an integer argument to a
-    // float counts only where no other matches (ResolveCall).
+    // float counts only where no other matches (ResolveCall). A case takes
+    // the variant, or a reference to it: an overload taking the whole ADT
+    // at pos is an ordinary candidate, which the variant reaches only by
+    // converting back to the ADT, and a case of it would be handed the
+    // payload where it takes the ADT. It gets the call where dispatch does
+    // not, as the integer-to-float last resort among them (ResolveCall).
     auto dispatches = [&](vector<Val> &vals, size_t pos, TypeExpr *et, bool isref,
                           bool defaults, vector<MatchInfo> &vm) {
         for (auto &var : et->enu->en->variants) {
@@ -1159,6 +1164,8 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
                 mi.env = env;
                 string why;
                 if (!TryMatch(sf, c, vals, mi, why, defaults)) continue;
+                auto pt = mi.paramtypes[pos];
+                if ((pt->kind == TY_REF ? pt->ref->sub : pt)->kind != TY_VARIANT) continue;
                 if (mi.tier == MatchInfo::INTTOFLOAT) {
                     onlyconverting = mi;
                     converting++;
