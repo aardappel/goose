@@ -4001,14 +4001,18 @@ R"GSRT(/* math's other libm functions (stdlib/math.goose). C has them set errno 
    function only by the name it is declared under, so there, and under
    clang on Apple, each name forwards to libm's, redeclared const: the
    compiler then still combines sin and cos of one value into sincos, turns
-   pow(x, 2.0) into x * x and folds constant arguments. Elsewhere the name
-   forwards to libm. */
+   pow(x, 2.0) into x * x and folds constant arguments. Since gcc 16, gcc
+   turns pow(x, 2.0) into x * x only without -fmath-errno (the call would
+   set errno on overflow), so under gcc pow squares a constant 2 itself;
+   that is the only one of gcc's folds that errno holds back. Elsewhere the
+   name forwards to libm. */
 #if defined(__clang__) && !defined(__APPLE__) && !defined(__TINYC__)
 #define GS_LIBM_SYM2(p, f) #p #f
 #define GS_LIBM_SYM(p, f) GS_LIBM_SYM2(p, f)
 #define GS_LIBM
 #define GS_LIBM1(f) __asm__(GS_LIBM_SYM(__USER_LABEL_PREFIX__, f)) __attribute__((const));
 #define GS_LIBM2(f) GS_LIBM1(f)
+#define GS_LIBM_POW(f) GS_LIBM1(f)
 #elif defined(__GNUC__) && !defined(__TINYC__)
 __attribute__((const)) double sin(double), cos(double), tan(double), asin(double), acos(double),
     atan(double), atan2(double, double), exp(double), log(double), log2(double), log10(double),
@@ -4021,10 +4025,12 @@ __attribute__((const)) float sinf(float), cosf(float), tanf(float), asinf(float)
 #define GS_LIBM static inline
 #define GS_LIBM1(f) { return f(x); }
 #define GS_LIBM2(f) { return f(x, y); }
+#define GS_LIBM_POW(f) { return __builtin_constant_p(y) && y == 2 ? x * x : f(x, y); }
 #else
 #define GS_LIBM static
 #define GS_LIBM1(f) { return f(x); }
 #define GS_LIBM2(f) { return f(x, y); }
+#define GS_LIBM_POW(f) GS_LIBM2(f)
 #endif
 GS_LIBM double gs_sin(double x) GS_LIBM1(sin)
 GS_LIBM double gs_cos(double x) GS_LIBM1(cos)
@@ -4037,7 +4043,7 @@ GS_LIBM double gs_exp(double x) GS_LIBM1(exp)
 GS_LIBM double gs_log(double x) GS_LIBM1(log)
 GS_LIBM double gs_log2(double x) GS_LIBM1(log2)
 GS_LIBM double gs_log10(double x) GS_LIBM1(log10)
-GS_LIBM double gs_pow(double x, double y) GS_LIBM2(pow)
+GS_LIBM double gs_pow(double x, double y) GS_LIBM_POW(pow)
 GS_LIBM double gs_hypot(double x, double y) GS_LIBM2(hypot)
 GS_LIBM double gs_cbrt(double x) GS_LIBM1(cbrt)
 GS_LIBM double gs_exp2(double x) GS_LIBM1(exp2)
@@ -4057,7 +4063,7 @@ GS_LIBM float gs_expf(float x) GS_LIBM1(expf)
 GS_LIBM float gs_logf(float x) GS_LIBM1(logf)
 GS_LIBM float gs_log2f(float x) GS_LIBM1(log2f)
 GS_LIBM float gs_log10f(float x) GS_LIBM1(log10f)
-GS_LIBM float gs_powf(float x, float y) GS_LIBM2(powf)
+GS_LIBM float gs_powf(float x, float y) GS_LIBM_POW(powf)
 GS_LIBM float gs_hypotf(float x, float y) GS_LIBM2(hypotf)
 GS_LIBM float gs_cbrtf(float x) GS_LIBM1(cbrtf)
 GS_LIBM float gs_exp2f(float x) GS_LIBM1(exp2f)
