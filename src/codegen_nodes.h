@@ -687,6 +687,7 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
 
 inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto named = cg.OpenIbNrvo(this, d);
+    auto fixednamed = named ? nullptr : cg.OpenIbFixed(this, d);
     // The named result's elements sit at d from its declaration on.
     if (named) cg.openat[d.s]++;
     // The callee's own locals and statement temporaries keep their ordinary
@@ -713,6 +714,10 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     if (named) {
         cg.nrvo.erase(named);
         cg.openat[d.s]--;
+    }
+    if (fixednamed) {
+        cg.ibfixed.erase(fixednamed);
+        cg.vnames.erase(fixednamed);
     }
     cg.termjump = false;
 }

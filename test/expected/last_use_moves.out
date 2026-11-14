@@ -1,0 +1,34 @@
+last 101
+after 2 102
+loop 0 3
+loop 0 3
+loop 0 3
+loop_sum 309 3
+in_loop 0
+in_loop 0
+branch 4
+other 5
+then 0
+reassigned 107
+replaced 1 8
+twice 9
+through 11
+ref_after 0 12
+pass_on 0 13
+read_after 130 13
+lent 30 30
+global 0 50
+and 14
+before_defer 0
+deferred 15
+break 0
+after_break 16
+match 0
+block 0
+index_after 0
+ref_arg 1
+slice_arg 0
+ref_deferred_wipe 0
+ref_deferred 1
+ref_captured 1
+loop_last 0

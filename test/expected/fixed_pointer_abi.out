@@ -1,0 +1,66 @@
+reads_global 10 1
+writes_global 1 99
+swapped 2 1
+either 2 1 0
+either 2 1 7
+grows 1 1 65
+through_ref 5 3
+bump 1 2 3
+from_global 5 1 2
+chain 4 5 6
+chain_global 7 8 0
+chain_element 9 0 10
+shadow 1 2 0
+reassigned 2 4 1
+deferred 1 6 0
+seen 6
+set_both 3 30 31
+pair 5 0 0
+pair 6 5 0
+swap_pair 6 5 0
+swap_pair 5 0 0
+outer 1 1 9
+outer 77 0 0
+count_down 10 0 0
+rec 0 3 4
+grab 11 3 0
+grab 12 0 0
+loop 36
+outer_ro 75 7
+mirror_shadow 2 1 1
+mirror_self 4 3 6
+ro_ref 4 50
+ro_then 5001 77
+rotate3 3 2 1 3
+walk 7 1
+hand 21 0 0
+hand_after 20 0 0
+hand2 21 0 0
+hand_tmp 31 1 0
+hand_twice 230
+hand_last 41 0 0
+loop_bump 6 0 0
+loop_bump 6 0 0
+loop_fresh 1 0 0
+loop_fresh 2 0 0
+widen 2 5 3
+vlast 11 0 0
+ro_last 4 4 0
+ro_last_after 4 0 0
+local_last 6 0 7
+outer2 9 5 0
+outer2_1 1 9 1
+outer3 9 5 1
+format Big(3, 4) Big(3, 4)
+threshold 0 2 0 2
+tag_with 16 1
+tag_with 13 1
+inlined 3 4 0
+inlined_pick 8 6 0
+inlined_pick0 6 0 1
+pick_deferred 3 0 0
+seen 9
+pick_deferred0 9 0 0
+seen 9
+swapped_rel 2 1
+swapped_rel2 1 2 5

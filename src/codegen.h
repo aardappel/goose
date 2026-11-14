@@ -64,6 +64,12 @@ namespace goose {
 // (CodeGen::GenBranch): a branch to label s where the value is `when`,
 // leaving the scopes down to `exitscope` on the way, and on through the
 // call where it is not.
+// A `fresh` lvalue is storage nothing else can read or write until the value
+// is complete there: a temporary, a variable being declared, or the result
+// out-pointer of a PtrAbi result, which callers only ever point at such
+// storage. A PtrAbi result is written straight into a fresh destination,
+// piece by piece (EmitSpecCall, GenNormalReturn); any other goes through a
+// temporary and is copied over once the call is done, as §7.3 has it.
 enum DstKind { DK_DISCARD, DK_LVALUE, DK_STACK, DK_BRANCH };
 struct Dst {
     DstKind k = DK_DISCARD;
@@ -73,6 +79,7 @@ struct Dst {
     bool pool = false;
     bool when = false;
     int exitscope = -1;
+    bool fresh = false;
 };
 
 // What a relative store knows of the reference it encodes beyond its type:
@@ -297,6 +304,26 @@ struct CodeGen {
     // packed layout, copying, indexing and lifetime rules stay unchanged.
     static constexpr int64_t NATIVE_VALUE_LIMIT = 4096;
     bool IsLargeFixed(TypeExpr *t) { return IsFix(t) && FixedSize(t) > NATIVE_VALUE_LIMIT; }
+    // Above this size a fixed parameter is passed by pointer to the caller's
+    // copy, and a fixed result is written through an out-pointer, instead of
+    // by C value: the C compiler copies a struct passed or returned by value
+    // through memory, with a memcpy call above 256 bytes (gcc), at every call
+    // it does not inline. Like NATIVE_VALUE_LIMIT, a C backend choice only; IsLargeFixed implies it.
+    // Such a parameter is declared `__restrict`, and so is the out-pointer of
+    // such a result unless it is built at its location (NeedsResultLocation).
+    // C's restrict constrains only an object changed while the function runs:
+    // every access to it must then go through that pointer or one based on
+    // it (the same pointer passed on to a call, say). The callers' rules give
+    // that. A snapshot, a temporary that dies at the call (DiesAtCall) or a
+    // variable at its only use (MovableArg) is reached through the parameter
+    // alone: the single-use rule leaves no other name for it, nor a reference
+    // into it. A lent variable (ParamUnwritten, StableArg) is changed by
+    // nothing during the call, so several pointers to it, as in f(x, x), are
+    // allowed too. A result's out-pointer only ever points at fresh storage.
+    // The qualifier lets clang forward copies out of a parameter into what
+    // the callee writes, which it can't when the parameter might alias them.
+    static constexpr int64_t FIXED_PTR_ABI_LIMIT = 256;
+    bool PtrAbi(TypeExpr *t) { return IsFix(t) && FixedSize(t) > FIXED_PTR_ABI_LIMIT; }
     bool NeedsStack(TypeExpr *t) {
         return IsBytesT(t) || IsLargeFixed(t) ||
                (IsRoot(t) && AnyField(t, [&](TypeExpr *ft) { return NeedsStack(ft); }));
@@ -1357,7 +1384,45 @@ struct CodeGen {
     vector<string> EmitExternCall(Call *c, FnSpec *sp);
     string ExternProto(FnSpec *sp);
     vector<Node *> CallArgNodes(Call *c, size_t nparams);
-    void EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &args, bool later);
+    // Returns whether it lent the callee a variable of the caller's
+    // (StableArg), which the call's results must not be written into while
+    // the callee may still read it.
+    bool EmitArg(FnSpec *sp, const vector<Node *> &an, size_t i, vector<string> &args,
+                 bool later);
+    // The Idents that are the only one naming their variable in a spec,
+    // outside any loop the variable is not declared in and outside deferred
+    // bodies and nested functions (SingleUses): nothing reads the variable
+    // after them. Made on first asking.
+    map<FnSpec *, set<const Ident *>> singleuses;
+    const set<const Ident *> &SingleUses(FnSpec *sp);
+    // A callee building a result at its location (NeedsResultLocation).
+    bool BuildsAtLocation(FnSpec *sp);
+    bool MovableArg(FnSpec *sp, Node *n, TypeExpr *pt);
+    // A PtrAbi argument whose value is a call result in a temporary of its
+    // own, which dies at the call: the callee can have it without a copy.
+    bool DiesAtCall(Node *n, TypeExpr *pt);
+    // A PtrAbi parameter its function never writes (ParamUnwritten), and a
+    // variable of the caller's whose storage nothing but the caller can
+    // write (StableArg): such an argument is passed as a pointer to the
+    // variable itself, with no copy.
+    map<FnSpec *, vector<bool>> unwrittenparams;
+    bool ParamUnwritten(FnSpec *sp, size_t i);
+    bool StableArg(Node *n, TypeExpr *pt);
+    // A spec's read-only by-pointer parameters that it hands, at their only
+    // use, to a parameter that changes them (ConsumedParam); made once per
+    // spec, as its callers and its own body must agree on them.
+    map<FnSpec *, set<const VarDef *>> consumedparams;
+    bool ConsumedParam(FnSpec *sp, const VarDef *v);
+    // An inlined body's named result of PtrAbi type, bound at the block's
+    // fresh destination for the block's extent (OpenIbFixed): its
+    // declaration and every return that hands it back share that storage.
+    map<const VarDef *, string> ibfixed;
+    const VarDef *OpenIbFixed(InlineBlock *ib, const Dst &d);
+    static Dst FreshLv(const string &s, TypeExpr *t) {
+        Dst d { DK_LVALUE, s, t };
+        d.fresh = true;
+        return d;
+    }
     void EmitFvArg(const VarDef *fv, vector<string> &args);
     vector<string> EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<Dst> *alldst);
     bool NeedsReprefix(const Dst &d, TypeExpr *rt);

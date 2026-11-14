@@ -672,6 +672,12 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         aliasbound.insert(d);
         return;
     }
+    // An inlined body's named result living at the block's destination.
+    if (auto it = ibfixed.find(d); it != ibfixed.end()) {
+        vnames[d] = it->second;
+        if (init) GenAny(init, FreshLv(it->second, d->type));
+        return;
+    }
     auto name = LocalName(d);
     auto t = d->type;
     if (IsRoot(t)) {
@@ -700,7 +706,8 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     if (LargeFixedOnStack(t)) {
         FixedLocal(t, name, "", forlocal);
         vnames[d] = name;
-        if (init) GenAny(init, Dst { DK_LVALUE, name, t });
+        // The variable being declared is no one else's yet (Dst::fresh).
+        if (init) GenAny(init, FreshLv(name, t));
         return;
     }
     if (!init) {
@@ -724,7 +731,7 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     if (IsCtl(init) || Is<Call>(init) || (Is<SliceExpr>(init) && t->kind == TY_SLICE) ||
         ((Is<StructLit>(init) || Is<ArrayLit>(init)) && HasRelRef(t))) {
         L(CT(t), " ", name, ";");
-        GenAny(init, Dst { DK_LVALUE, name, t });
+        GenAny(init, FreshLv(name, t));
         return;
     }
     if (IsStaticLimited(t)) {
@@ -949,6 +956,7 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                 else if (IsBytesT(rt)) chans[i] = Dst { DK_STACK, dst };
                 else if (NeedsResultLocation(rt))
                     chans[i] = Dst { DK_LVALUE, cat("(*gs_r", i, ")"), rt };
+                else if (PtrAbi(rt)) chans[i] = FreshLv(cat("(*gs_r", i, ")"), rt);
                 else continue;
                 if (IsBytesT(rt)) starts[i] = ExitStart(c, dst, "", 0);
             }
@@ -956,7 +964,8 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             for (size_t i = 0; i < sp->rets.size(); i++) {
                 if (IsBytesT(sp->rets[i])) continue;
                 if ((int)i == si.cret) retv = fixed[i];
-                else if (!NeedsResultLocation(sp->rets[i])) L("*gs_r", i, " = ", fixed[i], ";");
+                else if (!NeedsResultLocation(sp->rets[i]) && fixed[i] != chans[i].s)
+                    L("*gs_r", i, " = ", fixed[i], ";");
             }
             for (size_t i = 0; i < sp->rets.size(); i++)
                 if (!starts[i].empty())
@@ -1006,6 +1015,10 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             retv = T();
             L(CT(rt), " ", retv, ";");
             GenAny(vals[i], Dst { DK_LVALUE, retv, rt });
+        } else if (PtrAbi(rt)) {
+            // The caller points gs_r at fresh storage (Dst::fresh), so the
+            // value is built there directly.
+            GenAny(vals[i], FreshLv(cat("(*gs_r", i, ")"), rt));
         } else {
             auto tv = T();
             FixedLocal(rt, tv);
