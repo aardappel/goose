@@ -80,6 +80,9 @@ struct Parser {
     // written inside it records as where it resolves first.
     string_view filens;
     string_view curns;
+    // The file's namespace aliases, `namespace name = target;`: a reference
+    // `name::x` is read as `target::x`, in this file alone.
+    unordered_map<string_view, string_view> nsaliases;
     bool declseen = false;           // The directive must come before any declaration.
 
     // Recovery (docs/design/language_server.md §5 D): a statement or a
@@ -357,11 +360,26 @@ struct Parser {
 
     // A reference to a declaration: `name`, `ns::name`, or `::name`. The
     // qualified spellings are interned as one string (Ident::name).
-    string_view ParseQualifiedName(const char *context) {
-        if (IsNext(T_COLONCOLON)) return ast.Intern(cat("::", ExpectIdent(context)));
+    // A qualifier that is one of the file's aliases is replaced by its
+    // target, so nothing past the parser sees the alias. `written`, where
+    // given, is set to the source text of the name, for diagnostics.
+    string_view ParseQualifiedName(const char *context, string_view *written = nullptr) {
+        auto start = lex.attr.data();
+        auto spelled = [&](string_view leaf) {
+            if (written) *written = string_view(start, (size_t)(leaf.data() + leaf.size() - start));
+        };
+        if (IsNext(T_COLONCOLON)) {
+            auto leaf = ExpectIdent(context);
+            spelled(leaf);
+            return ast.Intern(cat("::", leaf));
+        }
         auto name = ExpectIdent(context);
+        spelled(name);
         if (!IsNext(T_COLONCOLON)) return name;
-        return ast.Intern(cat(name, "::", ExpectIdent(context)));
+        if (auto it = nsaliases.find(name); it != nsaliases.end()) name = it->second;
+        auto leaf = ExpectIdent(context);
+        spelled(leaf);
+        return ast.Intern(cat(name, "::", leaf));
     }
 
     string_view ParseStorageName(const char *context) {
@@ -375,6 +393,10 @@ struct Parser {
     // how a dump carries every file's namespace in one file. The rest of
     // the declaration is then parsed as written in that namespace.
     string_view ParseDeclName(const char *context) {
+        if (lex.tok == T_IDENT && lex.PeekTok() == T_COLONCOLON)
+            if (auto it = nsaliases.find(lex.attr); it != nsaliases.end())
+                Error(cat("a declaration names its namespace, not an alias: ", lex.attr,
+                          " is an alias of ", it->second));
         auto name = lex.tok == T_COLONCOLON ? string_view {} : ExpectIdent(context);
         if (IsNext(T_COLONCOLON)) {
             curns = name;
@@ -425,12 +447,45 @@ struct Parser {
         switch (lex.tok) {
             case T_NAMESPACE: {
                 // `namespace name;`: at most once, ahead of the declarations
-                // (imports may come either side of it).
+                // (imports may come either side of it). `namespace name =
+                // target;` is an alias instead, also ahead of them, so it is
+                // in place before any reference it rewrites.
                 lex.Next();
+                if (lex.tok == T_IDENT && lex.PeekTok() == T_ASSIGN) {
+                    // Each check runs while its name is the current token,
+                    // which is where the error is placed. One that comes
+                    // too late is still an alias, reported and kept, so
+                    // that each use of it is not an error of its own.
+                    if (declseen)
+                        ast.Report(lex.Diagnose("a namespace alias must precede all declarations",
+                                                lex.tokline, lex.toklinestart));
+                    auto name = lex.attr;
+                    if (nsaliases.count(name)) Error(cat("namespace alias ", name, " declared twice in this file"));
+                    if (name == filens) Error(cat("namespace alias ", name, " is this file's own namespace"));
+                    lex.Next();
+                    Expect(T_ASSIGN, "namespace alias");
+                    if (lex.tok == T_IDENT) {
+                        if (lex.attr == name) Error(cat("namespace alias ", name, " names itself"));
+                        if (auto it = nsaliases.find(lex.attr); it != nsaliases.end())
+                            Error(cat("a namespace alias names a namespace, not an alias: ", lex.attr,
+                                      " is an alias of ", it->second));
+                    }
+                    auto targetline = CurLine();
+                    auto target = ExpectIdent("namespace alias");
+                    Expect(T_SEMI, "namespace alias");
+                    nsaliases[name] = target;
+                    ast.nsaliases.push_back({ fileidx, name, target, targetline });
+                    return;
+                }
                 if (!filens.empty()) Error("namespace declared twice in this file");
                 if (declseen) Error("the namespace declaration must precede all declarations");
+                if (lex.tok == T_IDENT && nsaliases.count(lex.attr))
+                    Error(cat("namespace ", lex.attr, " is an alias in this file"));
                 filens = ExpectIdent("namespace declaration");
                 Expect(T_SEMI, "namespace declaration");
+                // The namespace exists from here, declarations or not, so an
+                // alias in another file may name it.
+                ast.NS(filens);
                 curns = filens;
                 return;
             }
@@ -1131,7 +1186,9 @@ struct Parser {
         }
         switch (lex.tok) {
             case T_IDENT: case T_COLONCOLON: {
-                auto t = NewUnresolvedType(ParseQualifiedName("type"), line);
+                string_view written;
+                auto t = NewUnresolvedType(ParseQualifiedName("type", &written), line);
+                t->named->written = written;
                 if (lex.tok == T_LT) Role(R_ANGLE_OPEN);
                 if (IsNext(T_LT)) {
                     for (;;) {

@@ -15,6 +15,8 @@
 (field_initializer name: (identifier) @property)
 
 (namespace_declaration name: (identifier) @module)
+(namespace_alias name: (identifier) @module)
+(namespace_alias target: (identifier) @module)
 (import_path (identifier) @module)
 (scoped_identifier namespace: (identifier) @module)
 

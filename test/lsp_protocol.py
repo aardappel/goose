@@ -460,6 +460,11 @@ def check_lsp_protocol(exe, base):
     ufcs = fixtures / "ufcs_ns.goose"
     utext = ufcs.read_text(encoding="utf-8")
     queries(ufcs, utext, open_fixture(ufcs, utext))
+    # Names spelled through a namespace alias, `g::x` for geo::x: the
+    # occurrence is the spelling as written, not the name it is read as.
+    alias = fixtures / "ns_alias.goose"
+    atext = alias.read_text(encoding="utf-8")
+    queries(alias, atext, open_fixture(alias, atext))
 
     # Statements with errors inside the braces of a struct literal or a
     # match they opened: each published where it is, and nothing after

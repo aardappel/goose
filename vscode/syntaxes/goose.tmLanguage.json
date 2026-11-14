@@ -43,6 +43,7 @@
     "declarations": { "patterns": [
       { "match": "\\b(fn|thread_fn)\\s+((?:::)?(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*)", "captures": { "1": { "name": "storage.type.function.goose" }, "2": { "name": "entity.name.function.goose" } } },
       { "match": "\\b(struct|enum|type)\\s+((?:::)?(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*)", "captures": { "1": { "name": "storage.type.goose" }, "2": { "name": "entity.name.type.goose" } } },
+      { "match": "\\b(namespace)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*([A-Za-z_][A-Za-z0-9_]*)", "captures": { "1": { "name": "keyword.other.goose" }, "2": { "name": "entity.name.namespace.goose" }, "3": { "name": "keyword.operator.goose" }, "4": { "name": "entity.name.namespace.goose" } } },
       { "match": "\\b(namespace)\\s+([A-Za-z_][A-Za-z0-9_]*)", "captures": { "1": { "name": "keyword.other.goose" }, "2": { "name": "entity.name.namespace.goose" } } }
     ] },
     "numbers": { "patterns": [

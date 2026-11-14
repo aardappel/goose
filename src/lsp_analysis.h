@@ -334,7 +334,26 @@ struct Analysis {
                 o.kind = Occurrence::IDENT;
                 o.node = n;
                 o.callee = callee;
-                at(o, n->line, id->name);
+                // A qualified name as written, which a namespace alias makes
+                // differ from Ident::name (`g::x` read as `image::x`). One
+                // whose text there does not end in its leaf (`g :: x`, with
+                // spaces) is left out rather than given the wrong extent.
+                auto spelled = id->name;
+                if (spelled.find("::") != string_view::npos) {
+                    auto leaf = [](string_view s) {
+                        auto q = s.rfind("::");
+                        return q == string_view::npos ? s : s.substr(q + 2);
+                    };
+                    spelled = {};
+                    if (infile(fileidx) && n->line.line > 0) {
+                        auto &text = files[(size_t)fileidx].text;
+                        auto start = text.OffsetOf(n->line.line, n->line.col);
+                        auto len = start < 0 ? 0 : text.NameLengthAt((size_t)start);
+                        auto written = text.text.substr((size_t)max<int64_t>(start, 0), len);
+                        if (len && leaf(written) == leaf(id->name)) spelled = written;
+                    }
+                }
+                at(o, n->line, spelled);
             } else if (auto d = Is<Dot>(n)) {
                 Occurrence o;
                 o.kind = Occurrence::DOT;

@@ -3,6 +3,7 @@ Namespace and imports
 ========================================
 
 namespace geo;
+namespace im = image;
 import std;
 import .util.strings;
 import json from "github.com/x/json";
@@ -11,6 +12,9 @@ import json from "github.com/x/json";
 
 (source_file
   (namespace_declaration
+    (identifier))
+  (namespace_alias
+    (identifier)
     (identifier))
   (import_declaration
     (import_path

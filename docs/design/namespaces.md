@@ -30,8 +30,22 @@ fn main() {
 
 * `namespace name;` occurs at most once, before declarations (imports may sit
   on either side of it). Files without it keep the global namespace. `name`
-  is one identifier. Nested namespaces, aliases, and namespace-opening
-  directives are not included.
+  is one identifier. Nested namespaces and namespace-opening directives
+  are not included.
+* `namespace g = image;` declares an alias, before the file's declarations
+  like the directive above, and any number of them. In that file alone,
+  every qualified reference `g::x` reads as `image::x`: in expressions,
+  types, variants, pools, match-pattern constants and `return ... from`.
+  The files it imports and those importing it never see it, so a
+  library's short names cannot collide with its users'. For the same
+  reason an alias may take the name of a namespace: in its own file `g::x`
+  then reads as `image::x`, and that file reaches the namespace `g` only
+  through an alias of another name; every other file is unaffected. It may
+  not take the name of the file's own namespace. The target is a namespace
+  some file declares (with a `namespace` directive, whether or not it
+  declares anything in it), never an alias. A declaration's qualifier
+  names its namespace itself, not an alias (`fn g::f` is an error), so
+  where a declaration goes is never a file-local fact.
 * Multiple files may declare the same namespace. `import` still locates and
   loads a file once; its path does not create a namespace or import
   unqualified names out of an explicitly named namespace. All declarations
@@ -98,16 +112,33 @@ fn main() {
 
 ## Implementation
 
+* Aliases are resolved by the parser alone. `ParseQualifiedName`, which
+  builds every qualified reference, replaces a qualifier that is one of
+  the file's aliases with its target, so nothing past the parser sees an
+  alias, and a dump, which merges files, prints the target. The aliases
+  are recorded in `Ast::nsaliases`. A `namespace x;` directive creates the
+  namespace `x` even if its file declares nothing in it, and once every
+  file is parsed, `ParseProgram` checks that each target is a namespace,
+  unless an error came first (a file that failed to load or parse may be
+  the one declaring it). Diagnostics name the target; an unknown type is
+  still underlined over its spelling in the source (`TypeName::written`).
+  An alias after a declaration is reported and still kept, so the rest of
+  the file reads its uses as meant. The language server takes the spelling of a
+  qualified `Ident` from the source text, so hover, definition and rename
+  work on `g::x` (a name spelled with spaces around its `::` is left out,
+  not given the wrong extent), and resolves the alias before completing
+  after `g::`.
 * Lexer: the `namespace` keyword and the `::` token. Parser: the directive,
   qualified declaration names, and qualified references wherever a
   declaration can be named (expressions, types, `return ... from`, the
   pool of a `T&<w in pool>` type, and the constants of an integer match's
   patterns). A qualified reference is interned as one string (`Ident::name`
-  is `"image::Pixel"` as written), so it can never coincide with a local's
-  name, and every existing lexical comparison stays correct. Every reference
-  also records the namespace it was written in (`Ident::ns`, `TypeName::ns`,
-  ...). That namespace is where an unqualified name resolves first, so it
-  must survive cloning and generic instantiation.
+  is `"image::Pixel"`, as written or as an alias reads), so it can never
+  coincide with a local's name, and every existing lexical comparison stays
+  correct. Every reference also records the namespace it was written in
+  (`Ident::ns`, `TypeName::ns`, ...). That namespace is where an
+  unqualified name resolves first, so it must survive cloning and generic
+  instantiation.
 * `Ast` keeps one `Namespace` of declaration maps per namespace name, and one
   lookup rule (`Ast::Lookup`) routes type resolution, function, global and
   enum lookup through it. Unknown qualified type names are errors in
@@ -117,9 +148,9 @@ fn main() {
   the attempt, so `ns::limit` in `a < ns::limit` is not treated as a type
   name (`test/syntax/namespace_comparisons.goose`).
 * The dump prints declarations with their qualified names (`fn
-  image::brightness(p: Pixel)`) and references as written, so a dump of a
-  multi-file program reparses to the same program; resolution runs after the
-  dump so it shows names as written.
+  image::brightness(p: Pixel)`) and references as written (through an
+  alias, as its target), so a dump of a multi-file program reparses to the
+  same program; resolution runs after the dump so it shows names as written.
 * C symbols: a global name `x` is `x_g` as before; a namespaced `ns::x` is
   `ns_x_g` followed by the namespace's length (`image_Pixel_g5`). The digits
   keep the mapping injective without a lossy punctuation replacement: `a::b_c`
@@ -139,10 +170,22 @@ fn main() {
   symbols. `test/syntax/match_constants.goose` names another namespace's
   constants in match patterns, `test/errors*/ns_*.goose` cover the
   diagnostics, and `test/lsp/ufcs_ns.goose` the language server's answers
-  on UFCS calls into a type's namespace.
+  on UFCS calls into a type's namespace. `test/syntax/namespace_aliases.goose`
+  uses aliases in every kind of qualified reference. It imports
+  `test/syntax/ns/alias_user.goose`, whose own `im` names another
+  namespace, whose `terrain` alias takes the name of a namespace the
+  importer uses, and whose `h` names a namespace that declares nothing
+  (`ns/hollow.goose`). The `test/errors/ns_alias_*.goose` fixtures reject
+  the misuses (one through the helper in `test/errors/ns_alias/`, showing
+  an alias does not reach an imported file), and `test/lsp/ns_alias.goose`
+  asks the language server about names spelled through an alias.
 
 This extension changes name resolution. It does not add separate compilation,
 package resolution, privacy, re-exports, or first-class module values.
+
+An alias is a directive of its own rather than part of an import (`import
+image.filters as f;`) because an import loads a file, and a namespace is not a
+file: one namespace may span several files, and a file may declare none.
 
 ## Rust and Zig comparison
 
