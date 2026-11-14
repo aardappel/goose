@@ -4472,6 +4472,18 @@ it leaves the caller's own facts about `src` intact.
   Namespaces affect only name resolution, type identity and generated C
   names (§7.10); they have no runtime representation, and they provide no
   privacy and no re-exports.
+* **Namespace aliases.** `namespace g = image;`, written before a file's
+  declarations, makes `g::x` read as `image::x` in every qualified
+  reference of that file (an expression, a type, a variant, a pool, a match
+  pattern's constant, `return ... from`). The alias holds in that file
+  alone: neither the files it imports nor those importing it see it. A
+  file may declare several. The target must be a namespace some file
+  declares with `namespace target;` (whether or not anything is declared
+  in it), and is never another alias. An alias may take the name of a
+  namespace, which its file then reaches only through another alias, but
+  not the name of the file's own namespace. A declaration's qualifier
+  names the namespace itself, never an alias (`fn g::f` is an error).
+  Diagnostics and dumps name the target (`image::x`).
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically, the program runs inside an implicit outermost
   scope that owns the globals. They take part in the depth check (§9.2) as
@@ -5103,8 +5115,9 @@ growth into a safe abort.
 ## Appendix D. Grammar sketch (informative)
 
 ```
-program     := namespace? topdecl*             // imports may precede namespace
+program     := (namespace | nsalias | import)* topdecl*  // namespace at most once
 namespace   := "namespace" ident ";"
+nsalias     := "namespace" ident "=" ident ";"      // file-local
 topdecl     := import | struct | enum | typealias | fndecl | externblock | globaldecl
 import      := "import" "."? ident ("." ident)* ";" | "import" ident "from" strlit ";"
 declname    := ident | ident "::" ident | "::" ident   // the namespace, else the file's

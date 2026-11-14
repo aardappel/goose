@@ -127,6 +127,7 @@ module.exports = grammar({
 
     _top_level_item: $ => choice(
       $.namespace_declaration,
+      $.namespace_alias,
       $.import_declaration,
       $.struct_declaration,
       $.enum_declaration,
@@ -137,6 +138,9 @@ module.exports = grammar({
     ),
 
     namespace_declaration: $ => seq('namespace', field('name', $.identifier), ';'),
+
+    // `namespace g = image;`: `g::x` reads as `image::x` in this file.
+    namespace_alias: $ => seq('namespace', field('name', $.identifier), '=', field('target', $.identifier), ';'),
 
     // `import a.b;`, `import .a.b;` (relative), `import name from "source";`.
     import_declaration: $ => seq(

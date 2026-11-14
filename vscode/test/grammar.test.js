@@ -66,6 +66,9 @@ test('all builtin calls and namespace declarations highlight', async () => {
     }
     const [line] = await tokenize('thread_fn image::worker(n: i64) {}');
     assert.ok(has(line, 'image::worker', 'entity.name.function'));
+    const [alias] = await tokenize('namespace im = image;');
+    assert.ok(has(alias, 'im', 'entity.name.namespace'));
+    assert.ok(has(alias, 'image', 'entity.name.namespace'));
 });
 
 test('export modifier and exported function declaration highlight', async () => {

@@ -243,7 +243,10 @@ struct TypeEnum : TypeDetail {       // TY_ENUM
 struct TypeName : TypeDetail {       // TY_UNRESOLVED and TY_GENERIC
     int expansionbinding = 0;       // Lexical const-for binding, never a name lookup.
     string_view expansionerror;     // Invalid substitution, diagnosed only when instantiated.
-    string_view name;                // As written: `Name`, `ns::Name` or `::Name`.
+    string_view name;                // `Name`, `ns::Name` or `::Name`: as written, but
+                                     // for a namespace alias, read as its target.
+    string_view written;             // The source text of a qualified name, which an
+                                     // alias makes differ from `name`; empty if not known.
     string_view ns;                  // Where an unqualified name resolves first: the
                                      // namespace of the declaration it was written in
                                      // (docs/design/namespaces.md).
@@ -2546,6 +2549,20 @@ struct Ast {
     // a go to definition on the import line opens.
     struct ImportSite { Line line; Line end; string path; };
     vector<ImportSite> imports;
+
+    // Every namespace alias, `namespace name = target;`, with the file that
+    // declares it and where its target is written: the parser rewrites
+    // `name::x` to `target::x` in that file alone, and the driver checks the
+    // targets once every file is parsed (docs/design/namespaces.md).
+    struct NsAlias { int fileidx; string_view name, target; Line targetline; };
+    vector<NsAlias> nsaliases;
+    // The namespace `name` stands for in a file: an alias's target, else
+    // the name itself.
+    string_view ResolveNsAlias(int fileidx, string_view name) const {
+        for (auto &a : nsaliases)
+            if (a.fileidx == fileidx && a.name == name) return a.target;
+        return name;
+    }
 
     // The text the terminal shows for d (RenderDiagnostic), with the source
     // line it is on and a caret under its range.

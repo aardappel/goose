@@ -3770,6 +3770,13 @@ variables to functions. Namespaces affect only name resolution, type
 identity and generated C names. There is no privacy, no re-export and no
 nesting of namespaces. Spec §11.1, `docs/design/namespaces.md`.
 
+`namespace g = goose_gfx2d;`, before a file's declarations, lets that file
+write `g::Sprite` for `goose_gfx2d::Sprite`, in any qualified name. The
+alias holds in that file alone, so a library's aliases never reach the
+files that import it, and it may even take the name of another namespace
+without affecting any other file. Its target must be a namespace some file
+declares. Errors and `--dump` name the target: `goose_gfx2d::Sprite`.
+
 ### Globals and initialization
 
 Globals are initialized before `main`, in declaration order within a

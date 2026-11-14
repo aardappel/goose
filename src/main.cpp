@@ -446,6 +446,22 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
             }
         }
     }
+    // A namespace alias's target must be a namespace some file declares,
+    // which only now are all known. Where an error came first, a file that
+    // would have declared it may be the one that failed to load or parse,
+    // so the target is not reported as well. An alias may take the name of
+    // a namespace: it holds in its own file alone, which then reaches that
+    // namespace only through an alias of another name.
+    if (ast.errors.empty())
+        for (auto &a : ast.nsaliases) {
+            if (ast.FindNS(a.target)) continue;
+            Diagnostic d;
+            d.where = LocOf(a.targetline);
+            d.where.endline = a.targetline.line;
+            d.where.endcol = a.targetline.col + (int)a.target.size();
+            d.message = cat("unknown namespace ", a.target, " in namespace alias ", a.name);
+            ast.Report(d);
+        }
     // Globals initialize in import order: everything a file imports runs before
     // the file's own, so a global initializer may name an imported global
     // (`let IDENT = Xf { ..., t: float3_0 }`). Files parse in worklist order,
