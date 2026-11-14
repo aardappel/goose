@@ -309,6 +309,19 @@ struct CodeGen {
     // by C value: the C compiler copies a struct passed or returned by value
     // through memory, with a memcpy call above 256 bytes (gcc), at every call
     // it does not inline. Like NATIVE_VALUE_LIMIT, a C backend choice only; IsLargeFixed implies it.
+    // Such a parameter is declared `__restrict`, and so is the out-pointer of
+    // such a result unless it is built at its location (NeedsResultLocation).
+    // C's restrict constrains only an object changed while the function runs:
+    // every access to it must then go through that pointer or one based on
+    // it (the same pointer passed on to a call, say). The callers' rules give
+    // that. A snapshot, a temporary that dies at the call (DiesAtCall) or a
+    // variable at its only use (MovableArg) is reached through the parameter
+    // alone: the single-use rule leaves no other name for it, nor a reference
+    // into it. A lent variable (ParamUnwritten, StableArg) is changed by
+    // nothing during the call, so several pointers to it, as in f(x, x), are
+    // allowed too. A result's out-pointer only ever points at fresh storage.
+    // The qualifier lets clang forward copies out of a parameter into what
+    // the callee writes, which it can't when the parameter might alias them.
     static constexpr int64_t FIXED_PTR_ABI_LIMIT = 256;
     bool PtrAbi(TypeExpr *t) { return IsFix(t) && FixedSize(t) > FIXED_PTR_ABI_LIMIT; }
     bool NeedsStack(TypeExpr *t) {
@@ -1382,6 +1395,8 @@ struct CodeGen {
     // after them. Made on first asking.
     map<FnSpec *, set<const Ident *>> singleuses;
     const set<const Ident *> &SingleUses(FnSpec *sp);
+    // A callee building a result at its location (NeedsResultLocation).
+    bool BuildsAtLocation(FnSpec *sp);
     bool MovableArg(FnSpec *sp, Node *n, TypeExpr *pt);
     // A PtrAbi argument whose value is a call result in a temporary of its
     // own, which dies at the call: the callee can have it without a copy.

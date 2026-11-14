@@ -156,6 +156,25 @@ fn put264(var s: S264, v: i64) -> S264 { s.x[32] = v; s }
 fn tag_with(s: Shape.Wide, var d: Big) -> i64 { d.a = 5; d.a + s.body.a }
 fn tag_with(s: Shape.Thin, d: Big) -> i64 { d.a + s.n }
 
+// A result holding a relative reference is built at its destination
+// (NeedsResultLocation), which may be the argument: the callee gets a copy
+// rather than the variable lent. Recursive, so it stays a call at -O2.
+struct Cell { v: i64 }
+var cells: Cell[>..] = [];
+struct RelBig { r: Cell&<u32 in cells>?, a: i64 = 0, b: i64 = 0, p: Big = Big { .. } }
+fn cell_v(r: Cell&?) -> i64 { if r { return r.v; } return -1; }
+recursive fn swapped_rel(d: RelBig, n: i64) -> RelBig {
+    if n > 0 { return swapped_rel(d, n - 1); }
+    RelBig { r: d.r, a: d.b, b: d.a, .. }
+}
+recursive fn swapped_rel2(d: RelBig, n: i64) -> RelBig {
+    if n > 0 { return swapped_rel2(d, n - 1); }
+    var x = RelBig { r: d.r, .. };
+    x.a = d.b;
+    x.b = d.a;
+    x
+}
+
 fn show(name: u8[:], d: Big) { print(name, " ", d.a, " ", d.b, " ", d.c); }
 
 fn main() {
@@ -281,4 +300,10 @@ fn main() {
     print("seen ", seen);
     show("pick_deferred0", start(9).pick_deferred(0));
     print("seen ", seen);
+    cells.push(Cell { v: 5 });
+    var rb = RelBig { r: cells[0], a: 1, b: 2, .. };
+    rb = swapped_rel(rb, 1);
+    print("swapped_rel ", rb.a, " ", rb.b);
+    rb = swapped_rel2(rb, 0);
+    print("swapped_rel2 ", rb.a, " ", rb.b, " ", cell_v(rb.r));
 }

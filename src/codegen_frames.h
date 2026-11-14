@@ -576,8 +576,10 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
             // The caller makes an independent value copy (on a data stack
             // when it is large), or hands over a temporary of its own that
             // dies at the call or a variable it never reads again
-            // (MovableArg). Passing its address avoids the C ABI's copy.
-            add(cat(CT(pt), " *", pn));
+            // (MovableArg), or lends a variable the callee only reads
+            // (StableArg). Passing its address avoids the C ABI's copy. The
+            // pointer is restrict: see PtrAbi.
+            add(cat(CT(pt), " *__restrict ", pn));
             if (decls) fvptr.insert(vd);
         } else {
             addval(pt, false, CT(pt), pn);
@@ -619,7 +621,11 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
         } else if (IsBytesT(sp->rets[i])) {
             add(cat("gs_stack *gs_dst", i));
         } else if ((int)i != si.cret) {
-            add(cat(CT(sp->rets[i]), " *gs_r", i));
+            // A PtrAbi result's destination is fresh (Dst::fresh), so this
+            // pointer is restrict (see PtrAbi); one built at its location
+            // (NeedsResultLocation) may be any variable, and is not.
+            auto fresh = PtrAbi(sp->rets[i]) && !NeedsResultLocation(sp->rets[i]);
+            add(cat(CT(sp->rets[i]), fresh ? " *__restrict gs_r" : " *gs_r", i));
         }
     }
     if (si.needssp) add("int64_t gs_sp");

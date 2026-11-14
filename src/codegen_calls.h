@@ -215,8 +215,11 @@ inline bool CodeGen::EmitArg(FnSpec *sp, const vector<Node *> &an, size_t i,
     }
     // A variable no one else can write while the callee runs, for a
     // parameter the callee only reads: the callee reads it where it lies.
-    // The caller may still write it, as the call's result.
-    if (!later && PtrAbi(pt) && ParamUnwritten(sp, i) && StableArg(node, pt)) {
+    // The caller may still write it, as the call's result. Not to a callee
+    // that builds a result at its location (NeedsResultLocation), which may
+    // be this very variable, while it still reads its parameter.
+    if (!later && PtrAbi(pt) && ParamUnwritten(sp, i) && !BuildsAtLocation(sp) &&
+        StableArg(node, pt)) {
         args.push_back(cat("&", GenX(node)));
         return true;
     }
@@ -283,6 +286,13 @@ inline const set<const Ident *> &CodeGen::SingleUses(FnSpec *sp) {
     return out;
 }
 
+// A callee that builds a result at its destination (NeedsResultLocation),
+// piece by piece while it may still read its arguments.
+inline bool CodeGen::BuildsAtLocation(FnSpec *sp) {
+    for (auto rt : sp->rets) if (NeedsResultLocation(rt)) return true;
+    return false;
+}
+
 // An argument whose storage the callee can have for its by-pointer
 // parameter (PtrAbi) in place of the copy it is owed: a variable of this
 // function at its only use (SingleUses), whose storage is this function's
@@ -296,7 +306,7 @@ inline const set<const Ident *> &CodeGen::SingleUses(FnSpec *sp) {
 inline bool CodeGen::MovableArg(FnSpec *sp, Node *n, TypeExpr *pt) {
     auto id = Is<Ident>(n);
     if (!id || !id->vdef || !curspec) return false;
-    for (auto rt : sp->rets) if (NeedsResultLocation(rt)) return false;
+    if (BuildsAtLocation(sp)) return false;
     auto v = id->vdef;
     if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
         !v->type || !TEq(v->type, pt) || splitroots.count(v) || refalias.count(v))
