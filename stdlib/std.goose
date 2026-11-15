@@ -1171,9 +1171,10 @@ fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8) {
 // ULEB128 (§3.6), the encoding an image's framing prefix uses
 // (docs/design/serialization.md): what to_bytes writes in front of an
 // array's bytes, so that a reader of a stream or a file can size its read
-// before it has the whole image.
+// before it has the whole image. A negative v goes out as its 64 bits, ten
+// bytes (`as!`, since that conversion changes the value on purpose).
 fn format_uleb(out: u8[>..]&, v: i64) {
-    var x = v as u64;
+    var x = v as! u64;
     loop {
         let b = (x & 0x7f) as u8;
         x >>= 7;
@@ -1183,7 +1184,8 @@ fn format_uleb(out: u8[>..]&, v: i64) {
 }
 
 // The ULEB128 at the front of s: its value and its byte count, or 0, 0 when
-// the bytes do not hold one (unterminated, or past the 64-bit range).
+// the bytes do not hold one (unterminated, or past the 64-bit range). Bit 63
+// comes back as the sign, as format_uleb wrote it (`as!` again).
 fn parse_uleb(s: u8[:]) -> i64, i64 {
     var v = 0 as u64;
     var shift = 0;
@@ -1193,7 +1195,7 @@ fn parse_uleb(s: u8[:]) -> i64, i64 {
         if shift > 63 || (shift == 63 && (b & 0x7e) != 0) { return 0, 0; }
         v |= (b & 0x7f) as u64 << shift;
         i++;
-        if b < 0x80 { return v as i64, i; }
+        if b < 0x80 { return v as! i64, i; }
         shift += 7;
     }
     return 0, 0;
