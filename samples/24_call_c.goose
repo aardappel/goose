@@ -8,7 +8,9 @@
 //
 // Build and run (from this directory):
 //   goose --include call_c.h -o call_c.c 24_call_c.goose
-//   cc call_c.c -o call_c -lm -pthread && ./call_c   (or: cl call_c.c && call_c)
+//   goose --emit-runtime goose_runtime.c
+//   cc call_c.c goose_runtime.c -o call_c -lm -pthread && ./call_c
+//   (or: cl call_c.c goose_runtime.c && call_c)
 
 import std;
 

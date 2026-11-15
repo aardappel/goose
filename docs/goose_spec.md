@@ -127,10 +127,17 @@ Literals:
 
 * Integer: decimal and `0x` hex; the full unsigned 64-bit range is accepted
   (a value above `i64.max` is a `u64` constant, §6.2). Character
-  literals `'a'` are integer constants.
+  literals `'a'` are integer constants. An underscore (`_`) may separate
+  digits for readability when it lies between two digits of the same digit
+  run (`1_000_000`, `0xFF_AA`); `1__0`, `1_`, and `0x_1` are lexical errors.
+  The separator is not part of the value.
 * Float: with `.` and/or a decimal exponent (`1.5`, `2.5e-3`); C99-style hex
   floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
   fraction only when a digit follows, so `1..2` lexes as a range.
+  Separators may appear in the integer part, fraction, and exponent,
+  including a hex float's binary exponent (`3.141_592`, `1_000e3`,
+  `0x1.A_Bp3`, `1e1_0`, `0x1.8p1_0`); `1.0_` and `0x1.8_p3` are errors.
+  `goose format` preserves the author's separators.
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
 * Raw string `"""..."""`: no escapes, and the next `"""` ends it. On one
   line, its text is what lies between the delimiters (`"""a "quoted"
@@ -3757,8 +3764,10 @@ let a = area(s);     // s: Shape — dispatches on the tag, like a match
 * Calling the overload set with the ADT type (or a reference to it)
   performs tag dispatch (a jump table). Exhaustiveness is checked as for
   `match`: every variant must have exactly one applicable overload, and the
-  return types must agree. All arms construct any nonfixed result in the
-  same destination (§4.3). The overloads' parameter types choose copy or
+  return types must agree. An overload taking the ADT itself in that
+  position is an ordinary candidate, not a case: `f(k: Shape, x: f64)`
+  called as `f(s, 2)` is that call, with its integer converted (§7.1).
+  All arms construct any nonfixed result in the same destination (§4.3). The overloads' parameter types choose copy or
   reference as match binders do (`Shape.Circle` vs `Shape.Circle&`), with
   the same rules: a fixed-mode or resizable scrutinee, even behind a
   reference, dispatches only to by-value variant parameters (§3.5), and a
@@ -4472,6 +4481,18 @@ it leaves the caller's own facts about `src` intact.
   Namespaces affect only name resolution, type identity and generated C
   names (§7.10); they have no runtime representation, and they provide no
   privacy and no re-exports.
+* **Namespace aliases.** `namespace g = image;`, written before a file's
+  declarations, makes `g::x` read as `image::x` in every qualified
+  reference of that file (an expression, a type, a variant, a pool, a match
+  pattern's constant, `return ... from`). The alias holds in that file
+  alone: neither the files it imports nor those importing it see it. A
+  file may declare several. The target must be a namespace some file
+  declares with `namespace target;` (whether or not anything is declared
+  in it), and is never another alias. An alias may take the name of a
+  namespace, which its file then reaches only through another alias, but
+  not the name of the file's own namespace. A declaration's qualifier
+  names the namespace itself, never an alias (`fn g::f` is an error).
+  Diagnostics and dumps name the target (`image::x`).
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically, the program runs inside an implicit outermost
   scope that owns the globals. They take part in the depth check (§9.2) as
@@ -5103,8 +5124,9 @@ growth into a safe abort.
 ## Appendix D. Grammar sketch (informative)
 
 ```
-program     := namespace? topdecl*             // imports may precede namespace
+program     := (namespace | nsalias | import)* topdecl*  // namespace at most once
 namespace   := "namespace" ident ";"
+nsalias     := "namespace" ident "=" ident ";"      // file-local
 topdecl     := import | struct | enum | typealias | fndecl | externblock | globaldecl
 import      := "import" "."? ident ("." ident)* ";" | "import" ident "from" strlit ";"
 declname    := ident | ident "::" ident | "::" ident   // the namespace, else the file's
