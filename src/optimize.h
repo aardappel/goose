@@ -852,11 +852,14 @@ inline Node *Optimizer::TryInline(Call *c) {
     // Trivial results unwrap to plain expressions — but only when the value's
     // type survives as-is (a reference return decayed at the call site, or an
     // ADT result received in its other mode, must keep the InlineBlock, whose
-    // exprtype records the type it converts to).
+    // exprtype records the type it converts to). So must a number the call
+    // site widened (RetypeOperand): the operation then computes at the wider
+    // type, which the narrower value alone would not carry.
     auto unwrapok = [&](Node *v) {
         if (SameType(v->exprtype, c->exprtype)) return true;
         auto a = v->exprtype, b = c->exprtype;
-        return a && b && a->kind == b->kind && a->kind != TY_REF && a->kind != TY_ENUM;
+        return a && b && a->kind == b->kind && a->kind != TY_REF && a->kind != TY_ENUM &&
+               a->kind != TY_INT && a->kind != TY_FLT;
     };
     if (body->stmts.empty() && body->tail && !ReturnsTo(body->tail, K->sf) &&
         unwrapok(body->tail))
