@@ -91,15 +91,17 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 }
 
 // An angle in radians brought into [-PI, PI) by whole turns: PI itself
-// wraps to -PI, as a floored remainder would. The last step catches a
-// quotient that rounded across a turn. NaN for an infinity or a NaN.
+// wraps to -PI, as a floored remainder would. A huge input's quotient can
+// round and leave the remainder many turns out, so repeat the reduction
+// until it lands in range; for such inputs only the range is promised.
+// NaN for an infinity or a NaN.
 fn wrap_angle(x: f64) -> f64 {
     var r = x - TAU * floor((x + PI) / TAU);
-    if r >= PI { r -= TAU; } else if r < -PI { r += TAU; }
+    while r >= PI || r < -PI { r -= TAU * floor((r + PI) / TAU); }
     r
 }
 fn wrap_angle(x: f32) -> f32 {
     var r = x - TAU * floor((x + PI) / TAU);
-    if r >= PI { r -= TAU; } else if r < -PI { r += TAU; }
+    while r >= PI || r < -PI { r -= TAU * floor((r + PI) / TAU); }
     r
 }
