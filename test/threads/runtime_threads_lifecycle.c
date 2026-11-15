@@ -57,6 +57,27 @@ static void *counted_realloc(void *p, size_t size) {
     return q;
 }
 
+/* gs_aligned_calloc hands stack blocks and globals instances out with the
+   aligned pair (runtime.h); they go into the same count. */
+#ifdef _WIN32
+static void *counted_aligned_malloc(size_t size, size_t align) {
+    void *p = _aligned_malloc(size, align);
+    if (p) counter_add(&live_allocations, 1);
+    return p;
+}
+
+static void counted_aligned_free(void *p) {
+    if (p) counter_add(&live_allocations, -1);
+    _aligned_free(p);
+}
+#else
+static void *counted_aligned_alloc(size_t align, size_t size) {
+    void *p = aligned_alloc(align, size);
+    if (p) counter_add(&live_allocations, 1);
+    return p;
+}
+#endif
+
 #ifdef _WIN32
 static void *counted_virtual_alloc(void *base, SIZE_T size, DWORD kind, DWORD prot) {
     void *p = VirtualAlloc(base, size, kind, prot);
@@ -91,6 +112,12 @@ static int counted_munmap(void *base, size_t size) {
 #define calloc counted_calloc
 #define free counted_free
 #define realloc counted_realloc
+#ifdef _WIN32
+#define _aligned_malloc counted_aligned_malloc
+#define _aligned_free counted_aligned_free
+#else
+#define aligned_alloc counted_aligned_alloc
+#endif
 #define GS_NEED_THREADS 1
 #define GS_MAX_STACKS 8
 #define GS_STACK_RESERVE (256u << 10)

@@ -42,7 +42,7 @@ static const GooseJitSymbol gs_jit_symbols[] = {
     GS_JIT_SYMBOL(calloc)
     GS_JIT_SYMBOL(realloc)
     GS_JIT_SYMBOL(free)
-    /* The aligned allocator gs_chunk_alloc hands chunks out with. */
+    /* The aligned allocator _aligned_malloc hands chunks out with. */
 #ifdef _WIN32
     GS_JIT_SYMBOL(_aligned_malloc)
     GS_JIT_SYMBOL(_aligned_free)

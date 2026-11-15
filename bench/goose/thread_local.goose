@@ -1,16 +1,15 @@
-// False sharing between the private chunks the runtime gives every
-// worker: its globals instance (what the thread-local gs_gl points at)
-// and its stack block (gs_stks). Threads share no data (goose_spec.md
-// 11.2), but the allocator can place two chunks in one cache line, and
-// each thread's writes invalidate the other's line anyway.
+// From goose_spec.md 11.2
 //
-// Each iteration of the loop below touches both structures the way real
-// code does. `counter += i` stores through GS_GL -- the worker's globals
-// instance -- every iteration. `user()` is recursive, so the compiler
-// cannot inline it away, and its resizable local makes every call load
-// and store this worker's stack descriptor in gs_stks; two workers whose
-// 16-byte stack blocks share a line pay for each other's calls. `sink`
-// keeps a byte flowing per iteration.
+// A thread program is an instance of the program with globals of its own.
+// At thread_spawn, every global the worker’s program uses is copied from
+// the spawning instance, in the same way as the arguments, and the worker
+// reads and writes its copies from then on. No global is shared: a worker
+// that increments a global increments its own copy.
+//
+// Because each instance owns its globals as plain data, reading or writing
+// one is a direct load or store — no TLS lookup, no lazy-init check — which
+// is why they beat thread locals in languages such as C++ or Rust, where
+// an access may pay for TLS resolution or initialization state.
 
 import std;
 import os;

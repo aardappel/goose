@@ -1116,22 +1116,32 @@ R"GSRT(/* The aligned allocators the chunks come from. Windows: the CRT's
    both, and tcc's small header surface declares calloc and free but not
    these, so tcc gets them here and the rest of the platform <malloc.h>.
    Elsewhere: C11's aligned_alloc, which stdlib.h declares and free takes
-   back. */
+   back. TCC compiles this header with -nostdinc (jit.h), so stdlib.h is
+   not there to declare aligned_alloc either: without a declaration here
+   it takes it for one returning int, and the pointer it hands back is
+   cut to 32 bits. */
 #if defined(_MSC_VER)
 #include <malloc.h>
-#elif defined(__TINYC__) && defined(_WIN32)
+#elif defined(__TINYC__)
+#if defined(_WIN32)
 void* _aligned_malloc(size_t, size_t);
 void _aligned_free(void*);
+#else
+void* aligned_alloc(size_t, size_t);
+#endif
 #endif
 
 )GSRT"
 R"GSRT(static void *gs_aligned_calloc(size_t n) {
-    size_t line = 64;
-    /* Whole lines: aligned_alloc's C11 contract wants a size multiple of
-       the alignment, and whole lines keep the chunk's last line its own
-       whatever the allocator packs beside it. */
-    size_t size = (n + line - 1) / line * line;
-    if (!size) size = line;
+  /* On Mac cache line is 128-byte size. On x86 64 bytes is the
+   * line size, but Intel's spatial prefetcher fetches pairs of lines, so
+   * 128‑byte alignment is the safe default for hot per‑thread data. */
+  size_t line = 128;
+  /* Whole lines: aligned_alloc's C11 contract wants a size multiple of
+     the alignment, and whole lines keep the chunk's last line its own
+     whatever the allocator packs beside it. */
+  size_t size = (n + line - 1) / line * line;
+  if (!size) size = line;
 #if defined(_WIN32)
     uint8_t *raw = (uint8_t *)_aligned_malloc(size, line);
 #else

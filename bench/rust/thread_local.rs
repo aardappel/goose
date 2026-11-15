@@ -1,4 +1,4 @@
-// The false_sharing.goose workload in idiomatic Rust: the same loop, the
+// The thread_local.goose workload in idiomatic Rust: the same loop, the
 // same recursion, the same sink, on std::thread. Goose's thread_fn gives
 // each worker its own copy of the program's globals on the heap;
 // the idiomatic Rust translation of "a worker owns its globals" is locals
