@@ -66,7 +66,10 @@ fn rotation<T>(from: vec3<T>, to: vec3<T>) -> quat<T> {
     let a = normalize(from);
     let b = normalize(to);
     // Half the rotation takes a to h, halfway between a and b, so q is
-    // (a x h, a . h): unit length however close to opposite they are.
+    // (a x h, a . h). w is |a + b| / 2, a . h for unit a and b, which keeps
+    // its precision near opposite where a . h loses it to a's and b's
+    // rounding off unit length; normalizing restores the length that
+    // rounding takes from a x h.
     let sum = a + b;
     if length_sq(sum) < 0.000000000001 {
         var axis = cross(vec3<T> { 0.0, 0.0, 1.0 }, a);
@@ -77,7 +80,7 @@ fn rotation<T>(from: vec3<T>, to: vec3<T>) -> quat<T> {
     }
     let h = normalize(sum);
     let v = cross(a, h);
-    quat<T> { v.x, v.y, v.z, dot(a, h) }
+    normalize(quat<T> { v.x, v.y, v.z, length(sum) * 0.5 })
 }
 
 // glm's quatLookAtRH: the rotation that turns -z toward `direction`, with y
