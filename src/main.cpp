@@ -1282,10 +1282,19 @@ static string ManPage() {
             auto line = string_view(text).substr(pos, e - pos);
             pos = e + 1;
             if (!line.empty() && (line[0] == '.' || line[0] == '\'')) s += "\\&";
-            for (auto c : line) {
+            for (size_t i = 0; i < line.size(); i++) {
+                auto c = line[i];
                 if (c == '\\') s += "\\e";
                 else if (c == '-') s += "\\-";
                 else s += c;
+                // troff takes `.`, `!` or `?` (past any closing `)]"'*`) followed by
+                // spaces mid-line as the end of a sentence, and groff 1.25's -w style
+                // warns about it, e.g. at "args...  What". `\&` keeps it a plain
+                // character and prints nothing.
+                if (c == '.' || c == '!' || c == '?') {
+                    auto j = line.find_first_not_of(")]\"'*", i + 1);
+                    if (j != string_view::npos && line[j] == ' ') s += "\\&";
+                }
             }
             s += '\n';
         }
