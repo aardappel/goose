@@ -450,7 +450,8 @@ which uses the empty-array declaration of §8.5. `sum` needs `default<T>()`;
 
 ```goose
 fn fill<T>(xs: T[:], v: T)
-fn copy_into<T>(dst: T[:], src: T[:])            // asserts equal lengths; memmove semantics
+fn copy_from<T>(dst: T[:], src: T[:])            // asserts equal lengths; memmove semantics
+fn copy_into<T>(dst: T[:], src: T[:])            // deprecated name of copy_from; a call warns
 fn reverse<T>(xs: T[:])
 fn sort<T>(xs: T[:])                             // by <
 fn sort<T, F>(xs: T[:])                          // by F(a, b); unstable, in place, no allocation

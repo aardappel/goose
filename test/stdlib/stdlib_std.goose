@@ -272,7 +272,7 @@ fn inplace() {
     fill(xs, 7);
     print(xs[0], xs[1], xs[2]);                                                // 777
     var d = [0, 0, 0];
-    copy_into(d, [4, 5, 6]);
+    copy_from(d, [4, 5, 6]);
     print(d[2]);                                                               // 6
     var r = [1, 2, 3, 4];
     reverse(r);

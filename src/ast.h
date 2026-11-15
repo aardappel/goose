@@ -1525,6 +1525,12 @@ struct SFunction {
     bool isrec = false;         // Declared with `recursive`.
     bool isinline = false;      // Declared with `inline`: inlined whatever its size (§7.13).
     bool issimd = false;        // Declared with `simd`: one version per instruction set (§7.12).
+    // Declared with `deprecated`: a direct call, and a use as a function
+    // value, warns (§7.15). The call through a value already named does not.
+    bool isdeprecated = false;
+    // The string after `deprecated`, empty when the declaration gives none:
+    // the warning's text after the colon.
+    string deprecatemsg;
     // Declared with `checkfree`, or nested in such a function: a bounds
     // check left in any copy of the body is an error (bce.h).
     bool checkfree = false;

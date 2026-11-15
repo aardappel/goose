@@ -259,6 +259,7 @@ module.exports = grammar({
       'simd',
       'inline',
       'recursive',
+      seq('deprecated', optional($.string_literal)),
       seq('export', optional($.string_literal)),
       seq('extern', optional($.string_literal)),
     ),

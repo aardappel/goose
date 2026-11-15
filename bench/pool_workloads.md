@@ -108,7 +108,7 @@ Most of the gap is one inlining decision. Clang inlines the builtin side's
 `new_string` into `put`, at an inline cost of 185 against its threshold of
 225, but not the library side's, which costs 370. The `alloc_slice` inlined
 into it brings seven abort calls (two length checks, the span check, two slice
-checks, growth and `copy_into`'s length assert), where the builtin's
+checks, growth and `copy_from`'s length assert), where the builtin's
 allocation brings two. Clang charges each call about 24: replaced by traps,
 the seven cost 205. Marking the abort functions cold changes nothing, and
 sharing one abort call per function still costs 280. Out of line, each of

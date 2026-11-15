@@ -8,6 +8,36 @@
 
 namespace goose {
 
+// A `deprecated` function (§7.15). The warning names it, and repeats the
+// declaration's string when it has one: `copy_into is deprecated: use copy_from`.
+inline void WarnDeprecatedFn(TypeCheck &tc, Node *at, SFunction *sf) {
+    if (!sf || !sf->isdeprecated) return;
+    auto msg = cat(sf->name, " is deprecated");
+    if (!sf->deprecatemsg.empty()) Append(msg, ": ", sf->deprecatemsg);
+    tc.Warn(at, msg);
+}
+
+// A direct call, `f(...)` or `a.f(...)`, of one. A call through a function
+// value warns where that value is named (WarnDeprecatedValue), not here:
+// the callee's name is the variable's, not the function's.
+inline void WarnDeprecatedCall(TypeCheck &tc, Call *c, string_view name, SFunction *sf) {
+    if (!sf || !sf->isdeprecated) return;
+    auto direct = false;
+    if (auto id = Is<Ident>(c->callee)) direct = id->name == name;
+    else if (Is<Dot>(c->callee)) direct = true;
+    if (direct) WarnDeprecatedFn(tc, c, sf);
+}
+
+// Naming a deprecated function as a value. A set warns only when every
+// overload is deprecated, so a live overload of the same name stays quiet
+// until a call selects the deprecated one.
+inline void WarnDeprecatedValue(TypeCheck &tc, Node *at, const vector<SFunction *> &fns) {
+    if (fns.empty()) return;
+    for (auto sf : fns)
+        if (!sf->isdeprecated) return;
+    WarnDeprecatedFn(tc, at, fns[0]);
+}
+
 // ------------------------------------------------------------------
 // Calls: builtin members, builtins, UFCS, overload resolution with
 // generic inference (§7.1, §7.7), and case-function tag dispatch (§8.2).
@@ -478,6 +508,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     c->spec = spec;
     CheckCalleeRelative(c, spec, argvals);
     CalleesReturn({ spec }, argsreach);
+    WarnDeprecatedCall(*this, c, name, best.sf);
     return CallResult(c, spec, argvals);
 }
 
@@ -1348,6 +1379,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
     }
     lastcallrets = results;
+    for (auto &mi : matches) WarnDeprecatedCall(*this, c, name, mi.sf);
     return results.empty() ? VoidVal() : results[0];
 }
 

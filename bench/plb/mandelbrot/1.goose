@@ -48,7 +48,7 @@ inline fn mbrot(cr: f64[BLOCK], ci: f64) -> u8[BLOCK / 8] {
 simd fn render_row(out: u8[:], xs: f64[BLOCK][:], ci: f64) {
     assert(out.len == xs.len * (BLOCK / 8));
     for cr, i in xs {
-        copy_into(out[i * (BLOCK / 8)..(i + 1) * (BLOCK / 8)], mbrot(cr, ci));
+        copy_from(out[i * (BLOCK / 8)..(i + 1) * (BLOCK / 8)], mbrot(cr, ci));
     }
 }
 
@@ -173,7 +173,7 @@ fn main() {
     row.resize(xs.len * (BLOCK / 8), 0);
     for y in size {
         render_row(row, xs, y * inv - 1.0);
-        copy_into(image[y * row_bytes..(y + 1) * row_bytes], row[..row_bytes]);
+        copy_from(image[y * row_bytes..(y + 1) * row_bytes], row[..row_bytes]);
     }
     var out: u8[>..] = [];
     format(out, "P4\n", size, " ", size, "\n");

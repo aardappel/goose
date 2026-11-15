@@ -81,6 +81,15 @@ test('all builtin calls and namespace declarations highlight', async () => {
     assert.ok(has(alias, 'image', 'entity.name.namespace'));
 });
 
+test('deprecated is a modifier only before a function declaration', async () => {
+    const [decl] = await tokenize('deprecated "use copy_from" fn copy_into() {}');
+    assert.ok(has(decl, 'deprecated', 'storage.modifier'));
+    assert.ok(has(decl, 'fn', 'storage.type.function'));
+    assert.ok(has(decl, 'copy_into', 'entity.name.function'));
+    const [name] = await tokenize('let deprecated = 1;');
+    assert.ok(!has(name, 'deprecated', 'storage.modifier'));
+});
+
 test('export modifier and exported function declaration highlight', async () => {
     const [line] = await tokenize('export fn CUSTOM_FUNCTION_0() -> const u8[:] {');
     assert.ok(has(line, 'export', 'storage.modifier.goose'));

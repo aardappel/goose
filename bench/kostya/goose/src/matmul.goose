@@ -148,7 +148,7 @@ fn matmul_parallel(pool: slice_pool<f64>&, a: (f64[:])[:], b: (f64[:])[:], num_t
         let part = qget<Columns>();
         let part_rows = rows_of(part.cells, n, part.last - part.first);
         for i in n {
-            copy_into(c[i][part.first..part.last], part_rows[i]);
+            copy_from(c[i][part.first..part.last], part_rows[i]);
         }
     }
 

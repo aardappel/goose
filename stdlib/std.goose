@@ -632,9 +632,16 @@ fn concat<T>(a: T[:], b: T[:]) -> T[>..] {
 fn fill<T>(xs: T[:], v: T) { for i in xs.len { xs[i] .= v; } }
 
 // Element by element, first to last; the lengths must agree.
-fn copy_into<T>(dst: T[:], src: T[:]) {
+// `dst.copy_from(src)` names the direction the call takes.
+fn copy_from<T>(dst: T[:], src: T[:]) {
     assert(dst.len == src.len);
     for i in dst.len { dst[i] .= src[i]; }
+}
+
+// The same copy under the old name. `dst.copy_into(src)` reads as a copy
+// out of dst, so a call warns. The arguments are unchanged: destination first.
+deprecated "use copy_from" fn copy_into<T>(dst: T[:], src: T[:]) {
+    copy_from(dst, src);
 }
 
 fn reverse<T>(xs: T[:]) {
@@ -837,8 +844,8 @@ fn sort<T, F>(xs: T[:]) {
 // form, and the merge leaves its own verdict in it for the next one.
 fn sort_merge<T, F>(l: T[:], r: T[:], d: T[:], chaotic: bool&) {
     if !F(r[0], l[l.len - 1]) {
-        copy_into(d[..l.len], l);
-        copy_into(d[l.len..], r);
+        copy_from(d[..l.len], l);
+        copy_from(d[l.len..], r);
         return;
     }
     var a = 0;
@@ -873,9 +880,9 @@ fn sort_merge<T, F>(l: T[:], r: T[:], d: T[:], chaotic: bool&) {
     }
     chaotic = switches * 4 > k;
     if a < l.len {
-        copy_into(d[k..], l[a..]);
+        copy_from(d[k..], l[a..]);
     } else {
-        copy_into(d[k..], r[b..]);
+        copy_from(d[k..], r[b..]);
     }
 }
 
@@ -933,7 +940,7 @@ fn stable_sort<T, F>(xs: T[:]) {
                 end = ends[i + 1];
                 sort_merge(src[start..mid], src[mid..end], dst[start..end], chaotic) { a, b => F(a, b) };
             } else {
-                copy_into(dst[start..end], src[start..end]);
+                copy_from(dst[start..end], src[start..end]);
             }
             ends[w] = end;
             w += 1;

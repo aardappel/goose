@@ -691,6 +691,13 @@ inline void DumpFields(string &s, const vector<Field> &fields, int ind) {
 }
 
 inline void FnDecl::Dump(string &s, int ind) const {
+    if (sf->isdeprecated) {
+        s += "deprecated ";
+        if (!sf->deprecatemsg.empty()) {
+            EscapeString(s, sf->deprecatemsg, '"');
+            s += " ";
+        }
+    }
     if (sf->isexport) {
         s += "export ";
         if (sf->cname != sf->name) { EscapeString(s, sf->cname, '"'); s += " "; }

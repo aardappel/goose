@@ -1,5 +1,5 @@
-// error: call copy_into stores a reference rooted at bi through its parameter dst, whose argument may point into outer
-// copy_into stores views read out of src into dst, which may each be outer
+// error: call copy_from stores a reference rooted at bi through its parameter dst, whose argument may point into outer
+// copy_from stores views read out of src into dst, which may each be outer
 // or inner: what inner holds, a reference to bi, may land in outer, which
 // bi does not outlive (§9.2).
 import std;
@@ -15,7 +15,7 @@ fn main() {
         let c = outer.len > 0;
         let s: (B&)[:] = if c { inner } else { outer };
         let d: (B&)[:] = if c { outer } else { inner };
-        copy_into(d, s);
+        copy_from(d, s);
     }
     print(outer[0].v);
 }

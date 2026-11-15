@@ -37,8 +37,8 @@ fn generate(img: u8[>..]&) {
 // sliced once per output row, and the inner loop indexes those.
 fn blur(src: u8[:], dst: u8[:]) {
     assert(src.len == W * H && dst.len == W * H);
-    copy_into(dst[..W], src[..W]);
-    copy_into(dst[(H - 1) * W..], src[(H - 1) * W..]);
+    copy_from(dst[..W], src[..W]);
+    copy_from(dst[(H - 1) * W..], src[(H - 1) * W..]);
     for y in 1..H - 1 {
         let a = src[(y - 1) * W..y * W];
         let b = src[y * W..(y + 1) * W];
