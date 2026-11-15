@@ -459,19 +459,7 @@ compiler needs macOS 13.3 or later. macOS keeps a downloaded archive's files
 from running until `xattr -dr com.apple.quarantine` is run on the unpacked
 directory.
 
-On macOS, Homebrew installs the compiler too:
-
-```bash
-brew install goose-lang
-```
-
-Homebrew needs the Xcode command line tools as well, so that build runs
-programs in-process and with `goose build` with nothing else to install. It
-leaves out the graphics, audio, ui and physics packages: the first time a
-program imports one, it is fetched and built into `~/.goose`, which needs
-cmake too (`brew install cmake`; git comes with the command line tools). The
-formula's `goose` command conflicts with the unrelated `goose` and
-`block-goose-cli` formulae, which install one too.
+On macOS, a recent release is also on Homebrew: `brew install goose-lang`.
 
 ## Build and run
 
