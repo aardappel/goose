@@ -663,6 +663,11 @@ struct Roots {
 // (Val), a location (TypeCheck::LVal) and the binding a reference variable
 // holds (VarDef::ref) all carry one.
 struct Prov : Roots {
+    // The own handle this value was read out of, or null (§5.5): the consume
+    // of the handle looks for the views still bound from it (OwnShrunkAt).
+    // No place-rule reads it: the roots stay the pointee's real provenance,
+    // and a rebinding of the variable overwrites this field.
+    VarDef *ownview = nullptr;
     bool writable = false;       // Writable provenance (§9.5).
     // A `bytes_of` view (docs/design/serialization.md): a u8 slice over the
     // element region of an array of some other type. The shrink scans of §5.1

@@ -215,6 +215,7 @@ inline void TypeCheck::ConsumeVar(VarDef *vd, Node *at) {
     o.claim = 0;
     o.at = at;
     moved();
+    OwnShrunkAt(at, vd, "consume");
 }
 
 // Whether n names storage that is no tracked variable of its own: a field,
@@ -271,6 +272,29 @@ inline void TypeCheck::ConsumeOwn(Node *n, bool pointee) {
     auto &f = cur.ownfresh;
     f.erase(remove(f.begin(), f.end(), n), f.end());
     if (inner != n) f.erase(remove(f.begin(), f.end(), inner), f.end());
+}
+
+// The consume of the handle is a shrink (docs/design/ownership.md §4.8, and
+// §5.5 of the spec): every plain view rooted at the handle -- bound from it
+// (RefProvOf), or through a borrow of what it points at, which carries the
+// same root -- must have met its last use before the consume, as for a
+// shrink of a grown array (§5.2's UsedAfter). The release frees the slot for
+// its reuse, and a take or replace hands the value on: what the view names
+// reads stale bytes or belongs to the taker then. The scan is the one the
+// shrink rules run (ShrinkScanVars), over the variables in scope; views in
+// holders cannot exist, the store rule keeps them out (FitsPlain).
+inline void TypeCheck::OwnShrunkAt(const Node *at, VarDef *vd, string_view op) {
+    // A struct value that owns fields is no handle: its borrows answer for
+    // its fields (OwnPath), not for the value's views.
+    if (!ownused || deferbodies || !reachable || !vd->type || !vd->type->oq) return;
+    ShrinkScanVars([&](VarDef *v) {
+        if (v == vd || v->owned || v->componentowner) return;
+        if (!v->type || !IsRefOrSlice(v->type)) return;
+        if (!v->refrootknown || v->ref.ownview != vd || !UsedAfter(v)) return;
+        Error(at, cat("cannot ", op, " ", vd->name, " while ", v->name,
+                      " is still used: it may hold a view of what the consume of ",
+                      vd->name, " frees or hands on (§5.5)"));
+    });
 }
 
 // A local array whose elements hold own values, or a root struct with a
@@ -421,6 +445,7 @@ inline void TypeCheck::OwnScopeEnd(const Scope &s, int scopeidx) {
             if (v->owned && v->own.state == OS_CLAIMED && v->own.claim == s.serial) {
                 v->own.state = OS_CONSUMED;
                 v->own.claim = 0;
+                OwnShrunkAt(v->own.at, v, "release");
             }
 }
 
@@ -434,6 +459,7 @@ inline void TypeCheck::RunOwnClaims(int fromscope) {
             if (v->owned && v->own.state == OS_CLAIMED && v->own.claim == scopes[i].serial) {
                 v->own.state = OS_CONSUMED;
                 v->own.claim = 0;
+                OwnShrunkAt(v->own.at, v, "release");
             }
     }
 }
@@ -622,6 +648,7 @@ inline Val TypeCheck::CheckTake(Call *c, vector<Node *> &args) {
         base->own.state = OS_EMPTY;
         base->own.at = args[0];
         base->own.empty = OwnLeafMask(base->type);
+        OwnShrunkAt(args[0], base, "take");
     } else if (tracked) {
         if (deferbodies && Depth(base) <= DeferDepth())
             Error(c, cat("a defer claims a whole own variable, not a field of one: take ",
@@ -682,6 +709,7 @@ inline Val TypeCheck::CheckReplace(Call *c, vector<Node *> &args) {
             Error(c, cat(base->name, " is released by the defer", OwnWhere(base->own.at),
                          ": the value replace returns would be released as well"));
         base->own = OwnFlow {};
+        OwnShrunkAt(args[0], base, "replace");
     } else if (!lv.writable && !(lv.var && lv.var->owned)) {
         Error(c, cat("cannot replace ", ExprStr(args[0]), " through a non-writable value "
                      "(const, or a read-only instantiation, §9.5)"));

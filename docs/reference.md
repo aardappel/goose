@@ -2622,6 +2622,24 @@ loop may not consume a handle its next iteration would find gone, and a call
 that may leave by a `return … from` ([section 20](#return--from)) may not be
 made while an unclaimed handle is held: claim it with a `defer` first.
 
+**Views.** A plain reference or slice read out of a handle may only be
+used before the handle it was read from is consumed. Usage after is an
+error at the consume, naming it:
+
+```goose
+import slice_pool;
+var bytes = slice_pool<u8> {};
+fn main() {
+    let s: own u8[:] = bytes.take_copy("hello");
+    let r: u8[:] = s;
+    bytes.release(s);    // error: cannot consume s while r is still used
+    print(r[..]);
+}
+```
+
+Such a view lives in a variable, is passed down or returned, and is never
+stored into a field, an element, a global, or any other storage.
+
 **Fields.** A field may own. Its type is `own T?` or `own T[:]`, the two own
 types with an empty value (null, and the empty run), or a struct of such
 fields; a struct holding own fields is fixed-size and is itself not copied.

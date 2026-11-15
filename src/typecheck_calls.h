@@ -3986,6 +3986,17 @@ inline void TypeCheck::CheckReturn(Return *r) {
         }
         RecordReturn(tspec, vals, r);
     }
+    // A defer's claim consumes what it releases at every exit of its scope,
+    // this return included (§4.3): a view of a claimed handle returned here
+    // would read stale bytes in the caller (§5.5).
+    if (ownused && reachable && tf == (int)frames.size() - 1)
+        for (auto &v : vals) {
+            if (v.isnull || v.emptyarr) continue;
+            if (!v.ownview || v.ownview->own.state != OS_CLAIMED) continue;
+            Error(r, cat("what this return hands on is a view of ", v.ownview->name,
+                         ", which the defer", OwnWhere(v.ownview->own.at),
+                         " releases as it exits"));
+        }
     // The return leaves every scope of its function, and of the calls
     // between here and it: nothing they declared may still hold an own
     // value, but for a trusted fn's own parameters at its own return.

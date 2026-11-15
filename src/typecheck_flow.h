@@ -173,6 +173,15 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
     return GrowShrinkTaint(p, t, reach);
 }
 
+// The tail the never-stored rules share (§5.2's grow-shrink arrays, §5.5's
+// own handles): what the reference may point at, or was read from, goes away
+// or is handed on, and only a variable's binding, an argument or a result is
+// a place where the consume or shrink is visible to judge the view.
+inline string TypeCheck::NeverStoredTail(string_view rule) {
+    return cat(": such a reference lives in a variable, is passed down or returned, and "
+               "is never stored (", rule, ")");
+}
+
 // Why a reference rooted at root, or a holder of one, is never stored: it
 // may point into a grow-shrink array (§5.2), or it is a back edge's result,
 // which may point anywhere, as may a parameter whose class stands for one.
@@ -181,8 +190,7 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
 // may. `reach`: root only bounds the reference, and the array is one root
 // leads to (GrowShrinkTaint).
 inline string TypeCheck::NeverStoredError(VarDef *root, bool may, bool reach) {
-    auto stored = ": such a reference lives in a variable, is passed down or returned, and "
-                  "is never stored (§5.2)";
+    auto stored = NeverStoredTail("§5.2");
     if (reach)
         return cat("storing a reference that may point into a grow-shrink array ",
                    ReachedThroughStr(root), stored);
@@ -191,6 +199,15 @@ inline string TypeCheck::NeverStoredError(VarDef *root, bool may, bool reach) {
                    root->name, " may", stored);
     return cat("storing a reference ", may ? "that may point " : "", "into ", root->name,
                ", which holds a grow-shrink array", stored);
+}
+
+// The store rule for a view read out of an own handle (§5.5, §4.8 of the
+// design note): what the view names dies with the handle's consume or moves
+// with it, and a slot holding the view would outlive that, reading what the
+// slot next holds.
+inline string TypeCheck::OwnViewStoredError(const Val &v) {
+    return cat("storing a view read from own handle ", v.ownview->name,
+               NeverStoredTail("§5.5"));
 }
 
 // "reached through p's references": where the grow-shrink array a root that
@@ -564,6 +581,18 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
                                     !vd->type->cq, true);
         if (cands.Any([](const RootAlt &a) { return a.root != nullptr; })) p.alts = cands.alts;
     }
+    // A plain view read out of an own handle names the handle it was read
+    // from (§4.8 of the design note), as &x is rooted at x: the consume of
+    // the handle looks for it there (OwnShrunkAt). The field is no place
+    // (§9.2): the alternatives already here keep the pointee's real
+    // provenance, the pool owning its slots, and no rule but the binding
+    // (BindProv, AddBinding) and that consume reads it. A struct value that
+    // owns fields is no handle: its borrows answer for its fields
+    // (VarDef::ownalias); nor is a relative link one: its value is the pool
+    // reference it stands for, rooted where §3.9 keeps it.
+    if (vd->owned && !deferbodies && vd->type && vd->type->oq && IsRefOrSlice(vd->type) &&
+        !IsRelRef(vd->type))
+        p.ownview = vd;
     return p;
 }
 
@@ -3293,7 +3322,10 @@ inline bool TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv,
     }
     // A rebind to other storage keeps the lifetime bound but means the
     // variable no longer names one array: a read inside a loop this rebind
-    // is in sees both on the next pass (CheckLoopPasses).
+    // is in sees both on the next pass (CheckLoopPasses). A value read out
+    // of an own handle (§5.5) names it to the binding; a rebind to another
+    // handle takes that one instead, which ends the view the binding had.
+    if (rv.ownview) vd->ref.ownview = rv.ownview;
     return AddBinding(vd, rv) || changed;
 }
 

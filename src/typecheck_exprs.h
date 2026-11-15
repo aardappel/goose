@@ -1133,6 +1133,10 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                       "own value, or a trusted fn, makes one");
         return false;
     }
+    // The handle moves whole into a destination that owes it: no view is
+    // read out of it here, and the mark for the views it spawned (§5.5)
+    // rides no further, its consume having been judged where it began.
+    v.ownview = nullptr;
     if (v.type->oq) v.type = ast.UnownedOf(v.type);
     if (!FitsPlain(v, ast.UnownedOf(dt))) return false;
     v.type = dt;
@@ -1225,6 +1229,17 @@ inline bool TypeCheck::FitsPlain(Val &v, TypeExpr *dt) {
         auto spec = CurRealFrame().spec;
         auto ownvar = curdst.varbind && curdst.roots.Exact() &&
                       curdst.roots.Root()->ownerspec == spec;
+        // A view read out of an own handle (§5.5, §4.8 of the design note)
+        // is never stored, as its handle's consume frees or hands on what it
+        // names: it lives in a variable of this activation (ownvar), is
+        // passed down or returned, and a slot holding it would outlive the
+        // consume and read what the slot next holds. An own destination
+        // cleared the mark at FitsAt: the whole handle moving in is the
+        // consume, and the views it spawned were its to judge.
+        if (v.ownview && !v.pointee && !ownvar) {
+            fitfail = OwnViewStoredError(v);
+            return false;
+        }
         if (!CycleStorable(roots) && spec && !ownvar && (spec->incycle || spec->sf->isrec)) {
             // A threaded parameter class may be stored while it stays
             // threaded, and only where every activation's store lands in
