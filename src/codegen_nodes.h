@@ -735,6 +735,12 @@ inline void Call::CgAny(CodeGen &cg, const Dst &d) {
         cg.GenAdtAdapted(from, exprtype, d, line, [&](const Dst &nd) { cg.GenCallAs(this, from, nd); });
         return;
     }
+    // A result of another array representation bound for a static-capacity
+    // limited array is copied in under its capacity check, as any other
+    // value is (LeafAny). The checker types a call stored there as the
+    // limited array itself, but a call an inlined body returns keeps its
+    // callee's type, a u8[>..] say, whose result has no lvalue to land in.
+    if (d.k == DK_LVALUE && !d.pool && cg.GenIntoLimited(this, d.t, d.s, true)) return;
     auto rets = cg.EmitCall(this, d);
     // A fixed-value result wires into the lvalue here; a channel-passed one
     // was written in place. A varint-typed one is the i64 it will encode to,
