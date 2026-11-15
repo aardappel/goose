@@ -6723,12 +6723,10 @@ one. NEON has no `movemask`. A block's 0x00/0xff result is narrowed by
 `shrn` (each 16-bit lane shifted right by 4, keeping 8 bits) to one 64-bit
 word holding a nibble per byte, so the first match is its trailing zero
 count divided by 4. `GS_BMASK`, `GS_BMASK_DROP` and `GS_BMASK_FIRST` stand
-for these steps, and the loops are written once for both targets. On
-AArch64 `find_any` also first steps 64 bytes at a time, testing the four
-blocks' results together (`GS_ANY_WIDE`). Without that step, a long search
-for a single rare byte ran at about 80% of the speed of macOS's `memchr`;
-with it, the search is 1.25x faster than `memchr`, and 1.8-4x faster than
-the byte loop for other sets (SSH.log, Apple M3 Max). MSVC for ARM64 and
+for these steps, and the loops are written once for both targets. On an
+Apple M3 Max the search runs at 1.8-4x the byte loop's speed for the
+compare kinds and the tables (SSH.log); a long search for a single rare
+byte runs at about nine-tenths of macOS's `memchr`. MSVC for ARM64 and
 big-endian AArch64 keep the byte loop.
 
 Everything else, TinyCC included, tests one byte at a time, and searches for

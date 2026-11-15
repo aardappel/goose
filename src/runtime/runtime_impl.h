@@ -1433,7 +1433,7 @@ static GS_INLINE uint8x16_t gs_bsm_tables(const gs_bsm *m, uint8x16_t x) {
     uint8x16_t low4 = vdupq_n_u8(0x8f);
     uint8x16_t lo = vqtbl1q_u8(m->a, vandq_u8(x, low4));
     uint8x16_t hi = vqtbl1q_u8(m->b, vandq_u8(veorq_u8(x, vdupq_n_u8(0x80)), low4));
-    uint8x16_t bit = vqtbl1q_u8(m->c, vandq_u8(vshrq_n_u8(x, 4), vdupq_n_u8(7)));
+    uint8x16_t bit = vqtbl1q_u8(m->c, vshrq_n_u8(x, 4));
     return vceqq_u8(vandq_u8(vorrq_u8(lo, hi), bit), bit);
 }
 
@@ -1451,37 +1451,16 @@ static GS_INLINE uint64_t gs_bmask_neon(uint8x16_t v) {
 #define GS_BMASK_DROP(m, k) ((m) >> (4 * (k)))
 #define GS_BMASK_FIRST(m) (__builtin_ctzll(m) >> 2)
 
-/* Before the block loop of a search, a loop over 64 bytes at a time, whose
-   four results are tested together: a long search for a byte that is rare
-   in the text otherwise ran at four-fifths of the speed of memchr. */
-#define GS_ANY_WIDE(TEST)                                                              \
-    for (; i + 64 <= n; i += 64) {                                                     \
-        uint8x16_t t0 = TEST(GS_LOAD(p + i)), t1 = TEST(GS_LOAD(p + i + 16));          \
-        uint8x16_t t2 = TEST(GS_LOAD(p + i + 32)), t3 = TEST(GS_LOAD(p + i + 48));     \
-        if (GS_BMASK(vorrq_u8(vorrq_u8(t0, t1), vorrq_u8(t2, t3)))) {                  \
-            if ((k = GS_BMASK(t0))) return i + GS_BMASK_FIRST(k);                      \
-            if ((k = GS_BMASK(t1))) return i + 16 + GS_BMASK_FIRST(k);                 \
-            if ((k = GS_BMASK(t2))) return i + 32 + GS_BMASK_FIRST(k);                 \
-            k = GS_BMASK(t3);                                                          \
-            return i + 48 + GS_BMASK_FIRST(k);                                         \
-        }                                                                              \
-    }
-
 #else
 static void gs_scan_init(void) {}
 #endif
 
 #if defined(GS_SCAN_SSE2) || defined(GS_SCAN_NEON)
-#ifndef GS_ANY_WIDE
-#define GS_ANY_WIDE(TEST)
-#endif
-
 /* The block loop of a search over n >= 16 positions for the bytes TEST
    finds in a block. */
 #define GS_ANY_LOOP(TEST)                                                              \
     int64_t i = 0;                                                                     \
     gs_bmask k;                                                                        \
-    GS_ANY_WIDE(TEST)                                                                  \
     for (; i + 16 <= n; i += 16) {                                                     \
         k = GS_BMASK(TEST(GS_LOAD(p + i)));                                            \
         if (k) return i + GS_BMASK_FIRST(k);                                           \

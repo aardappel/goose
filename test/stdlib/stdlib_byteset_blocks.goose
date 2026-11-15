@@ -2,9 +2,9 @@
 // position of searches 16 to 79 bytes long, over a filler that is not in the
 // set, compared with plain loops. Where stdlib_byteset.goose searches
 // random text, this reaches each byte's path through the block tests (every
-// lane of a block, each block of a wider step, the overlapping last block,
-// the tables' lookups on either side of 0x80), for sets of every kind and
-// their complements, from two starts.
+// lane of a block, the overlapping last block, the tables' lookups on
+// either side of 0x80), for sets of every kind and their complements, from
+// two starts.
 import std;
 
 fn plain_any(s: u8[:], m: bool[256]&) -> i64 {
@@ -83,7 +83,7 @@ fn main() {
     }
     print("kinds:", kinds);
 
-    // find_any's 64-byte steps (on AArch64) start at 64; find_pair has none.
+    // Lengths run from one block to four plus a part block.
     let lens = [16, 17, 31, 32, 33, 47, 64, 79];
     let starts = [0, 3];
     var anys = 0;
