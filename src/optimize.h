@@ -850,24 +850,54 @@ inline Node *Optimizer::TryInline(Call *c) {
     // the single-pass design allows, and only over fresh nodes.
     OptBlock(body);
     // Trivial results unwrap to plain expressions — but only when the value's
-    // type survives as-is (a reference return decayed at the call site, or an
-    // ADT result received in its other mode, must keep the InlineBlock, whose
-    // exprtype records the type it converts to).
-    auto unwrapok = [&](Node *v) {
-        if (SameType(v->exprtype, c->exprtype)) return true;
-        auto a = v->exprtype, b = c->exprtype;
-        return a && b && a->kind == b->kind && a->kind != TY_REF && a->kind != TY_ENUM;
+    // type survives as-is or the call site's implicit numeric conversion can
+    // be restored in a node of its own. The InlineBlock's exprtype records
+    // the type the call site checked the result as, which may be wider than
+    // the callee's return type: implicit integer widening, f32 to f64, a
+    // reference return decayed at the call site, or an ADT result received in
+    // its other mode. Unwrapping a numeric tail without that conversion would
+    // lose it: codegen takes an operator's type from the operand's exprtype,
+    // so `narrow_u8() + wide` would compute at u8 after inlining.
+    auto restored = [&](Node *v) -> Node * {
+        if (SameType(v->exprtype, c->exprtype)) return v;
+        auto from = v->exprtype, to = c->exprtype;
+        if (!from || !to) return nullptr;
+        // Only conversions the checker performs implicitly (§6.3): integer
+        // widening to a signed type of any width or an unsigned one of the
+        // same signedness, and f32 to f64. Never any two types of one kind.
+        auto ok = from->kind == TY_INT && to->kind == TY_INT && !to->ix &&
+                  TypeCheck::ImplicitInt(from->intstorage, to->intstorage);
+        if (!ok && from->kind == TY_FLT && to->kind == TY_FLT && IsF32(from) && !IsF32(to))
+            ok = true;
+        if (!ok) return nullptr;
+        // A literal retypes in place, so a constant result still folds at the
+        // call site (TryInline returns it to an enclosing Binary::Opt).
+        if (auto i = Is<IntLit>(v); i && !i->fixedtype && to->kind == TY_INT) {
+            auto n = ast.New<IntLit>(i->line, i->val, i->text, i->uns);
+            n->exprtype = to;
+            return n;
+        }
+        if (auto f = Is<FltLit>(v); f && !f->fixedtype && to->kind == TY_FLT) {
+            // The source was rounded at f32 before any widening to f64.
+            auto n = ast.New<FltLit>(f->line, IsF32(from) ? (double)(float)f->val : f->val);
+            n->exprtype = to;
+            return n;
+        }
+        // The conversion wraps the value as computed at its own type, so an
+        // f32 tail rounds at f32 before widening to f64.
+        auto a = ast.New<AsCast>(v->line, v, to, false);
+        a->totype = to;
+        a->exprtype = to;
+        return a;
     };
-    if (body->stmts.empty() && body->tail && !ReturnsTo(body->tail, K->sf) &&
-        unwrapok(body->tail))
-        return body->tail;
+    if (body->stmts.empty() && body->tail && !ReturnsTo(body->tail, K->sf))
+        if (auto v = restored(body->tail)) return v;
     if (body->stmts.empty() && !body->tail) return EmptyBlock(c);
     if (body->stmts.size() == 1 && !body->tail) {
         if (auto r = Is<Return>(body->stmts[0]); r && r->target == K->sf) {
             if (r->vals.empty()) return EmptyBlock(c);
-            if (r->vals.size() == 1 && !ReturnsTo(r->vals[0], K->sf) &&
-                unwrapok(r->vals[0]))
-                return r->vals[0];
+            if (r->vals.size() == 1 && !ReturnsTo(r->vals[0], K->sf))
+                if (auto v = restored(r->vals[0])) return v;
         }
     }
     return ib;
