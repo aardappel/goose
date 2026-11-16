@@ -3590,6 +3590,17 @@ R"GSRT(    /* Publish completion only after all Goose storage has been released.
 }
 
 )GSRT"
+R"GSRT(/* The native stack a worker thread reserves: as much as the main thread
+   gets by default on macOS and Linux. The system's default for a thread
+   is far less on some (512 KB on macOS, 1 MB on Windows), which a few
+   native frames holding large fixed values can exhaust: a TLS handshake
+   on a worker thread does. Reserved, not committed: pages are touched as
+   the stack grows. A system default above this is kept. */
+#ifndef GS_THREAD_STACK
+#define GS_THREAD_STACK ((size_t)8 << 20)
+#endif
+
+)GSRT"
 R"GSRT(GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
                                void (*release)(void), void (*entry)(uint8_t *),
                                const void *args, int64_t argsize, int contained) {
@@ -3615,7 +3626,8 @@ R"GSRT(GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *
     gs_threads = t;
     int failed;
     #ifdef _WIN32
-        HANDLE handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
+        HANDLE handle = CreateThread(NULL, GS_THREAD_STACK, gs_thread_main, t,
+                                      STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
         failed = handle == NULL;
         /* Closing the handle does not stop the worker. Completion is tracked
            above, so callers never need to retain or join a native handle. */
@@ -3625,7 +3637,10 @@ R"GSRT(GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *
         pthread_attr_t attr;
         failed = pthread_attr_init(&attr);
         if (!failed) {
+            size_t size = 0;
             failed = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            if (!failed && !pthread_attr_getstacksize(&attr, &size) && size < GS_THREAD_STACK)
+                failed = pthread_attr_setstacksize(&attr, GS_THREAD_STACK);
             if (!failed) failed = pthread_create(&handle, &attr, gs_thread_main, t);
             pthread_attr_destroy(&attr);
         }

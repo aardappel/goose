@@ -219,6 +219,7 @@ The `-D` macros that the runtime reads, which configure a program:
 | `GS_DEBUG` | 0 | 1 is what `--debug` sets: the overflow, range and tag checks. |
 | `GS_STACK_STATS` | 0 | 1 makes each thread program report its data stack use on stderr as it ends. |
 | `GS_STACK_RESERVE` | 2 GB | The address space reserved per data stack, which `--stack-reserve` sets. |
+| `GS_THREAD_STACK` | 8 MB | The native stack each worker thread reserves, where the system's default is less (512 KB on macOS, 1 MB on Windows). |
 | `GS_STACK_GAP` | 1 MB | The unmapped gap after each data stack, which makes runaway growth abort. |
 | `GS_STACK_BUDGET` | 32 TB | The address space all thread programs together are meant to take; `hardware_threads()` is capped at what it has room for. |
 | `GS_MAX_STACKS` | 1024 | The most data stacks one thread program may use. A program that needs more fails to compile. |

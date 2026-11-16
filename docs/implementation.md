@@ -6555,7 +6555,10 @@ object, `gs_rt_start` refuses to start one while another's regions are
 live, rather than forget them.
 
 **Native stacks.** Recursion consumes only the native call stack (spec
-§7.8), whose size is set when its thread starts. Running out of it ends the
+§7.8), whose size is set when its thread starts. A worker reserves
+`GS_THREAD_STACK` (8 MB) where the system's default is less, as on macOS
+(512 KB) and Windows (1 MB), so that a worker has the stack a main thread
+has; it is address space, committed as the stack grows. Running out of it ends the
 program with `goose runtime error: native call stack overflow` and exit
 status 1, as a data stack overrun does. The thread of every thread program
 prepares for this as it starts (`gs_native_stack_init`, called from
