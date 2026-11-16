@@ -118,8 +118,14 @@ function(goose_builtin_package pkgname source ref)
                 set(url "https://${source}")
             endif()
         endif()
+        # Like IsCommitHash in src/packages.h: commit pins need the full history.
+        set(shallow TRUE)
+        string(LENGTH "${ref}" ref_length)
+        if(ref MATCHES "^[0-9a-fA-F]+$" AND ref_length GREATER_EQUAL 7 AND ref_length LESS_EQUAL 40)
+            set(shallow FALSE)
+        endif()
         FetchContent_Declare(goose_pkg_${pkgname}
-            GIT_REPOSITORY "${url}" GIT_TAG "${ref}" GIT_SHALLOW TRUE GIT_SUBMODULES_RECURSE TRUE
+            GIT_REPOSITORY "${url}" GIT_TAG "${ref}" GIT_SHALLOW ${shallow} GIT_SUBMODULES_RECURSE TRUE
             SOURCE_DIR "${CMAKE_BINARY_DIR}/pkg/src/${pkgname}/${ref}")
         FetchContent_GetProperties(goose_pkg_${pkgname})
         if(NOT goose_pkg_${pkgname}_POPULATED)
