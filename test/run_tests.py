@@ -2661,6 +2661,17 @@ def main():
             r.fail("deep expressions", str(e))
     r.show_task(deep_expressions)
 
+    def main_stack():
+        from main_stack import check_main_stack
+        try:
+            check_main_stack(exe, cc, gendir)
+            where = "run" + (" and built" if cc else "")
+            limit = " with the soft stack limit lowered to 8 MB" if sys.platform.startswith("linux") else ""
+            r.ok(f"main stack: a recursion of about 12 MB, {where}{limit}")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("main stack", str(e))
+    r.show_task(main_stack)
+
     def diagnostics_json():
         from diagnostics_json import check_diagnostics_json
         try:

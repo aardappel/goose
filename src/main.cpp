@@ -2078,7 +2078,14 @@ int RunOnCompilerStack(const function<int()> &fn) {
 
 }  // namespace goose
 
+// Defined by the runtime (runtime_impl.h). Linux raises the soft stack
+// limit; everywhere else it does nothing.
+extern "C" void gs_raise_main_stack(void);
+
 int main(int argc, char **argv) {
+    // Before anything that runs on this thread, including a JIT program,
+    // whose runtime records the stack bounds from the limit in force then.
+    gs_raise_main_stack();
     #ifdef _MSC_VER
         // Asserts and aborts go to stderr and exit, never a dialog, so failing
         // debug runs terminate cleanly under test automation.

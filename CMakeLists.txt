@@ -113,9 +113,11 @@ target_include_directories(goose PRIVATE third_party/subprocess)
 # executable sets: 64 MB reserved, as for the compile thread, where Windows
 # would give it 1 MB and macOS 8 MB. Only what a program's depth reaches is
 # committed. On Windows this is also the reserve of every thread started
-# without a size of its own (SDL's, a GPU driver's). A Linux main thread's
-# stack comes from the RLIMIT_STACK the process starts with (`ulimit -s`,
-# commonly 8 MB), which no link option sets.
+# without a size of its own (SDL's, a GPU driver's). Linux has no link
+# option for the main thread's stack. The soft RLIMIT_STACK, commonly 8 MB,
+# is raised to this same 64 MB at process start, in goose's main and in a
+# built program's, before the runtime records the stack bounds. A limit
+# already higher is left as it is, and the hard limit is not crossed.
 set(goose_main_stack 67108864)
 if(MSVC)
     target_link_options(goose PRIVATE "/STACK:${goose_main_stack}")
