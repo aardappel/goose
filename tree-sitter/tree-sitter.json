@@ -9,6 +9,7 @@
       "path": ".",
       "file-types": ["goose"],
       "highlights": "queries/highlights.scm",
+      "tags": "queries/tags.scm",
       "injection-regex": "^goose$"
     }
   ],

@@ -105,8 +105,10 @@ references (`gr`), rename (`space r`), document and workspace symbols
 inlay hints with `display-inlay-hints = true` under `[editor.lsp]` in
 `config.toml`. Helix has no semantic tokens, folding or code lenses.
 
-For syntax highlighting, build the grammar from a Goose checkout and install
-the Helix queries (replace the paths as appropriate):
+Syntax highlighting requires Helix 25.07 or newer: these queries rely on
+the last matching pattern winning, unlike Helix 25.01. Build the grammar
+from a Goose checkout and install the Helix queries (replace the paths as
+appropriate):
 
 ```sh
 hx --grammar build
@@ -117,10 +119,19 @@ hx --health goose
 ```
 
 The generated parser is checked in, so building it requires a C compiler but
-not Node.js. The queries also provide indentation, function/class/parameter/
-comment text objects, syntax-based symbols and rainbow brackets. Restart
-Helix after installing or updating the grammar and queries; update them
-together when pulling a newer Goose checkout.
+not Node.js. The queries also provide indentation and function/class/parameter/
+comment text objects. Syntax-based symbols (`tags.scm`) and rainbow brackets
+(`rainbows.scm`) require Helix built from master; the 25.07.1 release reads
+neither query. For syntax-based symbols on master, also install the shared
+tags query:
+
+```sh
+cp /absolute/path/to/goose/tree-sitter/queries/tags.scm \
+    ~/.config/helix/runtime/queries/goose/
+```
+
+Restart Helix after installing or updating the grammar and queries; update
+them together when pulling a newer Goose checkout.
 
 ## Emacs
 

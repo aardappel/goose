@@ -33,8 +33,8 @@ jobs:
           node-version: '22'
       - name: Check grammar and queries
         run: python tree-sitter/build.py --check
-      - name: Check generated parser is current
-        run: git diff --exit-code -- tree-sitter/src/parser.c tree-sitter/src/tree_sitter/parser.h
+      - name: Check generated parser and Helix highlights are current
+        run: git diff --exit-code -- tree-sitter/src/parser.c tree-sitter/src/tree_sitter/parser.h tree-sitter/queries/helix/highlights.scm
 
   test:
     name: ${{ matrix.os }} / baseline
