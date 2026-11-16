@@ -1564,7 +1564,8 @@ inline void CodeGen::LeafAny(Node *n, const Dst &d) {
         } else if (auto sl = Is<StructLit>(n); sl && d.fresh && d.t && PtrAbi(d.t) &&
                    TEq(d.t, n->exprtype)) {
             // Nothing reads a fresh destination: built there, not in a
-            // temporary copied over (StructLit::CgX).
+            // temporary copied over (StructLit::CgX). Without d.fresh,
+            // fixed_pointer_abi's from_global prints otherwise at -O2.
             if (HasUninitSlots(n->exprtype)) L("GS_MEMZERO(&", d.s, ", sizeof(", d.s, "));");
             StructLitAt(sl, d.s, false);
         } else {

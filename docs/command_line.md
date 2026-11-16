@@ -501,6 +501,7 @@ These look into what the compiler does, and serve its test suite
 | `--multi-test file...` | Compile each file as a run of its own would, and end what each printed with a line on stdout and stderr: `==== goose --multi-test: exit <code> <file>`. A `%` in `-o` stands for each file's name. |
 | `--bce-test` | Verify the `// bce:elide` and `// bce:keep` annotations in the source. |
 | `--unsafe-no-rf-check` | Leave out the checks after calls that a `return ... from` can pass through. This is unsound, and is only for measuring what they cost. |
+| `--no-copy-elision` | Copy every argument and result of a fixed struct over 256 bytes, where the generated C would otherwise share the caller's storage. A program prints the same either way; the test suite compares the two. |
 | `--gen-runtime-header` | Regenerate `src/runtime_inline.h` from `src/runtime/` (`GOOSE_RUNTIME` names that directory if it is not found). |
 | `--compile-shader file` | Print what a shader compiles to, without a program around it; `--shader-source msl` or `hlsl` prints that source as well. |
 

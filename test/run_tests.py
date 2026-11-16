@@ -2661,6 +2661,17 @@ def main():
             r.fail("deep expressions", str(e))
     r.show_task(deep_expressions)
 
+    def copy_elision():
+        from copy_elision import check_copy_elision
+        try:
+            n = check_copy_elision(exe, cc, gendir)
+            r.ok(f"copy elision: {n} generated programs print the same at -O0 and -O2, with "
+                 "the copies of fixed structs over 256 bytes left out and with "
+                 "--no-copy-elision" + (", built" if cc else ", run"))
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("copy elision", str(e))
+    r.show_task(copy_elision)
+
     def diagnostics_json():
         from diagnostics_json import check_diagnostics_json
         try:
