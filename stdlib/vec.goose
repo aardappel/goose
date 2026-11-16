@@ -39,42 +39,42 @@ let int3_1 = int3 { 1, 1, 1 };
 let int4_0 = int4 { 0, 0, 0, 0 };
 let int4_1 = int4 { 1, 1, 1, 1 };
 
-checkfree fn dot<T>(a: vec2<T>, b: vec2<T>) -> T { a.x * b.x + a.y * b.y }
-checkfree fn dot<T>(a: vec3<T>, b: vec3<T>) -> T { a.x * b.x + a.y * b.y + a.z * b.z }
-checkfree fn dot<T>(a: vec4<T>, b: vec4<T>) -> T { a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w }
+fn dot<T>(a: vec2<T>, b: vec2<T>) -> T { a.x * b.x + a.y * b.y }
+fn dot<T>(a: vec3<T>, b: vec3<T>) -> T { a.x * b.x + a.y * b.y + a.z * b.z }
+fn dot<T>(a: vec4<T>, b: vec4<T>) -> T { a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w }
 
-checkfree fn cross<T>(a: vec3<T>, b: vec3<T>) -> vec3<T> {
+fn cross<T>(a: vec3<T>, b: vec3<T>) -> vec3<T> {
     vec3<T> { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }
 }
 
-checkfree fn length_sq<T>(v: vec2<T>) -> T { dot(v, v) }
-checkfree fn length_sq<T>(v: vec3<T>) -> T { dot(v, v) }
-checkfree fn length_sq<T>(v: vec4<T>) -> T { dot(v, v) }
+fn length_sq<T>(v: vec2<T>) -> T { dot(v, v) }
+fn length_sq<T>(v: vec3<T>) -> T { dot(v, v) }
+fn length_sq<T>(v: vec4<T>) -> T { dot(v, v) }
 
 // Float vectors only: sqrt has f32 and f64 forms.
-checkfree fn length<T>(v: vec2<T>) -> T { sqrt(length_sq(v)) }
-checkfree fn length<T>(v: vec3<T>) -> T { sqrt(length_sq(v)) }
-checkfree fn length<T>(v: vec4<T>) -> T { sqrt(length_sq(v)) }
+fn length<T>(v: vec2<T>) -> T { sqrt(length_sq(v)) }
+fn length<T>(v: vec3<T>) -> T { sqrt(length_sq(v)) }
+fn length<T>(v: vec4<T>) -> T { sqrt(length_sq(v)) }
 
-checkfree fn normalize<T>(v: vec2<T>) -> vec2<T> { v / length(v) }
-checkfree fn normalize<T>(v: vec3<T>) -> vec3<T> { v / length(v) }
-checkfree fn normalize<T>(v: vec4<T>) -> vec4<T> { v / length(v) }
+fn normalize<T>(v: vec2<T>) -> vec2<T> { v / length(v) }
+fn normalize<T>(v: vec3<T>) -> vec3<T> { v / length(v) }
+fn normalize<T>(v: vec4<T>) -> vec4<T> { v / length(v) }
 
-checkfree fn distance<T>(a: vec2<T>, b: vec2<T>) -> T { length(a - b) }
-checkfree fn distance<T>(a: vec3<T>, b: vec3<T>) -> T { length(a - b) }
-checkfree fn distance<T>(a: vec4<T>, b: vec4<T>) -> T { length(a - b) }
+fn distance<T>(a: vec2<T>, b: vec2<T>) -> T { length(a - b) }
+fn distance<T>(a: vec3<T>, b: vec3<T>) -> T { length(a - b) }
+fn distance<T>(a: vec4<T>, b: vec4<T>) -> T { length(a - b) }
 
-checkfree fn lerp<T>(a: vec2<T>, b: vec2<T>, t: T) -> vec2<T> {
+fn lerp<T>(a: vec2<T>, b: vec2<T>, t: T) -> vec2<T> {
     vec2<T> { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t }
 }
-checkfree fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T> {
+fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T> {
     vec3<T> { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t }
 }
-checkfree fn lerp<T>(a: vec4<T>, b: vec4<T>, t: T) -> vec4<T> {
+fn lerp<T>(a: vec4<T>, b: vec4<T>, t: T) -> vec4<T> {
     vec4<T> { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
               a.w + (b.w - a.w) * t }
 }
 
-checkfree fn xy<T>(v: vec3<T>) -> vec2<T> { vec2<T> { v.x, v.y } }
-checkfree fn xy<T>(v: vec4<T>) -> vec2<T> { vec2<T> { v.x, v.y } }
-checkfree fn xyz<T>(v: vec4<T>) -> vec3<T> { vec3<T> { v.x, v.y, v.z } }
+fn xy<T>(v: vec3<T>) -> vec2<T> { vec2<T> { v.x, v.y } }
+fn xy<T>(v: vec4<T>) -> vec2<T> { vec2<T> { v.x, v.y } }
+fn xyz<T>(v: vec4<T>) -> vec3<T> { vec3<T> { v.x, v.y, v.z } }

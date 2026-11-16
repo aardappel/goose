@@ -19,22 +19,22 @@ type doubleq = quat<f64>;
 let floatq_identity = floatq { 0.0, 0.0, 0.0, 1.0 };
 let doubleq_identity = doubleq { 0.0, 0.0, 0.0, 1.0 };
 
-checkfree fn dot<T>(a: quat<T>, b: quat<T>) -> T { a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w }
-checkfree fn length_sq<T>(q: quat<T>) -> T { dot(q, q) }
-checkfree fn length<T>(q: quat<T>) -> T { sqrt(dot(q, q)) }
-checkfree fn normalize<T>(q: quat<T>) -> quat<T> { q / length(q) }
-checkfree fn conjugate<T>(q: quat<T>) -> quat<T> { quat<T> { -q.x, -q.y, -q.z, q.w } }
+fn dot<T>(a: quat<T>, b: quat<T>) -> T { a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w }
+fn length_sq<T>(q: quat<T>) -> T { dot(q, q) }
+fn length<T>(q: quat<T>) -> T { sqrt(dot(q, q)) }
+fn normalize<T>(q: quat<T>) -> quat<T> { q / length(q) }
+fn conjugate<T>(q: quat<T>) -> quat<T> { quat<T> { -q.x, -q.y, -q.z, q.w } }
 // conjugate(q) for a unit quaternion.
-checkfree fn inverse<T>(q: quat<T>) -> quat<T> { conjugate(q) / dot(q, q) }
+fn inverse<T>(q: quat<T>) -> quat<T> { conjugate(q) / dot(q, q) }
 
 // The Hamilton product, glm's a * b: b's rotation, then a's.
-checkfree fn mul<T>(a: quat<T>, b: quat<T>) -> quat<T> {
+fn mul<T>(a: quat<T>, b: quat<T>) -> quat<T> {
     quat<T> { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
               a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z }
 }
 
 // v rotated by the unit quaternion q, glm's q * v.
-checkfree fn rotate<T>(q: quat<T>, v: vec3<T>) -> vec3<T> {
+fn rotate<T>(q: quat<T>, v: vec3<T>) -> vec3<T> {
     let u = vec3<T> { q.x, q.y, q.z };
     let t = cross(u, v) * 2.0;
     v + t * q.w + cross(u, t)
@@ -42,7 +42,7 @@ checkfree fn rotate<T>(q: quat<T>, v: vec3<T>) -> vec3<T> {
 
 // glm's angleAxis: `angle` radians about `axis`, counterclockwise as
 // rotate(axis, angle) is. The axis need not be unit length.
-checkfree fn angle_axis<T>(angle: T, axis: vec3<T>) -> quat<T> {
+fn angle_axis<T>(angle: T, axis: vec3<T>) -> quat<T> {
     let a = normalize(axis) * sin(angle * 0.5);
     quat<T> { a.x, a.y, a.z, cos(angle * 0.5) }
 }
@@ -50,7 +50,7 @@ checkfree fn angle_axis<T>(angle: T, axis: vec3<T>) -> quat<T> {
 // The angle in [0, 2 PI] and unit axis of the unit quaternion q, glm's angle
 // and axis; x for the axis of no rotation. From atan2 of the vector part's
 // length, which keeps a small angle's precision where acos(w) loses it.
-checkfree fn to_angle_axis<T>(q: quat<T>) -> T, vec3<T> {
+fn to_angle_axis<T>(q: quat<T>) -> T, vec3<T> {
     let v = vec3<T> { q.x, q.y, q.z };
     let s = length(v);
     if s == 0.0 {
@@ -62,7 +62,7 @@ checkfree fn to_angle_axis<T>(q: quat<T>) -> T, vec3<T> {
 // glm's rotation: the shortest rotation taking the direction `from` to the
 // direction `to`, about some axis perpendicular to `from` when they are
 // opposite. Neither need be unit length.
-checkfree fn rotation<T>(from: vec3<T>, to: vec3<T>) -> quat<T> {
+fn rotation<T>(from: vec3<T>, to: vec3<T>) -> quat<T> {
     let a = normalize(from);
     let b = normalize(to);
     // Half the rotation takes a to h, halfway between a and b, so q is
@@ -83,7 +83,7 @@ checkfree fn rotation<T>(from: vec3<T>, to: vec3<T>) -> quat<T> {
 // glm's quatLookAtRH: the rotation that turns -z toward `direction`, with y
 // toward `up`, as a camera looking down `direction` is turned. NaN where
 // `up` is parallel to `direction`.
-checkfree fn quat_look_at<T>(direction: vec3<T>, up: vec3<T>) -> quat<T> {
+fn quat_look_at<T>(direction: vec3<T>, up: vec3<T>) -> quat<T> {
     let back = -normalize(direction);
     let right = normalize(cross(up, back));
     quat_cast([right, cross(back, right), back])
@@ -91,14 +91,14 @@ checkfree fn quat_look_at<T>(direction: vec3<T>, up: vec3<T>) -> quat<T> {
 
 // Linear interpolation, normalized and the shorter way round: cheaper than
 // slerp, and as good for small steps, though not at constant speed.
-checkfree fn nlerp<T>(a: quat<T>, b: quat<T>, t: T) -> quat<T> {
+fn nlerp<T>(a: quat<T>, b: quat<T>, t: T) -> quat<T> {
     var e = b;
     if dot(a, b) < 0.0 { e = -b; }
     normalize(a + (e - a) * t)
 }
 
 // Spherical interpolation, the shorter way round, at constant angular speed.
-checkfree fn slerp<T>(a: quat<T>, b: quat<T>, t: T) -> quat<T> {
+fn slerp<T>(a: quat<T>, b: quat<T>, t: T) -> quat<T> {
     var e = b;
     var c = dot(a, b);
     if c < 0.0 {
@@ -114,7 +114,7 @@ checkfree fn slerp<T>(a: quat<T>, b: quat<T>, t: T) -> quat<T> {
 
 // glm's quat(eulerAngles): pitch about x, then yaw about y, then roll about
 // z, each in radians.
-checkfree fn from_euler<T>(e: vec3<T>) -> quat<T> {
+fn from_euler<T>(e: vec3<T>) -> quat<T> {
     let cx = cos(e.x * 0.5);
     let cy = cos(e.y * 0.5);
     let cz = cos(e.z * 0.5);
@@ -131,7 +131,7 @@ checkfree fn from_euler<T>(e: vec3<T>) -> quat<T> {
 // fixed: how it splits between them follows rounding. Pitch and yaw are
 // solved after roll, from the matrix with roll's turn taken out, so the
 // three always rebuild q's rotation, there too (glm's can be far off).
-checkfree fn euler_angles<T>(q: quat<T>) -> vec3<T> {
+fn euler_angles<T>(q: quat<T>) -> vec3<T> {
     // m is Rz(roll) Ry(yaw) Rx(pitch); m[c].r is row r of column c.
     let m = mat3_cast(q);
     let roll = atan2(m[0].y, m[0].x);
@@ -143,7 +143,7 @@ checkfree fn euler_angles<T>(q: quat<T>) -> vec3<T> {
 }
 
 // glm's mat3_cast and mat4_cast: the rotation matrix of the unit quaternion q.
-checkfree fn mat3_cast<T>(q: quat<T>) -> vec3<T>[3] {
+fn mat3_cast<T>(q: quat<T>) -> vec3<T>[3] {
     let xx = q.x * q.x;
     let yy = q.y * q.y;
     let zz = q.z * q.z;
@@ -157,12 +157,12 @@ checkfree fn mat3_cast<T>(q: quat<T>) -> vec3<T>[3] {
      vec3<T> { 2.0 * (xy - wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz + wx) },
      vec3<T> { 2.0 * (xz + wy), 2.0 * (yz - wx), 1.0 - 2.0 * (xx + yy) }]
 }
-checkfree fn mat4_cast<T>(q: quat<T>) -> vec4<T>[4] { to4x4(mat3_cast(q)) }
+fn mat4_cast<T>(q: quat<T>) -> vec4<T>[4] { to4x4(mat3_cast(q)) }
 
 // The transform that scales by s, rotates by the unit quaternion q, then
 // moves by t: mul(translate(t), mul(mat4_cast(q), scale(s))), with no
 // products. glm's recompose, without its skew and perspective.
-checkfree fn compose<T>(t: vec3<T>, q: quat<T>, s: vec3<T>) -> vec4<T>[4] {
+fn compose<T>(t: vec3<T>, q: quat<T>, s: vec3<T>) -> vec4<T>[4] {
     let r = mat3_cast(q);
     let x = r[0] * s.x;
     let y = r[1] * s.y;
@@ -174,7 +174,7 @@ checkfree fn compose<T>(t: vec3<T>, q: quat<T>, s: vec3<T>) -> vec4<T>[4] {
 // glm's quat_cast: the unit quaternion of the rotation matrix m (its upper
 // left for a 4x4), q or -q, both the same rotation. m must be a rotation
 // alone: a model matrix's scale gives a quaternion that is not unit length.
-checkfree fn quat_cast<T>(m: vec3<T>[3]) -> quat<T> {
+fn quat_cast<T>(m: vec3<T>[3]) -> quat<T> {
     // Shepperd's method: divide by the largest of the four candidates.
     let m00 = m[0].x;
     let m11 = m[1].y;
@@ -195,4 +195,4 @@ checkfree fn quat_cast<T>(m: vec3<T>[3]) -> quat<T> {
     let s = sqrt(1.0 + m22 - m00 - m11) * 2.0;
     quat<T> { (m[2].x + m[0].z) / s, (m[2].y + m[1].z) / s, s * 0.25, (m[0].y - m[1].x) / s }
 }
-checkfree fn quat_cast<T>(m: vec4<T>[4]) -> quat<T> { quat_cast(to3x3(m)) }
+fn quat_cast<T>(m: vec4<T>[4]) -> quat<T> { quat_cast(to3x3(m)) }

@@ -1561,8 +1561,17 @@ inline void CodeGen::LeafAny(Node *n, const Dst &d) {
         // assigning it from a temporary would copy the temporary's offsets.
         if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(n->exprtype)) {
             FixedLitAt(n, d.s);
+        } else if (auto sl = Is<StructLit>(n); sl && d.fresh && d.t && PtrAbi(d.t) &&
+                   TEq(d.t, n->exprtype)) {
+            // Nothing reads a fresh destination: built there, not in a
+            // temporary copied over (StructLit::CgX).
+            if (HasUninitSlots(n->exprtype)) L("GS_MEMZERO(&", d.s, ", sizeof(", d.s, "));");
+            StructLitAt(sl, d.s, false);
         } else {
-            L(d.s, " = ", GenXD(n, d.t), ";");
+            // A named result already where it is returned to (OpenIbFixed)
+            // needs nothing.
+            auto x = GenXD(n, d.t);
+            if (x != d.s) L(d.s, " = ", x, ";");
         }
         return;
     }

@@ -4,7 +4,13 @@
 
 namespace goose {
 
-inline void Indent(string &s, int ind) { s.append((size_t)ind * 4, ' '); }
+// Four spaces per level, up to the formatter's 256-column display cap (#250):
+// a dump of deeply nested source otherwise writes O(depth^2) spaces, and the
+// formatter's self-check dumps both its input and its output.
+constexpr int DUMPINDENTMAX = 256 / 4;
+inline void Indent(string &s, int ind) {
+    s.append((size_t)min(ind, DUMPINDENTMAX) * 4, ' ');
+}
 inline void NL(string &s, int ind) { s += '\n'; Indent(s, ind); }
 
 inline void EscapeString(string &s, string_view v, char quote) {

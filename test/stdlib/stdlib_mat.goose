@@ -12,7 +12,9 @@ fn show(v: double3) { print(r(v.x), " ", r(v.y), " ", r(v.z)); }
 fn show(v: double4) { print(r(v.x), " ", r(v.y), " ", r(v.z), " ", r(v.w)); }
 fn show(m: double4x4) { for i in 0..4 { show(row(m, i)); } }
 
-fn main() {
+// checkfree: what it calls of the module must keep no bounds check, so checkfree
+// code may call it too (spec §7.14).
+checkfree fn main() {
     // Columns: m[i] is column i, and elementwise + - * by a scalar are the language's.
     let a: double2x2 = [double2 { 1.0, 3.0 }, double2 { 2.0, 4.0 }];   // rows (1 2) and (3 4)
     print(a[1].x, " ", row(a, 1).x, " ", determinant(a));            // 2.0 3.0 -2.0

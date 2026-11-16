@@ -145,8 +145,8 @@ fn lcm<T>(a: T, b: T) -> T          // never negative; 0 if either is 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
-These are all `checkfree` functions or `extern fn`s, so a `checkfree`
-function (spec §7.14) can call them.
+None of these keeps a bounds check, so a `checkfree` function (spec §7.14)
+can call them.
 
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
@@ -196,7 +196,8 @@ fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
 These hashes mix all of their input into the low 32 bits. The scalar
-overloads and `hash_combine` are `checkfree` (spec §7.14). `dictionary`
+overloads and `hash_combine` keep no bounds check, so a `checkfree`
+function (spec §7.14) can call them. `dictionary`
 masks those bits to find the home slot and keeps them as the slot's tag.
 A float hashes as its bits, `-0.0` as `0.0`, and an `f32` as the `f64` of
 its value.
@@ -271,8 +272,9 @@ they are the string functions too: `find(line, "://")`. `find` and `rfind`
 compare a whole subsequence only where its first element matches.
 (The function is named `position` rather than `index_of` because
 `index_of` is the builtin that turns an element reference into its index.)
-`min(xs)` and `max(xs)` are `checkfree`; the forms that take a comparator
-are not, since that would require every comparator to be `checkfree`.
+`min(xs)`, `max(xs)`, `min_by` and `max_by` keep no bounds check, so a
+`checkfree` function (spec §7.14) can call them, the comparator forms with
+a comparator that keeps none either.
 
 ```goose
 let big = xs.find() { it > 100 };
@@ -416,7 +418,7 @@ fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8)   // B: u8[>
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, the exact value rounded half up; inf/-inf/nan as print writes them
 fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string; false outside i64 or base 2..36
 fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool       // optional '+', whole string; false on '-' or outside u64 or base 2..36
-fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent; correctly rounded
+fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent, or inf/-inf/nan; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
@@ -445,11 +447,11 @@ strings; the functions here add control over the output, and parsing. In
 base 10, `format_int` and `format_uint` write the same text as `format`
 (after any padding) and run as fast. `format_int` and `format_uint` abort
 when `base` is outside 2..36; `parse_int` and `parse_uint` return `false`
-for such a base. `parse_flt` gives the double nearest to
-the decimal, as C's `strtod` does, so a float's text from `print` or
-`format` reads back as the same value. Strings are `u8` arrays: input is a
-`u8[:]`, output goes to a `u8[>..]&` builder, and storage is a `u8[]` or
-`u8[..k]`.
+for such a base. `parse_flt` gives the double nearest to the decimal, as C's
+`strtod` does, so a float's text from `print` or `format` reads back as the
+same value, including the `inf`, `-inf` and `nan` they write for the
+non-finite values. Strings are `u8` arrays: input is a `u8[:]`, output goes
+to a `u8[>..]&` builder, and storage is a `u8[]` or `u8[..k]`.
 
 `split_once` cuts s at the first sep, as Go's `strings.Cut` does: the part
 before and the part after, read-only slices into s, and `true`. When sep is
@@ -911,7 +913,8 @@ fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T>
 fn xy<T>(v: vec3<T>) -> vec2<T>                 // also xy(vec4), xyz(vec4)
 ```
 
-The functions are all `checkfree` (spec §7.14).
+None of the functions keeps a bounds check, so a `checkfree` function
+(spec §7.14) can call them.
 
 Elementwise `+ - * /` are built into the language (`a + b`, `p - q`), and
 so is unary minus on a float or signed integer vector (`-v`). `*` and `/`
@@ -956,7 +959,8 @@ fn rotate<T>(angle: T) -> vec3<T>[3]                    // counterclockwise
 fn transform_point<T>(m: vec3<T>[3], p: vec2<T>) -> vec2<T>    // and transform_vector
 ```
 
-The functions are all `checkfree` (spec §7.14) except `row`.
+None of the functions but `row`, whose index is checked, keeps a bounds
+check, so a `checkfree` function (spec §7.14) can call them.
 
 A matrix is a fixed array of its columns, as in GLSL: `m[i]` is column
 `i`, `m[3]` a 4x4's translation, and `m[i].y` the element in row 1 of it.
@@ -1012,8 +1016,9 @@ fn conjugate<T>(q: quat<T>) -> quat<T>                  fn inverse<T>(q: quat<T>
 fn dot, length, length_sq, normalize                    // as vec's
 ```
 
-The functions are all `checkfree` (spec §7.14), and generic over `f32` and
-`f64` as `mat`'s are. A rotation is a unit quaternion. `a + b`, `-q` and
+None of the functions keeps a bounds check, so a `checkfree` function
+(spec §7.14) can call them. They are generic over `f32` and `f64` as
+`mat`'s are. A rotation is a unit quaternion. `a + b`, `-q` and
 `q * 2.0` are the language's elementwise operators, and so is **`a * b`:
 the Hamilton product is `mul`**. `angle_axis` turns as `mat`'s
 `rotate(axis, angle)` does and normalizes the axis (note the argument
@@ -1114,8 +1119,8 @@ for an infinity. `NAN`'s sign is unspecified.
 `INF` and `NAN` take the type the context asks for, as `PI` does
 (`let inf32: f32 = INF;`).
 
-The libm functions are `extern fn`s and the ones above `checkfree`, so a
-`checkfree` function (spec §7.14) can call any of math.
+The libm functions are `extern fn`s and the ones above keep no bounds
+check, so a `checkfree` function (spec §7.14) can call any of math.
 
 ## os
 

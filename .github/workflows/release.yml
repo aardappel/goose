@@ -11,6 +11,12 @@
 # extension. Before it is archived, the build tree it came from is moved
 # away and the samples run with the compiler in it, in-process and through
 # `goose build`, so it is tested as it will be unpacked.
+#
+# Beside the archives, the release has SHA256SUMS: the SHA-256 of each, in
+# the format `sha256sum -c` reads. It is named without the version, so
+# releases/latest/download/SHA256SUMS is the latest release's, and a person
+# or a tool that installs releases can check a download without the GitHub
+# API and its rate limit.
 name: Release
 
 on:
@@ -134,14 +140,32 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.zip *.tar.gz > SHA256SUMS
+
+      # The action uploads a release's files before it publishes it, which a
+      # repository with immutable releases requires, except for a
+      # pre-release: that it publishes first. So a pre-release starts as a
+      # draft and the next step publishes it, once its files are in.
       - uses: softprops/action-gh-release@v3
+        id: release
         with:
           name: Goose ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
             dist/*.zip
             dist/*.tar.gz
+            dist/SHA256SUMS
           body: |
-            Prebuilt compilers with the blessed packages (gfx, audio, ui, physics) compiled in. Unpack anywhere and put the directory on PATH; see "Install a release" in README.md for what each platform needs besides.
+            Prebuilt compilers with the blessed packages (gfx, audio, ui, physics) compiled in. Unpack anywhere and put the directory on PATH; see "Install a release" in README.md for what each platform needs besides, and for checking a download against SHA256SUMS.
+
+      - name: Publish the pre-release
+        if: contains(github.ref_name, '-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false --jq '.html_url'

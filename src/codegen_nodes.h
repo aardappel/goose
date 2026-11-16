@@ -687,6 +687,7 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
 
 inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto named = cg.OpenIbNrvo(this, d);
+    auto fixednamed = named ? nullptr : cg.OpenIbFixed(this, d);
     // The named result's elements sit at d from its declaration on.
     if (named) cg.openat[d.s]++;
     // The callee's own locals and statement temporaries keep their ordinary
@@ -713,6 +714,10 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     if (named) {
         cg.nrvo.erase(named);
         cg.openat[d.s]--;
+    }
+    if (fixednamed) {
+        cg.ibfixed.erase(fixednamed);
+        cg.vnames.erase(fixednamed);
     }
     cg.termjump = false;
 }
@@ -1017,9 +1022,11 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         if (auto k = cg.BlockSize(this)) {
             auto lit = r ? Is<IntLit>(r->lo) : nullptr;
             auto fromzero = !r || (lit && !lit->uns && lit->val == 0);
+            auto hilit = Is<IntLit>(r ? r->hi : iter);
+            auto whole = fromzero && hilit && !hilit->uns && hilit->val % k == 0;
             cg.L(ict, " ", ctr, " = ", lov, ";");
             cg.GenBlocked(this, k, cg.AtLeastLeft(ct, hiv, ctr, k, fromzero), step, bind,
-                          cat(ctr, " < ", hiv));
+                          cat(ctr, " < ", hiv), !whole);
             return;
         }
         cg.GenLoopBody(bind, body, d,
@@ -1183,7 +1190,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         if (auto k = cg.BlockSize(this); k && (lenbound < 0 || lenbound >= 2 * k)) {
             cg.L("int64_t ", gi, " = 0;");
             cg.GenBlocked(this, k, cat("(", v.len, ") - ", gi, " >= ", k), cat(gi, "++"), bind,
-                          cat(gi, " < (", v.len, ")"));
+                          cat(gi, " < (", v.len, ")"), !fixedarr || cg.ArrSize(lv.t->arr) % k != 0);
             return;
         }
     }

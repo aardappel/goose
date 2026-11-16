@@ -1008,7 +1008,6 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         ApplyCalleeShrinks(c, sp, argvals, "format", { nullptr, arg });
         ApplyCalleeRebinds(sp);
         ApplyCalleeGrows(c, sp, argvals, "format");
-        CheckfreeCallee(c, sp->sf);
         c->fmtspecs.push_back({ t, sp });
         return sp;
     }

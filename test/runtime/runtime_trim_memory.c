@@ -137,6 +137,27 @@ int main(int argc, char **argv) {
     check(base[0] == 85, "live byte survives a trim over skipped pages");
 #ifdef _WIN32
     check(r0->committed == base + gs_page_size, "skipped pages trimmed to the mark");
+    {
+        /* A hole below the mark, as slice_pool's trim leaves: a read commits
+           only its page, a write still commits a chunk. */
+        size_t mb = 1u << 20;
+        MEMORY_BASIC_INFORMATION info;
+        GS(0)->top = base + 4 * mb;
+        memset(base + 1, 85, 4 * mb - 1);
+        check(gs_discard_pages((uintptr_t)base + mb, 2 * mb), "decommit a hole below the mark");
+        check(r0->committed >= base + 4 * mb, "a hole leaves the mark where it was");
+        check(((volatile uint8_t *)base)[2 * mb] == 0, "a read in the hole sees zeros");
+        check(VirtualQuery(base + 2 * mb, &info, sizeof info) && info.State == MEM_COMMIT,
+              "a read commits its page");
+        check(VirtualQuery(base + 2 * mb + gs_page_size, &info, sizeof info) &&
+              info.State == MEM_RESERVE, "a read below the mark commits only its page");
+        base[mb] = 1;
+        check(VirtualQuery(base + 2 * mb - gs_page_size, &info, sizeof info) &&
+              info.State == MEM_COMMIT, "a write below the mark commits a chunk");
+        check(base[0] == 85 && base[4 * mb - 1] == 85, "live bytes around the hole survive");
+        GS(0)->top = base + 1;
+        check(gs_trim_memory(), "trim after refilling a hole");
+    }
 #endif
     GS(0)->top = base + r0->usable;
     base[r0->usable - 1] = 19;

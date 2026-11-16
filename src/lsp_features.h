@@ -1981,7 +1981,7 @@ inline bool Completion(Workspace &ws, const Json &params, JsonOut &j) {
         auto nsend = start - 2;
         auto nsstart = nsend;
         while (nsstart > 0 && IsIdentCont(text[nsstart - 1])) nsstart--;
-        auto nsname = text.substr(nsstart, nsend - nsstart);
+        auto nsname = loc.an->ast->ResolveNsAlias(loc.fi->fileidx, text.substr(nsstart, nsend - nsstart));
         if (auto ns = loc.an->ast->FindNS(nsname)) NamespaceCompletions(nsname, *ns, false, out);
     } else {
         ScopeCompletions(loc, offset, out);

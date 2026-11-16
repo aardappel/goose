@@ -45,6 +45,16 @@ test('numeric ranges, hex floats and string escapes have correct scopes', async 
     assert.ok(has(string, '\\q', 'invalid.illegal.escape'));
 });
 
+test('numeric separators are highlighted as part of each literal', async () => {
+    const [line] = await tokenize('1_000 0xFF_AA 3.141_592 1_000e3 0x1.A_Bp3 0x1.8p1_0 1e1_0 1_0..2_0');
+    const scopeOf = text => line.find(token => token.text === text)?.scopes ?? [];
+    for (const value of ['1_000', '1_0', '2_0']) assert.ok(scopeOf(value).includes('constant.numeric.integer.goose'), value);
+    assert.ok(scopeOf('0xFF_AA').includes('constant.numeric.integer.hex.goose'));
+    for (const value of ['3.141_592', '1_000e3', '1e1_0']) assert.ok(scopeOf(value).includes('constant.numeric.float.goose'), value);
+    for (const value of ['0x1.A_Bp3', '0x1.8p1_0']) assert.ok(scopeOf(value).includes('constant.numeric.float.hex.goose'), value);
+    assert.ok(scopeOf('..').includes('keyword.operator.goose'));
+});
+
 test('every compiler keyword is recognized without treating from as reserved', async () => {
     const lexer = fs.readFileSync(path.resolve(__dirname, '../../src/lexer.h'), 'utf8');
     const table = lexer.split('#define TOKENS_KEYWORDS')[1].split('enum TType')[0];
@@ -66,6 +76,9 @@ test('all builtin calls and namespace declarations highlight', async () => {
     }
     const [line] = await tokenize('thread_fn image::worker(n: i64) {}');
     assert.ok(has(line, 'image::worker', 'entity.name.function'));
+    const [alias] = await tokenize('namespace im = image;');
+    assert.ok(has(alias, 'im', 'entity.name.namespace'));
+    assert.ok(has(alias, 'image', 'entity.name.namespace'));
 });
 
 test('export modifier and exported function declaration highlight', async () => {

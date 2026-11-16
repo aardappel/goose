@@ -1248,8 +1248,6 @@ struct TypeCheck {
     bool IsFlat(TypeExpr *t);
     bool Reaches(TypeExpr *t, const function<bool(TypeExpr *)> &pred);
     bool HoldsIndexT(TypeExpr *t);
-    SFunction *TextFn();
-    void CheckfreeCallee(Node *at, SFunction *callee);
     bool HoldsPlainRef(TypeExpr *t);
     bool HasDefault(TypeExpr *t, string &why);
 
@@ -2301,7 +2299,7 @@ struct TypeCheck {
         return c != nowait && p.size() > 1 && p.back().node == c && p[p.size() - 2].discovering;
     }
     void CheckWaitingArg(Call *c, Node *a, bool entryreach);
-    void CalleesReturn(Call *c, const vector<FnSpec *> &specs, bool argsreach);
+    void CalleesReturn(const vector<FnSpec *> &specs, bool argsreach);
     // `defaults`: the call may leave out parameters that have a default
     // (§7.1), which ResolveCall then passes. Tag dispatch and rendering
     // hooks give every argument.

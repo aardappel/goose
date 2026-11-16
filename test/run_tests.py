@@ -1127,6 +1127,7 @@ class Runner:
             "shape_strip_fixed": f"{strip} 4", "shape_strip_div": f"{strip} 4",
             "shape_sum_dot": sums, "shape_sum_count": sums, "shape_sum_f32": sums,
             "shape_sum_range": sums, "shape_sum_spec": sums, "keep_sum_reads": None,
+            "shape_sum_whole": sums, "shape_sum_ragged": sums, "shape_sum_fixed": sums,
             "shape_bound_count": f"{bound} 8", "shape_bound_any": f"{bound} 8",
             "shape_bound_all": f"{bound} 8", "shape_bound_for": f"{bound} 6",
             "shape_bound_grow": f"{bound} 8",
@@ -1148,6 +1149,19 @@ class Runner:
         if "gs_divu32_q(" not in body or re.search(r"\bgs_(?:div|mod)_u32\(", body):
             self.fail("loop shapes shape_strip_div", "a division not by the divisor's magic number")
             valid = False
+        # From 0 to a constant multiple of the block size, the blocks run every
+        # iteration and there is no loop for the rest (CodeGen::GenBlocked,
+        # #210); any other count, constant or not, keeps it.
+        tails = {
+            "shape_sum_whole": False, "shape_sum_fixed": False, "shape_sum_ragged": True,
+            "shape_sum_count": True, "shape_sum_dot": True, "shape_strip_fixed": True,
+        }
+        for name, want in tails.items():
+            got = bool(re.search(r"^\s*for \(; ", texts.get(name, ""), re.MULTILINE))
+            if got != want:
+                self.fail(f"loop shapes {name}",
+                          f"loop for the rest: got {got}, want {want}")
+                valid = False
         # A && or || condition is a chain of branches (CodeGen::GenBranch):
         # neither the 0/1 flag the right operand sets inside an `if`, which
         # a value keeps, nor the two flags combined with & or | of a loop that
@@ -1793,6 +1807,33 @@ def main():
         else:
             r.ok(f"member parameters {f.name}")
     r.show_task(member_params)
+    # A large fixed variable at its only use is the callee's argument itself
+    # (CodeGen::SingleUses, MovableArg); one read again, or read through a
+    # reference or a deferred body, or used in a loop it is declared outside
+    # of, is copied first. At -O0, which inlines nothing.
+    def last_use_moves():
+        f = HERE / "codegen" / "last_use_moves.goose"
+        cfile = gendir / "last_use_moves-shapes.c"
+        code, out, err = r.goose("-O0", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"last-use moves {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        def given(fn, var):
+            return re.search(rf"\b{fn}_g\(&\(\*{var}_g\)[,)]", text) is not None
+        # ("spoil", "d") is pass_on's parameter handed on.
+        moved = [("bump", "a"), ("spoil", "dl"), ("spoil", "d")]
+        copied = [("bump", "b"), ("spoil", "c"), ("bump", "c"), ("spoil", "e"),
+                  ("both", "h"), ("spoil", "j"), ("pass_on", "m"), ("read_after", "m"),
+                  ("spoil", "n"), ("spoil", "q"), ("spoil", "w"), ("spoil", "ix"),
+                  ("spoil", "px"), ("spoil", "sx"), ("spoil", "dx"), ("spoil2", "cx")]
+        wrong = [f"{fn}({v}) not given" for fn, v in moved if not given(fn, v)]
+        wrong += [f"{fn}({v}) given" for fn, v in copied if given(fn, v)]
+        if wrong:
+            r.fail(f"last-use moves {f.name}", ", ".join(wrong))
+        else:
+            r.ok(f"last-use moves {f.name}")
+    r.show_task(last_use_moves)
     # Root descriptors expose ordinary component metadata to top caching and
     # loop-view hoisting, even when Goose leaves the helper out of line.
     def root_owner_caches():

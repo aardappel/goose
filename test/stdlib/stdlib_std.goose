@@ -417,6 +417,33 @@ fn strings() {
     // 2^53 + 1 takes 54 bits: the mantissa rounds (to even) as it converts.
     let fl3, okf3 = parse_flt("9007199254740993");
     print(fl3 == 9007199254740992.0, " ", okf3);                               // true true
+    // print and format write the non-finite values as inf, -inf and nan, and
+    // parse_flt reads exactly those spellings back.
+    let pinf, piok = parse_flt("inf");
+    let ninf, niok = parse_flt("-inf");
+    let pnan, pnok = parse_flt("nan");
+    print(pinf, " ", ninf, " ", pnan, " ", piok, " ", niok, " ", pnok);        // inf -inf nan true true true
+    let ri, riok = parse_flt(str(pinf));
+    let rni, rniok = parse_flt(str(ninf));
+    let rn, rnok = parse_flt(str(pnan));
+    print(riok, " ", rniok, " ", rnok, " ", ri == pinf, " ", rni == ninf,
+          " ", rn != rn);                                                      // true true true true true true
+    var fb: u8[>..] = [];
+    format(fb, pinf);
+    let fi, fiok = parse_flt(fb);
+    fb.resize(0);
+    format(fb, ninf);
+    let fni, fniok = parse_flt(fb);
+    fb.resize(0);
+    format(fb, pnan);
+    let fnan, fnanok = parse_flt(fb);
+    print(fiok, " ", fniok, " ", fnanok, " ", fi == pinf, " ", fni == ninf,
+          " ", fnan != fnan);                                                  // true true true true true true
+    // Only the spellings above, not strtod's wider set.
+    for bad in ["in", "infx", "infinity", "Inf", "-nan", "nanx", "nan(x)"] {
+        let bv, bok = parse_flt(bad);
+        assert(!bok && bv == 0.0);
+    }
     print(compare("abc", "abd"), " ", compare("b", "a"), " ", compare("a", "a"), " ",
           compare("ab", "abc"));                                               // -1 1 0 -1
     print(trim("  hi \n"), "|", trim_start("  x"), "|", trim_end("y  "), "|");   // hi|x|y|

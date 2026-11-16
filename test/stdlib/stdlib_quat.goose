@@ -23,7 +23,9 @@ fn same(a: floatq, b: floatq) -> bool {
     d * d > 0.999999
 }
 
-fn main() {
+// checkfree: what it calls of the module must keep no bounds check, so checkfree
+// code may call it too (spec §7.14).
+checkfree fn main() {
     let qz = angle_axis(PI / 2.0, double3 { 0.0, 0.0, 2.0 });
     show(qz);                                                        // 0.0 0.0 0.707 0.707
     show(rotate(qz, double3 { 1.0, 0.0, 0.0 }));                     // 0.0 1.0 0.0
