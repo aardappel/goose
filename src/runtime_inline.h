@@ -1596,8 +1596,9 @@ typedef struct {
     gs_stack *stack;       /* Stable descriptor of the owning data stack. */
     /* Windows: one past the highest page the fault handler has
        committed, so gs_trim_memory releases only what was ever committed
-       rather than walking the whole reservation. Unused on POSIX, where
-       the kernel supplies pages on touch. */
+       rather than walking the whole reservation. Pages below it can still
+       be uncommitted: skipped by growth or decommitted by slice_pool's
+       trim. Unused on POSIX, where the kernel supplies pages on touch. */
     uint8_t *committed;
 } gs_region;
 static GS_TLS gs_region *gs_regions;
@@ -1742,10 +1743,15 @@ R"GSRT(static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
         if ((uintptr_t)hit - (uintptr_t)r->base < r->size) {
             /* Within the usable part: commit another chunk (clamped to the
                region) and resume, or where the system has no more memory to
-               commit, say so. Within the gap: a data stack overran. */
+               commit, say so. A read below the commit mark (a page that was
+               skipped or decommitted by slice_pool's trim) commits only its
+               page, so a stale view does not take back the pages around it;
+               a write there still takes a chunk, as reuse writes on. Within
+               the gap: a data stack overran. */
             if (hit < r->base + r->usable) {
                 uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
-                size_t n = GS_COMMIT_CHUNK;
+                size_t n = page < r->committed && ep->ExceptionRecord->ExceptionInformation[0] == 0
+                               ? gs_page_size : GS_COMMIT_CHUNK;
                 if (page + n > r->base + r->usable)
                     n = (size_t)(r->base + r->usable - page);
                 if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE)) {
