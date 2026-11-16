@@ -80,3 +80,8 @@ fn sleep(seconds: f64) { sleep_ms((seconds * 1000.0) as! i64) }
 
 // Entropy, for seeding an rng.
 extern fn random_seed() -> u64 = "gs_os_random_u64";
+
+// Fills out with cryptographically secure random bytes from the OS, for
+// keys and nonces: getentropy(3), or ProcessPrng on Windows. False if the OS
+// gives none, and then out is not to be used.
+extern fn random_bytes(out: u8[:]) -> bool = "gs_os_random_bytes";
