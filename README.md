@@ -449,6 +449,11 @@ library, TinyCC's runtime and the packages beside itself, and keeps what it
 builds under `~/.goose` (`GOOSE_HOME`). The archive also holds these docs, the
 samples and the VS Code extension.
 
+Each release also has `SHA256SUMS`, the SHA-256 of every archive. In the
+directory an archive was downloaded to, `sha256sum -c --ignore-missing
+SHA256SUMS` checks it (on macOS, `shasum -a 256` in place of `sha256sum`); on
+Windows, `Get-FileHash` prints the hash to compare with the archive's line.
+
 Running a program in-process (`goose file.goose`) needs nothing else on
 Windows. On Linux it needs the C library's headers (`libc6-dev`, or
 `glibc-devel`); on macOS, the SDK of the Xcode command line tools
