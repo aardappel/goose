@@ -464,6 +464,8 @@ compiler needs macOS 13.3 or later. macOS keeps a downloaded archive's files
 from running until `xattr -dr com.apple.quarantine` is run on the unpacked
 directory.
 
+On macOS, a recent release is also on Homebrew: `brew install goose-lang`.
+
 ## Build and run
 
 You need CMake 3.27 or later, a C++20 compiler (MSVC, clang or gcc) and Python
