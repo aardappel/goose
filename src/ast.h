@@ -1536,8 +1536,10 @@ struct SFunction {
     // the program starts (§7.10); empty for an extern the link resolves.
     string dylib;
     // An extern that reads every data-stack top of its thread program
-    // (os.trim_memory): each caller, and transitively theirs, publishes all
-    // of its cached tops before the call (CodeGen::CollectSpecs, SyncReach).
+    // (os.trim_memory, and any extern a program with an export fn declares,
+    // since C may call that export before the extern returns): each caller,
+    // and transitively theirs, publishes all of its cached tops before the
+    // call (CodeGen::CollectSpecs, SyncReach).
     bool readsalltops = false;
     // A runtime entry point that reports a failure where the program called
     // the standard library: it takes a trailing const gs_loc * (runtime.h),

@@ -1,0 +1,12 @@
+alpha main local 42
+beta main local 42
+gamma main local 42
+delta main local 42
+total 788
+walk 788
+main still main local 42
+again 225
+main still main local 42
+notes 2
+from-main
+from-callback
