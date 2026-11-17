@@ -548,13 +548,25 @@ struct Parser {
     }
 
     // `kept`, where given, is moved past each whole parameter (ParseMembers).
-    void ParseGenerics(vector<GenericParam> &generics, Ast::DeclMark *kept = nullptr) {
+    // Functions take `inherited` parameters (§7.6), which only their lists
+    // accept.
+    void ParseGenerics(vector<GenericParam> &generics, Ast::DeclMark *kept = nullptr,
+                       bool allowinherited = false) {
         if (lex.tok != T_LT) return;
         Role(R_ANGLE_OPEN);
         lex.Next();
         for (;;) {
             GenericParam g;
             g.line = CurLine();
+            // `inherited` is a keyword only before a generic parameter's name
+            // (§7.6): it stays a name everywhere else.
+            if (lex.tok == T_IDENT && lex.attr == "inherited" && lex.PeekTok() == T_IDENT) {
+                if (!allowinherited)
+                    Error("'inherited' only applies to a function declaration's generic "
+                          "parameters (§7.6)");
+                g.inherited = true;
+                lex.Next();
+            }
             g.name = ExpectIdent("generic parameter list");
             for (auto &prev : generics)
                 if (prev.name == g.name) Error(cat("duplicate type parameter name: ", g.name));
@@ -846,7 +858,7 @@ struct Parser {
         // function stands, with no body (SFunction::brokensig). A nested one
         // is lost with the statement it is, as the block recovers.
         auto header = [&](Ast::DeclMark *kept) {
-            ParseGenerics(sf->generics, kept);
+            ParseGenerics(sf->generics, kept, true);
             if (lex.tok == T_LPAREN) Role(R_LIST);
             Expect(T_LPAREN, "function declaration");
             while (lex.tok != T_RPAREN) {

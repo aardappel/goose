@@ -38,6 +38,7 @@ inline void DumpGenerics(string &s, const vector<GenericParam> &generics) {
     s += "<";
     for (size_t i = 0; i < generics.size(); i++) {
         if (i) s += ", ";
+        s += generics[i].inherited ? "inherited " : "";
         s += generics[i].name;
         if (generics[i].bound) { s += ": "; generics[i].bound->Dump(s); }
     }

@@ -156,6 +156,36 @@ type Cb = fn(i32, u8[:]) -> (i32, bool);
       (primitive_type))))
 
 ========================================
+Generic functions with an inherited parameter
+========================================
+
+fn each<inherited f: fn(i64)>(xs: i64[:]) { f(xs[0]); }
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    type_parameters: (type_parameters
+      (type_parameter
+        name: (identifier)
+        bound: (function_type
+          (primitive_type))))
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (slice_type
+          element: (primitive_type))))
+    body: (block
+      (expression_statement
+        (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (index_expression
+              value: (identifier)
+              index: (int_literal))))))))
+
+========================================
 Reusable global
 ========================================
 

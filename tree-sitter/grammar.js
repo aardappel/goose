@@ -210,6 +210,9 @@ module.exports = grammar({
     type_parameters: $ => seq('<', commaSep1($.type_parameter), '>'),
 
     type_parameter: $ => seq(
+      // `inherited` is contextual: the value that a function declaration's
+      // generic parameter is drawn by name at every call of (spec §7.6).
+      optional('inherited'),
       field('name', $.identifier),
       optional(seq(':', field('bound', $._type))),
     ),
