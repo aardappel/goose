@@ -1654,6 +1654,8 @@ struct CodeGen {
         if (!usedexterns.empty() || !runtime_ext_text.empty()) {
             EmitCoreTypes();
             CT(ast.SliceOf(ast.inttypes[IS_U8], Line {}));
+            // runtime_ext.h's helpers also take an i64 slice (gs_find_all).
+            CT(ast.SliceOf(ast.inttypes[IS_I64], Line {}));
         }
         for (auto sp : usedexterns) {
             if (sp->sf->dylib.empty() &&

@@ -12,6 +12,18 @@ fn plain_any(s: u8[:], m: bool[256]&) -> i64 {
     return -1;
 }
 
+fn plain_all(s: u8[:], m: bool[256]&, out: i64[:]) -> i64 {
+    var cnt = 0;
+    for c, i in s {
+        if m[c] {
+            if cnt == out.len { return cnt; }
+            out[cnt] = i;
+            cnt++;
+        }
+    }
+    return cnt;
+}
+
 fn plain_pair(s: u8[:], a: bool[256]&, d: i64, b: bool[256]&) -> i64 {
     var i = 0;
     while i + d < s.len {
@@ -62,7 +74,7 @@ fn main() {
     most[0x90] = false;
     sets.push(most);
     var prepared: ByteSet[>..] = [];
-    var kinds: u8[>..] = [];
+    var kinds:    u8[>..]      = [];
     for &m in sets {
         let s = byte_set(m);
         format(kinds, " ", s.kind, if s.invert { "i" } else { "" });
@@ -91,8 +103,12 @@ fn main() {
     lens.append([47, 48, 49, 63, 64, 65, 100]);
     var anys = 0;
     var pairs = 0;
+    var alls = 0;
     var found = 0;
     var wrong = 0;
+    var wall: i64[160];
+    var gall: i64[160];
+    var gcap: i64[64];
     for text in texts {
         for st in starts {
             for n in lens {
@@ -106,6 +122,17 @@ fn main() {
                     }
                     anys += 1;
                     if want >= 0 { found += 1; }
+                    // Room for every hit, and a cap the hits can overflow:
+                    // the written prefix must match either way.
+                    for cap in [160, 64] {
+                        let wn = plain_all(s, m, wall[..cap]);
+                        let gn = find_all(s, prepared[k], gall[..cap]);
+                        if gn != wn || gall[..gn] != wall[..wn] {
+                            wrong += 1;
+                            print("all ", k, " ", st, " ", n, " ", cap);
+                        }
+                        alls += 1;
+                    }
                     for d in [0, 1, 2, 17] {
                         let k2 = (k * 7 + d) % sets.len;
                         let pw = plain_pair(s, m, d, sets[k2]);
@@ -120,8 +147,8 @@ fn main() {
             }
         }
     }
-    print(anys, " find_any and ", pairs, " find_pair searches, ", found, " found, ", wrong,
-          " wrong");
+    print(anys, " find_any, ", pairs, " find_pair and ", alls, " find_all searches, ", found,
+          " found, ", wrong, " wrong");
 
     let comma = byte_set(",");
     print(find_any("hello, world", comma), " ", find_any("hello world", comma), " ",

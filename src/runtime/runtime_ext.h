@@ -14,6 +14,7 @@
 typedef struct { uint8_t *base; int64_t len; } gs_rhdr;
 typedef struct { gs_rhdr *hdr; gs_stack *stk; } gs_rref;
 typedef struct { uint8_t *data; int64_t len; } sl_u8;
+typedef struct { int64_t *data; int64_t len; } sl_i64;
 #pragma pack(pop)
 #endif
 
@@ -201,6 +202,12 @@ GS_LIBM float gs_tanhf(float x) GS_LIBM1(tanhf)
 static int64_t gs_find_any(sl_u8 s, const void *set) { return gs_scan_any(s.data, s.len, set); }
 static int64_t gs_find_pair(sl_u8 s, const void *a, int64_t d, const void *b) {
     return gs_scan_pair(s.data, s.len, a, d, b);
+}
+
+/* std's find_all over a slice (gs_scan_collect): the hits' indexes to out,
+   their total returned. */
+static int64_t gs_find_all(sl_u8 s, const void *set, sl_i64 out) {
+    return gs_scan_collect(s.data, s.len, set, out.data, out.len);
 }
 
 /* std's popcount, clz and ctz (64 for zero): the instruction where the C

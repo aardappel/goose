@@ -371,6 +371,22 @@ BENCHMARKS = [
             "vectorisation. Compare flat indexing and row-based implementations "
             "separately; all perform the same stencil and include image generation."),
     ),
+    dict(
+        name="scan",
+        what="Collect the index of every set byte in a text of N lines, eight times.",
+        sizes=[200000, 2000000, 8000000],
+        goose=[dict(label="goose byte loop", file="scan.goose"),
+               dict(label="goose find_all", file="scan_all.goose")],
+        cpp=[dict(label="cpp scalar loop", file="scan.cpp", variant=0, tier="idiomatic"),
+             dict(label="cpp memchr loop", file="scan.cpp", variant=1, tier="expert")],
+        rust=[dict(label="rust iter collect", file="scan_positions.rs")],
+        summary=(
+            "Set bytes are about one in sixty, the moderate density where a batched "
+            "collect pays: the find_all row writes all hit indexes in one call while the "
+            "other rows scan a byte at a time or call memchr per hit. Dense separators "
+            "would leave the output write, not the scan, as the cost. All rows checksum "
+            "the same positions."),
+    ),
 ]
 
 # --- build helpers -----------------------------------------------------------

@@ -593,6 +593,12 @@ fn find_pair(s: u8[:], a: const ByteSet&, d: i64, b: const ByteSet&) -> i64 {
     return byte_set_pair(s, a, d, b);
 }
 
+// The indexes of s's bytes that are in the set, ascending: writes up to
+// out.len of them to out and returns how many it wrote, so a return of
+// out.len says more may follow, collected by a call on what is left past
+// the last one. One call does the scanning find_any would spread over many.
+extern fn find_all(s: const u8[:], set: const ByteSet&, out: i64[:]) -> i64 = "gs_find_all";
+
 // ---- arrays: transforming ------------------------------------------------------
 
 fn map<T, F>(xs: T[:]) {

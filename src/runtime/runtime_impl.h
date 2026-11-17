@@ -1253,12 +1253,16 @@ GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t
    Every x86-64 CPU has SSE2, so the comparisons test blocks of 16 bytes
    without any dispatch. The tables take SSSE3's pshufb, which the CPU is
    asked for as the runtime starts, and a search where either set is of kind
-   5 tests both by their tables. Without SSSE3 such a search, and on other
-   targets, under TinyCC (which has no intrinsics), or over fewer than 16
-   positions, every search, tests one byte at a time, a single byte by
-   memchr. No load reaches past the range: its last part is tested as the
-   range's last whole block, with the positions before it, already tested,
-   shifted out of the result.
+   5 tests both by their tables. Every AArch64 CPU has NEON, whose TBL does
+   the same lookups, so there both tests run without dispatch. NEON has no
+   movemask: a block's result is narrowed to 4 bits a byte (shrn), which
+   gives one 64-bit word with a nibble for each byte, in order. Without
+   SSSE3 a search by the tables, and on other targets (and big-endian
+   AArch64, and MSVC for ARM64), under TinyCC (which has no intrinsics), or
+   over fewer than 16 positions, every search, tests one byte at a time, a
+   single byte by memchr. No load reaches past the range: its last part is
+   tested as the range's last whole block, with the positions before it,
+   already tested, shifted out of the result.
 
    The set is a ByteSet the program wrote, read here as a gs_byteset: may_alias
    keeps gcc's type-based alias analysis from taking those for two objects,
@@ -1292,6 +1296,16 @@ static int64_t gs_scan_pair_bytes(const uint8_t *p, int64_t np, const gs_byteset
     for (int64_t i = 0; i < np; i++)
         if (a->members[p[i]] & b->members[p[i + d]]) return i;
     return -1;
+}
+
+/* Positions with p[i] in the set to out while it has room; the count it
+   wrote, so a full out can mean more hits follow. */
+static int64_t gs_scan_collect_bytes(const uint8_t *p, int64_t n, const gs_byteset *s,
+                                     int64_t *out, int64_t cap) {
+    int64_t cnt = 0;
+    for (int64_t i = 0; i < n && cnt < cap; i++)
+        if (s->members[p[i]]) out[cnt++] = i;
+    return cnt;
 }
 
 #if !defined(__TINYC__) && (defined(__x86_64__) || defined(_M_X64))
@@ -1377,34 +1391,115 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
 }
 
 #define GS_LOAD(q) _mm_loadu_si128((const __m128i *)(q))
+#define GS_AND(x, y) _mm_and_si128(x, y)
 
+/* A block's members as a mask, bit i for byte i; GS_BMASK_DROP removes the
+   first k positions and GS_BMASK_FIRST is the first that is left. */
+typedef unsigned gs_bmask;
+#define GS_BMASK(v) ((unsigned)_mm_movemask_epi8(v))
+#define GS_BMASK_DROP(m, k) ((m) >> (k))
+#define GS_BMASK_FIRST(m) gs_ctz32(m)
+#define GS_BMASK_NEXT(m) ((m) & ((m) - 1))
+
+#elif !defined(__TINYC__) && defined(__aarch64__) && !defined(__ARM_BIG_ENDIAN) && \
+    (defined(__GNUC__) || defined(__clang__))
+#define GS_SCAN_NEON 1
+#include <arm_neon.h>
+#define GS_SSSE3
+
+static void gs_scan_init(void) {}
+
+typedef struct { uint8x16_t a, b, c, flip; } gs_bsm;
+
+static const uint8_t gs_bsm_bits[16] = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+
+static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
+    if (tables) {
+        m->a = vld1q_u8(s->lo);
+        m->b = vld1q_u8(s->hi);
+        m->c = vld1q_u8(gs_bsm_bits);
+        m->flip = vdupq_n_u8(0);
+    } else {
+        m->a = vdupq_n_u8(s->bytes[0]);
+        m->b = vdupq_n_u8(s->bytes[1]);
+        m->c = vdupq_n_u8(s->bytes[2]);
+        m->flip = vdupq_n_u8(s->invert ? 0xff : 0);
+    }
+}
+
+/* As the SSE2 gs_bsm_test: the members among the 16 bytes of x, as 0xff
+   bytes, for a set of kind k from 1 to 4. */
+static GS_INLINE uint8x16_t gs_bsm_test(const gs_bsm *m, int k, uint8x16_t x) {
+    uint8x16_t r;
+    if (k == 1) {
+        r = vceqq_u8(x, m->a);
+    } else if (k == 2) {
+        r = vorrq_u8(vceqq_u8(x, m->a), vceqq_u8(x, m->b));
+    } else if (k == 3) {
+        r = vorrq_u8(vorrq_u8(vceqq_u8(x, m->a), vceqq_u8(x, m->b)), vceqq_u8(x, m->c));
+    } else {
+        r = vcleq_u8(vsubq_u8(x, m->a), m->b);
+    }
+    return veorq_u8(r, m->flip);
+}
+
+/* The same by the tables. TBL gives 0 for an index of 16 or more, so
+   masking x with 0x8f looks up lo[x & 15] where x < 128 and gives 0 where
+   not, and the same of x ^ 0x80 looks up hi[x & 15] where x >= 128. */
+static GS_INLINE uint8x16_t gs_bsm_tables(const gs_bsm *m, uint8x16_t x) {
+    uint8x16_t low4 = vdupq_n_u8(0x8f);
+    uint8x16_t lo = vqtbl1q_u8(m->a, vandq_u8(x, low4));
+    uint8x16_t hi = vqtbl1q_u8(m->b, vandq_u8(veorq_u8(x, vdupq_n_u8(0x80)), low4));
+    uint8x16_t bit = vqtbl1q_u8(m->c, vshrq_n_u8(x, 4));
+    return vceqq_u8(vandq_u8(vorrq_u8(lo, hi), bit), bit);
+}
+
+#define GS_LOAD(q) vld1q_u8(q)
+#define GS_AND(x, y) vandq_u8(x, y)
+
+/* A block's members as a mask, the nibble i (4 bits) for byte i: shifting
+   each 16-bit lane right by 4 and keeping its low byte (shrn) takes the high
+   nibble of the lane's first byte and the low nibble of its second. */
+typedef uint64_t gs_bmask;
+static GS_INLINE uint64_t gs_bmask_neon(uint8x16_t v) {
+    return vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(v), 4)), 0);
+}
+#define GS_BMASK(v) gs_bmask_neon(v)
+#define GS_BMASK_DROP(m, k) ((m) >> (4 * (k)))
+#define GS_BMASK_FIRST(m) (__builtin_ctzll(m) >> 2)
+#define GS_BMASK_NEXT(m) ((m) & ~(0xFULL << (4 * GS_BMASK_FIRST(m))))
+
+#else
+static void gs_scan_init(void) {}
+#endif
+
+#if defined(GS_SCAN_SSE2) || defined(GS_SCAN_NEON)
 /* The block loop of a search over n >= 16 positions for the bytes TEST
    finds in a block. */
 #define GS_ANY_LOOP(TEST)                                                              \
     int64_t i = 0;                                                                     \
-    unsigned k;                                                                        \
+    gs_bmask k;                                                                        \
     for (; i + 16 <= n; i += 16) {                                                     \
-        k = (unsigned)_mm_movemask_epi8(TEST(GS_LOAD(p + i)));                         \
-        if (k) return i + gs_ctz32(k);                                                 \
+        k = GS_BMASK(TEST(GS_LOAD(p + i)));                                            \
+        if (k) return i + GS_BMASK_FIRST(k);                                           \
     }                                                                                  \
     if (i == n) return -1;                                                             \
-    k = (unsigned)_mm_movemask_epi8(TEST(GS_LOAD(p + n - 16))) >> (16 - (n - i));      \
-    return k ? i + gs_ctz32(k) : -1;
+    k = GS_BMASK_DROP(GS_BMASK(TEST(GS_LOAD(p + n - 16))), 16 - (n - i));              \
+    return k ? i + GS_BMASK_FIRST(k) : -1;
 
 /* The same over np >= 16 positions for two sets, d bytes apart. */
 #define GS_PAIR_LOOP(TESTA, TESTB)                                                     \
     int64_t i = 0;                                                                     \
-    unsigned k;                                                                        \
+    gs_bmask k;                                                                        \
     for (; i + 16 <= np; i += 16) {                                                    \
-        k = (unsigned)_mm_movemask_epi8(                                               \
-            _mm_and_si128(TESTA(GS_LOAD(p + i)), TESTB(GS_LOAD(p + i + d))));          \
-        if (k) return i + gs_ctz32(k);                                                 \
+        k = GS_BMASK(GS_AND(TESTA(GS_LOAD(p + i)), TESTB(GS_LOAD(p + i + d))));        \
+        if (k) return i + GS_BMASK_FIRST(k);                                           \
     }                                                                                  \
     if (i == np) return -1;                                                            \
-    k = (unsigned)_mm_movemask_epi8(_mm_and_si128(TESTA(GS_LOAD(p + np - 16)),         \
-                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
-        >> (16 - (np - i));                                                            \
-    return k ? i + gs_ctz32(k) : -1;
+    k = GS_BMASK_DROP(GS_BMASK(GS_AND(TESTA(GS_LOAD(p + np - 16)),                     \
+                                      TESTB(GS_LOAD(p + np - 16 + d)))),               \
+                      16 - (np - i));                                                  \
+    return k ? i + GS_BMASK_FIRST(k) : -1;
 
 #define GS_TEST_S(x) gs_bsm_test(&ms, ks, x)
 #define GS_TEST_A(x) gs_bsm_test(&ma, ka, x)
@@ -1465,8 +1560,52 @@ static int64_t gs_scan_pair_blocks(const uint8_t *p, int64_t np, const gs_bytese
     }
 }
 
-#else
-static void gs_scan_init(void) {}
+/* The block loop of a collect over n >= 16 positions: the positions TEST
+   finds go to out while it has room, and the return is what was written. */
+#define GS_COLLECT_LOOP(TEST)                                                          \
+    int64_t i = 0, cnt = 0;                                                            \
+    for (; i + 16 <= n; i += 16) {                                                     \
+        gs_bmask m = GS_BMASK(TEST(GS_LOAD(p + i)));                                   \
+        while (m) {                                                                    \
+            if (cnt == cap) return cnt;                                                \
+            out[cnt++] = i + GS_BMASK_FIRST(m);                                        \
+            m = GS_BMASK_NEXT(m);                                                      \
+        }                                                                              \
+    }                                                                                  \
+    if (i < n) {                                                                       \
+        gs_bmask m = GS_BMASK_DROP(GS_BMASK(TEST(GS_LOAD(p + n - 16))),                \
+                                   16 - (n - i));                                      \
+        while (m) {                                                                    \
+            if (cnt == cap) return cnt;                                                \
+            out[cnt++] = i + GS_BMASK_FIRST(m);                                        \
+            m = GS_BMASK_NEXT(m);                                                      \
+        }                                                                              \
+    }                                                                                  \
+    return cnt;
+
+static GS_INLINE int64_t gs_scan_collect_k(const uint8_t *p, int64_t n, const gs_byteset *s,
+                                           int64_t *out, int64_t cap, int ks) {
+    gs_bsm ms;
+    gs_bsm_init(&ms, s, 0);
+    GS_COLLECT_LOOP(GS_TEST_S)
+}
+
+static GS_SSSE3 int64_t gs_scan_collect_tables(const uint8_t *p, int64_t n, const gs_byteset *s,
+                                               int64_t *out, int64_t cap) {
+    gs_bsm ms;
+    gs_bsm_init(&ms, s, 1);
+    GS_COLLECT_LOOP(GS_TABLES_S)
+}
+
+static int64_t gs_scan_collect_blocks(const uint8_t *p, int64_t n, const gs_byteset *s,
+                                      int64_t *out, int64_t cap) {
+    switch (s->kind) {
+        case 1: return gs_scan_collect_k(p, n, s, out, cap, 1);
+        case 2: return gs_scan_collect_k(p, n, s, out, cap, 2);
+        case 3: return gs_scan_collect_k(p, n, s, out, cap, 3);
+        default: return gs_scan_collect_k(p, n, s, out, cap, 4);
+    }
+}
 #endif
 
 GS_API int64_t gs_scan_any(const uint8_t *p, int64_t n, const void *set) {
@@ -1476,6 +1615,8 @@ GS_API int64_t gs_scan_any(const uint8_t *p, int64_t n, const void *set) {
 #ifdef GS_SCAN_SSE2
     if (n >= 16 && s->kind != 5) return gs_scan_any_blocks(p, n, s);
     if (n >= 16 && gs_cpu_ssse3) return gs_scan_any_tables(p, n, s);
+#elif defined(GS_SCAN_NEON)
+    if (n >= 16) return s->kind != 5 ? gs_scan_any_blocks(p, n, s) : gs_scan_any_tables(p, n, s);
 #endif
     return gs_scan_any_bytes(p, n, s);
 }
@@ -1491,8 +1632,38 @@ GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t 
 #ifdef GS_SCAN_SSE2
     if (np >= 16 && sa->kind != 5 && sb->kind != 5) return gs_scan_pair_blocks(p, np, sa, d, sb);
     if (np >= 16 && gs_cpu_ssse3) return gs_scan_pair_tables(p, np, sa, d, sb);
+#elif defined(GS_SCAN_NEON)
+    if (np >= 16) {
+        if (sa->kind != 5 && sb->kind != 5) return gs_scan_pair_blocks(p, np, sa, d, sb);
+        return gs_scan_pair_tables(p, np, sa, d, sb);
+    }
 #endif
     return gs_scan_pair_bytes(p, np, sa, d, sb);
+}
+
+/* The indexes of a search's hits, batched: one call where a caller would
+   otherwise call gs_scan_any per hit, its per-call setup and dispatch paid
+   once for them all. Writes up to cap of them to out and returns how many
+   it wrote, so a return of cap says more hits may follow, which a call on
+   what is left collects without rescanning these. */
+GS_API int64_t gs_scan_collect(const uint8_t *p, int64_t n, const void *set, int64_t *out,
+                               int64_t cap) {
+    const gs_byteset *s = (const gs_byteset *)set;
+    if (n <= 0 || cap <= 0) return 0;
+    if (s->kind == 0) {
+        if (!s->invert) return 0;
+        int64_t cnt = n < cap ? n : cap;
+        for (int64_t i = 0; i < cnt; i++) out[i] = i;
+        return cnt;
+    }
+#ifdef GS_SCAN_SSE2
+    if (n >= 16 && s->kind != 5) return gs_scan_collect_blocks(p, n, s, out, cap);
+    if (n >= 16 && gs_cpu_ssse3) return gs_scan_collect_tables(p, n, s, out, cap);
+#elif defined(GS_SCAN_NEON)
+    if (n >= 16) return s->kind != 5 ? gs_scan_collect_blocks(p, n, s, out, cap)
+                                   : gs_scan_collect_tables(p, n, s, out, cap);
+#endif
+    return gs_scan_collect_bytes(p, n, s, out, cap);
 }
 
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
