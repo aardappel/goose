@@ -1503,7 +1503,9 @@ fn compare(a: u8[:], b: u8[:]) -> i64 {
     return 0;
 }
 
-fn is_space(c: u8) -> bool { c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+fn is_space(c: u8) -> bool {
+    c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
+}
 
 // ASCII character classes, as C's <ctype.h> has them in the C locale: no
 // byte from 0x80 up is in any of them. They are declared into a namespace
