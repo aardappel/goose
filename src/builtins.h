@@ -129,7 +129,7 @@ struct BuiltinDef {
     int flags;
 };
 
-inline const BuiltinDef builtindefs[] = {
+inline constexpr BuiltinDef builtindefs[] = {
     #define F(k, n, lo, hi, a, r, rv, gr, fl) { k, n, lo, hi, a, r, rv, gr, fl },
     BUILTINS
     #undef F
@@ -153,4 +153,241 @@ inline const BuiltinDef &BuiltinByKind(int kind) {
     return builtindefs[kind];
 }
 
+// Metadata for LSP display (hover, signature help, completion, inlay hints).
+struct BuiltinDoc {
+    BuiltinKind kind;
+    const char *forms;          // "\n"-separated forms; "" for BF_PROPERTY (.len, .cap).
+    const char *doc;            // Markdown documentation (non-empty).
+};
+
+inline constexpr BuiltinDoc builtindocs[] = {
+    { B_PRINT, "print(values...)", "Writes the arguments' text and a newline to standard output as a single write." },
+    { B_STR, "str(values...) -> u8[>..]", "Returns the arguments' text as a fresh `u8[>..]`, built at its destination." },
+    { B_FORMAT, "format(out, values...)", "Appends the arguments' text to `out`, any growable `u8` array." },
+    { B_ASSERT, "assert(c)", "Aborts unless `c` holds (`bool` or an optional, which it narrows afterwards)." },
+    { B_ABORT, "abort(msg: u8[:])", "Aborts with `msg` and ends the program (or the current contained worker). Never returns." },
+    { B_EXIT, "exit(code: i64)", "Ends the program with exit status `code`. Never returns." },
+    { B_HARDWARE_THREADS, "hardware_threads() -> i64", "Returns a sensible worker count, never more than the data stacks allow." },
+    { B_THREAD_SPAWN, "thread_spawn(worker, args...) -> i64", "Starts a `thread_fn` worker with flat copies of `args`; returns its id, never reused." },
+    { B_THREAD_SPAWN_CONTAINED, "thread_spawn_contained(worker, args...) -> i64", "Starts a `thread_fn` worker whose failed checks or `abort` end only that worker; returns its id, never reused." },
+    { B_THREAD_WAIT, "thread_wait(id: i64) -> bool\nthread_wait(id: i64, msg) -> bool", "Blocks until worker `id` has ended and releases its storage; returns `false` if it was contained and aborted, appending its abort message to growable `u8` array `msg` on the first wait." },
+    { B_QPUT, "qput(v: T) -> bool", "Puts flat `v` on the typed queue for `T`; returns `false` at once without queueing when the queue is full." },
+    { B_QGET, "qget<T>() -> T\nqget<T>(ms: i64) -> T, bool", "Takes the next `T` from its typed queue, blocking or waiting at most `ms` milliseconds (returning `T`'s zero value and `false` on timeout)." },
+    { B_QPOLL, "qpoll<T>() -> T, bool", "Takes one `T` from its typed queue if available, else returns `T`'s zero value and `false`." },
+    { B_QLIMIT, "qlimit<T>(n: i64)", "Sets the typed queue for `T` to hold at most `n` messages (`n > 0`)." },
+    { B_DEFAULT, "default<T>() -> T", "Returns the value a fixed-size `T` has before anything is written to it, declared field defaults applied." },
+    { B_COPY, "copy(x: T) -> T", "Returns a fresh copy of the stored value or reference `x` names." },
+    { B_MOVE_FROM, "move_from(dst: T[:], src: T[:])", "Copies fixed-size elements from `src` into equal-length slice `dst` with overlap-safe ordering." },
+    { B_TO_BYTES, "to_bytes(a) -> u8[>..]\nto_bytes(a, out)", "Builds a framed image of array or slice `a` (a varint byte count then its element region), fresh as `u8[>..]` or appended to growable `u8` array `out`." },
+    { B_BYTES_OF, "bytes_of(a) -> const u8[:]", "Returns the element region of array or slice `a` alone as a read-only `const u8[:]` view without copying." },
+    { B_FROM_BYTES, "from_bytes<A>(b: u8[:]) -> A, bool", "Verifies untrusted image `b` and copies it into a fresh array `A` (`T[>..]`, `T[>..<]`, or `T[]`), or returns an empty array and `false`." },
+    { B_EMBED_SHADER, "embed_shader(path: const u8[:]) -> const u8[:]\nembed_shader(stage: const u8[:], source: const u8[:]...) -> const u8[:]", "Compiles GLSL at compile time from file `path` or stage (`\"vert\"`, `\"frag\"`, `\"comp\"`) and `source` strings into a static `const u8[:]` shader blob." },
+    { B_EMBED_FILE, "embed_file(path: const u8[:]) -> const u8[:]", "Reads file `path` (relative to the calling source file) at compile time into static `const u8[:]` data." },
+    { B_FILE, "src_file() -> const u8[:]", "Returns the base file name of the source file containing the call as `const u8[:]` (or of the caller when evaluated as an omitted default)." },
+    { B_LINE, "src_line() -> i64", "Returns the 1-based line number of the call (or of the caller when evaluated as an omitted default)." },
+    { B_LEN, "", "The element count of the array or slice." },
+    { B_CAP, "", "The capacity of the limited array (`T[..k]` or `T[..]`)." },
+    { B_INDEX_OF, "index_of(a, r: T&) -> i64", "Returns the index of the element `r` refers to in fixed-stride array `a` (proven rooted in `a`)." },
+    { B_RANGE_INDEX, "range_index(a, s: T[:]) -> i64\nrange_index(a, s: T[:], msg: const u8[:]) -> i64", "Returns the start index in fixed-stride array `a` of contained slice `s` (0 when empty), aborting with `msg` if out of range." },
+    { B_CHECK_LENGTH, "check_length(a, n: i64) -> i64\ncheck_length(a, n: i64, msg: const u8[:]) -> i64", "Validates `n` against a data-stack reservation without changing `a`, returning `n` or aborting with `msg`." },
+    { B_PUSH, "push(a, v: T) -> T&", "Constructs element `v` in place at the end of growable array `a` and returns a reference to it." },
+    { B_APPEND, "append(a, src)", "Appends the elements of array, slice, or array literal `src` into growable array `a`." },
+    { B_POP, "pop(a) -> T", "Removes and returns the last element of `a`, aborting if empty." },
+    { B_POP_N, "pop_n(a, n: i64)", "Drops the last `n` elements of `a`, aborting if fewer than `n` exist." },
+    { B_RESIZE, "resize(a, n: i64)\nresize(a, n: i64, v: T)", "Shrinks `a` to length `n`; with `v`, grows with copies of `v` or shrinks." },
+    { B_CLEAR, "clear(a)", "Empties `a`, setting its length to 0." },
+    { B_ALLOC_INDEX, "alloc_index(a, v: T) -> i64", "Allocates or reuses a slot in a `reusable` pool with `v` and returns its index. Deprecated: prefer `slot_pool<T>`." },
+    { B_ALLOC_REF, "alloc_ref(a, v: T) -> T&", "Allocates or reuses a slot in a `reusable` pool with `v` and returns a reference to it. Deprecated: prefer `slot_pool<T>`." },
+    { B_FREE, "free(a, i: i64)", "Marks slot `i` available for reuse in a `reusable` pool. Deprecated: prefer `slot_pool<T>`." },
+    { B_ALLOC_SLICE, "alloc_slice(a, n: i64) -> T[:]", "Allocates or reuses a default-initialized run of `n` elements in a `reusable[]` pool. Deprecated: prefer `slice_pool<T>`." },
+    { B_REALLOC_SLICE, "realloc_slice(a, s: T[:], n: i64) -> T[:]", "Resizes pool slice `s` to `n` elements in a `reusable[]` pool. Deprecated: prefer `slice_pool<T>`." },
+    { B_FREE_SLICE, "free_slice(a, s: T[:])", "Marks slice `s` available for reuse in a `reusable[]` pool. Deprecated: prefer `slice_pool<T>`." },
+};
+
+static_assert(sizeof(builtindocs) / sizeof(builtindocs[0]) == B_COUNT,
+              "builtindocs must stay in sync with BUILTINS");
+
+struct ParsedBuiltinForm {
+    string_view text;
+    string_view tyargs;
+    string_view params[3];
+    int nparams = 0;
+    int minargs = 0;
+    int maxargs = 0;
+    bool variadic = false;
+    string_view rets;
+
+    constexpr bool IsVariadic(int idx) const { return variadic && idx == nparams - 1; }
+
+    static constexpr string_view Trim(string_view s) {
+        while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
+        while (!s.empty() && s.back() == ' ') s.remove_suffix(1);
+        return s;
+    }
+
+    static constexpr string_view ParamName(string_view param) {
+        auto c = param.find(':');
+        if (c != string_view::npos) param = param.substr(0, c);
+        if (param.size() >= 3 && param.substr(param.size() - 3) == "...")
+            param.remove_suffix(3);
+        return Trim(param);
+    }
+};
+
+constexpr bool ParseBuiltinForm(string_view line, int prev_max, ParsedBuiltinForm &f,
+                                string_view *name_out = nullptr) {
+    f = {};
+    f.text = line;
+    size_t i = 0, n = line.size();
+    while (i < n && line[i] != '<' && line[i] != '(') i++;
+    if (i == 0 || i == n) return false;
+    if (name_out) *name_out = line.substr(0, i);
+    if (line[i] == '<') {
+        size_t lt = i;
+        int angle = 0, bracket = 0;
+        for (; i < n; i++) {
+            auto ch = line[i];
+            if (ch == '[') bracket++;
+            else if (ch == ']') { if (bracket > 0) bracket--; }
+            else if (bracket == 0) {
+                if (ch == '<') angle++;
+                else if (ch == '>' && --angle == 0) { i++; break; }
+            }
+        }
+        if (angle != 0 || i == n || line[i] != '(') return false;
+        f.tyargs = line.substr(lt, i - lt);
+    }
+    if (i >= n || line[i] != '(') return false;
+    size_t lp = i++;
+    int paren = 1, bracket = 0;
+    size_t rp = string_view::npos;
+    for (; i < n; i++) {
+        auto ch = line[i];
+        if (ch == '[') bracket++;
+        else if (ch == ']') { if (bracket > 0) bracket--; }
+        else if (ch == '(') paren++;
+        else if (ch == ')') {
+            if (--paren == 0) { rp = i; break; }
+        }
+    }
+    if (rp == string_view::npos) return false;
+    auto inner = ParsedBuiltinForm::Trim(line.substr(lp + 1, rp - (lp + 1)));
+    if (!inner.empty()) {
+        size_t start = 0;
+        paren = bracket = 0;
+        int angle = 0;
+        for (size_t j = 0; j <= inner.size(); j++) {
+            bool split = (j == inner.size());
+            if (!split) {
+                auto ch = inner[j];
+                if (ch == '[') bracket++;
+                else if (ch == ']') { if (bracket > 0) bracket--; }
+                else if (ch == '(') paren++;
+                else if (ch == ')') { if (paren > 0) paren--; }
+                else if (ch == '<' && bracket == 0) angle++;
+                else if (ch == '>' && bracket == 0 && !(j > 0 && inner[j - 1] == '-') && angle > 0) angle--;
+                else if (ch == ',' && bracket == 0 && paren == 0 && angle == 0) split = true;
+            }
+            if (split) {
+                auto p = ParsedBuiltinForm::Trim(inner.substr(start, j - start));
+                if (p.empty() || f.nparams >= 3) return false;
+                f.params[f.nparams++] = p;
+                start = j + 1;
+            }
+        }
+        for (int k = 0; k < f.nparams; k++) {
+            auto p = f.params[k];
+            if (p.size() >= 3 && p.substr(p.size() - 3) == "...") {
+                if (k != f.nparams - 1) return false;
+                f.variadic = true;
+            }
+            auto pname = ParsedBuiltinForm::ParamName(p);
+            if (pname.empty()) return false;
+            for (size_t c = 0; c < pname.size(); c++) {
+                auto ch = pname[c];
+                bool alpha = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
+                bool digit = ch >= '0' && ch <= '9';
+                if (c == 0 ? !alpha : !(alpha || digit)) return false;
+            }
+        }
+    }
+    auto rest = line.substr(rp + 1);
+    if (!rest.empty()) {
+        if (rest.size() <= 4 || rest.substr(0, 4) != " -> ") return false;
+        f.rets = ParsedBuiltinForm::Trim(rest.substr(4));
+        if (f.rets.empty()) return false;
+    }
+    if (f.variadic) {
+        // Trailing x... accepts 0+ items unless the previous form already ended at nparams - 1 (embed_shader).
+        f.minargs = prev_max >= f.nparams - 1 ? f.nparams : f.nparams - 1;
+        f.maxargs = 99;
+    } else {
+        f.minargs = f.nparams;
+        f.maxargs = f.nparams;
+    }
+    return true;
+}
+
+constexpr bool ParseBuiltinForms(string_view forms, ParsedBuiltinForm (&out)[2], int &nforms,
+                                 string_view expected_name = {}) {
+    nforms = 0;
+    if (forms.empty()) return true;
+    int prev_max = -1;
+    size_t pos = 0;
+    while (pos <= forms.size()) {
+        auto nl = forms.find('\n', pos);
+        auto end = nl == string_view::npos ? forms.size() : nl;
+        auto line = forms.substr(pos, end - pos);
+        if (line.empty() || nforms >= 2) return false;
+        string_view fname;
+        if (!ParseBuiltinForm(line, prev_max, out[nforms], &fname)) return false;
+        if (!expected_name.empty() && fname != expected_name) return false;
+        prev_max = out[nforms].maxargs;
+        nforms++;
+        if (nl == string_view::npos) break;
+        pos = nl + 1;
+    }
+    return true;
+}
+
+constexpr bool CheckBuiltinDocs() {
+    for (int k = 0; k < B_COUNT; k++) {
+        const auto &def = builtindefs[k];
+        const auto &doc = builtindocs[k];
+        if (doc.kind != k || !doc.forms || !doc.doc || doc.doc[0] == '\0') return false;
+        if (def.flags & BF_PROPERTY) {
+            if (doc.forms[0] != '\0') return false;
+            continue;
+        }
+        ParsedBuiltinForm forms[2];
+        int nforms = 0;
+        if (!ParseBuiltinForms(doc.forms, forms, nforms, def.name) || nforms < 1 || nforms > 2)
+            return false;
+        int lo = forms[0].minargs;
+        int hi = forms[0].maxargs;
+        for (int i = 0; i < nforms; i++) {
+            const auto &f = forms[i];
+            if (i > 0 && f.minargs <= forms[i - 1].maxargs) return false;
+            if ((!f.tyargs.empty()) != ((def.flags & BF_TYARGS) != 0)) return false;
+            if ((def.flags & BF_MEMBER) && f.nparams < 1) return false;
+            if (def.rets[0] != '\0') {
+                string_view want = def.rets[0] == 'i' ? "i64"
+                                 : def.rets[0] == 'e' ? "T"
+                                 : def.rets[0] == 'r' ? "T&"
+                                 : def.rets[0] == 's' ? "T[:]" : "";
+                if (want.empty() || f.rets != want) return false;
+            }
+            if (f.minargs < lo) lo = f.minargs;
+            if (f.maxargs > hi) hi = f.maxargs;
+        }
+        if (lo != def.minargs || hi != def.maxargs) return false;
+    }
+    return true;
+}
+static_assert(CheckBuiltinDocs(), "builtindocs must stay in sync with BUILTINS");
+
+inline constexpr const BuiltinDoc &BuiltinDocByKind(int kind) {
+    assert(kind >= 0 && kind < B_COUNT && builtindocs[kind].kind == kind);
+    return builtindocs[kind];
+}
 }  // namespace goose

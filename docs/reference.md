@@ -3970,7 +3970,7 @@ a read. Three builtins do this for any array:
 | Builtin | Meaning |
 |---|---|
 | `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | a framed image of the array: a varint byte count, then its element region; fresh, or appended to `out` |
-| `bytes_of(a) -> u8[:]` | the element region alone, as a read-only view: nothing copied |
+| `bytes_of(a) -> const u8[:]` | the element region alone, as a read-only view: nothing copied |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a **verified** array from an untrusted image; `false` and an empty array if it is not one |
 
 Bytes arriving from outside the program are the only place a reference

@@ -7666,7 +7666,12 @@ implicit `it`.
 and the occurrence at its position (`Locate`, `FileIndex::At`). Hover
 renders a declaration header (`FnHeader`, `VariantHeader`), the type a clone
 gave the node, the specializations a function has (`SpecsText`) and the
-documentation comment (`DocText`, with the `//` stripped). For a name no
+documentation comment (`DocText`, with the `//` stripped); for builtins
+(`builtins.h`, `builtindocs` compact form strings, compile-time checked via
+`CheckBuiltinDocs()`), it renders the arity-matched form, concrete call
+types and documentation (or all forms without concrete types when uncalled or
+unmatched, and `builtin .name: i64` with documentation for properties `.len`
+and `.cap`). For a name no
 instantiation reaches, hover says so. For a type that an exemplar's clone
 gave, it says that the type is an exemplar's (`NoteExemplar`: `a: T`, "in an
 exemplar instantiation"). For a name past the error that ended an exemplar,
@@ -7680,15 +7685,24 @@ follows the resolution to the declaration's name (`DefinitionOf`), and on an
 file's top-level declarations with their fields, variants and nested
 functions; workspace symbols are those of every root. Semantic tokens
 classify the occurrences by their resolution (`SemanticTokenOf`, the legend
-in `SEMANTIC_TYPES`). Signature help finds the innermost call whose
-parentheses hold the position (`FileIndex::CallAt`), and counts the commas
-before the position to find the active parameter, leaving out commas in
-string and character literals and in comments. It lists the overloads of the
-callee's name, with the resolved one active; for a UFCS call these are the
-ones the receiver's type selects (`MethodsOf`, from its clone's type), which
-is also where hover and definition look for a call the check left
-unresolved. Completion (`Completion`) looks
-at what precedes the name being typed:
+in `SEMANTIC_TYPES`, setting `SM_DEFAULTLIBRARY` for resolved builtins and
+builtin members/properties). Signature help finds the innermost call whose
+parentheses hold the position (`FileIndex::CallAt`) and counts the commas
+before the position to find the active parameter, leaving out commas in string
+and character literals and in comments. It lists the overloads of the callee's
+name and applicable builtin forms from `builtindocs`, selecting the resolved
+user overload or arity-matching builtin form and clamping `activeParameter` to
+any trailing variadic parameter. For an unresolved dot call, one helper
+(`ResolveUfcs`) mirrors `CheckUfcsCall`'s order across hover, definition,
+semantic tokens, signature help and rename refusal: `BF_MEMBER` builtins on
+`TY_ARRAY` receivers, then struct field names, type parameters (`GenericAt`),
+enclosing local functions (`LocalFnsAt`) and `MethodsOf`, then any remaining
+callable builtin that accepts the receiver (or any callable builtin when the
+receiver has no checked type or is an exemplar's opaque type). Signature help
+and free-call lookup also check `LocalFnsAt` ahead of `Namespace::functionmap`.
+Non-call properties (`.len`, `.cap`) still require a known array or slice
+receiver type (`ResolveDotProperty`). Completion (`Completion`) looks at what
+precedes the name being typed:
 
 * After a `.`, it offers the members of the value before the `.`
   (`MemberCompletions`). The innermost node ending at the `.` is the object
@@ -7696,16 +7710,19 @@ at what precedes the name being typed:
   it). The object's type from a clone gives the fields of a struct or a
   variant's payload, the functions whose first parameter takes the type
   (`FirstParamTakes`: untyped, generic, the type or a reference to it) as
-  UFCS calls, and the builtin members of its kind (`RecvKindOf`). An enum's
-  name before the `.` gives its variants, and a value no instantiation typed
-  gives every field and function.
+  UFCS calls, and the builtin members of its kind (`RecvKindOf`), all carrying
+  signatures and docs from `builtindocs` (ordered ahead of user methods only
+  for `TY_ARRAY` receivers so shared names follow `CheckUfcsCall`
+  precedence). An enum's name before the `.` gives its variants, and a value no
+  instantiation typed gives every field and function.
 * After `::`, it offers the namespace's declarations.
 * Otherwise it offers the names in scope (`ScopeCompletions`), taken from
   the parse tree alone so that a generic body has them too. In order of
   nearness (`sortText`), these are the bindings of the enclosing blocks
   declared before the position, the enclosing functions' parameters, type
   parameters and nested functions, every namespace's declarations (qualified
-  where the namespace is not the file's own), the builtins and the keywords.
+  where the namespace is not the file's own), the builtins (with signatures
+  and docs from `builtindocs`) and the keywords.
 
 References and rename share one notion of identity: the place of the
 declaration's name, as `DefinitionOf` finds it for any occurrence. Two
@@ -7744,10 +7761,14 @@ Inlay hints give two things. The first is the type of each `let` or `var`
 that has no type written, shown after its name, where the clones' `VarDef`s
 agree on it (there is no hint where the specializations differ, or where an
 exemplar knows the type only as `?`). The second is the parameter's name
-before each argument written in a call resolved to a specialization (not
-before the defaults that a global's initializer, checked in place, holds). A
-UFCS call's object stands for the first parameter, and an argument that is
-the parameter's own name gets no hint. Folding ranges are every
+before each argument written in a call resolved to a specialization, never
+before the defaults that a global's initializer, checked in place, holds.
+Multi-argument builtin calls (`>= 2` post-receiver written arguments for
+`BF_MEMBER` builtins, or `>= 2` written arguments for non-member builtins)
+likewise emit parameter hints for non-variadic parameters from `builtindocs`,
+or from the worker's parameters on `thread_spawn*`. A UFCS call's object
+stands for the first parameter, and an argument that is the parameter's own
+name gets no hint. Folding ranges are every
 brace-delimited body (a block, a match, a struct literal) and declaration
 that spans more than one line, as `region`, and every run of `//` comment
 lines, as `comment`. A body's or declaration's range ends one line early

@@ -54,6 +54,7 @@ MALFORMED = [
     "test/errors/",
     "test/errors_tc/recovery/",
     "test/lsp/broken_decls.goose",
+    "test/lsp/builtins.goose",
     "test/lsp/complete.goose",
     "test/lsp/exemplar.goose",
     "test/syntax/lexer_tokens.goose",
