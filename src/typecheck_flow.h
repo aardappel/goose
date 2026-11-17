@@ -173,6 +173,15 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
     return GrowShrinkTaint(p, t, reach);
 }
 
+// The tail the never-stored rules share (§5.2's grow-shrink arrays, §5.5's
+// own handles): what the reference may point at, or was read from, goes away
+// or is handed on, and only a variable's binding, an argument or a result is
+// a place where the consume or shrink is visible to judge the view.
+inline string TypeCheck::NeverStoredTail(string_view rule) {
+    return cat(": such a reference lives in a variable, is passed down or returned, and "
+               "is never stored (", rule, ")");
+}
+
 // Why a reference rooted at root, or a holder of one, is never stored: it
 // may point into a grow-shrink array (§5.2), or it is a back edge's result,
 // which may point anywhere, as may a parameter whose class stands for one.
@@ -181,8 +190,7 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
 // may. `reach`: root only bounds the reference, and the array is one root
 // leads to (GrowShrinkTaint).
 inline string TypeCheck::NeverStoredError(VarDef *root, bool may, bool reach) {
-    auto stored = ": such a reference lives in a variable, is passed down or returned, and "
-                  "is never stored (§5.2)";
+    auto stored = NeverStoredTail("§5.2");
     if (reach)
         return cat("storing a reference that may point into a grow-shrink array ",
                    ReachedThroughStr(root), stored);
@@ -191,6 +199,15 @@ inline string TypeCheck::NeverStoredError(VarDef *root, bool may, bool reach) {
                    root->name, " may", stored);
     return cat("storing a reference ", may ? "that may point " : "", "into ", root->name,
                ", which holds a grow-shrink array", stored);
+}
+
+// The store rule for a view read out of an own handle (§5.5, §4.8 of the
+// design note): what the view names dies with the handle's consume or moves
+// with it, and a slot holding the view would outlive that, reading what the
+// slot next holds.
+inline string TypeCheck::OwnViewStoredError(const Val &v) {
+    return cat("storing a view read from own handle ", v.ownviews.v[0]->name,
+               NeverStoredTail("§5.5"));
 }
 
 // "reached through p's references": where the grow-shrink array a root that
@@ -564,6 +581,20 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
                                     !vd->type->cq, true);
         if (cands.Any([](const RootAlt &a) { return a.root != nullptr; })) p.alts = cands.alts;
     }
+    // A plain view read out of an own handle names the handle it was read
+    // from (§4.8 of the design note), as &x is rooted at x: the consume of
+    // the handle looks for it there (OwnShrunkAt). The field is no place
+    // (§9.2): the alternatives already here keep the pointee's real
+    // provenance, the pool owning its slots, and no rule but the binding
+    // (BindProv, AddBinding) and that consume reads it. A struct value that
+    // owns fields is no handle: its borrows answer for its fields
+    // (VarDef::ownalias); nor is a relative link one: its value is the pool
+    // reference it stands for, rooted where §3.9 keeps it.
+    if (vd->owned && !deferbodies && vd->type && vd->type->oq && IsRefOrSlice(vd->type) &&
+        !IsRelRef(vd->type)) {
+        p.ownviews.clear();
+        p.ownviews.add(vd);
+    }
     return p;
 }
 
@@ -736,7 +767,9 @@ inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool 
 inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use) {
     auto top = (int)frames.size() - 1;
     for (auto i = (int)vars.size() - 1; i >= frames[top].varbase; i--)
-        if (vars[i]->name == name) return vars[i];
+        if (vars[i]->name == name) {
+            return vars[i];
+        }
     VarDef *found = nullptr;
     ForOuterVars(top, [&](VarDef *v) {
         if (v->name != name) return false;
@@ -944,7 +977,8 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
     FlowState f;
     EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
         auto v = vars[i];
-        f.locals.push_back({ i, v, { v->assigned, v->maybeassigned, v->narrowed, v->own } });
+        f.locals.push_back({ i, v, { v->assigned, v->maybeassigned, v->narrowed, v->own,
+                                     v->ref.ownviews } });
     });
     // Globals' narrowing participates too (assignment in branches).
     for (auto v : narrowedglobals)
@@ -961,6 +995,11 @@ inline void TypeCheck::RestoreFlow(const FlowState &f) {
         e.var->maybeassigned = e.state.maybeassigned;
         e.var->narrowed = e.state.narrowed;
         e.var->own = e.state.own;
+        // The own-view answers only grow on a restore: the restored state is
+        // a path to the restore point, whose binding may name handles the
+        // binding at the point saved answers (§5.5), and a consume after the
+        // restore judges the view of either.
+        e.var->ref.ownviews.union_with(e.state.ownviews);
     }
     for (auto v : narrowedglobals) v->narrowed = nullptr;
     for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
@@ -994,10 +1033,18 @@ inline TypeCheck::FlowState TypeCheck::JoinFlow(const FlowState &a, const FlowSt
     size_t p = 0, q = 0;
     for (auto &e : joined.locals) {
         auto aa = at(a, p, e), bb = at(b, q, e);
-        e.state = { (!a.reachable || aa.assigned) && (!b.reachable || bb.assigned),
-                    (a.reachable && aa.maybeassigned) || (b.reachable && bb.maybeassigned),
-                    narrow(aa.narrowed, bb.narrowed),
-                    !a.reachable ? bb.own : !b.reachable ? aa.own : JoinOwn(aa.own, bb.own) };
+        // The paths' own-view answers union: the binding itself may name
+        // either path's handle (§5.5), as it may lie where either's roots
+        // do.
+        auto &views = e.state.ownviews;
+        views = !a.reachable ? bb.ownviews
+              : !b.reachable ? aa.ownviews
+              : (views = aa.ownviews, views.union_with(bb.ownviews), views);
+        e.state.assigned = (!a.reachable || aa.assigned) && (!b.reachable || bb.assigned);
+        e.state.maybeassigned = (a.reachable && aa.maybeassigned) ||
+                                (b.reachable && bb.maybeassigned);
+        e.state.narrowed = narrow(aa.narrowed, bb.narrowed);
+        e.state.own = !a.reachable ? bb.own : !b.reachable ? aa.own : JoinOwn(aa.own, bb.own);
     }
     // A global stays narrowed where every reachable side narrowed it.
     if (!a.reachable) joined.globals = b.globals;
@@ -3293,7 +3340,13 @@ inline bool TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv,
     }
     // A rebind to other storage keeps the lifetime bound but means the
     // variable no longer names one array: a read inside a loop this rebind
-    // is in sees both on the next pass (CheckLoopPasses).
+    // is in sees both on the next pass (CheckLoopPasses). A value read out
+    // of an own handle (§5.5) names it to the binding; a rebind to another
+    // handle takes that one instead, which ends the view the binding had.
+    // A rebind replaces the answer of the path it is on; a branch the
+    // checker returns from carries the earlier one in its saved flow, and
+    // their join unions the paths' (RestoreFlow, JoinFlow).
+    vd->ref.ownviews = rv.ownviews;
     return AddBinding(vd, rv) || changed;
 }
 

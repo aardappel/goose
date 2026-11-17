@@ -1623,6 +1623,12 @@ inline void TypeCheck::NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeEx
     auto reach = false;
     if (auto gs = StoredIntoGrowShrink(v, roots, t, !isrs, &reach))
         Error(at, NeverStoredError(gs, MayPointWording(roots, gs), reach));
+    // A view read out of an own handle is never stored (§5.5): the element
+    // would keep it past the handle's consume, past OwnShrunkAt's scan.
+    // However if the field's type is own, then the assignment to the field
+    // is a valid consume of the handle.
+    if (v.ownviews.any() && !(v.type && v.type->oq))
+        Error(at, OwnViewStoredError(v));
     deep.roots.Add(roots);
     deep.byteview = deep.byteview || v.byteview;
 }

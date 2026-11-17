@@ -951,9 +951,10 @@ of `own`-holding elements with the scope-exit compare, owning operations on
 both pools, owned relative links, and a sample
 ([33_owned_handles](../../samples/33_owned_handles.goose)). The rules as
 built are in [reference §14](../reference.md#owning-handles) and
-[spec §5.5](../goose_spec.md#55-owning-handles-experimental). Not built: the
-affine form (4.5), release as a shrink (4.8), `clear_all`, `handle_of`, and
-all of section 5. What the build leaves open, and in which order to take it
+[spec §5.5](../goose_spec.md#55-owning-handles-experimental). Also built on
+this branch: release as a shrink (4.8), its views living in variables of
+their own, never stored. Not built: the affine form (4.5), `clear_all`,
+`handle_of`, and all of section 5. What the build leaves open, and in which order to take it
 up, is [10.1](#101-what-is-left-open).
 
 Where the implementation departs from sections 4 and 6:

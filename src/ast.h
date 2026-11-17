@@ -658,11 +658,47 @@ struct Roots {
     }
 };
 
+// The handles a view answers to (§5.5), at most four without saturation: a
+// branch's join unions the paths' answers, and past four the mark saturates
+// -- it then names every handle, so consumes are judged as if the view
+// still answered to them (the store rule reads only that it is not empty).
+struct OwnViewMark {
+    VarDef *v[4] = {};
+    int n = 0;
+    bool saturated = false;
+    bool has(VarDef *vd) const {
+        if (saturated) return true;
+        for (auto k = 0; k < n; k++) if (v[k] == vd) return true;
+        return false;
+    }
+    bool any() const { return n > 0 || saturated; }
+    void add(VarDef *vd) {
+        if (saturated || has(vd)) return;
+        if (n >= 4) { saturated = true; return; }
+        v[n++] = vd;
+    }
+    void clear() { n = 0; saturated = false; }
+    // The handles both paths' bindings may name: the union of this path's
+    // and the other's, saturating past four (the consume of any handle a
+    // saturated view may name is then judged as if it answered to it).
+    void union_with(const OwnViewMark &o) {
+        if (o.saturated) { saturated = true; return; }
+        for (auto k = 0; k < o.n; k++) add(o.v[k]);
+    }
+    bool operator==(const OwnViewMark &) const = default;
+};
+
 // Where a reference or slice points, as the lifetime system tracks it (§9):
 // its roots, and the provenance bits. The checked value of an expression
 // (Val), a location (TypeCheck::LVal) and the binding a reference variable
 // holds (VarDef::ref) all carry one.
 struct Prov : Roots {
+    // The own handles this value was read out of (§5.5), none on anything
+    // the checker judges as a place: the consume of a handle looks for the
+    // views still bound from it (OwnShrunkAt). Carried per path: a rebind
+    // replaces it, a branch's join unions the paths' (JoinFlow), so the
+    // consume of a handle after the join sees every path's answer.
+    OwnViewMark ownviews;
     bool writable = false;       // Writable provenance (§9.5).
     // A `bytes_of` view (docs/design/serialization.md): a u8 slice over the
     // element region of an array of some other type. The shrink scans of §5.1

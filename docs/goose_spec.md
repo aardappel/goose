@@ -2036,6 +2036,16 @@ scope exit, apart from the one length check below.
 * **Empty values.** A variable of type `own T?` or `own T[:]` known to hold
   null or the empty run owes nothing: after a `null` or `[]`, after
   `take`, and where a condition found it null.
+* **Views.** A plain reference or slice read out of an own value a variable
+  holds must not be used after the value it was read from is consumed.
+  Consuming the value may free or otherwise invalidate the viewed storage.
+  Use of a view after the value is consumed is an error at the consume,
+  naming the view (`cannot release s while r is still used`), where used
+  is read as elsewhere (§5.1, §7.6). The view lives in a variable, is
+  passed down or returned, and is never stored into a field, an element,
+  a global, or any other storage (`storing a view read from own handle s`),
+  which is the rule §5.2 keeps for views into a grow-shrink array. A return
+  that hands a view of a claimed value to the caller is an error as well.
 * **Storage.** `take(place)` yields the own value a place holds and leaves
   its empty value; `replace(place, v)` stores `v` and yields what was there.
   An assignment to storage holding an own value is an error, except to a

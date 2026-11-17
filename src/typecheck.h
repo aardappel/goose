@@ -260,6 +260,11 @@ struct TypeCheck {
         bool maybeassigned = false;
         TypeExpr *narrowed = nullptr;
         OwnFlow own;                // Of a variable carrying an obligation (VarDef::owned).
+        // The own handles a reference or slice variable's binding answers for
+        // on this path (§5.5): a rebind replaces it, a branch's join unions
+        // the paths', so the consume of one handle after the join judges the
+        // views of every path that reaches it (JoinFlow).
+        OwnViewMark ownviews;
         bool operator==(const VarFlow &) const = default;
     };
     struct FlowEntry {
@@ -1384,6 +1389,10 @@ struct TypeCheck {
     VarDef *StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t, bool holder,
                                  bool *reach);
     string NeverStoredError(VarDef *root, bool may, bool reach);
+    // The tail the never-stored rules share (§5.2's grow-shrink arrays,
+    // §5.5's own handles), and the own-view store rule's message.
+    string NeverStoredTail(string_view rule);
+    string OwnViewStoredError(const Val &v);
     string ReachedThroughStr(VarDef *root);
     bool CycleStorable(VarDef *r);
     bool CycleStorable(const Roots &r);
@@ -2585,6 +2594,9 @@ struct TypeCheck {
     void UseOwn(VarDef *vd, const Node *at);
     void ConsumeVar(VarDef *vd, Node *at);
     void ConsumeOwn(Node *n, bool pointee = false);
+    // The release of a handle is a shrink (docs/design/ownership.md §4.8):
+    // every plain view rooted at it that is still used dies with it.
+    void OwnShrunkAt(const Node *at, VarDef *vd, string_view op);
     VarDef *OwnVarNamed(Node *n);
     bool OwnPlace(Node *n);
     Val BorrowOwn(Node *n, Val v);
