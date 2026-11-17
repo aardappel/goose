@@ -5094,19 +5094,31 @@ typedef BOOL (WINAPI *gs_os_process_prng)(PBYTE, SIZE_T);
 typedef BOOLEAN (WINAPI *gs_os_rtl_gen_random)(PVOID, ULONG);
 
 )GSRT"
+R"GSRT(/* A function of a system DLL: from the copy already loaded, else from one
+   loaded out of System32 only, as Go does. bcryptprimitives.dll is not a
+   KnownDLL, so a plain LoadLibraryW would look in the application's
+   directory first, and a DLL placed there would supply the program's keys. */
+static FARPROC gs_os_system_proc(const wchar_t *dll, const char *name) {
+    HMODULE h = GetModuleHandleW(dll);
+    if (!h) h = LoadLibraryExW(dll, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    return h ? GetProcAddress(h, name) : NULL;
+}
+
+)GSRT"
 R"GSRT(static int gs_os_entropy(uint8_t *p, size_t n) {
-    /* Workers may race to fill these in; each finds the same function. */
-    static gs_os_process_prng volatile prng;
-    static gs_os_rtl_gen_random volatile rtl;
-    static volatile LONG looked;
-    if (!looked) {
-        HMODULE h = LoadLibraryW(L"bcryptprimitives.dll");
-        if (h) prng = (gs_os_process_prng)GetProcAddress(h, "ProcessPrng");
-        if (!prng) {
-            h = LoadLibraryW(L"advapi32.dll");
-            if (h) rtl = (gs_os_rtl_gen_random)GetProcAddress(h, "SystemFunction036");
+    /* The function pointers themselves are published, with full barriers,
+       so a thread that sees one sees it whole (ARM64 too). Workers racing
+       the first call each look it up and find the same function. */
+    static PVOID volatile prng_fn, rtl_fn;
+    gs_os_process_prng prng = (gs_os_process_prng)InterlockedCompareExchangePointer(&prng_fn, NULL, NULL);
+    gs_os_rtl_gen_random rtl = (gs_os_rtl_gen_random)InterlockedCompareExchangePointer(&rtl_fn, NULL, NULL);
+    if (!prng && !rtl) {
+        prng = (gs_os_process_prng)gs_os_system_proc(L"bcryptprimitives.dll", "ProcessPrng");
+        if (prng) InterlockedExchangePointer(&prng_fn, (PVOID)prng);
+        else {
+            rtl = (gs_os_rtl_gen_random)gs_os_system_proc(L"advapi32.dll", "SystemFunction036");
+            if (rtl) InterlockedExchangePointer(&rtl_fn, (PVOID)rtl);
         }
-        InterlockedExchange(&looked, 1);
     }
     /* ProcessPrng always returns TRUE. */
     if (prng) return prng(p, n) ? 1 : 0;
