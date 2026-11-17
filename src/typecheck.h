@@ -260,6 +260,11 @@ struct TypeCheck {
         bool maybeassigned = false;
         TypeExpr *narrowed = nullptr;
         OwnFlow own;                // Of a variable carrying an obligation (VarDef::owned).
+        // The own handles a reference or slice variable's binding answers for
+        // on this path (§5.5): a rebind replaces it, a branch's join unions
+        // the paths', so the consume of one handle after the join judges the
+        // views of every path that reaches it (JoinFlow).
+        OwnViewMark ownviews;
         bool operator==(const VarFlow &) const = default;
     };
     struct FlowEntry {

@@ -1627,7 +1627,7 @@ inline void TypeCheck::NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeEx
     // would keep it past the handle's consume, past OwnShrunkAt's scan.
     // However if the field's type is own, then the assignment to the field
     // is a valid consume of the handle.
-    if (v.ownview && !(v.type && v.type->oq))
+    if (v.ownviews.any() && !(v.type && v.type->oq))
         Error(at, OwnViewStoredError(v));
     deep.roots.Add(roots);
     deep.byteview = deep.byteview || v.byteview;

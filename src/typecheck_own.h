@@ -290,7 +290,7 @@ inline void TypeCheck::OwnShrunkAt(const Node *at, VarDef *vd, string_view op) {
     ShrinkScanVars([&](VarDef *v) {
         if (v == vd || v->owned || v->componentowner) return;
         if (!v->type || !IsRefOrSlice(v->type)) return;
-        if (!v->refrootknown || v->ref.ownview != vd || !UsedAfter(v)) return;
+        if (!v->refrootknown || !v->ref.ownviews.has(vd) || !UsedAfter(v)) return;
         Error(at, cat("cannot ", op, " ", vd->name, " while ", v->name,
                       " is still used: it may hold a view of what the consume of ",
                       vd->name, " frees or hands on (§5.5)"));

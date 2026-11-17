@@ -1136,7 +1136,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     // The handle moves whole into a destination that owes it: no view is
     // read out of it here, and the mark for the views it spawned (§5.5)
     // rides no further, its consume having been judged where it began.
-    v.ownview = nullptr;
+    v.ownviews.clear();
     if (v.type->oq) v.type = ast.UnownedOf(v.type);
     if (!FitsPlain(v, ast.UnownedOf(dt))) return false;
     v.type = dt;
@@ -1236,7 +1236,7 @@ inline bool TypeCheck::FitsPlain(Val &v, TypeExpr *dt) {
         // consume and read what the slot next holds. An own destination
         // cleared the mark at FitsAt: the whole handle moving in is the
         // consume, and the views it spawned were its to judge.
-        if (v.ownview && !v.pointee && !ownvar) {
+        if (v.ownviews.any() && !v.pointee && !ownvar) {
             fitfail = OwnViewStoredError(v);
             return false;
         }
