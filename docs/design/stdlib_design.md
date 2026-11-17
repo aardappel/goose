@@ -750,6 +750,7 @@ fn clock() -> f64                                    // monotonic, high resoluti
 fn time_ns() -> i64      fn clock_ns() -> i64
 fn sleep(seconds: f64)   fn sleep_ms(ms: i64)
 fn random_seed() -> u64                              // OS entropy, for rng
+fn random_bytes(out: u8[:]) -> bool                  // OS CSPRNG, for keys and nonces
 ```
 
 Directory listing, subprocesses, sockets and date formatting are not in v1.

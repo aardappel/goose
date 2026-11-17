@@ -4242,6 +4242,7 @@ GS_API int64_t gs_os_time_ns(void);
 GS_API int64_t gs_os_clock_ns(void);
 GS_API void gs_os_sleep_ms(int64_t ms);
 GS_API uint64_t gs_os_random_u64(void);
+GS_API uint8_t gs_os_random_bytes(sl_u8 out);
 /* os.trim_memory: discards unused complete pages of this thread program's
    data stacks. Defined with the region registry it walks (runtime_impl.h),
    but declared here like the other os primitives, so that no prototype is
@@ -4287,6 +4288,11 @@ R"GSRT(#include <time.h>
 #include <sys/stat.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#endif
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/random.h>
+#else
+#include <unistd.h>
 #endif
 #endif
 
@@ -5077,9 +5083,86 @@ R"GSRT(GS_API void gs_os_sleep_ms(int64_t ms) {
 }
 
 )GSRT"
-R"GSRT(/* Entropy for seeding a PRNG (not cryptographic): /dev/urandom where there
-   is one; on Windows a splitmix64 mix of the clocks, the process id and an
-   address, which needs no library beyond the runtime's. */
+R"GSRT(/* Cryptographically secure random bytes from the OS into p[0..n): 1, or 0
+   if it gives none. Windows: ProcessPrng (bcryptprimitives.dll, Windows 10
+   and later, what Go and Rust use), else RtlGenRandom (advapi32.dll's
+   SystemFunction036), each looked up when first needed, so that a program
+   links no library beyond the runtime's (TinyCC's .def files list neither).
+   Elsewhere getentropy(3), 256 bytes a call, else /dev/urandom. */
+#ifdef _WIN32
+typedef BOOL (WINAPI *gs_os_process_prng)(PBYTE, SIZE_T);
+typedef BOOLEAN (WINAPI *gs_os_rtl_gen_random)(PVOID, ULONG);
+
+)GSRT"
+R"GSRT(/* A function of a system DLL: from the copy already loaded, else from one
+   loaded out of System32 only, as Go does. bcryptprimitives.dll is not a
+   KnownDLL, so a plain LoadLibraryW would look in the application's
+   directory first, and a DLL placed there would supply the program's keys. */
+static FARPROC gs_os_system_proc(const wchar_t *dll, const char *name) {
+    HMODULE h = GetModuleHandleW(dll);
+    if (!h) h = LoadLibraryExW(dll, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    return h ? GetProcAddress(h, name) : NULL;
+}
+
+)GSRT"
+R"GSRT(static int gs_os_entropy(uint8_t *p, size_t n) {
+    /* The function pointers themselves are published, with full barriers,
+       so a thread that sees one sees it whole (ARM64 too). Workers racing
+       the first call each look it up and find the same function. */
+    static PVOID volatile prng_fn, rtl_fn;
+    gs_os_process_prng prng = (gs_os_process_prng)InterlockedCompareExchangePointer(&prng_fn, NULL, NULL);
+    gs_os_rtl_gen_random rtl = (gs_os_rtl_gen_random)InterlockedCompareExchangePointer(&rtl_fn, NULL, NULL);
+    if (!prng && !rtl) {
+        prng = (gs_os_process_prng)gs_os_system_proc(L"bcryptprimitives.dll", "ProcessPrng");
+        if (prng) InterlockedExchangePointer(&prng_fn, (PVOID)prng);
+        else {
+            rtl = (gs_os_rtl_gen_random)gs_os_system_proc(L"advapi32.dll", "SystemFunction036");
+            if (rtl) InterlockedExchangePointer(&rtl_fn, (PVOID)rtl);
+        }
+    }
+    /* ProcessPrng always returns TRUE. */
+    if (prng) return prng(p, n) ? 1 : 0;
+    if (!rtl) return 0;
+    while (n > 0) {
+        ULONG part = n > 0x40000000u ? 0x40000000u : (ULONG)n;
+        if (!rtl(p, part)) return 0;
+        p += part;
+        n -= part;
+    }
+    return 1;
+}
+#else
+static int gs_os_entropy(uint8_t *p, size_t n) {
+    size_t done = 0;
+    while (done < n) {
+        size_t part = n - done > 256 ? 256 : n - done;
+        if (getentropy(p + done, part) != 0) break;
+        done += part;
+    }
+    if (done == n) return 1;
+    /* No getentropy (ENOSYS: a kernel before Linux 3.17): the device. */
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) return 0;
+    while (done < n) {
+        size_t got = fread(p + done, 1, n - done, f);
+        if (got == 0) break;
+        done += got;
+    }
+    fclose(f);
+    return done == n;
+}
+#endif
+
+)GSRT"
+R"GSRT(GS_API uint8_t gs_os_random_bytes(sl_u8 out) {
+    if (out.len <= 0) return 1;
+    return (uint8_t)gs_os_entropy(out.data, (size_t)out.len);
+}
+
+)GSRT"
+R"GSRT(/* Entropy for seeding a PRNG: the OS's, as random_bytes takes it; if it
+   gives none, a splitmix64 mix of the clocks, the process id and an
+   address, which is not cryptographic. */
 static uint64_t gs_os_mix64(uint64_t x) {
     x += 0x9e3779b97f4a7c15u;
     x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9u;
@@ -5089,15 +5172,8 @@ static uint64_t gs_os_mix64(uint64_t x) {
 
 )GSRT"
 R"GSRT(GS_API uint64_t gs_os_random_u64(void) {
-#ifndef _WIN32
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (f) {
-        uint64_t v = 0;
-        size_t n = fread(&v, 1, sizeof v, f);
-        fclose(f);
-        if (n == sizeof v) return v;
-    }
-#endif
+    uint64_t v = 0;
+    if (gs_os_entropy((uint8_t *)&v, sizeof v)) return v;
     /* Which call this is, counted atomically: workers calling at once each
        get a count of their own. */
 #ifdef _WIN32

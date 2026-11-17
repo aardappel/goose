@@ -1153,6 +1153,7 @@ fn clock() -> f64                                    // monotonic, high resoluti
 fn time_ns() -> i64         fn clock_ns() -> i64
 fn sleep(seconds: f64)      fn sleep_ms(ms: i64)
 fn random_seed() -> u64                              // entropy, for rng
+fn random_bytes(out: u8[:]) -> bool                  // cryptographic; false: the OS gave none
 ```
 
 `trim_memory` asks the OS to discard complete pages beyond every current
@@ -1180,6 +1181,16 @@ path is refused, and the call returns `false`, if it is longer than 4095
 bytes, contains a NUL byte, or (on Windows) is not valid UTF-8, because a
 path that was cut short or decoded another way could name a different
 file.
+
+`random_bytes` fills its argument from the operating system's
+cryptographically secure generator, for keys, nonces and other secrets:
+`getentropy` on macOS, Linux and the BSDs (`/dev/urandom` where the kernel
+lacks it), and `ProcessPrng` on Windows 10 and later (`RtlGenRandom` before
+that), looked up at run time so that a program links no further library.
+`false` means the OS gave no bytes; the contents of `out` are then not to be
+used. `random_seed` takes its value the same way, and falls back to a mix of
+the clocks only if that fails, so it is not for secrets. `std`'s `rng` is
+never for secrets.
 
 `read_file` appends nothing when it fails. `read_stdin` appends the bytes
 unchanged, on Windows too, where the C library's text mode would turn each

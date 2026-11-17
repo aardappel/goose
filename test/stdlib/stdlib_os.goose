@@ -1,5 +1,5 @@
 // runtime-debug: stdlib/os.goose: a temp file written, appended, read back
-// and deleted; arguments, environment, clocks.
+// and deleted; arguments, environment, clocks, entropy.
 import os;
 
 fn main() {
@@ -24,6 +24,20 @@ fn main() {
     sleep(0.0015);                                              // 1 ms: the fraction is dropped
     let seed = random_seed();
     print(seed == seed);                                        // true
+    // 1000 bytes take several of getentropy's 256-byte calls: each part of
+    // them is filled, and a second draw differs.
+    var r1: u8[1000] = [0; 1000];
+    var r2: u8[1000] = [0; 1000];
+    print(random_bytes(r1), " ", random_bytes(r2));             // true true
+    var filled = true;
+    each_chunk(r1, 250) { c, i =>
+        var zero = true;
+        for x in c { if x != 0 { zero = false; } }
+        if zero { filled = false; }
+    };
+    print(filled, " ", r1 != r2);                               // true true
+    var none: u8[:] = r1[0..0];
+    print(random_bytes(none));                                  // true
     write_stdout("out\n");                                      // out
     flush_stdout();
 }
