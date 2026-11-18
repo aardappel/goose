@@ -6217,6 +6217,9 @@ special_math_val:
             SValue ret;
             Sym *sa;
             int nb_args, ret_nregs, ret_align, regsize, variadic;
+#if defined TCC_TARGET_X86_64 && !defined TCC_TARGET_PE
+            CType mixed[2];
+#endif
             TokenString *p, *p2;
 
             /* function call  */
@@ -6329,7 +6332,29 @@ special_math_val:
 #ifdef TCC_TARGET_RISCV64
                 arch_transfer_ret_regs(1);
 #endif
-            } else {
+            }
+#if defined TCC_TARGET_X86_64 && !defined TCC_TARGET_PE
+            else if ((s->type.t & VT_BTYPE) == VT_STRUCT && ret_nregs > 0 &&
+                     gfunc_sret_mixed(&s->type, &mixed[0], &mixed[1])) {
+                /* one eightbyte in RAX, the other in XMM0, by their classes:
+                   stored to a local in the order of the struct */
+                int addr, k;
+                CValue c0;
+                c0.i = 0;
+                for (k = 1; k >= 0; k--)
+                    vsetc(&mixed[k], (mixed[k].t & VT_BTYPE) == VT_DOUBLE ? TREG_XMM0 : TREG_RAX, &c0);
+                loc = (loc - 16) & -8;
+                addr = loc;
+                for (k = 0; k < 2; k++) {
+                    vset(&mixed[k], VT_LOCAL | VT_LVAL, addr + 8 * k);
+                    vswap();
+                    vstore();
+                    vtop--;
+                }
+                vset(&s->type, VT_LOCAL | VT_LVAL, addr);
+            }
+#endif
+            else {
                 /* return value */
                 n = ret_nregs;
                 while (n > 1) {
@@ -6838,7 +6863,29 @@ static void gfunc_return(CType *func_type)
             vswap();
             /* copy structure value to pointer */
             vstore();
-        } else {
+        }
+#if defined TCC_TARGET_X86_64 && !defined TCC_TARGET_PE
+        else if (gfunc_sret_mixed(func_type, &type, &ret_type)) {
+            /* one eightbyte to RAX, the other to XMM0, by their classes,
+               read from a copy of 16 bytes so that neither reads past it */
+            CType t[2];
+            int addr, k;
+            t[0] = type, t[1] = ret_type;
+            loc = (loc - 16) & -8;
+            addr = loc;
+            type = *func_type;
+            vset(&type, VT_LOCAL | VT_LVAL, addr);
+            vswap();
+            vstore();
+            vpop();
+            for (k = 0; k < 2; k++) {
+                vset(&t[k], VT_LOCAL | VT_LVAL, addr + 8 * k);
+                gv((t[k].t & VT_BTYPE) == VT_DOUBLE ? RC_XMM0 : RC_RAX);
+            }
+            vtop--;
+        }
+#endif
+        else {
             /* returning structure packed into registers */
             int size, addr, align, rc, n;
             size = type_size(func_type,&align);
