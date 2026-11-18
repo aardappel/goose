@@ -1,0 +1,7 @@
+zero targets false true
+zero records false true true
+wide true false
+pool true false false false false false true
+varint pool true false false true
+limited true false false
+fixed adt true false false
