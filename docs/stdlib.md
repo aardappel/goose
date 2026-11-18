@@ -1791,7 +1791,7 @@ read-write resources are instead passed to `begin_compute` in binding order.
 fn open(title: const u8[:], width: i64, height: i64) -> bool        // and (..., flags)
 fn open_headless(width: i64, height: i64) -> bool                   // no window; and (..., flags)
 fn close()
-fn frame() -> bool          // ends the frame drawn since the last call; false once asked to close
+fn frame() -> bool          // ends the frame drawn since the last call; false once asked to close or the device is lost
 fn quit()                   // frame() returns false next
 fn flush()                  // submit everything and wait for the GPU
 fn error() -> u8[>..]       // why the last failing call failed
@@ -1846,6 +1846,11 @@ have made is printed when it happens and skipped, and the program aborts at
 the next `frame()`, `check()`, read back or `close()`. Examples are a draw
 with no pipeline bound, a texture the shader samples left unbound, a
 released handle, and a uniform struct of the wrong size.
+
+A lost GPU device (Vulkan's `VK_ERROR_DEVICE_LOST`) is printed once, and
+`frame()` returns false from then on, as if the window were closed, so the
+program can save and exit. Direct3D 12's device removal and Metal's loss
+aren't recognized yet.
 
 ### Input
 
