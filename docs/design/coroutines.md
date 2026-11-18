@@ -14,7 +14,7 @@
   - [2.4 Function values are inlined, so HOFs cost nothing to suspend through](#24-function-values-are-inlined-so-hofs-cost-nothing-to-suspend-through)
   - [2.5 Threads share nothing, so thread-per-core is the shape](#25-threads-share-nothing-so-thread-per-core-is-the-shape)
   - [2.6 Pools own what a coroutine cannot](#26-pools-own-what-a-coroutine-cannot)
-  - [2.7 No function pointers, so the scheduler protocol is data](#27-no-function-pointers-so-the-scheduler-protocol-is-data)
+  - [2.7 The scheduler protocol is the function-value arguments](#27-the-scheduler-protocol-is-the-function-value-arguments)
 - [3. What other languages did](#3-what-other-languages-did)
   - [3.1 The taxonomy](#31-the-taxonomy)
   - [3.2 Rust](#32-rust)
@@ -27,16 +27,16 @@
   - [3.9 The fastest servers](#39-the-fastest-servers)
   - [3.10 What to take](#310-what-to-take)
 - [4. The design](#4-the-design)
-  - [4.1 Declaration: a function that is also a type](#41-declaration-a-function-that-is-also-a-type)
+  - [4.1 A coroutine is an ordinary function](#41-a-coroutine-is-an-ordinary-function)
   - [4.2 Starting: a literal, and nothing runs](#42-starting-a-literal-and-nothing-runs)
-  - [4.3 `yield` and `resume`](#43-yield-and-resume)
-  - [4.4 Calling a coroutine from a coroutine](#44-calling-a-coroutine-from-a-coroutine)
+  - [4.3 Resume and suspend](#43-resume-and-suspend)
+  - [4.4 Calling: the activation is a whole call tree](#44-calling-the-activation-is-a-whole-call-tree)
   - [4.5 Rules at a suspension point](#45-rules-at-a-suspension-point)
   - [4.6 Blocks, HOFs and nested functions](#46-blocks-hofs-and-nested-functions)
   - [4.7 `return … from`, `defer` and the other exits](#47-return--from-defer-and-the-other-exits)
   - [4.8 Lifetimes: the frame is a holder](#48-lifetimes-the-frame-is-a-holder)
   - [4.9 Copying, flatness and threads](#49-copying-flatness-and-threads)
-  - [4.10 Finishing, re-entry, abandonment](#410-finishing-re-entry-abandonment)
+  - [4.10 Finishing, forking, abandonment](#410-finishing-forking-abandonment)
   - [4.11 Generics and checking order](#411-generics-and-checking-order)
   - [4.12 Lowering to C, and what it costs](#412-lowering-to-c-and-what-it-costs)
   - [4.13 What stays out of the language](#413-what-stays-out-of-the-language)
@@ -73,26 +73,33 @@ for each part, section 8 the order to build it in.
   what makes a suspended coroutine hold no data stack (2.2). Growable data
   is owned outside, in pools, as it already is for recursion and for
   threads (2.6).
-* **A coroutine is a function that is also a type.** `coro fn serve(c:
-  Conn&) …` declares a function whose body may `yield`, and a fixed-size
-  struct type `serve` that holds its parameters, the locals that live
-  across a yield, and where it is suspended (4.1). `serve { c }` is a
-  frame that has not run yet (4.2). Calling `serve(c)` from another
-  coroutine runs it to completion inside the caller's state machine (4.4).
-* **One builtin drives it.** `resume(f, x)` runs a frame to its next
-  `yield` or to its end, and returns the yielded value and whether it
-  yielded; `result(f)` reads a finished frame's result (4.3). Yield and
-  resume values are flat data, not callbacks: a coroutine *tells* its
-  resumer what it waits for, and the resumer, not a waker, decides what to
-  do about it (2.7).
+* **A coroutine is a higher-order function.** Nothing in a coroutine's
+  declaration differs from any other function's (4.1):
+  `fn serve<inherited await_non_blocking, …>(conn: Conn&)`
+  is ordinary, and the function values bound to its
+  parameters — its scheduler implements those — are all the ways it can
+  suspend. `suspend<serve>` names the type of a suspended activation of
+  it: a fixed-size struct holding the parameters, the locals of its whole
+  spliced call tree that live across a suspension, and where it is parked
+  (4.1). `ServeTask { conn }` is a task that has not run yet (4.2).
+* **One builtin drives it.** `resume(task)` consumes a suspended task and
+  runs it to its next suspension or to its end. The statement that parks it,
+  `suspend { task => … }`, lives only in the scheduler's handlers:
+  parking is the handler's
+  own act, and the block takes ownership of the newly parked task. Nothing
+  crosses a suspension as data: the coroutine's protocol with its
+  scheduler is the types of its function-value parameters, and what an
+  earlier draft called `Wait` — which fd, which deadline — is already an
+  argument the coroutine passes and book-keeping internal to the handler
+  that receives it (2.7).
 * **Everything else is a library**: event loops, timers, channels,
   cancellation, structured concurrency, `select`, `run_blocking`,
   generators-as-iterators (4.13, 5). The language supplies the state
   machine and a value to put it in; nothing in it allocates, locks, or
   calls through a pointer.
 * **Zero cost otherwise.** No runtime state, no thread-local, no change to
-  how an ordinary function is compiled or called. A program without a
-  `coro fn` compiles to the same C it does today.
+  how an ordinary function is compiled or called. A program that never
+  writes `suspend<…>` compiles to the same C it does today.
 * **Thread-per-core is the server architecture**, and Goose already has it:
   workers share nothing and own their globals, so a reactor and its pools
   written as globals are per-worker by construction (2.5). Go-style
@@ -146,8 +153,8 @@ The brief for this note, restated as tests that the design has to pass:
    language has. Nothing opaque: a reader of the generated C should
    recognize the struct and the switch.
 3. **Cheapest representation**: a frame is parameters plus the locals that
-   cross a yield plus a tag, no more, with nothing per resume beyond a call
-   and a switch.
+   cross a suspension plus a tag, no more, with nothing per resume beyond a
+   call and a switch.
 4. **Zero cost to code that does not use it.**
 5. **Libraries build the rest.** Scheduling, I/O integration, timers,
    cancellation policy and structured concurrency are all choices that a
@@ -167,7 +174,7 @@ that force it, with the sections they come from.
 A Goose activation keeps its fixed-size locals on the native stack or in
 registers, and its nonfixed locals on data stacks, each on the stack index
 the compiler assigned it (§1.2, §10.3). A coroutine suspends in the middle
-of its body and returns control to whoever resumed it; that resumer goes on
+of its run and returns control to whoever resumed it; that resumer goes on
 to run other code, and later resumes the coroutine again, possibly from a
 different place in a different function.
 
@@ -200,9 +207,10 @@ the cycle" with "suspension point" and the reason holds word for word: each
 The checker already implements this rule (`CycleCallTemps`,
 `CheckCycleInit`, `Node::nftemp`, implementation.md §3.11), and codegen
 asserts it (`NoStackAcrossCycleCall`). A coroutine needs the same checks at
-a `yield`, and the same answers for the programmer: declare the scratch
-buffer in a block that ends before the yield, or own the growable data
-outside and pass it in by reference or as a pool index. §7.8's advice for
+a suspension point, and the same answers for the programmer: declare the
+scratch buffer in a block that ends before the suspending call, or own the
+growable data outside and pass it in by reference or as a pool index.
+§7.8's advice for
 cycles ("Growable data that must outlive a recursive call is owned outside
 the cycle and passed in: references, slices, reusable pools, or one struct
 of references to several tables, A.6") is the advice for coroutines.
@@ -247,12 +255,20 @@ which is listed as future work in section 9, not as the feature.
 A function value is a compile-time entity, spliced inline into the function
 it is passed to, which is specialized per function value (§7.6,
 implementation.md §6.6). So a `fn each<F>(xs: i64[:]) { for x in xs {
-F(x) } }` called with a block that yields is, in that specialization, code
-that yields: its locals (here, the loop index) cross the yield like the
-coroutine's own, and nothing about `each` needs to be declared for it.
-Kotlin needs `inline fun` to get this; Goose has it already, and it is what
-keeps the standard library's HOFs usable from coroutines without a second,
-colored copy (3.4, 3.10).
+F(x) } }` called with a block whose calls reach a `suspend { }` is, in that
+specialization, code that can suspend: its locals (here, the loop index)
+cross the suspension like the coroutine's own, and nothing about `each`
+needs to be declared for it. Kotlin needs `inline fun` to get this; Goose
+has it already, and it is what keeps the standard library's HOFs usable
+from coroutines without a second, colored copy (3.4, 3.10).
+
+This section is the load-bearing one now. The coroutine is itself a HOF
+(4.1), and every way it can suspend is one of the function values bound to
+its parameters — scheduler code, spliced in here, so that a `suspend { }`
+in a handler is a suspension inside the coroutine's own specialization.
+The frame covers the handler's live-across-suspension locals as readily as
+`each`'s loop index (4.5, R3), and nothing outside the coroutine's tree
+knows or cares.
 
 ### 2.5 Threads share nothing, so thread-per-core is the shape
 
@@ -262,7 +278,7 @@ queues (§11.2). This decides how coroutines and threads combine:
 
 * A coroutine runs on the thread that resumes it and shares that thread's
   memory freely, since only one thing runs on a thread at a time and
-  switches happen only at `yield`. No data race is possible, and no rule
+  switches happen only at `suspend`. No data race is possible, and no rule
   about what a coroutine may touch is needed beyond the ones every function
   obeys.
 * A per-thread event loop, written in Goose with its pools of connections
@@ -288,7 +304,7 @@ fix nothing more; the loop is library code (section 5).
 
 ### 2.6 Pools own what a coroutine cannot
 
-A coroutine cannot own a `u8[>..]` across a yield (2.1), and a server has
+A coroutine cannot own a `u8[>..]` across a suspension (2.1), and a server has
 a buffer per connection. In Goose this is already answered for every other
 "one growable thing per item" problem: `reusable` pools of fixed-size
 elements, `reusable[]` slice pools, and relative references (§5.4, §3.9;
@@ -300,21 +316,33 @@ while the coroutine is suspended (which is what completion-based I/O such
 as `io_uring` and IOCP needs, and what Rust's borrowed-buffer futures make
 hard, 3.2), and freeing a connection is `free` on two pools.
 
-### 2.7 No function pointers, so the scheduler protocol is data
+### 2.7 The scheduler protocol is the function-value arguments
 
 Rust's `Future::poll` receives a `Waker`, a (data pointer, vtable) pair that
 the leaf future stores and calls when the task should be polled again. C++
 hands `await_suspend` a `coroutine_handle`, resumed through a function
 pointer in the frame. Kotlin's `Continuation` has a virtual `resumeWith`.
 Goose has no runtime function values (§7.6), so a coroutine cannot hand
-anyone a callback. It does not need to: the entity that resumed it is the
-one that will resume it again, and it already knows which frame it holds.
-What the coroutine must communicate is *what it is waiting for*, and that
-is a value: `yield Wait.Readable { fd: fd }`. The loop that resumed it
-stores the frame's index against that fd and resumes the frame when the fd
-is ready, passing back what happened as the resume value. This is cheaper
-than a waker (no clone, no refcount, no indirect call), it is flat, and it
-is why the yield carries a typed value in this design (4.3).
+anyone a callback at run time. It does not need to: the entity that resumed
+it is the one that will resume it again, and it already knows which task it
+holds.
+
+An earlier draft of this note answered the remaining question — *what is
+the coroutine waiting for* — with a typed value through `yield`, such as
+`Wait.Readable { fd: fd }`, and an `Event` back through `resume`. Under
+HOFs-as-coroutines (4.1) a type like that turns out to be unnecessary, for
+two reasons. First, what the coroutine waits on is exactly what it already
+passes to the functions it calls: the fd and flags of
+`await_non_blocking(fd, flags)`, the deadline of `wait(time)`. Second, the
+functions those arguments arrive in are not the far side of a protocol:
+they are scheduler code running *spliced into* the coroutine (2.4),
+written next to the loop's own bookkeeping. The loop learns an fd by
+watching it in `await_non_blocking`'s own body, a few lines from the `suspend`
+that parks its caller; a type naming the reason for a parking would
+describe data that never leaves that function. So the design defines no
+`Wait` and no `Event`: the protocol is the types of the coroutine's
+function-value parameters, declared once by the coroutine's author and
+implemented once by the scheduler (4.3).
 
 ## 3. What other languages did
 
@@ -358,44 +386,44 @@ What caused the famous disagreements, and what this design does about each:
   goals are still working on pin ergonomics ([2025H1 async goal][rust-goals];
   [July 2025 update][rust-july]). Goose avoids the problem by rule, not
   machinery: no reference into a coroutine's own locals may be live across
-  a yield (4.5, R4). The frame is then an ordinary value, copyable and
+  a suspension (4.5, R4). The frame is then an ordinary value, copyable and
   movable, and the thing that moved into Rust's type system never arises.
-  The price is that `let s = buf[..n]; yield; use(s)` over a *local* `buf`
-  is an error; the buffer is owned outside, which the server shape wants
-  anyway (2.6).
+  The price is that `let s = buf[..n];` with `use(s)` still to come cannot
+  cross a suspending call; the buffer is owned outside, which the server
+  shape wants anyway (2.6).
 * **The waker is dynamic dispatch**, and its ownership rules
   (`Send + 'static` tasks for work-stealing executors) drove the
   thread-per-core debate ([boats, "Thread-per-core"][boats-tpc];
-  [glommio][glommio]). Goose's protocol is a value (2.7), and threads
-  already share nothing.
+  [glommio][glommio]). Goose's protocol is its coroutine's function-value
+  arguments (2.7), and threads already share nothing.
 * **Cancellation is dropping the future**, with no async `Drop`
   (experiments only, [2025 goals][rust-goals]); a future dropped between
   polls loses its partial progress, hence tokio's documented
   ["cancellation safety"][tokio-cancel] hazards around `select!`. Goose
   has no destructors and a frame owns no growable data, so dropping a
   frame loses nothing but the frame; the resources it names are in pools
-  the loop frees. Cooperative cancellation is a resume value (4.10).
+  the loop frees. Cooperative cancellation is a handler's result (4.10).
 * **Two ecosystems and coloring.** [Nystrom's "What Color is Your
   Function?"][colors] names the split; sync and async libraries duplicate
   each other; async in traits took until 1.75 ([AFIT][afit], 2023) and
   `dyn` async traits are still open ([2025 goals][rust-goals]); [boats,
   "Let futures be futures"][boats-futures] and the [async vision
-  document][async-vision] record the runtime fragmentation. Goose has
-  coloring too (only a `coro fn` yields), but less of it bites: HOFs are
+  document][async-vision] record the runtime fragmentation. Goose colors
+  even less: nothing in a coroutine's body says it suspends (4.1), HOFs are
   suspend-transparent (2.4), no traits exist to color, and any ordinary
-  function can drive a frame with `resume` (4.3). The library advice that
+  function can drive a task with `resume` (4.3). The library advice that
   came out of Python, [sans-I/O][sansio] (protocol code that works on
   bytes and never does I/O), is the right default for Goose libraries:
-  only the waiting is colored.
+  the waiting lives in the scheduler's handlers (4.13).
 * **Readiness versus completion.** Rust futures borrow their buffers, so
   `io_uring` and IOCP, which need the kernel to own the buffer while the
   operation is in flight, required new APIs (tokio-uring, monoio). Goose
-  buffers live in pools, so a yield can hand the kernel a slice that stays
-  valid while the frame is suspended (5).
+  buffers live in pools, so a scheduler handler can hand the kernel a slice
+  that stays valid while the frame is parked (5).
 * Later additions worth knowing: async closures (stable in 1.85, 2025);
   return-type notation and `#[coroutine]` generators with resume
-  arguments, both still unstable. The generators are the closest thing in
-  Rust to 4.3's typed yield.
+  arguments, both still unstable. The resume argument is the closest thing
+  in Rust to Goose's handler arguments (4.1).
 
 ### 3.3 C++
 
@@ -475,9 +503,10 @@ whether a function was async was *inferred* from whether it suspended. The
 inference was its problem: async-ness was viral and invisible, frames'
 sizes depended on whole call trees, and the feature did not survive the
 move to the self-hosted compiler in 0.11 (2023; [release
-notes][zig011]). Lesson: mark it explicitly (`coro fn`), and make a
-coroutine's frame depend on its own body, with called coroutines inlined by
-a rule rather than by inference (4.4).
+notes][zig011]). Lesson: name the coroutine where it is used (`suspend<F>`,
+4.1) rather than inferring suspension from a body, and make its frame
+depend on the tree that actually runs, with the bound function values
+spliced in (4.4).
 
 Zig's second design (2025; [Cro, "Zig's new async I/O"][zig-io]; [Kelley's
 devlog][zig-devlog]) passes an `std.Io` *interface value* into every
@@ -507,12 +536,13 @@ at compile time, so the vtable cost never arises.
   suspension points can be read as atomic.
 * **Python** generators ([PEP 342][pep342]) have `send` (a resume value),
   `throw` and `close` (cancellation delivered at the yield as an
-  exception), and [PEP 380][pep380]'s `yield from` is the desugaring of
-  "call another coroutine and forward its yields" that 4.4 uses. Frames
-  are heap objects.
+  exception), and [PEP 380][pep380]'s `yield from` desugars "call another
+  coroutine and forward its yields" — 4.4 needs no equivalent, since a
+  callee is spliced into the caller's machine. Frames are heap objects.
 * **Lua** coroutines are stackful, asymmetric and first-class, and the
   cleanest small API: `create`, `resume`, `yield`, `status`
-  ([manual][lua]). The resume/yield value passing of 4.3 is Lua's.
+  ([manual][lua]). 4.3's shape — resumed from outside, parked from inside
+  the body — is Lua's.
 * **Java** virtual threads ([JEP 444][jep444]) and **OCaml 5** effect
   handlers ([Sivaramakrishnan et al.][ocaml-effects]) are stackful designs
   that copy or relocate stack chunks to the heap; both depend on a GC that
@@ -527,8 +557,8 @@ middle of the function, and any state that must survive is kept in a
 struct the programmer declares. Protothreads run sensor-network nodes in
 two bytes of state per thread. They show what the lowering of 4.12 is,
 and exactly what a compiler adds over them: it hoists the locals that
-cross a yield into the struct and reloads them, and it checks that nothing
-else was needed. That is the entire "convenience" of the feature, and it
+cross a suspension into the struct and reloads them, and it checks that
+nothing else was needed. That is the entire "convenience" of the feature, and it
 is enough to make the hand-written version clearly worse (1.2).
 
 ### 3.9 The fastest servers
@@ -555,7 +585,7 @@ is the missing per-connection piece.
 | Cancellation delivered at suspension points, as a value | Kotlin, Python | 4.10 |
 | No self-borrows across suspension, hence no `Pin` | Rust's pain | 4.5 R4 |
 | No callback-shaped waker; the resumer knows the frame | Rust's `Waker`, C++ handles | 2.7, 4.3 |
-| One `yield`, one `resume`, one value each way | C++'s protocol soup | 4.3 |
+| One `resume` in, one `suspend` out, no values between | C++'s protocol soup | 4.3 |
 | Protocol logic sans-I/O; only waiting is colored | Python, Rust ecosystems | 4.13, 5 |
 | Thread-per-core, share-nothing, pools own buffers | Seastar, glommio, monoio | 2.5, 2.6, 5 |
 | HOFs suspend transparently | Kotlin `inline` | 2.4, 4.6 |
@@ -565,227 +595,303 @@ is the missing per-connection piece.
 
 Syntax is a placeholder throughout; section 6.9 lists the alternatives.
 
-### 4.1 Declaration: a function that is also a type
+### 4.1 A coroutine is an ordinary function
 
 ```goose
-coro fn serve(c: Conn&<u32 in conns>) -> bool resume Event {
-    …                         // a body that may yield
+fn serve<
+    inherited await_non_blocking: fn(fd: i64, flags: i32) -> bool,
+    inherited wait: fn(time: i64),
+    inherited close: fn(conn: Conn&),
+>(conn: Conn&) {
+    defer close(conn);
+    …                            // an ordinary body; nothing in it names a scheduler construct
 }
 ```
 
-`coro fn` declares two things under one name:
+Coroutines are not declared. The coroutine is an **ordinary function**
+whose function-value parameters happen to be implemented by code that
+suspends (4.3). It is declared like any function: fully typed parameters
+(as `thread_fn` and cycle functions require, §7.8, §11.2; the frame's
+layout depends on them, 4.11), optional result types after `->`,
+generics, defaults, overloads, namespaces, UFCS. Its body is an ordinary
+body: plain calls, `defer`, `return`, blocks — and no suspension of its
+own. The scheduler's handlers are `inherited` parameters (§7.6), and the
+binding semantics are the ones that keyword already has: a call draws a
+handler from the scope of the call, so `serve`'s `fill(conn)` binds
+`fill`'s `await_non_blocking` to the definition — or the parameter — of that
+name in `serve`'s scope, and a middle layer with an `inherited` parameter
+of the same name passes its binding on. A call may still supply such a
+value explicitly, as §7.6 values are; `inherited` only makes the scope
+supply it by default.
 
-* **A function** whose body may contain `yield`, and which may be *called*
-  only from another coroutine's body (4.4) or *started* as a value (4.2).
-  It is declared like any function: fully typed parameters (as `thread_fn`
-  and cycle functions require, §7.8, §11.2; the frame's layout depends on
-  them, 4.11), optional result types after `->`, generics, defaults,
-  overloads, namespaces, UFCS.
-* **A struct type** of the same name, the *frame*: the parameters as
-  fields, the locals that are live across any yield as hidden fields, the
-  result (if any), and a hidden tag saying where the body is suspended.
-  It is fixed-size, and it has the size class, flatness, root bindings and
-  copyability that a struct with those fields has (4.8, 4.9). A lowercase
-  type name is already ordinary (`float3`, `int2` in `vec`).
+The **type** names the coroutine and binds it: `type ServeTask =
+suspend<serve>;` typechecks a *start*, the way `serve(args)` typechecks a
+call. Writing `suspend<serve>` binds `serve`'s `inherited` parameters from
+the scope of the instantiation, exactly as §7.6 resolves a call's — without
+definitions of `await_non_blocking`, `wait` and `close` there, `suspend<serve>`
+is a compilation error, as a call that does not supply all arguments is.
+That is why a concrete task is always instantiated in its scheduler:
+the type cannot be named anywhere the handlers are not in scope. The type
+it produces holds:
 
-Two more clauses can follow the result types:
+* **A fixed-size struct**: the parameters as fields (readable from
+  outside, writable only if declared `var`, as `let` fields are, §3.2),
+  the results (if any), the locals of the whole spliced call tree — the
+  function, its callees, the handlers — that are live across a suspension
+  as hidden fields (4.5, R3), and a hidden tag saying where the activation
+  is parked. It has the size class, flatness, root bindings and
+  copyability that a struct with those fields has (4.8, 4.9).
+* **A specialization**: the layout follows from the parameters, the body
+  *and* the bound values (4.11), so two `suspend<serve>` instantiations
+  whose scopes bind different handlers are different specializations.
 
-* `yield Y`: the type each `yield` hands to the resumer. It may be omitted
-  and inferred from the first `yield` checked, as a result type is inferred
-  from the first `return` (§7.1). A body whose yields carry nothing has no
-  yield type.
-* `resume X`: the type each resume supplies, and the value of a `yield`
-  expression. Without it, `yield` is a statement and `resume` takes no
-  value. It cannot be inferred, because the body is checked before any
-  `resume` of it is (4.11).
-
-`Y`, `X` and the results are fixed-size. A coroutine that produces
-growable data appends it to a buffer it is given, as a cycle function does
-(§7.8); it cannot be a `[>..]` result built at the resumer's destination,
-since the resume that completes it is not statically known from the ones
-that do not (6.8). A `coro fn` is not `extern`, `export`, `thread_fn` or
+The results are fixed-size. A coroutine that produces growable data
+appends it to a buffer it is given, as a cycle function does (§7.8); it
+cannot be a `[>..]` result built at the resumer's destination, since the
+resume that completes it is not statically known from the ones that do
+not (6.8). A coroutine's entry is not `extern`, `export`, `thread_fn` or
 `recursive`; `checkfree` and `simd` apply as to any function; `inline`
-means nothing, since what gets inlined is the resume.
+means nothing, since what is spliced is the whole activation.
 
 ### 4.2 Starting: a literal, and nothing runs
 
 ```goose
-var task = serve { c };                   // a frame, suspended before its first statement
-tasks.push(serve { c: conns.alloc_ref(Conn { fd: fd, .. }) });
+type ServeTask = suspend<serve>;                    // binds the handlers from this scope (4.1)
+var task = ServeTask { conn };                      // a task that has not run yet
+resume(ServeTask { &conns.take(Conn { ev.fd }) });  // built and started at once by the loop
 ```
 
-A frame is constructed by the struct literal of its type: the parameters
-positionally or by name, defaults as field defaults, built in place like
-any struct (§4.2, §4.3). Nothing of the body runs. This is Rust's and
-Python's laziness, chosen because it is also the thinnest: starting is a
-store of the arguments and a zero tag, and no code can run that the owner
-of the frame did not ask for. The parameter fields are readable from
-outside (`task.c`), and writable only if declared `var`, as `let` fields
-are (§3.2).
+A task is constructed by the struct literal of its `suspend<F>` type: the
+coroutine's parameters positionally or by name, defaults as field
+defaults, built in place like any struct (§4.2, §4.3). Nothing of the body
+runs — the literal only stores the arguments and a zero tag. This is
+Rust's and Python's laziness, chosen because it is also the thinnest: no
+code can run that the owner of the task did not ask for; the scheduler's
+loop starts a task by resuming a fresh literal (4.3). The handlers were
+already bound where `suspend<serve>` was written (4.1), so the literal
+binds nothing further: it is a plain struct literal whose type happens to
+know how to run. The parameter fields are readable from outside
+(`task.conn`), and writable only if declared `var`, as `let` fields are
+(§3.2).
 
-### 4.3 `yield` and `resume`
+### 4.3 Resume and suspend
 
 ```goose
-let w, suspended = resume(task, Event.Ready);   // runs to the next yield or to the end
+resume(tasks.release(f.task));   // runs to the task's next suspension point or to its end
 ```
 
-* `resume(f)` or `resume(f, x)` runs the frame `f` (an lvalue of a frame
-  type, or a reference to one) from where it is suspended to its next
-  `yield` or to the end of its body. It returns the yielded value and
-  `true`, or the yield type's zero value (as a missed `qpoll` does, §11.2)
-  and `false` once the body has returned. A coroutine without a yield type
-  returns the `bool` alone. `x` is required exactly when the coroutine
-  declares `resume X`.
-* `yield e` inside the body stores the live locals, hands `e` to the
-  resumer, and returns from `resume`. The next `resume(f, x)` continues
-  after it, and `x` is the value of the `yield` expression. Without a
-  `resume X` clause, `yield e;` is a statement.
-* `result(f)` reads a finished frame's results (`let a, b = result(f);`
-  for several). It aborts on a frame that has not finished.
+* `resume(f)` runs a task in any form it takes — a variable, the value a
+  pool's `release` hands back, a freshly built literal — and **consumes
+  it**: the value becomes the running activation, which is why the
+  scheduler releases a task out of its pool to resume it (section 5). It
+  runs from where the task is parked, or from the initial state of a
+  literal that has not run yet, to the end of the body or to the next
+  executed `suspend { }`. `resume(f)` does not return a value.
+* `suspend { task => … }` — the statement that parks, in the scheduler's
+  handler: the activation stops on it, the entire call tree's live locals
+  are stored (R3), and the block runs once, right there, with `task`
+  bound to the freshly parked task — the frame, its tag set — whose
+  ownership passes to the block's body. Then `resume` returns to
+  its caller. The block's free variables are the handler's declaration
+  scope (§7.5), so the body registers the task against the fd or the
+  deadline the handler was called with, exactly as section 5 does. When
+  the task is next resumed, execution continues with the statements after
+  the block, and the handler then returns to its coroutine caller like
+  any completed call. Nothing is handed *back* through a suspension: what
+  the coroutine learns arrives as the handler's return value, and what
+  the scheduler learns arrived as its arguments (2.7).
 
-That is the whole runtime surface: one way in, one way out, a value each
-way. Every protocol of section 5 is spelled with these. The names are
-builtins so that `resume` can be specialized per frame type without a
-declaration; by UFCS, `task.resume(ev)` works too (§7.1).
+The suspend block is checked per binding (4.11): `task` has the
+`suspend<F>` type of the coroutine whose tree binds the handler, so a
+handler whose block records a specific task type can be bound only under
+that coroutine, and one whose block merely forwards `task` (a `wait`, say)
+works under any of them. `resume` is a builtin so it can be specialized
+per task type without a declaration; by UFCS, `task.resume()` works too
+(§7.1).
 
-### 4.4 Calling a coroutine from a coroutine
+### 4.4 Calling: the activation is a whole call tree
 
 ```goose
-coro fn read_line(c: Conn&, out: u8[..4096]&) -> bool resume Event { … }
+fn read_line<
+    inherited await_non_blocking: fn(fd: i64, flags: i32) -> bool,
+>(c: Conn&, out: u8[..4096]&) -> bool { … }   // an ordinary fn, like fill
 
-coro fn serve(c: Conn&) resume Event {
-    while read_line(c, c.line) { handle(c.line[..]); }
-}
+// in serve's body:
+while read_line(c, c.line) { handle(c.line[..]); }   // a plain call
 ```
 
-A call of a `coro fn` from a coroutine body runs the callee to completion
-*inside the caller's state machine*: each of the callee's yields is a yield
-of the caller, each resume of the caller continues the callee, and the
-call's value is the callee's result. This is Rust's `.await` and Python's
-`yield from` without a keyword, and Kotlin's suspend call. The callee's
-yield type must be the caller's (or the caller's is inferred from it), and
-its resume type must be the caller's or absent (it ignores the value).
+A call from a coroutine's body is a plain call, and it stays part of the
+same activation. If the callee — directly, or through another callee —
+reaches a `suspend { }`, the park stops the *one* running task, and the
+parked frame carries the callee's live locals as readily as the caller's.
+The callee's `inherited` parameters draw their values from its call scope
+(§7.6): `read_line`'s `await_non_blocking` is bound to the definition — or the
+parameter — of that name in `serve`'s scope, so the scheduler's handler
+reaches any depth without being written at each layer. This is Rust's
+`.await` and Python's `yield from` with no keyword and no protocol type,
+and Kotlin's suspend call with no coloring: nothing in either body marks
+this out, and the same functions run to completion under a scheduler
+whose handlers never suspend.
 
-The callee's locals that cross its yields are part of the caller's frame,
-so the frame of a coroutine is sized by its whole call tree, statically.
-That is why a coroutine cannot be recursive: there is no bound. A
-coroutine *can* call ordinary recursive functions between yields, and an
-ordinary function can call a coroutine only by starting it as a value and
-resuming it (4.3). Whether the callee's code is spliced into the caller's
-segments (one tag, one switch) or kept as a separate resume function with a
-tag of its own (one extra switch per level per resume) is an implementation
-choice per call site, like inlining; the community sketch measured the
-difference at 45% on a patrol benchmark (section 7), so the spliced form is
-the default and the nested form is for large callees with many callers.
+The live locals of the whole tree belong to the one frame, so a task's
+frame is sized by its whole call tree, statically. That is why a
+coroutine's tree cannot be recursive: there is no bound. A coroutine *can*
+call ordinary recursive functions between suspensions, and code outside a
+`suspend<F>` activation cannot reach a `suspend { }` at all (R7). Whether
+a callee's code is spliced into the caller's segments (one tag, one
+switch) or kept as a separate resume function with a tag of its own (one
+extra switch per level per resume) is an implementation choice per call
+site, like inlining; the community sketch measured the difference at 45%
+on a patrol benchmark (section 7), so the spliced form is the default and
+the nested form is for large callees with many callers.
 
 ### 4.5 Rules at a suspension point
 
-A *suspension point* is a `yield`, and every call of a `coro fn` from a
-coroutine, in the body or in a block it passes to a HOF (4.6).
+A *suspension point* is an executing `suspend { }` statement. What the
+rules govern is everything the park reaches past: the statements whose
+scope or temporaries would still be live while the tree is parked and
+resumed elsewhere. Since the park happens inside a callee (4.4), the
+coroutine-visible form of a suspension point is the **suspending call** —
+a call whose spliced tree reaches a `suspend { }`, in the coroutine's body
+or in a block it passes to a HOF (4.6) — and R1 and R2 apply to it as they
+apply to a call into a recursive cycle (§7.8), with the callee's park in
+the role of the call into the cycle. The checker sees every suspending
+call once the handlers are bound (4.1).
 
 * **R1. No nonfixed local in scope.** §7.8's rule, verbatim: no variable-
   or resizable-class `let`, `var`, by-value parameter or by-value `match`
   payload may be in scope at a suspension point, nor may one whose
   initializer contains it. Declare scratch in a block that ends before
-  the yield; own growable data outside and pass it in.
+  the suspending call, or own the growable data outside and pass it in.
 * **R2. No nonfixed temporary live**: §7.8's cases (a) to (d), with the
-  yield in the role of the call into the cycle. So `print(str(n), yield w)`
-  is an error and `let s = str(n).len; yield w;` is not. Nor may a
-  nonfixed *result* be pending: its destination stack is in use from the
-  call until the value arrives (§10.3), and the arrival would be in a
+  suspending call in the role of the call into the cycle. So
+  `print(str(n), conn.fd.await_non_blocking(net::READ))` is an error and
+  `let s = str(n).len; conn.fd.await_non_blocking(net::READ);` is not. Nor may
+  a nonfixed *result* be pending: its destination stack is in use from
+  the call until the value arrives (§10.3), and the arrival would be in a
   later resume, possibly from another resumer with other stacks in use. A
-  `coro fn` has fixed results (4.1), so this only concerns a block that
-  yields inside a function with a nonfixed result: `each_rev(xs) { yield
-  w; }` is fine, `map(xs) { yield w; … }` and `exception::try { yield w; }`
-  (whose `handler` returns an `E[]`) are errors.
-* **R3. What crosses is stored.** A local declared before a yield and
-  named after it is live across it and becomes a hidden field of the
-  frame. The test is syntactic, as the shrink rules' liveness test is
-  (§5.1): any mention after the yield in the local's scope counts, loops
-  count their whole body, and a block or nested function that names the
-  variable counts. "Named after" is decided per yield, so a local that
-  dies before a later yield does not widen that yield's state.
-* **R4. No reference into the coroutine's own locals crosses.** A yield
-  ends an activation: the locals that are live after it are reloaded from
-  the frame, in a different place. So a reference or slice rooted at a
-  coroutine's local or parameter copy, or at a temporary of the yield's
-  statement, may not be live across the yield. This is the outlives rule
-  (§9.1) with the yield as a scope exit, and it is checked as a return of
-  such a reference is. References rooted *outside* the frame (a pool, a
-  global, a reference parameter's pointee, static data) cross freely: they
-  are fixed values. This rule is what makes the frame a plain value (no
-  `Pin`, 3.2) and an ordinary holder (4.8). Section 6.4 discusses relaxing
-  it.
-* **R5. No `defer` in scope** at a suspension point, in v1: a `defer` body
-  runs at its block's exit, which would now be in a later resume, from a
-  different resumer. Section 9 keeps the question.
+  coroutine has fixed results (4.1), so this concerns calls inside blocks
+  and handlers where a suspension nests under a call returning a nonfixed
+  result: `each_rev(xs) { conn.fd.await_non_blocking(net::READ); }` is fine,
+  `map(xs) { conn.fd.await_non_blocking(net::READ); … }` and
+  `exception::try { conn.fd.await_non_blocking(flags); … }` (whose `handler`
+  returns an `E[]`) are errors.
+* **R3. What crosses is stored.** A local declared before a suspension
+  point and named after it is live across it and becomes a hidden field
+  of the frame. The test is syntactic, as the shrink rules' liveness test
+  is (§5.1): any mention after the suspending call in the local's scope
+  counts, loops count their whole body, and a block or nested function
+  that names the variable counts. "Named after" is decided per
+  suspension, so a local that dies before a later park does not widen
+  that park's state. The same holds for the locals of every spliced
+  callee and handler between the call site and the `suspend` (2.4): each
+  joins the frame, `each`'s loop index as readily as `serve`'s own.
+* **R4. No reference into the activation's own locals crosses.** A park
+  ends an activation's run: the locals that are live after it are
+  reloaded from the frame, in a different place, in a segment of some
+  resumer's choosing. So a reference or slice rooted at a coroutine's
+  local or parameter copy, or at a temporary of a suspending call's
+  statement, may not be live across it. This is the outlives rule (§9.1)
+  with the park as a scope exit, and it is checked as a return of such a
+  reference is. References rooted *outside* the frame (a pool, a global,
+  a reference parameter's pointee, static data) cross freely: they are
+  fixed values. This rule is what makes the frame a plain value (no
+  `Pin`, 3.2) and an ordinary holder (4.8). Section 6.4 discusses
+  relaxing it.
+* **R5. A `defer` may be live across a suspension.** Tasks are consumed
+  by `resume()`, but the scheduler will always be required to take back
+  ownership except when the coroutine runs to completion. This implies
+  that a task will always be run to completion (which will run `defer`s
+  normally) or will be cancelled (which run `defer`s exclusively, §4.10),
+  so a `defer` live across a suspension will never be dropped.
 * **R6. Narrowing survives, flow state is the body's.** An optional
-  narrowed before a yield is narrowed after it: it is a `let` or `var` of
-  the body, saved and restored, and nothing but the body writes it. (A
-  `var` parameter is writable by the frame's owner between resumes, so it
-  is not narrowed across a yield.) Definite assignment is checked on the
-  body as a whole, as for any function.
-* **R7. No yield in a global initializer, a default, or a `defer` body**,
-  which have no frame; and none in a function of a recursive cycle, in a
-  block passed to one, or in a nested `fn` that is not itself a `coro fn`
-  (4.6).
-* **R8. A yield is a statement's own.** It may stand anywhere an expression
-  may (`let ev = yield w;`, `guard (yield w) == Event.Ready else { return;
-  }`), subject to R2, and it is evaluated where it stands in left-to-right
-  order (§2): the operands before it are evaluated before the suspension
-  and kept, since they are fixed by R2.
+  narrowed before a suspension is narrowed after it: it is a `let` or
+  `var` of the body, saved and restored, and nothing but the body writes
+  it. (A `var` parameter is writable by whoever holds the task between
+  resumes, so it is not narrowed across one.) Definite assignment is
+  checked on the body as a whole, as for any function.
+* **R7. Where a park may be.** A `suspend { }` may stand only on the
+  scheduler's side of the splice: in a function bound to an activation's
+  `inherited` parameters or called from one (4.1, 4.4) — in the design's
+  shape, the scheduler's handlers and their helpers. Not in the
+  coroutine's own declarations, a global initializer, a default, or a
+  `defer` body; not in a function of a recursive cycle (whose frame has
+  no bound, 4.4); not in code outside any `suspend<F>` activation, which
+  would park a task nobody holds. By the same token, `resume` may not be
+  called from any function whose own call graph reaches a `suspend { }`:
+  an activation does not start another one, because a nested activation's
+  saved state would have to be captured inside the parking task's frame.
+  The scheduler's loop calls `resume`; its handlers never do.
+* **R8. From the coroutine's side, nothing happens.** A suspension has no
+  expression and no value, and no syntax of its own in the coroutine's
+  body: a suspending call reads exactly like a slow call, and the flow
+  between suspension points is the coroutine's own. The only code that
+  observes a park is the scheduler's — the `suspend { }` statement and
+  whatever the handler runs after it, which executes in the resumed
+  segment. Evaluation order is left-to-right everywhere (§2), so a
+  suspending call in `print(a, await_non_blocking(x))` parks only after `a`
+  has been evaluated — which is exactly why R2 refuses to let a nonfixed
+  `a` be there.
 
-Everything else a function may do, a coroutine may do between two yields:
-grow pools and buffers through references, declare and use scratch
-buffers in inner blocks, call anything, `return … from` within the
-coroutine (4.7), spawn workers, block on `qget` (a logic hazard, not an
-error).
+Everything else a function may do, a coroutine may do between two
+suspensions: grow pools and buffers through references, declare and use
+scratch buffers in inner blocks, call anything, `return … from` within
+the activation (4.7), spawn workers, block on `qget` (a logic hazard, not
+an error).
 
 ### 4.6 Blocks, HOFs and nested functions
 
-A block written in a coroutine body may yield. The function it is passed to
-is specialized for that block (§7.6), and that specialization becomes part
-of the coroutine: R1 to R4 apply to the HOF's own locals at the block's
-yields, as they would to the coroutine's, and its locals that cross join
-the frame. So `each_rev(xs) { yield Wait.Any; }` works with std's ordinary
-`each_rev`, whose only local across the yield is its loop index. The HOF
-itself stays an ordinary `fn`: it contains no `yield`, it only runs a
-block that does. A function that yields *in its own text* is a `coro fn`,
-so the sketch's `wait_until` is written `coro fn wait_until<F>() { while
-!F() { yield Wait.Any; } }` and called as `wait_until { ready(c) }`; a
-`coro fn` with a function-value parameter can be called but not started,
-since a literal has nothing to bind `F` to. A block that yields can only be
-passed to a function whose own locals and results obey the rules at that
-point (R1, R2: fixed results, no nonfixed local in scope), which the
-specialization checks; a block passed into a recursive cycle cannot yield
-(R7). `return` inside such a block returns from the lexically
-enclosing coroutine, as it returns from the enclosing named function today
-(§7.6).
+A block written in a coroutine body is spliced into whatever function it
+is passed to (§7.6), and that specialization is part of the activation: R1
+to R4 apply to the HOF's own locals at the block's suspending calls as
+they would to the coroutine's, and its locals that cross join the frame.
+So `each_rev(xs) { guard fill(conn) else { break; } }` works with std's
+ordinary `each_rev`, whose only local across the suspension is its loop
+index. A HOF used this way needs no marker of its own: whether a call in
+its body can reach a `suspend { }` is a property of what is bound at each
+call site, not of its text. The generic wait is therefore an ordinary HOF
+over a predicate and a parking handler:
 
-A nested `fn` declared in a coroutine body may not yield; a nested
-`coro fn` may, and is called as any coroutine is (4.4). Function values
-that are *named* coroutines (`each_rev(xs, step)` where `step` is a
-`coro fn`) follow the same rule as blocks.
+```goose
+fn wait_until<inherited park: fn()>(pred: fn() -> bool) {
+    while !pred() { park(); }     // the scheduler's park handler; its park joins this frame
+}
+```
+
+called from inside an activation as `wait_until { ready(conn) }`, with the
+scheduler's park drawn from scope (§7.6). A block whose calls reach a
+suspension can only be passed to a function whose own locals and results
+obey the rules at that point (R1, R2: fixed results, no nonfixed local in
+scope), which the specialization checks; such a block cannot be passed
+into a recursive cycle (R7). `return` inside such a block returns from the
+lexically enclosing coroutine, as it returns from the enclosing named
+function today (§7.6).
+
+A nested `fn` declared in a coroutine body is on the coroutine's side of
+the splice: it may call the handlers, its parks join the frame (4.4), and
+it may contain no `suspend { }` of its own (R7) — parking is defined
+exactly once, by the scheduler, and every park goes through it.
 
 ### 4.7 `return … from`, `defer` and the other exits
 
-* `return` from a coroutine body finishes the frame: the results are stored
-  in it, the tag marks it finished, and `resume` returns `false`.
-* `return E from f` where `f` is the coroutine itself, a coroutine it
-  called (4.4), or a function inlined into the coroutine by a block (4.6)
+* `return` from a coroutine body finishes the task. Any return value is
+  dropped.
+* `return E from f` where `f` is the coroutine itself, a callee of it
+  (4.4), or a function inlined into the activation by a block (4.6)
   works as today: these frames are on the native stack whenever the body
-  runs, since a called coroutine's code only ever runs through its
-  caller's resume. The thread-local discriminant (§C.3) is set only
+  runs, since activation code only ever runs through a `resume()` of its
+  task. The thread-local discriminant (§C.3) is set only
   between the throw and the catch inside one `resume`. A target *outside*
-  the coroutine (the function that constructed the frame, or the one
-  resuming it) is an error: it is not on the compile-time path from the
+  the activation (the function that built the task, or the one resuming
+  it) is an error: it is not on the compile-time path from the
   `resume` to the body, which is the condition §7.9 already checks.
-  `exception::try` as written cannot take a body that yields, because its
+  `exception::try` as written cannot wrap a suspending call, because its
   `handler` returns a nonfixed `E[]` (R2); a coroutine-friendly `try` with
   a fixed-size error slot (an ADT with a "none" variant) would be a small
   library addition.
-* `defer` may not be live across a yield (R5). `guard`, `block`, `break`,
-  `continue` and loops are unaffected: a `yield` inside a `for` over a
+* `defer` may be live across a suspension (R5), stored in the frame, as
+  section 5's `defer close(conn)` is. `guard`, `block`, `break`,
+  `continue` and loops are unaffected: a suspension inside a `for` over a
   slice keeps the index; a `for` over a fixed array local of the coroutine
   iterates by index over the hoisted array, as a `for` over a resizable
   already does (§6.5).
@@ -796,13 +902,15 @@ A frame type is a struct with reference fields wherever its parameters or
 hoisted locals are references, slices, or values holding them. So it is
 "implicitly generic over those fields' roots" (§9.2) and checked as any
 such struct: storing a frame into a pool, a local or a global is a store of
-what it holds, under the store rule; a frame in a global pool holds only
-references that outlive globals (pools, other globals, static data), which
-is the server's shape (5); a frame built from a reference to a local of
+what it holds, under the store rule; a frame parked in the scheduler's
+pools holds only references that outlive them (the scheduler's other
+pools, static data), which is the server's shape (5); a frame built from a
+reference to a local of
 `main`'s loop can live in that loop's locals and nowhere deeper. The
 read-back rules (§9.5) give a frame read out of a pool the roots of the
 pool's candidates, and `in pool` links stay exact wherever the frame is
-(§3.9), which is why the server example links its connection that way.
+(§3.9), which is why section 5's tasks reach their `Conn` through a
+`slot_pool`.
 A frame rooted at a grow-shrink array (its `c` points into a `[>..<]`) is
 held by variables only (§5.2), like any such value.
 
@@ -831,120 +939,124 @@ fixed-size value:
   whose tag is range-checked (§12). A consequence, not a goal, and tied to
   the compiler version that laid the frame out, as every image is.
 * `==` compares the parameters, the tag and the hoisted locals as fields;
-  `print` renders the parameters and the tag; `default<serve>()` exists
-  when every parameter has a default, and is the unstarted frame.
+  `print` renders the parameters and the tag; `default<suspend<serve>>()`
+  exists when every parameter has a default, and is the unstarted frame.
 
-### 4.10 Finishing, re-entry, abandonment
+### 4.10 Finishing and cancelling
 
-* **Finished.** After the body returns, `resume` returns `false` and
-  `result(f)` reads the results. Resuming a finished frame aborts
-  ("resumed a finished coroutine"), as `pop` on an empty array does; the
-  check is the tag's own `match`, so it costs nothing extra.
-* **Re-entry.** `resume` on a frame whose body is running (through an
-  alias, from inside its own body) is a logic error, not a safety error:
-  the inner resume reruns the segment after the last yield with the saved
-  locals, which are valid values of their types, and the outer run
-  overwrites them at its next yield. This is type-safe reuse in the sense
-  of §9.4. A debug build stores a "running" tag at entry and aborts on
-  re-entry; a release build does not pay the store.
-* **Abandonment.** A frame that is never resumed again costs nothing to
-  drop: it owns no stack, there are no destructors (§4.1), and whatever it
-  names in pools is the pools' to free. This is where Goose's lack of
-  destructors becomes a simplification rather than a gap: Rust's
-  cancellation-safety problem (3.2) does not exist, since no partial
-  progress is lost that was not already stored outside the frame.
-* **Cooperative cancellation** is a resume value (`Event.Cancel`), which
-  the body sees at its yield and acts on by returning; Python's `close()`
-  and Kotlin's `CancellationException` are this, delivered as a value
-  instead of an exception. A library can make it a convention; the
-  language does not need to know.
+* **Finished.** The `resume` that runs the body to its end hands the
+  results back and returns `false` (4.3), and the task value is gone: it
+  was consumed by that resumer, and no code ran to park a new one. There
+  is no finished task value to resume by mistake — the checked abort of
+  the old design's finished frame has nothing left to name it.
+* **Cancellation** is a built-in: `cancel(task)` consumes and terminates
+  the coroutine, running no code except any active `defer`s.
 
 ### 4.11 Generics and checking order
 
-A generic `coro fn step<T>(…)` is monomorphized like any function, and its
-frame type is per instantiation like a generic struct's. The frame's
-*layout* depends only on the parameter types and type arguments: the
-hoisted locals' types follow from the body with concrete parameter types,
-whatever the roots. So the layout is fixed when the type is first used
-(a literal, a field, an array element), by checking the body once
-standalone, as `CheckUnreached` checks a function with no caller
-(implementation.md §3.1). Each `resume` site then specializes the body for
-real, as a call of `fn serve_resume(f: serve&, x: Event) -> Wait, bool`
-with the frame's roots, writability and `in pool` provenance, so that the
-body's stores and shrinks are checked for the storage that frame actually
-names. Two frame instances with different root bindings are distinct for
+A generic coroutine function `fn step<T>(…)` is monomorphized like any
+function. But a `suspend<F>` type is per **binding**, not per function:
+the hoisted locals follow from the spliced tree — `F`'s body, the
+function values bound to `F`'s `inherited` parameters, and theirs in turn
+— so the same `suspend<serve>` written under a scheduler whose handlers
+watch one fd and one whose handlers park on timers are different
+specializations with different layouts, like two calls under two
+different function values (§7.6, §10.2). Checking an instantiation
+therefore checks the tree against its binding where the type is first
+used (a literal, a field, an array element) — which is why the type is
+written where the handlers are defined, 4.1 — and each `resume` site
+then specializes the tree for real, as a call of
+`fn resume(f: own ServeTask)` with the frame's roots,
+writability and `in pool` provenance, so that the body's stores and
+shrinks are checked for the storage that frame actually names.
+Two frame instances with different root bindings are distinct for
 checking and identical in layout, as reference-holding struct instances
-are (§9.2). A frame type with a function-value parameter has no literal
-(4.6).
+are (§9.2).
 
 ### 4.12 Lowering to C, and what it costs
 
-The frame is a packed C struct; the body is one C function with a `switch`
-over the tag that jumps to the label after the yield it was suspended at
-(the Protothreads lowering, 3.8, which is legal C: a `goto` may enter a
+The frame is a packed C struct; the task is one C function with a `switch`
+over the tag that jumps to the label after the `suspend { }` it was parked
+at (the Protothreads lowering, 3.8, which is legal C: a `goto` may enter a
 loop body, and the generated C already declares every aggregate local at
-the top of the function, implementation.md §6.7). Sketch for a body with
-one yield that keeps `n` live:
+the top of the function, implementation.md §6.7). Sketch for section 5's
+shape, where the only park in `fill`'s slice of the tree is the spliced
+`await_non_blocking`, and `fill`'s `n` and the handler's `fd` are live across
+it:
 
 ```c
-typedef struct serve_g { uint32_t c_g; uint8_t gs_tag; int64_t n_g; } serve_g;
+typedef struct serve_g {              // parameters, live set, tag
+    uint32_t conn_g;                  // the pooled Conn the task was started with
+    uint8_t gs_tag;
+    int64_t n_g, fd_g;                // live across the park: fill's recv count, the fd
+} serve_g;
 
-static bool serve_resume(serve_g *f, Event_g ev, Wait_g *out, int64_t gs_sp) {
-    int64_t n;
+static void serve_resume(serve_g *f, int64_t gs_sp) {
+    int64_t n, fd;
     switch (f->gs_tag) {
-        case 0: goto L0;
-        case 1: n = f->n_g; goto L1;             // reload what is live after yield 1
-        default: gs_fail_finished();
+        case 0: goto L0;                            // the initial state
+        case 1: n = f->n_g; fd = f->fd_g; goto L1;  // reload what is live after the park
     }
 L0: for (;;) {
-        n = net_recv(…);
+        n = net_recv(f->conn_g, …);                 // fill's own code is straight-line
         while (n == AGAIN) {
-            f->n_g = n; f->gs_tag = 1;           // save what is live after the yield
-            *out = (Wait_g){ .tag = READABLE, .fd = … };
-            return true;                         // yield
-        L1:
-            if (ev.tag != READY) { f->gs_tag = DONE; return false; }
-            n = net_recv(…);
+            fd = f->conn_g;                         // conn.fd.await_non_blocking(READ), spliced:
+            net_watch(fd, WANT_READ);               //   its statements before the suspend
+            f->n_g = n; f->fd_g = fd; f->gs_tag = 1;//   save what is live after the park
+            by_fd[fd] = status(tasks_take(f));      //   suspend { task => by_fd[fd] = … }:
+            return;                                 //   parked
+        L1:                                         // after the suspend block, when resumed:
+            by_fd[fd].task = NULL;                  //   the handler's tail
+            if (!by_fd[fd].ready)                   //   its return; fill's guard acts on it
+                goto finish;                        //   (fill false -> serve breaks -> defer close)
+            n = net_recv(f->conn_g, …);
         }
         …
     }
+finish:                                             // the body has run out: results, done
+    // defer close
 }
 ```
 
-* **Copy in, copy out.** Between two yields, the locals are C locals of
-  the resume function, so the C compiler allocates registers for them as it
-  would in any function; a yield stores the ones live after it and a
+* **Copy in, copy out.** Between two parks, the locals are C locals of
+  the resume function, so the C compiler allocates registers for them as
+  it would in any function; a park stores the ones live after it and a
   resume reloads them. The frame is not addressed in the hot path, which
   also keeps the C compiler's aliasing worries (implementation.md §6.2)
   out of the segment. R4 is what permits this.
-* **Overlap.** Two hoisted locals never live at the same yield can share
+* **Overlap.** Two hoisted locals never live at the same park can share
   a slot (Rust's layout, 3.2). The frame is then parameters + tag + the
-  largest live set over the yields, not the sum. v1 can lay them out
+  largest live set over the parks, not the sum. v1 can lay them out
   without overlap and add it later; the C never changes shape.
-* **A called coroutine** (4.4) is spliced in as a block of the caller's
-  resume function with its yields numbered among the caller's (one tag),
-  or compiled as its own resume function called from the caller's segment
-  with its own tag in a nested frame struct. The optimizer chooses as it
-  chooses inlining today (implementation.md §4).
-* **Data stacks.** The resume function takes `gs_sp` like any function and
-  builds its between-yield temporaries above the resumer's watermark; by
-  R1 and R2 nothing of the coroutine's is on a data stack at a yield, so a
-  yield restores nothing. `NoStackAcrossCycleCall`'s assertion applies to
-  yields unchanged.
-* **The resumer.** `resume(f, x)` is a direct call of the frame type's
-  resume function, inlined into a loop that is its only caller by the
-  existing policy. No thread-local, no runtime function, no table.
+* **The handlers and any called function** (4.4) are spliced in as a
+  block of the caller's resume function with their parks numbered among
+  the caller's (one tag), or compiled as a resume function of their own
+  called from the caller's segment, with its own tag in a nested frame
+  struct — the two forms the earlier draft gave called coroutines. The
+  optimizer chooses as it chooses inlining today (implementation.md §4);
+  since every callee, handlers included, is inlined per binding (§7.6),
+  the common case is one function with one tag.
+* **Data stacks.** The resume function takes `gs_sp` like any function
+  and builds its between-park temporaries above the resumer's watermark;
+  by R1 and R2 nothing of the activation's is on a data stack at a park,
+  so a park restores nothing. `NoStackAcrossCycleCall`'s assertion
+  applies to parks unchanged.
+* **The resumer and the parked.** `resume(f)` is a direct call of the
+  task type's resume function, inlined into the scheduler loop by the
+  existing policy; the suspend block compiles to inline stores and
+  bookkeeping just before that return. No thread-local, no runtime
+  function, no table.
 
 What it costs, per operation:
 
 | Operation | Cost |
 |---|---|
-| start (`serve { c }`) | the parameters stored, a zero tag |
+| start (`ServeTask { … }`) | the parameters stored, a zero tag |
 | `resume` | one direct call (often inlined), one switch, the loads of the locals live at that point |
-| `yield` | the stores of the locals live after it, a tag store, the yield value in registers, a return |
-| finish | a tag store, the result store, a return |
-| a called coroutine | nothing per call when spliced; one extra switch per level per resume when nested |
-| frame size | parameters + the largest set of locals live across one yield (+ result) + 1 tag byte |
+| `suspend { … }` | the stores of the locals live after it, a tag store, the block body inline, a return |
+| finish | the result stores, a return |
+| a called function | nothing per call when spliced; one extra switch per level per resume when nested |
+| frame size | parameters + the largest set of locals live across one park (+ result) + 1 tag byte |
 | non-users | nothing: no runtime state, no hidden parameters, no change to any other function |
 
 This is the cost of the hand-written state machine, and the community
@@ -956,124 +1068,187 @@ sketch's measurement (section 7) found a hand-lowered coroutine within
 Each of these is a library, and section 5 shows the first of them:
 
 * **The event loop**: which fds to watch, with which kernel API, and how to
-  find the frame an event belongs to.
-* **Timers**, as a heap of deadlines the loop checks between events.
-* **Channels** between coroutines on one thread (an array and a `Wait`
-  variant), and across threads (the typed queues, §11.2).
-* **`select`**: a `Wait` variant that holds several reasons, or a coroutine
-  that resumes two inner frames in turn (the sketch's `await_all`, 7).
-* **Structured concurrency**: a scope that owns a local array of frames and
-  does not end until all are finished; the outlives rule makes a frame
-  unable to outlive what it refers to (4.8), which is the half of structured
-  concurrency Kotlin has to enforce by discipline.
-* **Cancellation** policy: which resume value means stop, and who sends it.
-* **`run_blocking`**: a loop over `resume` in an ordinary function that
-  satisfies the waits by blocking (`poll` with no timeout, `qget`).
-* **Generators as iteration**: `for x in gen` could be sugar over `resume`
-  later; today it is `loop { let x, more = resume(g); guard more else {
-  break; } … }`, or a HOF.
+  find the task an event belongs to — all of it inside the handlers,
+  which is why no `Wait` type exists: the loop's bookkeeping never leaves
+  the loop.
+* **Timers**, as a heap of deadlines the loop checks between events;
+  section 5's `wait(time)` handler is already all of it.
+* **Channels** between coroutines on one thread (a `send` handler that
+  queues the value and parks the sender), and across threads (the typed
+  queues, §11.2).
+* **`select`**: a handler that registers the parked task against several
+  fds or deadlines and resumes it from whichever fires first — the same
+  bookkeeping `await_non_blocking` already does (the sketch's `await_all`, 7,
+  is a handler that parks until its subtasks' results have arrived).
+* **Structured concurrency**: a scope whose task is parked until the
+  subtasks it built as literals — owned by its await handler once it
+  parks — are finished; the outlives rule makes a task unable to outlive
+  what it refers to (4.8), which is the half of structured concurrency
+  Kotlin has to enforce by discipline.
+* **Cancellation** policy: what a handler returns to make its caller
+  unwind, and who decides it (4.10).
+* **`run_blocking`**: a scheduler whose handlers never park — they block
+  (`poll` with no timeout, `qget`) and return — so the same coroutine
+  code runs, once, on the current stack, with no frame and no `resume`.
+* **Generators as iteration**: a HOF whose `emit` handler is an
+  `fn(x: T)` that stores the value where its resumer reads it and parks;
+  `for x in gen` could be sugar over `resume` later.
 * **Protocol implementations** written sans-I/O (3.2): a parser consumes
-  slices and says "need more" or "done"; only the function that waits is a
-  `coro fn`, and the parser serves blocking and coroutine code alike.
+  slices and says "need more" or "done"; since nothing about a coroutine
+  is marked, the parser serves blocking and coroutine code alike.
 
 ## 5. A server on top
 
-A sketch of the layering, with a hypothetical `net` module of `extern fn`
-sockets (there is none yet; section 8 lists it as a prerequisite track).
-Names are placeholders.
+A sketch of the layering, with hypothetical `net`, `http` and `slot_pool`
+libraries (there are none yet; section 8 lists the network track as a
+prerequisite). Names are placeholders. The point the example makes is the
+split between its two halves:
+
+* **The coroutines are written with no knowledge of how the scheduler
+  will suspend.** `fill` and `serve` are ordinary functions whose three
+  function-value parameters — `await_non_blocking`, `wait`, `close` — are the
+  whole interface; the types of those parameters are the whole protocol
+  (2.7), and the bodies call them as plain blocking calls.
+* **The scheduler is written with no control of the coroutine code.**
+  `worker` owns the state and the loop, and the handlers it defines in
+  the scope that names `suspend<serve>` (4.1) are where every suspension
+  happens; nothing of the coroutine's text is reachable from them.
 
 ```goose
 import std;
-import net;        // hypothetical: nonblocking sockets and a readiness poll as externs
+import net;
+import slot_pool;   // hypothetical: fixed-slot element pools; take/release/…
 
-// Connections live in a pool. The buffer is a limited array inside the element,
-// so the kernel can write into it while the coroutine is suspended (§5.3).
-struct Conn { fd: i64, inbuf: u8[..4096], outbuf: u8[..4096] }
-reusable var conns: Conn[>..] = [];
+struct Conn { fd: i64, inbuf: u8[..4096] = [], outbuf: u8[..4096] = [] }
 
-// The protocol between coroutines and the loop is two flat ADTs the library
-// defines. A different loop (io_uring, IOCP, a game's frame tick) defines its own.
-enum Wait  { Readable { fd: i64 }, Writable { fd: i64 }, Timer { deadline_ns: i64 }, Any }
-enum Event { Ready, Timeout, Hangup, Cancel }
-
-// Waiting is the only colored code. recv appends into the limited array and
-// returns the byte count, 0 at end of stream, or net::AGAIN.
-coro fn fill(c: Conn&<u32 in conns>) -> bool resume Event {
+///////////
+// coroutines library, written with no knowledge of how the scheduler will suspend
+fn fill<
+    inherited await_non_blocking: fn(fd: i64, flags: i32) -> bool,
+>(conn: Conn&) -> bool {
     loop {
-        let n = net::recv(c.fd, c.inbuf);
+        let n = net::recv(conn.fd, conn.inbuf);
         if n != net::AGAIN { return n > 0; }
-        guard (yield Wait.Readable { fd: c.fd }) == Event.Ready else { return false; }
+        guard conn.fd.await_non_blocking(net::READ) else { return false; }
     }
 }
 
-coro fn flush(c: Conn&<u32 in conns>) -> bool resume Event { … }   // the same for Writable
+// flush ...                       // the same for net::WRITE
 
-// The handler is straight-line code; the parser is an ordinary function over
-// slices (sans-I/O), usable from blocking code just as well.
-coro fn serve(c: Conn&<u32 in conns>) resume Event {
+fn serve<
+    inherited await_non_blocking: fn(fd: i64, flags: i32) -> bool,
+    inherited wait: fn(time: i64),
+    inherited close: fn(conn: Conn&),
+>(conn: Conn&) {
+    defer close(conn);
     loop {
-        guard fill(c) else { return; }
-        let consumed = http::respond(c.inbuf[..], c.outbuf);   // parses, writes a reply
-        guard consumed > 0 else { continue; }                   // need more bytes
-        drop_front(c.inbuf, consumed);                          // keeps the unparsed tail
-        guard flush(c) else { return; }
-    }
-}
-
-// The loop. Frames live in a pool beside the connections; the loop keeps a
-// table from fd to frame index for the events the kernel hands back.
-reusable var tasks: serve[>..] = [];
-var by_fd: i64[>..] = [];                                 // fd -> index into tasks, or -1
-var timers: Deadline[>..] = [];                           // a heap of (deadline, task)
-var ready: i64[>..<] = [];                                // tasks to resume next round
-
-fn run(listen_fd: i64) {
-    loop {
-        for ev in net::poll_wait(…) {                      // (fd, readable/writable/hangup)
-            let i = by_fd[ev.fd];
-            let w, suspended = resume(tasks[i], if ev.hangup { Event.Hangup } else { Event.Ready });
-            guard suspended else {
-                conns.free(conns.index_of(tasks[i].c)); tasks.free(i); net::close(ev.fd);
-                continue;
-            }
-            match w {
-                Readable r => net::watch(r.fd, net::READ, i),
-                Writable r => net::watch(r.fd, net::WRITE, i),
-                Timer t    => timers.push(Deadline { at: t.deadline_ns, task: i }),
-                Any        => ready.push(i),
-            }
+        // By default, inherited function values are drawn from the scope of the call
+        // site. Here we call fill(), and its await_non_blocking parameter is automatically
+        // bound to the definition of await_non_blocking in this scope.
+        guard fill(conn) else { break; }
+        let consumed = http::respond(conn.inbuf[..], conn.outbuf);
+        guard consumed > 0;
+        conn.inbuf.drop_front(consumed);
+        guard flush(conn) else { break; }
+        if conn.should_be_throttled() {
+            wait(std::now_ns() + THROTTLE_DURATION);
         }
-        … accept new connections into conns and tasks; fire due timers …
     }
 }
 
-// Thread-per-core: each worker is a program instance with its own copies of
-// conns, tasks and by_fd (§11.2), accepting on its own SO_REUSEPORT socket.
-thread_fn worker(listen_fd: i64) { run(listen_fd); }
+///////////
+// scheduler, written with no control of the coroutine code
+struct StatusAnd<T> {
+    task: T?,
+    ready: bool = false,
+};
 
-fn main() {
-    for i in hardware_threads() { thread_spawn(worker, net::listen(8080, true)); }   // SO_REUSEPORT
-    …
+thread_fn worker(listen_fd: i64) {
+    type ServeTask = suspend<serve>;
+
+    var conns = slot_pool<Conn> {};
+    var tasks = slot_pool<ServeTask> {};
+    var by_fd: StatusAnd<ServeTask>[>..] = [];
+    var timers: Deadline[>..<] = [];
+    let timer_fd = net::make_timer();
+
+    // The suspension handlers needed by serve are defined by the scheduler in this scope.
+    // Without these definitions, `suspend<serve>` would be a compilation error just like
+    // a function call which doesn't supply all arguments.
+    fn await_non_blocking(fd: i64, flags: i32) -> bool {
+        net::watch(fd, flags);
+
+        // suspends execution and block takes ownership of the task:
+        suspend { task => by_fd[fd] = StatusAnd<ServeTask>{ &tasks.take(task) }; }
+        // execution resumes here when the task is resume()d
+
+        by_fd[fd].task = null;
+        return by_fd[fd].ready;
+    }
+
+    fn wait(time: i64) {
+        suspend { task => timers.heap_push(Deadline { time, &tasks.take(task) }) { l, r => l.time < r.time }; }
+    }
+
+    fn close(conn: Conn&) {
+        conns.release(conn);
+    }
+
+    loop {
+        for ev in net::poll_wait(…) {
+            if ev.is_new_connection {
+                // resuming from the initial state
+                resume(ServeTask { &conns.take(Conn { ev.fd }) });
+            }
+
+            let f = by_fd[ev.fd];
+            assert(f.task != null, "pure scheduler error");
+            // the file won't block anymore, store its status and resume
+            f.ready = !ev.hangup;
+            resume(tasks.release(f.task));
+        }
+
+        while timers.len > 0 && timers[0].time >= std::now_ns() {
+            let timer = timers.heap_pop();
+            resume(tasks.release(timer.task));
+        }
+
+        if timers.len > 0 {
+            net::set_timer_for(timer_fd, timers[0].time);
+        }
+
+        // …
+    }
 }
 ```
 
+The buffer is a limited array inside the pooled element, so the kernel
+can write into it while the task is parked (§5.3). The example demonstrates
+cleanup of a finished task; the scheduler never receives a task in a
+finished state.
+
 What this shows about the fit:
 
-* The frame of `serve` is a 4-byte link, a tag and the few locals that
-  cross the yields inside `fill` and `flush` (an `n`, a position): tens of
-  bytes. A million connections are a million elements in two pools.
-* Nothing in the loop allocates, locks or calls indirectly; `resume` is a
-  switch into the frame's code. The loop's data structures are arrays.
-* The buffers are the pool's, so a completion-based loop (io_uring, IOCP)
-  can submit `c.inbuf`'s free slots to the kernel at the yield and hand the
-  byte count back as the resume value: the yield value would carry the
-  slice, and the frame need not be pinned for the kernel to write into
-  memory it does not own (2.6).
-* Every worker runs the same loop on its own copies of the globals. There
-  is no scheduler and no cross-thread anything until the program wants it,
-  and then it is a queue.
-* The protocol logic (`http::respond`) is uncolored and testable without a
-  socket.
+* The frame of a `ServeTask` is one reference into `conns`, a tag and the
+  few locals that cross the suspensions inside `fill` and `flush` (an
+  `n`, a position): tens of bytes. A million connections are a million
+  elements in two pools.
+* Nothing allocates, locks or calls indirectly: the handlers are spliced
+  into every task they run through (2.4, 4.12), and the loop's data
+  structures are arrays.
+* The buffers are the pool's, so a completion-based loop (io_uring,
+  IOCP) can have a handler submit `conn.inbuf`'s free slots to the
+  kernel at the park and record the completion in its own tables —
+  bookkeeping that never crosses the suspension, which is why no `Wait`
+  type is missed (2.6, 2.7).
+* Every `thread_fn` runs the whole scheduler — its pools, its timer, its
+  loop — as its own program instance (§11.2), accepting on its own
+  listening socket. Nothing crosses workers until the program wants a
+  queue (4.9).
+* The protocol logic (`http::respond`) is uncolored and testable without
+  a socket — so uncolored that `serve`'s body never mentions waiting:
+  the same code runs unchanged under a blocking scheduler whose handlers
+  never park (4.13).
 
 ## 6. Options, with pros and cons
 
@@ -1085,51 +1260,62 @@ stacks* (§11.3, a task owning a block of data stacks, switched by setting
 `gs_stks`) would lift R1 for a bounded number of heavyweight tasks and is
 the community sketch's suggestion for later; it costs address space per
 task and a stack switch per resume, and it should be an opt-in on the
-declaration (`coro fn … with stacks`), never the default. Not in v1.
+declaration (`suspend<F> … with stacks`), never the default. Not in v1.
 
-**6.2 The frame type: named by the function (recommended) / `co<f>` / a
-user struct.** Naming the frame after the function (Zig's `@Frame(f)` in
-spirit, 3.6) gives the type a name to put in pools and fields, a literal
-to start it with, and fields for the parameters, at no new type-system
-concept. `co<f>` (the sketch) needs a type expression that names a
-function, which nothing else in Goose has. The Protothreads form, where
-the user declares the state struct and the compiler only checks that
-nothing else crosses a yield, is the thinnest of all and keeps the layout
-entirely in the user's hands (packed fields, `varint`s), but it gives up
-the one convenience the feature exists for (3.8); it remains available as
-a style, since a coroutine whose locals never cross a yield has a frame of
-just its parameters. A `--frames` listing (section 8) tells the programmer
-what was hoisted.
+**6.2 The task type: `suspend<F>` (recommended) / a frame named by the
+function / a user struct.** `suspend<F>` is as close to naming the frame
+after the function (Zig's `@Frame(f)` in spirit, 3.6) as the HOF shape
+gets: one type expression, bound where it is written, giving the type a
+name to put in pools and fields, a literal to start a task with, and
+fields for the parameters. It is not a new type-system concept, but it
+is a new type *former* — and it checks its binding like a call (4.1)
+rather than by a declaration's color, which is what removed Zig's 0.10
+design once its inference broke (3.6). Naming a frame type after a
+`coro fn` declaration — the earlier draft — gives the same conveniences
+but requires a colored declaration, which this shape does not want. The
+Protothreads form, where the user declares the state struct and the
+compiler only checks that nothing else crosses a suspension, is the
+thinnest of all and keeps the layout entirely in the user's hands (packed
+fields, `varint`s), but it gives up the one convenience the feature
+exists for (3.8); it remains available as a style, since an activation
+whose locals never cross a suspension has a frame of just its
+parameters. A `--frames` listing (section 8) tells the programmer what
+was hoisted.
 
-**6.3 Typed yield and resume values (recommended) / bare `suspend()` with
-fields.** With bare suspension, a coroutine communicates with its resumer
-through the frame's parameter fields, which is enough for a game tick that
-polls every frame but not for a server, where the loop must learn *what*
-each of 10⁵ tasks waits for without asking each one (2.7). A typed yield
-costs nothing (the value is returned in registers) and gives generators for
-free. The resume value can be emulated through a `var` field, so it is the
-more optional half; it is kept because cancellation and completion results
-(a byte count from io_uring) are naturally resume values, and because a
-value in registers beats a store and a reload through the frame.
+**6.3 No suspension values at all (here recommended) / typed yield and
+resume values.** The earlier draft passed a typed `Wait` through each
+`yield` and an `Event` back through `resume`, so a loop with 10⁵ tasks
+could learn what each waits for "without asking" (2.7). The HOF shape
+asks a different question: the loop never asks anything, because its own
+handler code is running inside the coroutine when the fd or the deadline
+arrives as an argument, and the bookkeeping stays in that handler's
+locals (2.7). Typed values through a suspension stay the right tool
+where coroutine and resumer are two programs that must communicate at a
+boundary — which is no longer this shape — and what a typed yield was
+kept for. A protocol that wants values anyway can have a handler take
+a `msg: T` parameter; the protocol then simply is that parameter's type (6.7).
 
-**6.4 No self-references across a yield (recommended) / self-referential,
-non-copyable frames.** The sketch chose the second: build in place, never
-copy, and the outlives rule keeps references to the frame's own locals
-valid. Goose can express "fixed but not copyable" already (a value holding
-self-relative references, §3.9), and a reference into the frame's own
-locals *is* self-relative in nature. That form allows `let s = local[..n];
-yield; use(s)`, and it costs: the frame cannot be copied, popped, sent or
-serialized, the locals must live in the frame in place (addressed through
-`f->` in the hot path), and the layout cannot overlap slots whose addresses
-were taken. R4 keeps the frame a plain value and the hot path in registers,
-at the price of one error message that points at the fix. A later
-relaxation can keep both: a local whose address crosses a yield lives in
-the frame in place, and references to it are rooted at the frame's
+**6.4 No self-references across a suspension (recommended) /
+self-referential, non-copyable frames.** The sketch chose the second:
+build in place, never copy, and the outlives rule keeps references to
+the frame's own locals valid. Goose can express "fixed but not copyable"
+already (a value holding self-relative references, §3.9), and a
+reference into the frame's own locals *is* self-relative in nature. That
+form allows a slice of a local (`let s = local[..n]; use(s)`) to stay
+live across a park, and it costs: the frame cannot be copied, popped,
+sent or serialized, the locals must live in the frame in place
+(addressed through `f->` in the hot path), and the layout cannot overlap
+slots whose addresses were taken. R4 keeps the frame a plain value and
+the hot path in registers, at the price of one error message that points
+at the fix. A later relaxation can keep both: a local whose address
+crosses a suspension lives in the frame in place, and references to it
+are rooted at the frame's
 storage (exact when the frame is a variable, the pool's when it is an
 element), while the frame stays copyable because TODO 16's "whole-region
 copy" is exactly what copying a frame is.
 
-**6.5 Lazy start (recommended) / run to the first yield at construction.**
+**6.5 Lazy start (recommended) / run to the first suspension at
+construction.**
 Kotlin and C++ (by default) run eagerly to the first suspension. Lazy is
 thinner (a literal), gives the owner control over when work happens, and is
 what Rust's experience endorses; the cost is that a coroutine that wants to
@@ -1140,28 +1326,36 @@ and 4.12. Splicing duplicates a callee's code per call site, like
 inlining, and gives one switch; nesting shares code and costs a switch per
 level. Let the optimizer decide by size, as it does for calls.
 
-**6.7 A std `Wait`/`Event` convention / fully generic coroutines.** Rust's
-`Waker` lets any future run on any executor; a typed yield ties a library
-coroutine to the `Wait` type it constructs. The recommendation is a small
-conventional `io::Wait`/`io::Event` pair in the standard library that its
-reference loop consumes, so that library coroutines and loops interoperate,
-with the language itself indifferent. A loop with other needs defines its
-own types and adapts. This is the explicit trade of dynamic dispatch for
-flat data, and it is the same trade Goose makes everywhere else.
+**6.7 No `Wait`/`Event` anywhere; the handler types are the convention
+(recommended) / a std `Wait`/`Event` pair.** The earlier draft kept a
+conventional `io::Wait`/`io::Event` pair in std so library coroutines and
+loops could interoperate, accepting that a coroutine is tied to the
+`Wait` type it constructs. With the protocol moved into the parameters
+(2.7), the question changes shape: a library coroutine binds to whatever
+functions the embedding scope defines, so one `serve` runs against an
+epoll loop, an io_uring loop, a game tick or a blocking scheduler without
+a line changed in it, and there is no `Wait` type for two libraries to
+disagree about. What is lost is ad-hoc interop between a coroutine from
+one library and a loop from another whose handlers have different
+signatures; that is now a plain adapter function, which is what the
+`Waker` machinery was already doing with more types.
 
-**6.8 Fixed-size results and yields only (recommended) / nonfixed
-results.** A `[>..]` result is built at its destination by the call that
-produces it (§7.3); for a coroutine, that is one of many `resume` calls,
-and the destination would have to be reserved across all of them. The
-spec's idiom for recursion (build into a buffer passed by reference, §7.8)
-covers it. Revisit if real code wants `coro fn lines() -> u8[>..]`.
+**6.8 Fixed-size results only (recommended) / nonfixed results.** A
+`[>..]` result is built at its destination by the call that produces it
+(§7.3); for a coroutine, that call is one of many `resume`s, and the
+destination would have to be reserved across all of them. The spec's
+idiom for recursion (build into a buffer passed by reference, §7.8)
+covers it. Revisit if real code wants `fn lines(…)` as a coroutine start
+returning `u8[>..]`.
 
-**6.9 Syntax.** `coro fn` beside `thread_fn` and `recursive fn`; the
-sketch's `suspend_fn` is the other obvious spelling. `yield` is universal.
-`resume`/`result` as builtins (like `thread_spawn`/`thread_wait`), reached
-by UFCS as members. The `resume X` header clause is the least settled part:
-alternatives are a marked parameter (`ev: resume Event`) or an attribute
-list. `await` as a keyword is deliberately absent: a call is a call.
+**6.9 Syntax.** `suspend<F>` for the task type is Zig's `@Frame` spelling
+with a keyword; `parked<F>`, `task<F>` and `frame<F>` are the obvious
+alternatives. The `suspend { task => … }` statement reads like the block
+sugar of §7.6, so one keyword does duty as a type former and a statement;
+a `park { … }` statement would split them. `resume` as a builtin (like
+`thread_spawn`/`thread_wait`), reached by UFCS as a member. `await` as a
+keyword is deliberately absent: a call is a call, and there is nothing
+left for it to await — suspension lives in the handlers.
 
 ## 7. The community `suspend_fn` sketch
 
@@ -1190,14 +1384,14 @@ Where this note differs, and why:
 
 | | `suspend_fn` sketch | This note |
 |---|---|---|
-| suspension carries | nothing; the resumer polls a predicate each tick | a typed value each way (4.3), so a loop with 10⁵ tasks learns what each waits for (2.7, 6.3) |
-| frame | `co<f>`, built in place, never copied, not flat | a struct named after the function, copyable and flat when its fields are (4.9, 6.4) |
+| suspension carries | nothing; the resumer polls a predicate each tick | nothing either, and there is no field to carry it: the protocol is the coroutine's function-value parameters, implemented by the loop (2.7, 6.3), so a loop with 10⁵ tasks learns what each waits for inside its own handler code — running inside the coroutines |
+| frame | `co<f>`, built in place, never copied, not flat | a `suspend<F>` struct, copyable and flat when its fields are (4.9, 6.4) |
 | references to own locals across a suspension | allowed, hence non-copyable | forbidden (R4), hence a plain value and a register-resident hot path |
 | threads | a coroutine cannot cross | a flat frame can be queued to another worker (4.9) |
-| blocks in HOFs that suspend | open question | allowed; the HOF's specialization joins the coroutine (4.6) |
-| `return … from` | open question | within the coroutine's call tree, as today; never past `resume` (4.7) |
-| generators | open question | the same machinery (4.3) |
-| game-frame use | the example | works unchanged: `resume(p, Event.Tick)` per frame, with `yield Wait.Any` for "next frame" |
+| blocks in HOFs that suspend | open question | allowed; the HOF's specialization joins the activation (4.6) |
+| `return … from` | open question | within the activation's call tree, as today; never past `resume` (4.7) |
+| generators | open question | the same machinery, an `emit` handler that parks (4.13, 9) |
+| game-frame use | the example | works unchanged: a per-tick scheduler's park handler parks every task that calls it, and the loop resumes them all next frame |
 
 Its open question "is a fixed but not copyable kind of value new to the
 type system" is answered by R4 (nothing non-copyable is needed) and, for
@@ -1207,72 +1401,79 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
 
 1. **Settle the spec text.** A new §7.15 (or a section of its own) with
    4.1 to 4.11 as rules, R1 to R8 numbered, placeholder syntax decided,
-   and the `Wait`/`Event` convention noted as a library matter. Add TODO
-   items for 6.1, 6.4's relaxation and 6.8.
+   and `suspend<F>` and the suspend statement added beside §7.6's
+   inherited parameters. Add TODO items for 6.1, 6.4's relaxation and
+   6.8.
 2. **Measure the server shape by hand**, as the sketch measured the patrol:
    a hand-lowered C echo loop over 10⁵ pooled frames with a `poll`-based
    reactor, in `bench/coro/`, against the same program in Rust/tokio, Go
    and plain C with `epoll`. This fixes the target before anything is
    built and tests the claim of 1.1 that the per-event cost is a switch and
    a few loads. Replicate the patrol numbers on this machine too.
-3. **Checker.** Parse `coro fn`, the `yield`/`resume` clauses and the
-   `yield` expression; the frame type as a struct instance built from the
-   parameters plus the hoisted locals (R3's syntactic liveness, reusing the
-   shrink rules' `blockpos` scan); R1 and R2 by reusing `CycleCallTemps`,
-   `CheckCycleInit` and `Node::nftemp` with yields as the marked calls; R4
-   as the return check on roots at each yield; R5 to R8 as the simple
-   rejections they are; the `resume`/`result` builtins specialized per
-   frame type and roots (4.11); error messages that name the local and the
-   yield.
-4. **Codegen.** The frame struct beside the other generated types; one
-   resume function per frame instantiation with the switch and labels,
-   copy-in/copy-out at the segment boundaries; splicing of called
-   coroutines first (it needs no second tag), the nested form after, chosen
-   by the optimizer's inlining policy; `gs_sp` and the watermark
+3. **Checker.** Parse `suspend<F>` and the `suspend { task => … }`
+   statement, and turn each `suspend<F>` instantiation into a
+   specialization whose inherited arguments come from its scope (§7.6
+   already draws them like this for calls); the task type as a struct
+   instance built from the parameters plus the hoisted locals (R3's
+   syntactic liveness, reusing the shrink rules' `blockpos` scan); R1 and
+   R2 by reusing `CycleCallTemps`, `CheckCycleInit` and `Node::nftemp`
+   with suspend-reaching calls as the marked calls; R4 as the return
+   check on roots at each suspension; R5 to R8 as the simple rejections
+   they are; the `resume` builtin and the suspend statement specialized
+   per task type and roots (4.11); error messages that name the local and
+   the suspension.
+4. **Codegen.** The task struct beside the other generated types; one
+   resume function per task instantiation with the switch and labels,
+   copy-in/copy-out at the segment boundaries and the suspend block
+   inlined into the parking segment; splicing of called functions first
+   (it needs no second tag), the nested form after, chosen by the
+   optimizer's inlining policy; `gs_sp` and the watermark
    discipline unchanged. `--frames` listing each frame's size and hoisted
    locals, and the LSP's hover showing the same.
 5. **Tests.** A corpus entry per rule (each error message), the patrol and
-   the echo loop as samples, a generator, a yielding block through std's
-   HOFs, the R2 rejection of `exception::try` around a yield, a frame
-   through a queue, a
-   `from_bytes` of a frame pool, re-entry and finished-resume aborts in
-   debug.
+   the echo loop as samples, a generator, a suspending block through std's
+   HOFs, the R2 rejection of `exception::try` around a suspending call, a
+   task through a queue, a `from_bytes` of a task pool, and a resumed
+   copy of a running task aborting on its "running" tag in debug.
 6. **Networking track** (independent of 1 to 5, and a prerequisite for the
    server): sockets, nonblocking I/O and a readiness poll in `os` or a new
    `net` module as `extern fn`s over the runtime, portable (`poll`) first,
    `epoll`/`kqueue`/IOCP next, `io_uring` when the completion-shaped
    protocol of 5 is wanted.
-7. **The reference loop in std**: `io::Wait`, `io::Event`, a reactor with
-   timers, `run_blocking`, and the thread-per-core skeleton of section 5
-   as a sample. Then the server benchmark of step 2 in Goose, which is the
-   measurement the brief's "absolute fastest" claim stands or falls on.
+7. **The reference loop in std**: the handler set of section 5 — a
+   reactor with timers, `select`-style bookkeeping, `run_blocking` — and
+   the thread-per-core skeleton of section 5 as a sample. Then the server
+   benchmark of step 2 in Goose, which is the measurement the brief's
+   "absolute fastest" claim stands or falls on.
 8. **Later**: overlapped frame slots (4.12), the 6.4 relaxation, `for x in
    gen`, dynamic-stack tasks (6.1), nonfixed results (6.8).
 
 ## 9. Open questions
 
-* Whether the resume value should be declared in the header (`resume X`),
-  marked on a parameter, or dropped in favor of `var` fields (6.3, 6.9).
-* Whether parameters should be visible as frame fields at all, or the
-  frame should be opaque apart from `resume` and `result`. Visible fields
-  are convenient (the loop reads `tasks[i].c` to free the connection) and
-  cost nothing; opaque is tidier.
-* `defer` across a yield (R5): it could be kept in the frame as a flag and
-  run at the block's exit in whichever resume reaches it, at one byte and
-  one branch per `defer`. Wait for a use. [ownership.md §5](ownership.md#5-coroutines)
-  works out what an `own` qualifier would add here, a frame that can be
-  neither dropped nor copied and a `cancel` that runs the pending defers;
-  that is a separate decision, and this design stands without it.
+* Whether parameters should be visible as task fields at all, or the
+  frame should be opaque apart from `resume`. Visible fields are
+  convenient (a cleanup pass can read `task.conn` of an abandoned task)
+  and cost nothing; opaque is tidier.
+* `defer` across a suspension (R5): now allowed, since `serve` needs one
+  (4.7); it costs a frame field for its captured state and runs at its
+  block's exit in whichever resume reaches that exit. What remains open
+  is what abandonment then implies — its defers never run, and the
+  scheduler must clean up explicitly (4.10) — and what
+  [ownership.md §5](ownership.md#5-coroutines) works out for an `own`
+  qualifier here, a frame that can be neither dropped nor copied and a
+  `cancel` that runs the pending defers; that is a separate decision, and
+  this design stands without it.
 * Large hoisted locals: copy-in/copy-out of a `u8[1024]` local per resume
   is 2 KB of traffic. The 6.4 relaxation (in-place slots) or a size
   threshold would address it; the workaround today is to own the buffer
   outside, which is the idiom anyway.
-* Whether a `thread_fn` entry may itself be a `coro fn` (no obvious use;
-  no), and whether `simd coro fn` means anything (not in v1).
+* Whether a `thread_fn` entry may itself be started as a coroutine (no
+  obvious use; no — it owns its stacks and needs no frame), and whether
+  `simd` means anything next to `suspend<F>` (not in v1).
 * Dynamic-stack tasks (6.1): what the opt-in looks like and how many a
   program may have, given the address-space budget.
-* A `for x in gen` form and a `yield`-based iterator protocol for std's
-  containers, once generators are in use.
+* A `for x in gen` form and an iterator protocol for std's containers
+  over the emit-handler idiom (4.13), once generators are in use.
 
 ## References
 
