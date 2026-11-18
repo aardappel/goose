@@ -8,6 +8,7 @@
 
 #include "libtcc.h"
 #include "jit_runtime.h"
+#include "build_paths.h"   // GOOSE_TCC_LIB_PATH, GOOSE_STDLIB_PATH
 #include <filesystem>
 
 namespace goose {

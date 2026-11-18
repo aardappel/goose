@@ -23,6 +23,7 @@ import json
 import re
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 
 import toolchain as tc
@@ -33,10 +34,13 @@ REFRESHED = ("codeLens", "semanticTokens", "inlayHint")
 
 
 def uri_of(path):
+    """A path's URI as the server spells one (UriOfPath in src/lsp_rpc.h):
+    the drive letter in lower case, and everything but unreserved characters
+    escaped, so a `#` or a space in the path matches its replies."""
     p = Path(path).resolve().as_posix()
     if re.match(r"^[A-Za-z]:/", p):
-        p = p[0].lower() + "%3A" + p[2:]
-    return "file:///" + p.lstrip("/")
+        p = p[0].lower() + p[1:]
+    return "file:///" + urllib.parse.quote(p.lstrip("/"), safe="/")
 
 
 class Client:

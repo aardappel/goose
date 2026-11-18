@@ -1,6 +1,7 @@
 // Goose compiler — driver. Includes establish the project-wide header order.
 
 #include "includes.h"
+#include "build_paths.h"   // GOOSE_STDLIB_PATH
 #include "utils.h"
 #include "small_vector.h"
 #include "flat_map.h"
