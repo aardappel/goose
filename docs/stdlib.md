@@ -1808,7 +1808,8 @@ Flags for `open`: `WINDOW_RESIZABLE`, `WINDOW_HIDDEN`, `WINDOW_FULLSCREEN`,
 `NO_VSYNC`, `DEBUG` (validation layers where installed; on in a debug build of
 the layer). With `GOOSE_GFX_HEADLESS=1` in the environment, `open` opens no
 window; the test runners use this. The screen is an RGBA8 texture the size
-of the window in pixels, with a depth texture. A frame draws into it, and
+of the window in pixels; its depth texture is made the first time
+`screen_depth()` is called. A frame draws into it, and
 `frame()` shows it. A window has the width and height that `open` gives, in
 the display's own coordinates, and it has every pixel the display has in
 that area. On a high-density display, that is more pixels than its width
