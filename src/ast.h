@@ -387,6 +387,11 @@ struct GenericParam {
     string_view name;
     Line line;
     TypeExpr *bound = nullptr;  // Optional ": fn(...)" style documentation bound.
+    // Declared `inherited F`: a function value drawn by name at each call
+    // site, from the scope the call is written in (§7.6). Takes no argument,
+    // no explicit type argument, and the only trailing block (§7.6). Used in
+    // the body like any other function-valued parameter.
+    bool inherited = false;
 };
 
 struct Param {

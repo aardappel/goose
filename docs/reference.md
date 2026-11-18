@@ -3721,6 +3721,37 @@ variable receiving it, with no intermediate array. A HOF never states what
 its function value returns: `map`'s result element type is whatever `F(x)`
 is in that instantiation. Spec §7.6, §7.7.
 
+### Inherited function values
+
+A generic parameter declared `inherited name` is a function value that is
+drawn by `name` from the scope of the call. It is looked up
+exactly as a call by that name would resolve the name there: a set of
+overloads is drawn whole, a type parameter of the name is drawn through
+its bound value (which is how a middle layer passes its own on), a
+variable of the name hides the functions of it, and no builtin is drawn at
+all. The body uses it like any other function value, and call sites that
+draw different names give different specializations. An inherited
+parameter may not be supplied as an argument or explicit type argument,
+and a call in a scope that includes no such name is an error.
+
+```goose
+fn bar() { print("foobar"); }
+fn foo<inherited bar: fn()>() { bar(); }
+
+fn main() {
+    foo();                    // the call of foo finds `bar` in scope
+    {
+        fn bar() { print("inner bar"); }
+        foo();                // this call draws the block's bar
+    }
+}
+```
+
+```
+foobar
+inner bar
+```
+
 ---
 
 ## 19. Recursion

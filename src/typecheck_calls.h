@@ -831,6 +831,13 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         return false;
     }
     for (size_t i = 0; i < c->tyargs.size(); i++) {
+        // An inherited parameter takes no type argument: every call draws it
+        // by name (§7.6).
+        if (sf->generics[i].inherited) {
+            why = cat("an explicit type argument cannot bind inherited parameter ",
+                      sf->generics[i].name);
+            return false;
+        }
         auto t = Subst(c->tyargs[i]);
         ValidateType(t, c->line, VT_LOCAL);
         mi.bindings.push_back({ sf->generics[i].name, t });
@@ -927,9 +934,11 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         return true;
     }();
     if (!paramsok) return false;
-    // Leftover generics bind function values, in order (§7.6).
+    // Leftover generics bind function values, in order (§7.6); inherited
+    // ones are drawn by name below.
     vector<string_view> unbound;
     for (auto &g : sf->generics) {
+        if (g.inherited) continue;
         auto found = false;
         for (auto &[n, t] : mi.bindings) found |= n == g.name;
         if (!found) unbound.push_back(g.name);
@@ -962,6 +971,66 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         fb.env = frames.back().lexspec;
         mi.fnvals.push_back({ unbound.back(), fb });
     }
+    // Inherited parameters draw their function values by name at the call
+    // site (§7.6): the functions of that name in the scope of the call, as a
+    // call by that name would resolve them. An overload set passes all its
+    // members, and each call of the value resolves among them as a call by
+    // that name would; a variable of the name stands for none of them, and a
+    // type parameter of it must be bound to a function value. A name binding
+    // captures free variables per the scope it is found in, as a function
+    // value passed by name does.
+    // The namespace of the code the call was written in (Ident::ns), where
+    // the inherited names resolve first (§11.1).
+    string_view cns;
+    if (auto *id = Is<Ident>(c->callee)) cns = id->ns;
+    else if (auto *d = Is<Dot>(c->callee)) cns = d->ns;
+    auto inherit = [&](string_view iname) -> bool {
+        // A variable of the name in scope hides the functions of its name,
+        // as it does a call (§11.1); a global one does not: no call can name
+        // a variable.
+        if (auto vd = LookupVar(iname, cns); vd && !vd->isglobal) {
+            why = cat(iname, " is a variable, not a function");
+            return false;
+        }
+        const FnValBind *pfb;
+        if (auto t = LookupTypeParam(iname, pfb)) {
+            why = cat("type parameter ", iname, " is bound to the type ", TypeStr(t),
+                      ", not a function");
+            return false;
+        }
+        if (pfb) {
+            mi.fnvals.push_back({ iname, *pfb });
+            return true;
+        }
+        FnSpec *env = nullptr;
+        if (auto cands = LookupLocalFns(iname, env); !cands.empty()) {
+            mi.fnvals.push_back({ iname, LocalFnValue(cands, env) });
+            return true;
+        }
+        if (auto &cands = ast.LookupFunctions(iname, cns); !cands.empty()) {
+            for (auto cf : cands)
+                if (cf->brokensig) throw Abandoned {};
+            FnValBind fb;
+            fb.named = cands[0];
+            if (cands.size() > 1) fb.set = &cands;
+            mi.fnvals.push_back({ iname, fb });
+            return true;
+        }
+        why = cat("inherited parameter ", iname, ": no function named ", iname,
+                  " is in scope at the call (§7.6)");
+        return false;
+    };
+    for (auto &g : sf->generics)
+        if (g.inherited)
+            for (auto &[n, t] : mi.bindings)
+                if (n == g.name) {
+                    why = cat("inherited parameter ", g.name,
+                              " is neither a type nor inferred from an argument; "
+                              "it is drawn by name at the call (§7.6)");
+                    return false;
+                }
+    for (auto &g : sf->generics)
+        if (g.inherited && !inherit(g.name)) return false;
     // The left-out parameters' types, as the arguments made them. A type
     // variable a function value took leaves one undecided as well.
     for (auto i = K; i < P; i++) {

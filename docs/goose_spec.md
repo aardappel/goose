@@ -2660,7 +2660,10 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   (by-value) parameter a reassignable local.
 * A parameter with no type annotation is generic (Lobster-style). Explicit
   `<T>` parameters express same-type constraints and let signatures name
-  types. Return types may be omitted where they can be inferred (they are
+  types. A generic parameter declared `inherited name` is a function value
+  that no argument supplies: each call draws it by name from the scope of
+  the call, as a call by that name would resolve the name (§7.6).
+  Return types may be omitted where they can be inferred (they are
   required across recursive cycles, §7.8). An omitted result type is taken
   from the first return checked, the way an un-annotated `let` takes its
   type from its initializer (§3.8, §4.1). The result is a reference if that
@@ -2987,6 +2990,41 @@ enclosing named function**, not from the HOF that calls the value, so a
 HOF-based iterator has the same structuring power as `for`. This is
 implemented with the `return from` mechanism (§7.9), which unwinds the
 HOF's frames transparently.
+
+**Inherited parameters.** Declared among a function's generics as
+`inherited name`, with the same optional `: fn(...)` bound, an inherited
+parameter is a function value that no argument supplies. Every call draws
+its value by name from the scope of the call, exactly as a call by that
+name would resolve the name there, and an explicit type argument binds
+none. A trailing block and an argument carry no value for it, and the
+callee's ordinary generics one may bind stay ordinary: a function with
+only inherited parameters has nothing for either to bind, and a call that
+writes one is an error. The name is resolved at the call as a call by it
+would be: the overload set of the name is drawn whole, and each call of
+the value resolves among its members as a call by that name would; a type
+parameter of the name is drawn through its bound function value, which is
+how a middle layer passes its own value on; a local variable of the name
+hides the functions of it, as it hides a call by that name; a global one
+is ignored, as no call can name a variable; and no builtin is drawn at
+all. Whichever scope the name was found in is where its binding captures
+free variables, as a name passed as an argument would. The body uses it
+identically to any other function-valued parameter — `bar()` is a direct
+call, and a member call `a.bar()` is an error — and call sites that draw
+different names specialize again, as call sites with different arguments
+do. A call whose scope offers no such name is an error, as a call by that
+name would be.
+
+```goose
+fn bar() { print("foobar"); }
+fn foo<inherited bar: fn()>() { bar(); }
+fn main() {
+    foo();               // the call of foo finds `bar` in scope
+    {
+        fn bar() { print("inner"); }
+        foo();           // this call draws the same block's bar
+    }
+}
+```
 
 ### 7.7 Generics and monomorphization
 
@@ -5182,7 +5220,9 @@ variant     := ident ( "{" fieldlist "}" )?
 fieldlist   := field ("," field)* ","?
 field       := ("let" | "const")? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" declname "=" type ";"
-generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
+generics    := "<" genericparam ("," genericparam)* ">"
+genericparam := "inherited" ident (":" type)?   // functions only (§7.6): the
+              | ident (":" type)?               // value a call draws by name
 
 fndecl      := "trusted"? "checkfree"? ("export" strlit? | "extern" strlit?)? "checkfree"? "simd"?
                "inline"? "recursive"? ("fn" | "thread_fn")

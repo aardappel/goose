@@ -46,6 +46,7 @@ inline string GenericsText(const vector<GenericParam> &gs) {
     string s = "<";
     for (size_t i = 0; i < gs.size(); i++) {
         if (i) s += ", ";
+        if (gs[i].inherited) s += "inherited ";
         s += gs[i].name;
         if (gs[i].bound) Append(s, ": ", TypeText(gs[i].bound));
     }
