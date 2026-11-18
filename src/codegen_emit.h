@@ -567,7 +567,7 @@ inline string CodeGen::HoistAggregateDecls(string &b) {
 // C compiler from fusing a multiply and an add into one rounding in any of
 // them, which the wider instruction sets would otherwise let it do.
 inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
-                                      const string &fnbody) {
+                                      const string &fnbody, vector<string> &names) {
     // The parameter list is `type name` declarations whose types are
     // typedef names or pointers to them; the names forward the call.
     string args;
@@ -588,6 +588,7 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
     // it whatever the target's mode (runtime.h).
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         versions[lv] = Unique(cat(name, "_simd", lv));
+        names.push_back(versions[lv]);
         Append(code, "#if GS_SIMD >= ", lv,
                "\n#undef GS_MUL_ADD_MODE\n#define GS_MUL_ADD_MODE fused\nGS_SIMD_TARGET", lv,
                " static ", ret, " ", versions[lv], "(", params, ") {\n", fnbody,
@@ -708,9 +709,15 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
         Append(fnbody, "    uint8_t *", p.second, " = ", gnames[p.first], ".base;\n");
     fnbody += bodyout;
     auto name = er ? ernames[sp] : curinfo->cname;
-    if (sp->sf->issimd) EmitSimdVersions(sp, name, params, fnbody);
-    else Append(code, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(", params, ") {\n", fnbody,
+    // Where the function lies in the C, for MergeSpecs, taken once its
+    // result type is: nothing emitted for that belongs to the function.
+    auto ret = SigRet(sp);
+    SpecText st { sp, er, code.size(), 0, { name } };
+    if (sp->sf->issimd) EmitSimdVersions(sp, name, params, fnbody, st.names);
+    else Append(code, "static ", FnAttrs(sp), ret, " ", name, "(", params, ") {\n", fnbody,
                 "}\n\n");
+    st.end = code.size();
+    spectexts.push_back(std::move(st));
     curspec = nullptr;
     curinfo = nullptr;
     emiter = false;

@@ -37,6 +37,7 @@
 #include "codegen_render.h"
 #include "codegen_emit.h"
 #include "codegen_stacks.h"
+#include "codegen_merge.h"
 #include "codegen_nodes.h"
 #include "runtime_inline.h"
 #include "process.h"
