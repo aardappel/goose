@@ -2071,6 +2071,10 @@ fn draw(vertices, instances, first_vertex, first_instance)
 fn draw_indexed(indices, instances, first_index, vertex_offset, first_instance)
 ```
 
+A pass resolves each multisampled `color` target into its `resolve` target.
+A multisampled target keeps nothing after the pass, neither samples nor
+depth, so a later pass clears it rather than loads it.
+
 A pipeline is not tied to the formats it draws into; it is made for each
 pass's targets the first time it is bound in one. The vertex shader's inputs
 are read in location order, one after another, from one packed element,
