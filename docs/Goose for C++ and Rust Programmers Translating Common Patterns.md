@@ -877,7 +877,8 @@ Goose's speed and safety come from a closed world and static ownership. A few de
 | `shared_ptr` with automatic last-owner cleanup | No refcounts, no destructors | Pick an owner; `slot_pool` + explicit `free`; generation field to detect staleness |
 | Shared mutable state between threads | No shared memory by design | Messages through typed queues |
 | An array of objects that each own several growable members | A root struct must be a local or global variable | One root struct holding a field per member, with slot indices or a `slice_pool` for the per-object parts |
-| Subprocesses, networking | Not in the v1 library | `extern fn` to C |
+| Subprocesses | Not in the v1 library | `extern fn` to C |
+| Async or UDP networking | `net` is blocking TCP in v1 | A thread per connection with `net`, or `extern fn` to C |
 
 As a rule of thumb, when something won't compile, read the whole error. It names both ends, such as the reference and where it was bound, or the holder and the line that stored into it, which usually tells you which scope or binding to move.
 

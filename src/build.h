@@ -58,12 +58,12 @@ struct Builder {
     }
 
     // The system libraries a program links beyond the C library, in the cc
-    // style: none on Windows, where they live in the C runtime.
+    // style: winsock on Windows, where the rest live in the C runtime.
     vector<string> SystemLibs() const {
         #ifdef _WIN32
-            return {};
+            return { LibFlag("ws2_32") };
         #else
-            if (tc.style == "msvc") return {};
+            if (tc.style == "msvc") return { LibFlag("ws2_32") };
             vector<string> libs = { "-lm", "-pthread" };
             #ifdef __linux__
                 // dlopen, for the runtime's dynamic externs: in libdl before
@@ -136,6 +136,7 @@ struct Builder {
             argv.push_back(cat("/Fo:", builddir, "\\"));
             for (auto &o : objects) argv.push_back(o);
             for (auto &l : libs) argv.push_back(l);
+            for (auto &l : SystemLibs()) argv.push_back(l);
         } else {
             argv.push_back("-shared");
             for (auto &o : objects) argv.push_back(o);
@@ -164,6 +165,7 @@ struct Builder {
             argv.push_back(src);
             for (auto &o : objects) argv.push_back(o);
             for (auto &r : rsps) argv.push_back(cat("@", r));
+            for (auto &l : SystemLibs()) argv.push_back(l);
         } else {
             if (opts.shared) {
                 // Not on Windows, where clang rejects the flag for its
