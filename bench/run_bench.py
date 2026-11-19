@@ -230,12 +230,14 @@ BENCHMARKS = [
         what="Integrate N particles for 200 steps of f32 vector math.",
         sizes=[100000, 1000000, 4000000],
         goose=[dict(label="goose AoS, elementwise", file="particles.goose"),
-               dict(label="goose AoS, per component", file="particles_scalar.goose")],
+               dict(label="goose AoS, per component", file="particles_scalar.goose"),
+               dict(label="goose SoA", file="particles_soa.goose")],
         cpp=[dict(label="cpp AoS, per component", file="particles.cpp", variant=0, tier="expert"),
              dict(label="cpp AoS, elementwise", file="particles.cpp", variant=2, tier="idiomatic"),
              dict(label="cpp SoA", file="particles.cpp", variant=1, tier="expert")],
         rust=[dict(label="rust AoS, elementwise", file="particles.rs"),
-              dict(label="rust AoS, per component", file="particles_scalar.rs")],
+              dict(label="rust AoS, per component", file="particles_scalar.rs"),
+              dict(label="rust SoA", file="particles_soa.rs")],
         summary=(
             "This flat floating-point workload offers little representation advantage. "
             "Compare elementwise and per-component rows to see the cost of expression "
