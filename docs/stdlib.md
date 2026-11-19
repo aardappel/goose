@@ -248,7 +248,7 @@ results.
 
 ```goose
 fn each_rev<T, F>(xs: T[:])                    // F(x), last to first
-fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); the last chunk may be short
+fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); asserts n > 0; last chunk may be short
 fn find<T, F>(xs: T[:]) -> T?                  // first x with F(x), as a reference
 fn find_index<T, F>(xs: T[:]) -> i64
 fn position<T>(xs: T[:], v: T) -> i64          // first i with xs[i] == v
@@ -267,6 +267,25 @@ fn rfind<T>(xs: T[:], sub: T[:]) -> i64
 fn starts_with<T>(xs: T[:], p: T[:]) -> bool   fn ends_with<T>(xs: T[:], p: T[:]) -> bool
 ```
 
+`each_chunk` invokes the block once for each consecutive subslice of `xs`
+whose length is `n` at most, with the first chunks exactly `n` elements long
+when enough elements remain. The final chunk may be shorter, when
+`xs.len` is not a multiple of `n`. The second argument to the block is the
+chunk index, starting at `0`. Each chunk is a slice into `xs`; it is valid
+only for the duration of that block call.
+
+The chunk size `n` must be positive. The function asserts `n > 0` before it
+reads `xs.len` or enters its loop, so a zero or negative size aborts even
+when `xs` is empty. That check prevents a nonterminating loop when `n` would
+advance the index by zero. When `xs` is empty and `n > 0`, the block is not
+called.
+
+```goose
+each_chunk(pixels, width) { line, y => row += line.len; };        // width must be > 0
+each_chunk(xs[..0], 4) { c, i => print(c); };                     // no calls
+// each_chunk(xs, 0) { c, i => };                                  // assert fails: n > 0
+```
+
 `find`/`rfind`/`starts_with`/`ends_with` are generic over the element, so
 they are the string functions too: `find(line, "://")`. `find` and `rfind`
 compare a whole subsequence only where its first element matches.
@@ -279,8 +298,6 @@ a comparator that keeps none either.
 ```goose
 let big = xs.find() { it > 100 };
 if big { print(big); }
-var row = 0;
-each_chunk(pixels, width) { line, y => row += line.len; };
 ```
 
 ### Byte sets

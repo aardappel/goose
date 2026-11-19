@@ -403,7 +403,7 @@ own xorshift. To seed from the OS, use `os`'s `random_seed()`.
 
 ```goose
 fn each_rev<T, F>(xs: T[:])                    // F(x), last to first
-fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); the last chunk may be short
+fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); asserts n > 0; last chunk may be short
 fn find<T, F>(xs: T[:]) -> T?                  // first x with F(x), as a reference; null if none
 fn find_index<T, F>(xs: T[:]) -> i64           // …or its index, -1 if none
 fn position<T>(xs: T[:], v: T) -> i64          // first i with xs[i] == v, -1 if none
@@ -426,7 +426,10 @@ fn ends_with<T>(xs: T[:], p: T[:]) -> bool
 
 `each_chunk` exists because row slices are the documented way to get bounds
 checks out of 2-D kernels (`bench/goose/blur_rows.goose`); `for y in h {
-each_chunk(img, w) … }` is that idiom with the arithmetic done once.
+each_chunk(img, w) … }` is that idiom with the arithmetic done once. The
+chunk size must be positive: the implementation asserts `n > 0` on entry,
+including when `xs` is empty, so nonpositive sizes abort instead of looping
+forever. An empty slice with positive `n` invokes the block zero times.
 `find`/`rfind`/`starts_with`/`ends_with` are generic over the element type,
 so they also serve as the string functions (`find(line, "://")`). They
 coexist with the predicate `find` because a function-value argument and a
