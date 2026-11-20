@@ -56,9 +56,11 @@ template<typename K, typename V> class flat_map {
     flat_map(flat_map &&) = delete;
     flat_map &operator=(flat_map &&) = delete;
 
-    // Room for n keys without growing.
+    // Room for n keys without growing. n/2, not n*2: an absurd n must fail
+    // the invariant assert below, not wrap around into a huge allocation.
     void reserve(size_t n) {
-        while (slots.size() < n * 2) Grow();
+        while (slots.size() / 2 < n) Grow();
+        assert(slots.size() / 2 >= n);
     }
     size_t size() const { return count; }
     bool empty() const { return !count; }

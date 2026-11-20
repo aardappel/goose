@@ -2753,7 +2753,11 @@ struct Ast {
     }
 
     // The same type with its contents read-only (§9.5): a fresh node, since
-    // a primitive type's node is shared.
+    // a primitive type's node is shared. `*n = *t` shares the detail
+    // pointers (struc/named/var), so the copy aliases the original's
+    // details: they stay immutable once resolve has classified them
+    // (resolve.h classifies a const copy's detail on its own and stores
+    // back through the sharing deliberately).
     TypeExpr *ConstOf(TypeExpr *t) {
         if (t->cq) return t;
         auto n = NewType(t->kind, t->line);
