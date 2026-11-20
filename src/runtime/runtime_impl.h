@@ -73,6 +73,12 @@ static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, 
     static const char lead[] = "goose runtime error: ";
     int64_t pre = sizeof lead - 1;
     int64_t loc = file ? snprintf(NULL, 0, " (%s:%d)\n", file, line) : 1;
+    /* The length is a C caller's to choose (gs_abort_msg is the runtime's
+       public surface), but the spec caps every size, count and index at 48
+       bits (10.4, GS_STACK_RESERVE's limit): a length past that cannot be a
+       message the program built, and ends the program as its own failure
+       rather than wrapping the size below or copying past its bounds. */
+    if (len < 0 || len > (int64_t)1 << 48) gs_end(1);
     uint8_t *text = (uint8_t *)malloc((size_t)(pre + len + loc + 1));
     if (!text) {
         if (gs_contain) gs_panic("out of memory recording an aborted thread");

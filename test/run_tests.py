@@ -2099,6 +2099,7 @@ def main():
                     r.ok(f"runtime {name}")
         r.show_task(runtime_lifecycle, "runtime_threads_lifecycle", "threads")
         r.show_task(runtime_lifecycle, "runtime_trim_memory", "runtime")
+        r.show_task(runtime_lifecycle, "gs_fail_overflow", "runtime")
 
         # A library build's C host: goose_exit ends the program and goose_init
         # starts it again over fresh globals and queues, and ending it while a
