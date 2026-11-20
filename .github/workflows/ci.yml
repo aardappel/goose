@@ -87,6 +87,18 @@ jobs:
         if: runner.os == 'Linux'
         run: build/goose format --check samples stdlib
 
+      # The embedded runtime header (src/runtime_inline.h) is generated from
+      # src/runtime/ (`goose --gen-runtime-header`); anyone editing the
+      # runtime re-runs it and commits the result. Regenerate here and refuse
+      # a checkout whose copy drifted from the sources: the drift is caught
+      # in CI, not by whoever builds next.
+      - name: Check runtime header drift
+        if: runner.os == 'Linux'
+        run: |
+          build/goose --gen-runtime-header
+          git diff --exit-code -- src/runtime_inline.h \
+            || (echo "::error::src/runtime_inline.h drifted from src/runtime/. Run: goose --gen-runtime-header, then commit the header." && exit 1)
+
       - name: Test
         run: python test/run_tests.py --exe build/${{ runner.os == 'Windows' && 'Debug/goose.exe' || 'goose' }} --profile baseline --cc native --require-clang
 
