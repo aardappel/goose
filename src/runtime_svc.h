@@ -28,7 +28,7 @@ void SetBinaryStdio();
 // The runtime C sources embedded into the compiler (runtime_inline.h), in the
 // order a standalone program holds them (runtime.h has how they divide), and
 // goose.h, the header native parts compile against (native.h).
-inline const char *const runtimefiles[] = { "runtime.h", "runtime_impl.h", "runtime_threads.h",
+inline constexpr const char *runtimefiles[] = { "runtime.h", "runtime_impl.h", "runtime_threads.h",
                                             "runtime_ext.h", "runtime_os.h", "goose.h", "jit_c.h" };
 
 inline string RuntimeSections(std::initializer_list<const char *> names) {
