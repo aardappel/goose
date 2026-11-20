@@ -2668,7 +2668,8 @@ struct Ast {
     }
 
     // Declarations, by namespace. Qualified spellings (`ns::name`) are
-    // interned here: the lexer delivers their parts as separate tokens.
+    // built here once per use (Ast::Intern): the lexer delivers their parts
+    // as separate tokens.
     map<string_view, Namespace> namespaces;
     deque<string> interned;
 
@@ -2903,6 +2904,14 @@ struct Ast {
         }
     }
 
+    // Adds s to the strings this Ast owns and returns a view of it: the one
+    // store every `string_view` name and message the tree carries points
+    // into, whose entries live as long as the compile. Names the parser
+    // spells qualified (`ns::leaf`, Parser::ParseQualifiedName) are built
+    // here once per use; the source's own spellings stay views into the
+    // source buffers (ast.sources) and never come through this call.
+    // Despite the name, entries are not deduplicated: one store entry per
+    // call, so the same qualified spelling twice is two entries.
     string_view Intern(string s) {
         interned.push_back(std::move(s));
         return interned.back();
