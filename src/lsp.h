@@ -4,13 +4,12 @@
 // have settled, and answers the requests from the latest analyses.
 #pragma once
 
+#include "runtime_svc.h"
+
 namespace goose {
 
 // The protocol version served; what --probe prints.
 constexpr const char *LSP_VERSION = "3.17";
-
-// In main.cpp: stdin and stdout as byte streams, which the framing needs.
-void SetBinaryStdio();
 
 struct Server {
     Transport rpc;

@@ -11,10 +11,9 @@
 // Format is pure, so the language server can call it as well.
 #pragma once
 
-namespace goose {
+#include "runtime_svc.h"
 
-// In main.cpp: stdin and stdout as byte streams.
-void SetBinaryStdio();
+namespace goose {
 
 struct FormatResult {
     bool ok = false;
