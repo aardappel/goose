@@ -58,9 +58,9 @@ GS_API void gs_stack_stats(int64_t stacks) {
     char who[40], reserve[40], budget[40];
     if (gs_current_thread_id < 0) snprintf(who, sizeof who, "main");
     else snprintf(who, sizeof who, "worker %lld", (long long)gs_current_thread_id);
-    *gs_size(reserve, gs_region_usable) = 0;
+    *gs_size(reserve, gs_region_usable_load()) = 0;
     *gs_size(budget, gs_stack_budget) = 0;
-    uint64_t per = gs_region_usable + gs_region_gap;
+    uint64_t per = gs_region_usable_load() + gs_region_gap;
     char cap[64];
     if (gs_workerregions > 0)
         snprintf(cap, sizeof cap, "a worker %lld, thread cap %lld", (long long)gs_workerregions,

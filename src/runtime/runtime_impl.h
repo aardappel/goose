@@ -191,8 +191,10 @@ static char **gs_argv;
 /* What a new region reserves: the usable part, which halves whenever the
    platform refuses one (gs_reserve_region), and the guard gap behind it;
    the usable part as configured, for the reports; and the page size, a
-   whole number of which the usable part always is (gs_rt_start). */
-static size_t gs_region_usable, gs_region_gap, gs_region_reserve, gs_region_page;
+   whole number of which the usable part always is (gs_rt_start). The
+   usable size lives in the gs_region_usable_load/store pair below, the
+   one workers race through a reservation refusal on. */
+static size_t gs_region_gap, gs_region_reserve, gs_region_page;
 /* The worker running on this thread, main's being -1 (runtime_threads.h). */
 static GS_TLS int64_t gs_current_thread_id = -1;
 /* The program's address space budget for regions and the most regions its
@@ -650,11 +652,34 @@ static GS_NORETURN void gs_end(int code) {
    stack, and the guard gap behind a smaller one aborts growth that much
    sooner. Workers racing through a refusal may each halve the size once
    more than needed, or restore a larger one for a moment; it only ever
-   settles downward. */
+   settles downward. The shared variable is read and written with the
+   atomics gs_end_first uses: a plain write here would be a data race on
+   the C model, whatever the value's drift toward the minimum. */
+#ifdef _WIN32
+static volatile LONG64 gs_region_usable64;
+#else
+static size_t gs_region_usable64;
+#endif
+static size_t gs_region_usable_load(void) {
+#ifdef _WIN32
+    return (size_t)InterlockedCompareExchange64(&gs_region_usable64, 0, 0);
+#else
+    return __atomic_load_n(&gs_region_usable64, __ATOMIC_SEQ_CST);
+#endif
+}
+
+static void gs_region_usable_store(size_t usable) {
+#ifdef _WIN32
+    InterlockedExchange64(&gs_region_usable64, (LONG64)usable);
+#else
+    __atomic_store_n(&gs_region_usable64, usable, __ATOMIC_SEQ_CST);
+#endif
+}
+
 GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     if (gs_nregions >= gs_regions_cap)
         gs_panic("too many data stack regions");
-    size_t usable = gs_region_usable;
+    size_t usable = gs_region_usable_load();
     uint8_t *p;
     for (;;) {
         p = gs_os_reserve(usable, usable + gs_region_gap);
@@ -662,7 +687,7 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
         if (usable <= GS_REGION_MIN) gs_panic("cannot reserve data stack address space");
         usable /= 2;
         usable -= usable % gs_region_page;
-        gs_region_usable = usable;
+        gs_region_usable_store(usable);
     }
     long i = gs_nregions;
     gs_regions[i].base = p;
@@ -1604,7 +1629,8 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     gs_region_page = gs_os_page_size();
     reserve -= reserve % gs_region_page;
     if (!reserve) gs_panic("the data stack reservation (GS_STACK_RESERVE) is less than a page");
-    gs_region_usable = gs_region_reserve = (size_t)reserve;
+    gs_region_reserve = (size_t)reserve;
+    gs_region_usable_store(gs_region_reserve);
     gs_region_gap = (size_t)gap;
     gs_stack_budget = budget;
     gs_mainregions = mainregions;
