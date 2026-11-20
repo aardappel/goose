@@ -1409,9 +1409,10 @@ int Main(int argc, char **argv) {
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     auto jsondiag = false;
     string ccrequest;
-    // The inlining at its highest. The C compiler optimizes whatever the
+    // The inlining at its highest: what a run or build defaults to
+    // (DEFAULTOPTLEVEL, optimize.h). The C compiler optimizes whatever the
     // level, unless --debug (Builder::CFlags).
-    auto optlevel = 2;
+    auto optlevel = DEFAULTOPTLEVEL;
     vector<string> cdefines, progargs, includenames, files;
     for (int i = firstarg; i < argc; i++) {
         string arg = argv[i];
