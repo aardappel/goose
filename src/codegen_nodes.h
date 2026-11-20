@@ -239,7 +239,7 @@ inline string Binary::CgX(CodeGen &cg) {
             if (rt && IsPlainRef(rt)) {
                 auto p = cg.T();
                 cg.FixedLocal(rt, p);
-                cg.GenAny(n, Dst { DK_LVALUE, p, rt });
+                cg.GenAny(n, Dst::Lv(p, rt));
                 return fix ? cat("(*", p, ")") : cat("((uint8_t *)", p, ")");
             }
             // A call's reference result to a bytes value is its pointer
@@ -702,19 +702,19 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
         if (cg.IsResz(rt)) {
             string stk;
             auto h = cg.RzTemp(rt, stk);
-            EmitBody(cg, Dst { DK_STACK, stk, rt, cg.RzLenLv(rt, h) });
+            EmitBody(cg, Dst::StkLen(stk, rt, cg.RzLenLv(rt, h)));
             lv = cg.RzTempLoc(rt, h, stk);
         } else if (cg.IsBytesT(rt)) {
             string stk;
             auto base = cg.BytesTemp(stk);
-            EmitBody(cg, Dst { DK_STACK, stk, rt });
+            EmitBody(cg, Dst::Stk(stk, rt));
             lv = cg.BytesLoc(base, rt, CodeGen::Loc {});
         } else {
             lv.t = rt;
             lv.val = true;
             lv.s = cg.T();
             cg.FixedLocal(rt, lv.s);
-            EmitBody(cg, Dst { DK_LVALUE, lv.s, rt });
+            EmitBody(cg, Dst::Lv(lv.s, rt));
         }
         auto x = cg.LoadLoc(lv, want, line);
         if (d.k == DK_LVALUE) cg.L(d.s, " = ", x, ";");
@@ -879,7 +879,7 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
                 auto name = cg.LocalName(d);
                 cg.FixedLocal(d->type, name, "", true);
                 cg.vnames[d] = name;
-                dsts.push_back(Dst { DK_LVALUE, name, d->type });
+                dsts.push_back(Dst::Lv(name, d->type));
             }
         }
         cg.EmitCallInto(c, dsts);
@@ -994,7 +994,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
         else cg.L(lv.s, " = ", x, ";");
         return;
     }
-    cg.GenAny(rhs, Dst { DK_LVALUE, lv.s, lv.t });
+    cg.GenAny(rhs, Dst::Lv(lv.s, lv.t));
 }
 
 inline void IncDec::CgStmt(CodeGen &cg) {

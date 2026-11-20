@@ -436,7 +436,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         else EmitValStore(stk, want, GenXD(n, want));
         return;
     }
-    if (IsCtl(n)) { GenAny(n, Dst { DK_STACK, stk, want, lenlv }); return; }
+    if (IsCtl(n)) { GenAny(n, Dst::StkLen(stk, want, lenlv)); return; }
     // What this places at stk while its parts are built sits in front of
     // any exit taken inside one of them (ExitStart).
     OpenAt open(*this, stk);
@@ -463,7 +463,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     }
     if (auto c = Is<Call>(n)) {
         if (auto from = AdtFrom(c)) {
-            GenAdtAdapted(from, et, Dst { DK_STACK, stk, et, lenlv }, n->line,
+            GenAdtAdapted(from, et, Dst::StkLen(stk, et, lenlv), n->line,
                           [&](const Dst &d) { GenCallAs(c, from, d); });
             return;
         }
@@ -624,7 +624,7 @@ inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, Typ
         auto p = T();
         L(CT(et), " *", p, " = (", CT(et), " *)", Top(stk), ";");
         Bump(stk, cat(FixedSize(et)));
-        EmitCall(c, Dst { DK_LVALUE, cat("(*", p, ")"), et });
+        EmitCall(c, Dst::Lv(cat("(*", p, ")"), et));
         return;
     }
     // A bytes-class result feeding a fixed-class slot (an array
@@ -633,7 +633,7 @@ inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, Typ
     // temporary of its own and copied into the slot below, so the call
     // is not handed the slot's stack to build on.
     auto own = rt0 && IsBytesT(rt0) && (!IsBytesT(et) || !CallBuildsAt(c, rt0, et, lenlv));
-    auto rets = EmitCall(c, own ? Dst {} : Dst { DK_STACK, stk, want, lenlv });
+    auto rets = EmitCall(c, own ? Dst {} : Dst::StkLen(stk, want, lenlv));
     if (rets.empty() || IsVoidT(et)) return;
     // A returned reference landing in a relative-reference slot stores the
     // offset, as any other reference value does there (§3.9).
@@ -708,7 +708,7 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
         lv.val = true;
         lv.s = T();
         FixedLocal(from, lv.s);
-        gen(Dst { DK_LVALUE, lv.s, from });
+        gen(Dst::Lv(lv.s, from));
         GenVarEnumFromLoc(lv, to, d.s);
         if (!d.lenlv.empty()) L(d.lenlv, " = 0;");
         return;
@@ -726,7 +726,7 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
         auto ei = EIOf(to);
         auto vi = ei->en->VariantIndex(from->var->variant);
         L(base, ".tag = ", TagConst(ei, vi), ";");
-        gen(Dst { DK_LVALUE, cat(base, ".u.v_", Sanitize(from->var->variant->name)), from });
+        gen(Dst::Lv(cat(base, ".u.v_", Sanitize(from->var->variant->name)), from));
         return;
     }
     Loc lv;
@@ -735,12 +735,12 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
         string stk;
         lv.s = BytesTemp(stk);
         lv.stk = stk;
-        gen(Dst { DK_STACK, stk, from });
+        gen(Dst::Stk(stk, from));
     } else {
         lv.val = true;
         lv.s = T();
         FixedLocal(from, lv.s);
-        gen(Dst { DK_LVALUE, lv.s, from });
+        gen(Dst::Lv(lv.s, from));
     }
     auto x = AdaptToFixed(lv, to, ln);
     if (d.k == DK_LVALUE) L(d.s, " = ", x, ";");
@@ -757,7 +757,7 @@ inline Dst CodeGen::VariantBehindTag(TypeExpr *from, TypeExpr *to, const Dst &d)
     EmitValStoreTag(d.s, TagStore(ei->en), TagConst(ei, ei->en->VariantIndex(from->var->variant)));
     auto rz = IsResz(from);
     if (!d.lenlv.empty() && !rz) L(d.lenlv, " = 0;");
-    return Dst { DK_STACK, d.s, from, rz ? d.lenlv : "" };
+    return Dst::StkLen(d.s, from, rz ? d.lenlv : "");
 }
 
 // A call's first result, of the type t it arrives as, into d.
@@ -984,7 +984,7 @@ inline void CodeGen::FreezeFill(Node *n, TypeExpr *t, vector<Node *> &added) {
     lv.t = t;
     if (IsResz(t)) {
         auto h = RzTemp(t, lv.stk);
-        GenAny(n, Dst { DK_STACK, lv.stk, t, RzLenLv(t, h) });
+        GenAny(n, Dst::StkLen(lv.stk, t, RzLenLv(t, h)));
         lv = RzTempLoc(t, h, lv.stk);
     } else if (IsBytesT(t)) {
         lv.s = BytesTemp(lv.stk);
@@ -1122,7 +1122,7 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
     auto emitelem = [&](Node *e, const string &path) {
         if (rel) EmitRelStoreAt(cat("(uint8_t *)&", path), elem, GenX(e), al->line, inroot,
                                 RelValue(e));
-        else GenAny(e, Dst { DK_LVALUE, path, elem });
+        else GenAny(e, Dst::Lv(path, elem));
     };
     auto count = LitCount(al);
     if (et->arr->akind == A_LIMITED) L(base, ".len = ", count, ";");
@@ -1185,7 +1185,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
                 }
                 continue;
             }
-            GenAny(init, Dst { DK_LVALUE, path, ft });
+            GenAny(init, Dst::Lv(path, ft));
         }
     };
     if (et->kind == TY_STRUCT) {
@@ -1358,7 +1358,7 @@ inline void CodeGen::GenFrameObjLit(StructLit *sl, StructInst *si, const string 
                            RelValue(init));
             continue;
         }
-        GenAny(init, Dst { DK_LVALUE, flv, ft });
+        GenAny(init, Dst::Lv(flv, ft));
     }
 }
 

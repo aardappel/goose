@@ -454,7 +454,7 @@ inline CodeGen::Loc CodeGen::RenderedLoc(Node *a) {
         FixedLocal(rt, lv.s, rets[0]);
     } else {
         FixedLocal(rt, lv.s);
-        GenAny(ib, Dst { DK_LVALUE, lv.s, rt });
+        GenAny(ib, Dst::Lv(lv.s, rt));
     }
     return lv;
 }

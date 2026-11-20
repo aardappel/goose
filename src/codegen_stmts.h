@@ -786,12 +786,12 @@ inline Dst CodeGen::DeclStackLocal(VarDef *d, bool forlocal) {
     if (!resz) {
         L("uint8_t *", name, " = ", Top(stk), ";");
         if (own) SaveBase(forlocal, stk, name);
-        return Dst { DK_STACK, stk, t };
+        return Dst::Stk(stk, t);
     }
     if (IsFrameObj(t)) {
         L(CT(t), " ", name, ";");
         if (own) SaveBase(forlocal, stk, cat(FoTailHdr(t, name), ".base"));
-        return Dst { DK_STACK, stk, t, name };
+        return Dst::StkLen(stk, t, name);
     }
     L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");
     if (own) SaveBase(forlocal, stk, cat(name, ".base"));
@@ -803,7 +803,7 @@ inline Dst CodeGen::DeclStackLocal(VarDef *d, bool forlocal) {
         SaveBase(forlocal, flstk, cat(fln, ".base"));
         vpool[d] = { fln, flstk };
     }
-    return Dst { DK_STACK, stk, t, cat(name, ".len") };
+    return Dst::StkLen(stk, t, cat(name, ".len"));
 }
 
 // A gs_pref value from a &pool expression or another pool reference, or
@@ -813,7 +813,7 @@ inline string CodeGen::GenPrefVal(Node *n) {
     if (IsCtl(n)) {
         auto t = T();
         L("gs_pref ", t, ";");
-        GenAny(n, Dst { DK_LVALUE, t, n->exprtype, "", true });
+        GenAny(n, Dst::LvPool(t, n->exprtype));
         return t;
     }
     if (auto u = Is<Unary>(n); u && u->op == T_BITAND) {
@@ -895,7 +895,7 @@ inline vector<string> CodeGen::GenForward(Call *c, const vector<TypeExpr *> &ret
         if (TEq(ct, rets[i])) {
             auto d = chans[i];
             if (d.k == DK_DISCARD) {
-                d = Dst { DK_LVALUE, T() };
+                d = Dst::Lv(T(), nullptr);
                 FixedLocal(rets[i], d.s);
             }
             dsts.push_back(d);
@@ -911,18 +911,18 @@ inline vector<string> CodeGen::GenForward(Call *c, const vector<TypeExpr *> &ret
         if (IsResz(ct)) {
             auto h = RzTemp(ct, stk);
             lv = RzTempLoc(ct, h, stk);
-            dsts.push_back(Dst { DK_STACK, stk, ct, RzLenLv(ct, h) });
+            dsts.push_back(Dst::StkLen(stk, ct, RzLenLv(ct, h)));
         } else if (IsBytesT(ct)) {
             lv.t = ct;
             lv.s = BytesTemp(stk);
             lv.stk = stk;
-            dsts.push_back(Dst { DK_STACK, stk, ct });
+            dsts.push_back(Dst::Stk(stk, ct));
         } else {
             lv.t = ct;
             lv.val = true;
             lv.s = T();
             FixedLocal(ct, lv.s);
-            dsts.push_back(Dst { DK_LVALUE, lv.s, ct });
+            dsts.push_back(Dst::Lv(lv.s, ct));
         }
     }
     auto res = EmitCall(c, dsts[0], &dsts);
@@ -956,10 +956,10 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             for (size_t i = 0; i < sp->rets.size(); i++) {
                 auto rt = sp->rets[i];
                 auto dst = cat("gs_dst", i);
-                if (IsResz(rt)) chans[i] = Dst { DK_STACK, dst, rt, cat("(*gs_rl", i, ")") };
-                else if (IsBytesT(rt)) chans[i] = Dst { DK_STACK, dst };
+                if (IsResz(rt)) chans[i] = Dst::StkLen(dst, rt, cat("(*gs_rl", i, ")"));
+                else if (IsBytesT(rt)) chans[i] = Dst::Stk(dst);
                 else if (NeedsResultLocation(rt))
-                    chans[i] = Dst { DK_LVALUE, cat("(*gs_r", i, ")"), rt };
+                    chans[i] = Dst::Lv(cat("(*gs_r", i, ")"), rt);
                 else if (PtrAbi(rt)) chans[i] = FreshLv(cat("(*gs_r", i, ")"), rt);
                 else continue;
                 if (IsBytesT(rt)) starts[i] = ExitStart(c, dst, "", 0);
@@ -1014,11 +1014,11 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             GenConstruct(vals[i], dst, rt);
             if (!start.empty()) LandValue(dst, DstTop0(i), start, rt, "");
         } else if (NeedsResultLocation(rt)) {
-            GenAny(vals[i], Dst { DK_LVALUE, cat("(*gs_r", i, ")"), rt });
+            GenAny(vals[i], Dst::Lv(cat("(*gs_r", i, ")"), rt));
         } else if ((int)i == si.cret) {
             retv = T();
             L(CT(rt), " ", retv, ";");
-            GenAny(vals[i], Dst { DK_LVALUE, retv, rt });
+            GenAny(vals[i], Dst::Lv(retv, rt));
         } else if (PtrAbi(rt)) {
             // The caller points gs_r at fresh storage (Dst::fresh), so the
             // value is built there directly.
@@ -1026,7 +1026,7 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
         } else {
             auto tv = T();
             FixedLocal(rt, tv);
-            GenAny(vals[i], Dst { DK_LVALUE, tv, rt });
+            GenAny(vals[i], Dst::Lv(tv, rt));
             L("*gs_r", i, " = ", tv, ";");
         }
     }
@@ -1123,7 +1123,7 @@ inline void CodeGen::GenFromReturn(Return *r) {
             else {
                 auto dst = cat("gs_lret_", tid, "_", i);
                 if (NeedsResultLocation(rets[i])) dst = cat("(*", dst, ")");
-                GenAny(r->vals[i], Dst { DK_LVALUE, dst, rets[i] });
+                GenAny(r->vals[i], Dst::Lv(dst, rets[i]));
             }
         }
     } else {
@@ -1132,9 +1132,9 @@ inline void CodeGen::GenFromReturn(Return *r) {
         for (size_t i = 0; i < rets.size(); i++) {
             auto stk = cat("gs_fdst_", tid, "_", i), lret = cat("gs_lret_", tid, "_", i);
             if (NeedsResultLocation(rets[i])) lret = cat("(*", lret, ")");
-            if (IsResz(rets[i])) chans.push_back(Dst { DK_STACK, stk, rets[i], lret });
-            else if (IsBytesT(rets[i])) chans.push_back(Dst { DK_STACK, stk });
-            else chans.push_back(Dst { DK_LVALUE, lret, rets[i] });
+            if (IsResz(rets[i])) chans.push_back(Dst::StkLen(stk, rets[i], lret));
+            else if (IsBytesT(rets[i])) chans.push_back(Dst::Stk(stk));
+            else chans.push_back(Dst::Lv(lret, rets[i]));
         }
         auto fixed = GenForward(Is<Call>(r->vals[0]), rets, chans);
         for (size_t i = 0; i < rets.size(); i++)

@@ -80,6 +80,25 @@ struct Dst {
     bool when = false;
     int exitscope = -1;
     bool fresh = false;
+
+    // Named constructors: a positional aggregate of eight fields is easy to
+    // misread at the call site (the first four share the shape
+    // { kind, storage, type, optional length }), so every call builds
+    // through these; FreshLv and the branch destination set further fields
+    // on top. A discard destination stays `Dst {}`.
+    static Dst Lv(const string &s, TypeExpr *t) { return Dst { DK_LVALUE, s, t }; }
+    static Dst LvPool(const string &s, TypeExpr *t) {
+        auto d = Lv(s, t);
+        d.pool = true;
+        return d;
+    }
+    static Dst Stk(const string &s, TypeExpr *t) { return Dst { DK_STACK, s, t }; }
+    // A stack destination without a type: a bytes-typed result channel takes
+    // the storage alone and picks its type up from the value routed to it.
+    static Dst Stk(const string &s) { return Dst { DK_STACK, s }; }
+    static Dst StkLen(const string &s, TypeExpr *t, const string &len) {
+        return Dst { DK_STACK, s, t, len };
+    }
 };
 
 // What a relative store knows of the reference it encodes beyond its type:

@@ -929,7 +929,7 @@ inline CodeGen::Loc CodeGen::GenRzTmp(Node *n) {
     auto t = n->exprtype;
     string stk;
     auto h = RzTemp(t, stk);
-    GenAny(n, Dst { DK_STACK, stk, t, RzLenLv(t, h) });
+    GenAny(n, Dst::StkLen(stk, t, RzLenLv(t, h)));
     return RzTempLoc(t, h, stk);
 }
 
@@ -1547,7 +1547,7 @@ inline string CodeGen::CtlValX(Node *n) {
     FixedLocal(vt, t);
     // The type rides along: a spliced body may deliver a reference where
     // the checked value had already decayed (NeedsDeref).
-    GenAny(n, Dst { DK_LVALUE, t, vt });
+    GenAny(n, Dst::Lv(t, vt));
     return t;
 }
 
@@ -1649,7 +1649,7 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
     // Everything else constructs on a fresh temp stack.
     string stk;
     auto base = BytesTemp(stk);
-    GenAny(n, Dst { DK_STACK, stk, n->exprtype });
+    GenAny(n, Dst::Stk(stk, n->exprtype));
     if (stkout) *stkout = stk;
     return base;
 }

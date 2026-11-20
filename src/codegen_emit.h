@@ -911,7 +911,7 @@ inline void CodeGen::InitGlobalValue(VarDef *d, Node *init) {
         EmitRelStoreAt(cat("(uint8_t *)&", gnames[d]), d->type, GenX(init),
                        init->line, true, RelValue(init));
     } else {
-        GenAny(init, Dst { DK_LVALUE, gnames[d], d->type });
+        GenAny(init, Dst::Lv(gnames[d], d->type));
     }
 }
 
