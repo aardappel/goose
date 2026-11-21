@@ -14,6 +14,7 @@ add_executable(goose
     src/main.cpp
     src/process.cpp
     src/version.cpp
+    src/runtime_svc.cpp
     src/process.h
     src/progress.cpp
     src/progress.h
@@ -32,6 +33,7 @@ add_executable(goose
     src/builtin.h
     src/includes.h
     src/utils.h
+    src/runtime_svc.h
     src/small_vector.h
     src/flat_map.h
     src/lexer.h

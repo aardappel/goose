@@ -124,11 +124,11 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 L("for (int64_t ", i, " = 0; ", i, " < ", ArrSize(t->arr), "; ", i, "++) {");
                 ind++;
                 PushSc(SC_PLAIN);
-                GenAny(c->defaultinit, Dst { DK_LVALUE, cat(tv, ".e[", i, "]"), t->arr->sub });
+                GenAny(c->defaultinit, Dst::Lv(cat(tv, ".e[", i, "]"), t->arr->sub));
                 PopSc();
                 ind--;
                 L("}");
-            } else GenAny(c->defaultinit, Dst { DK_LVALUE, tv, t });
+            } else GenAny(c->defaultinit, Dst::Lv(tv, t));
             return { tv };
         }
         case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
@@ -651,7 +651,7 @@ inline void CodeGen::StoreElemAt(Node *n, TypeExpr *elem, const string &e, const
     // not the pointer (§3.9).
     if (IsRelRef(elem))
         EmitRelStoreAt(cat("(uint8_t *)", e), elem, ev, ln, true, RelValue(n));
-    else if (ev.empty()) GenAny(n, Dst { DK_LVALUE, cat("(*", e, ")"), elem });
+    else if (ev.empty()) GenAny(n, Dst::Lv(cat("(*", e, ")"), elem));
     else StoreWhole(e, elem, ev);
 }
 
@@ -735,7 +735,7 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     if (fresh && asrun && ak != A_LIMITED) {
         auto nn = T();
         L("int64_t ", nn, " = 0;");
-        GenAny(src, Dst { DK_STACK, lv.stk, st, nn });
+        GenAny(src, Dst::StkLen(lv.stk, st, nn));
         L(v.lenlv, " += ", nn, ";");
         return;
     }
@@ -746,7 +746,7 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
         // elements belong to the appended run.
         auto base = T(), nn = T(), bytes = T();
         L("uint8_t *", base, " = ", Top(lv.stk), ";");
-        GenAny(src, Dst { DK_STACK, lv.stk, st });
+        GenAny(src, Dst::Stk(lv.stk, st));
         L("int64_t ", nn, " = *(gs_u32 *)(", base, " + 4);");
         L("int64_t ", bytes, " = ", nn, " * ", FixedSize(elem), ";");
         L("memmove(", base, ", ", base, " + 8, (size_t)", bytes, ");");
@@ -1069,7 +1069,7 @@ inline void CodeGen::EmitDefaultElems(const ArrView &v, const string &first,
     L(CT(v.elem), " *", e, " = (", CT(v.elem), " *)(", ElemAddr(v, cat("(", first, " + ", k, ")")),
       ");");
     PushSc(SC_PLAIN);
-    GenAny(init, Dst { DK_LVALUE, cat("(*", e, ")"), v.elem });
+    GenAny(init, Dst::Lv(cat("(*", e, ")"), v.elem));
     PopSc();
     ind--;
     L("}");

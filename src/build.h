@@ -5,12 +5,9 @@
 // source unless -o says otherwise.
 #pragma once
 
-namespace goose {
+#include "runtime_svc.h"
 
-// In main.cpp: the runtime's text hash, the runtime object's C, and a path's directory.
-string RuntimeVersion();
-string RuntimeObjectSource();
-string DirOf(const string &path);
+namespace goose {
 
 struct BuildOptions {
     bool debug = false;       // --debug: GS_DEBUG=1, debug information, no C optimization

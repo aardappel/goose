@@ -908,10 +908,13 @@ struct Node {
     // The codegen pass (codegen.h): CgX emits the node as a C value
     // expression, CgAny routes its value to a destination, CgStmt emits it in
     // statement position. Implementations live together in codegen_nodes.h;
-    // most are one-line delegations into CodeGen's machinery.
+    // most are one-line delegations into CodeGen's machinery. CgStmt defaults
+    // to evaluating the node for effect (GenAny to a discard destination),
+    // like BceWalk above defaults to walking Children; only statements with
+    // their own machinery override it.
     virtual string CgX(CodeGen &cg) = 0;
     virtual void CgAny(CodeGen &cg, const Dst &d) = 0;
-    virtual void CgStmt(CodeGen &cg) = 0;
+    virtual void CgStmt(CodeGen &cg);
 };
 
 // Where a diagnostic about n is: on its anchor's line, from the earliest
@@ -953,8 +956,7 @@ template<typename T> T *Is(Node *n) {
     Node *Cp1(Inliner &inl) const override; \
     Node *Opt(Optimizer &opt) override; \
     string CgX(CodeGen &cg) override; \
-    void CgAny(CodeGen &cg, const Dst &d) override; \
-    void CgStmt(CodeGen &cg) override;
+    void CgAny(CodeGen &cg, const Dst &d) override;
 #define NODE_END };
 
 NODE(IntLit)
@@ -1233,6 +1235,7 @@ NODE(NullLit)                   // The null optional; adapts to any T? (§3.8).
 NODE_END
 
 NODE(SelfRef)                   // `self`: the value a literal is constructing (§3.9).
+    void CgStmt(CodeGen &cg) override;  // Fails: not a statement.
     SelfRef(Line l) : Node(l, NKind) {}
 NODE_END
 
@@ -1293,6 +1296,9 @@ using FieldPath = pair<VarDef *, vector<int>>;
 
 NODE(While)
     BCE_WALK
+    // The loop's own statement machinery (codegen_nodes.h); the Node::CgStmt
+    // default would only evaluate it for effect.
+    void CgStmt(CodeGen &cg) override;
     // Set by BCE: the reference variables this loop indexes whose array it can
     // neither resize nor re-bind, so codegen reads their base and length once
     // before the loop instead of through the reference at every access.
@@ -1320,6 +1326,7 @@ NODE_END
 
 NODE(ForLoop)
     BCE_WALK
+    void CgStmt(CodeGen &cg) override;   // Its own loop machinery.
     // Set by BCE for array/slice iteration: nothing in the body can change the
     // iterated array's length, so the view may be read once instead of every
     // iteration (§6.5 otherwise requires the re-read, since growing during
@@ -1363,6 +1370,7 @@ NODE_END
 enum ExpansionSource { ES_FIELDS, ES_TYPES, ES_CONSTANTS, ES_VARIANTS };
 
 NODE(ConstFor)
+    void CgStmt(CodeGen &cg) override;  // Fails: never reached unexpanded.
     ExpansionSource source = ES_FIELDS;
     vector<string_view> names;
     vector<int> bindings;           // Assigned by BindExpansionNames, stable across clones.
@@ -1381,6 +1389,7 @@ NODE_END
 enum QueryKind { Q_HAS_DEFAULT, Q_SAME };
 
 NODE(ConstQuery)
+    void CgStmt(CodeGen &cg) override;  // Fails: never reached unexpanded.
     QueryKind query;
     string_view name;               // has_default: the accessor binding, as written.
     vector<TypeExpr *> types;       // same: the two types.
@@ -1402,6 +1411,7 @@ struct ConstIfBranch {
 };
 
 NODE(ConstIf)
+    void CgStmt(CodeGen &cg) override;  // Fails: never reached unexpanded.
     vector<ConstIfBranch> branches;
     bool armfragments = false;      // Its fragments are match arms (in a match's arm list).
     ConstIf(Line l) : Node(l, NKind) {}
@@ -1409,6 +1419,7 @@ NODE_END
 
 NODE(Return)
     BCE_WALK
+    void CgStmt(CodeGen &cg) override;  // The return machinery.
     vector<Node *> vals;
     string_view from;           // "return ... from f"; empty if absent. As written (Ident::name).
     string_view ns;             // The namespace `from` resolves in first (Ident::ns).
@@ -1419,12 +1430,14 @@ NODE_END
 
 NODE(Break)
     BCE_WALK
+    void CgStmt(CodeGen &cg) override;  // GenBreakPath.
     Node *val;
     Break(Line l, Node *_val) : Node(l, NKind), val(_val) {}
 NODE_END
 
 NODE(Continue)
     BCE_WALK
+    void CgStmt(CodeGen &cg) override;  // The continue label.
     Continue(Line l) : Node(l, NKind) {}
 NODE_END
 
@@ -1436,6 +1449,7 @@ NODE_END
 // (CodeGen::RegisterDefer).
 NODE(Defer)
     BCE_WALK
+    void CgStmt(CodeGen &cg) override;  // RegisterDefer.
     Block *body;
     Defer(Line l, Block *_body) : Node(l, NKind), body(_body) {}
 NODE_END
@@ -1444,6 +1458,7 @@ NODE_END
 // compile-time entity; participates in calls only.
 NODE(FunVal)
     BCE_WALK
+    void CgStmt(CodeGen &cg) override;  // Fails: not a statement.
     vector<Param> params;       // Empty param list = implicit "it".
     bool explicit_params = false;
     Block *body;
@@ -1454,6 +1469,7 @@ NODE_END
 NODE(VarDecl)
     BCE_WALK
     BCE_MARK
+    void CgStmt(CodeGen &cg) override;  // Storage and initialization.
     bool isvar;                 // var vs let.
     bool isconst = false;       // `const x`: a let whose type is `const` (§4.4).
     int reusable = 0;           // `reusable` or `reusable[]`: RU_SLOTS or RU_SLICES (§5.4).
@@ -1475,6 +1491,7 @@ NODE_END
 NODE(Assign)
     BCE_WALK
     BCE_MARK
+    void CgStmt(CodeGen &cg) override;  // The assignment machinery.
     TType op;                   // T_ASSIGN, T_PLUSEQ, ...
     Node *lval, *rhs;
     bool pointee = false;       // Typecheck: lval is a reference and this writes its pointee.
@@ -1484,6 +1501,7 @@ NODE_END
 NODE(IncDec)
     BCE_WALK
     BCE_MARK
+    void CgStmt(CodeGen &cg) override;  // x++ / x--.
     TType op;                   // T_INC / T_DEC.
     Node *lval;
     IncDec(Line l, TType _op, Node *_lval) : Node(l, NKind), op(_op), lval(_lval) {}
@@ -1664,21 +1682,25 @@ inline string_view NominalNs(const TypeExpr *t) {
 }
 
 NODE(FnDecl)
+    void CgStmt(CodeGen &cg) override;  // Empty: nested decls are separate specs.
     SFunction *sf;
     FnDecl(Line l, SFunction *_sf) : Node(l, NKind), sf(_sf) {}
 NODE_END
 
 NODE(StructDecl)
+    void CgStmt(CodeGen &cg) override;  // Empty: declarations emit nothing.
     SStruct *st;
     StructDecl(Line l, SStruct *_st) : Node(l, NKind), st(_st) {}
 NODE_END
 
 NODE(EnumDecl)
+    void CgStmt(CodeGen &cg) override;  // Empty: declarations emit nothing.
     SEnum *en;
     EnumDecl(Line l, SEnum *_en) : Node(l, NKind), en(_en) {}
 NODE_END
 
 NODE(AliasDecl)
+    void CgStmt(CodeGen &cg) override;  // Empty: declarations emit nothing.
     SAlias *al;
     AliasDecl(Line l, SAlias *_al) : Node(l, NKind), al(_al) {}
 NODE_END
@@ -2646,7 +2668,8 @@ struct Ast {
     }
 
     // Declarations, by namespace. Qualified spellings (`ns::name`) are
-    // interned here: the lexer delivers their parts as separate tokens.
+    // built here once per use (Ast::Intern): the lexer delivers their parts
+    // as separate tokens.
     map<string_view, Namespace> namespaces;
     deque<string> interned;
 
@@ -2731,7 +2754,11 @@ struct Ast {
     }
 
     // The same type with its contents read-only (§9.5): a fresh node, since
-    // a primitive type's node is shared.
+    // a primitive type's node is shared. `*n = *t` shares the detail
+    // pointers (struc/named/var), so the copy aliases the original's
+    // details: they stay immutable once resolve has classified them
+    // (resolve.h classifies a const copy's detail on its own and stores
+    // back through the sharing deliberately).
     TypeExpr *ConstOf(TypeExpr *t) {
         if (t->cq) return t;
         auto n = NewType(t->kind, t->line);
@@ -2877,6 +2904,14 @@ struct Ast {
         }
     }
 
+    // Adds s to the strings this Ast owns and returns a view of it: the one
+    // store every `string_view` name and message the tree carries points
+    // into, whose entries live as long as the compile. Names the parser
+    // spells qualified (`ns::leaf`, Parser::ParseQualifiedName) are built
+    // here once per use; the source's own spellings stay views into the
+    // source buffers (ast.sources) and never come through this call.
+    // Despite the name, entries are not deduplicated: one store entry per
+    // call, so the same qualified spelling twice is two entries.
     string_view Intern(string s) {
         interned.push_back(std::move(s));
         return interned.back();

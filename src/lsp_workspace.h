@@ -6,9 +6,13 @@
 // published for a root's files.
 #pragma once
 
+#include "runtime_svc.h"    // DirOf; SourceProvider (utils.h) arrives through the includes order.
+
 namespace goose {
 
-// In main.cpp.
+// In main.cpp (compiler-side entry points, not the service layer
+// runtime_svc.h holds): the standard library's directories, the program's
+// parse over the packages it reaches, and the compile on its own stack.
 vector<string> StdlibDirs(const string &stdlibdir, const string &exe);
 void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlibdirs,
                   const string &exedir, const SourceProvider &sources);
@@ -317,9 +321,9 @@ struct Workspace {
                 TypeCheckProgram(ast, false, true);
                 an->Build();
                 if (!ast.errors.empty()) return 0;
-                // At the level a run or build defaults to, so that the
-                // checkfree verdicts here are theirs.
-                Optimizer opt(ast, 2);
+                // At the level a run or build defaults to (DEFAULTOPTLEVEL),
+                // so that the checkfree verdicts here are theirs.
+                Optimizer opt(ast, DEFAULTOPTLEVEL);
                 BCE bce(ast);
                 bce.RunAll();
                 if (!bce.checkfreefails.empty()) throw bce.CheckfreeError();

@@ -4,10 +4,9 @@
 // file that wrote it; a git source is fetched into GOOSE_HOME (§4.6).
 #pragma once
 
-namespace goose {
+#include "runtime_svc.h"
 
-// In main.cpp.
-string RelativeTo(const string &path, const string &dir);
+namespace goose {
 
 struct PackageSource {
     string text;        // As written.

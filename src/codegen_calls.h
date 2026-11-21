@@ -53,8 +53,8 @@ inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
         if (vt) {
             auto base = T();
             L("uint8_t *", base, " = ", Top(d0.s), ";");
-            auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { DK_STACK, d0.s, vt })
-                                        : EmitDispatch(c, Dst { DK_STACK, d0.s, vt }, alldst);
+            auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst::Stk(d0.s, vt))
+                                        : EmitDispatch(c, Dst::Stk(d0.s, vt), alldst);
             EmitSlidePrefix(base, LenStore(vt->arr), d0.s, d0.lenlv);
             return rets;
         }
@@ -772,13 +772,13 @@ inline vector<string> CodeGen::EmitFvCall(Call *c, Dst d0) {
     if (wantsval && !IsBytesT(et) && (adapt || d0.k != DK_LVALUE)) {
         rv = T();
         FixedLocal(et, rv);
-        d = Dst { DK_LVALUE, rv, et };
+        d = Dst::Lv(rv, et);
     } else if (wantsval && IsResz(et) && (adapt || d0.k != DK_STACK)) {
         rv = RzTemp(et, stk);
-        d = Dst { DK_STACK, stk, et, RzLenLv(et, rv) };
+        d = Dst::StkLen(stk, et, RzLenLv(et, rv));
     } else if (wantsval && IsBytesT(et) && (adapt || d0.k != DK_STACK)) {
         rv = BytesTemp(stk);
-        d = Dst { DK_STACK, stk, et };
+        d = Dst::Stk(stk, et);
     } else if (wantsval && d0.k == DK_LVALUE) {
         rv = d0.s;
     }

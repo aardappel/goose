@@ -239,7 +239,7 @@ inline string Binary::CgX(CodeGen &cg) {
             if (rt && IsPlainRef(rt)) {
                 auto p = cg.T();
                 cg.FixedLocal(rt, p);
-                cg.GenAny(n, Dst { DK_LVALUE, p, rt });
+                cg.GenAny(n, Dst::Lv(p, rt));
                 return fix ? cat("(*", p, ")") : cat("((uint8_t *)", p, ")");
             }
             // A call's reference result to a bytes value is its pointer
@@ -438,6 +438,10 @@ inline string FnDecl::CgX(CodeGen &cg) { cg.Fail(line, "internal: FnDecl as valu
 inline string StructDecl::CgX(CodeGen &cg) { cg.Fail(line, "internal: decl as value"); }
 inline string EnumDecl::CgX(CodeGen &cg) { cg.Fail(line, "internal: decl as value"); }
 inline string AliasDecl::CgX(CodeGen &cg) { cg.Fail(line, "internal: decl as value"); }
+
+// The statement-position default (ast.h): evaluate the node for effect,
+// whatever destination its CgAny would have taken.
+inline void Node::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
 
 // ---- CgAny ----------------------------------------------------------------
 
@@ -698,19 +702,19 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
         if (cg.IsResz(rt)) {
             string stk;
             auto h = cg.RzTemp(rt, stk);
-            EmitBody(cg, Dst { DK_STACK, stk, rt, cg.RzLenLv(rt, h) });
+            EmitBody(cg, Dst::StkLen(stk, rt, cg.RzLenLv(rt, h)));
             lv = cg.RzTempLoc(rt, h, stk);
         } else if (cg.IsBytesT(rt)) {
             string stk;
             auto base = cg.BytesTemp(stk);
-            EmitBody(cg, Dst { DK_STACK, stk, rt });
+            EmitBody(cg, Dst::Stk(stk, rt));
             lv = cg.BytesLoc(base, rt, CodeGen::Loc {});
         } else {
             lv.t = rt;
             lv.val = true;
             lv.s = cg.T();
             cg.FixedLocal(rt, lv.s);
-            EmitBody(cg, Dst { DK_LVALUE, lv.s, rt });
+            EmitBody(cg, Dst::Lv(lv.s, rt));
         }
         auto x = cg.LoadLoc(lv, want, line);
         if (d.k == DK_LVALUE) cg.L(d.s, " = ", x, ";");
@@ -875,7 +879,7 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
                 auto name = cg.LocalName(d);
                 cg.FixedLocal(d->type, name, "", true);
                 cg.vnames[d] = name;
-                dsts.push_back(Dst { DK_LVALUE, name, d->type });
+                dsts.push_back(Dst::Lv(name, d->type));
             }
         }
         cg.EmitCallInto(c, dsts);
@@ -990,7 +994,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
         else cg.L(lv.s, " = ", x, ";");
         return;
     }
-    cg.GenAny(rhs, Dst { DK_LVALUE, lv.s, lv.t });
+    cg.GenAny(rhs, Dst::Lv(lv.s, lv.t));
 }
 
 inline void IncDec::CgStmt(CodeGen &cg) {
@@ -1313,29 +1317,10 @@ inline void Continue::CgStmt(CodeGen &cg) {
     cg.termjump = true;
 }
 
-// Everything else in statement position evaluates for effect.
-inline void IntLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void FltLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void BoolLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void StrLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void NullLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Ident::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void ArrayLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void StructLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Unary::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Binary::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Dot::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Index::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void SliceExpr::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void AsCast::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void RangeExpr::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Call::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void Block::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void IfExpr::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void MatchExpr::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void EarlyBlock::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void LoopExpr::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
-inline void InlineBlock::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
+// Everything else in statement position evaluates for effect: the Node::
+// CgStmt default (ast.h) routes the node through GenAny to a discard
+// destination. Only the statements above carry machinery of their own, and
+// FunVal and SelfRef, which cannot appear here, fail loudly.
 inline void FunVal::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: FunVal statement"); }
 inline void SelfRef::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: self statement"); }
 inline void StructDecl::CgStmt(CodeGen &) {}
