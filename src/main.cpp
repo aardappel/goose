@@ -944,6 +944,9 @@ Options:
   --bce-test            Verify the `// bce:elide` and `// bce:keep` annotations.
   --unsafe-no-rf-check  Leave out the checks after calls that a `return ...
                         from` can pass through: unsound, for pricing them only.
+  --no-copy-elision     Copy every argument and result of a fixed struct over
+                        256 bytes, which the C otherwise often shares: a
+                        reference the same program must print the same with.
   --gen-runtime-header  Regenerate src/runtime_inline.h from src/runtime/.
 
 goose format --verify file.goose|dir... formats each file in memory and
@@ -1398,6 +1401,7 @@ int Main(int argc, char **argv) {
     auto nocgen = false;
     auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
+    auto noelide = false;
     auto stacks = false;
     auto stats = false;
     auto forcejit = false, standalone = false, shared = false;
@@ -1448,6 +1452,8 @@ int Main(int argc, char **argv) {
         else if (arg == "--bce-lines") bcelines = true;
         // Unsound; a measurement aid only (see CodeGen::norfcheck).
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
+        // A reference for testing (see CodeGen::noelide).
+        else if (arg == "--no-copy-elision") noelide = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
         else if (arg == "--shared") shared = true;
@@ -1753,7 +1759,7 @@ int Main(int argc, char **argv) {
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
         auto stackcfg = StackConfigOf(cdefines);
         CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, shared,
-                   stackcfg.maxstacks);
+                   stackcfg.maxstacks, noelide);
         if (stacks) cg.StackReport(msgs, stackcfg);
         // The packages whose native parts the program needs, which a JIT
         // run takes functions from and a build links: its own, when it has

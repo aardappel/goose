@@ -185,6 +185,13 @@ struct CodeGen {
     // that never takes a long-distance return still prints the right answer
     // and the checks' cost can be priced (--unsafe-no-rf-check).
     bool norfcheck = false;
+    // Testing only: leave out none of the copies a PtrAbi value takes
+    // (--no-copy-elision). No destination is fresh (FreshLv), and no
+    // argument is handed over (MovableArg, DiesAtCall) or lent (StableArg),
+    // so every call works on copies of its own, as the language describes
+    // it. The same program built both ways must print the same thing, which
+    // test/copy_elision.py checks on programs it generates.
+    bool noelide = false;
 
     [[noreturn]] void Fail(Line l, const string &msg) {
         auto s = cat("codegen: ", msg);
@@ -1418,9 +1425,9 @@ struct CodeGen {
     // declaration and every return that hands it back share that storage.
     map<const VarDef *, string> ibfixed;
     const VarDef *OpenIbFixed(InlineBlock *ib, const Dst &d);
-    static Dst FreshLv(const string &s, TypeExpr *t) {
+    Dst FreshLv(const string &s, TypeExpr *t) const {
         Dst d { DK_LVALUE, s, t };
-        d.fresh = true;
+        d.fresh = !noelide;
         return d;
     }
     void EmitFvArg(const VarDef *fv, vector<string> &args);
@@ -1598,9 +1605,9 @@ struct CodeGen {
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
             bool _norfcheck = false, bool _library = false, bool _sharedlibrary = false,
-            int64_t _maxstacks = 0)
+            int64_t _maxstacks = 0, bool _noelide = false)
         : ast(_ast), library(_library), sharedlibrary(_sharedlibrary),
-          norfcheck(_norfcheck), maxstacks(_maxstacks) {
+          norfcheck(_norfcheck), noelide(_noelide), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();

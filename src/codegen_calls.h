@@ -217,7 +217,10 @@ inline bool CodeGen::EmitArg(FnSpec *sp, const vector<Node *> &an, size_t i,
     // parameter the callee only reads: the callee reads it where it lies.
     // The caller may still write it, as the call's result. Not to a callee
     // that builds a result at its location (NeedsResultLocation), which may
-    // be this very variable, while it still reads its parameter.
+    // be this very variable, while it still reads its parameter. Without
+    // `later`, stable_later prints otherwise; without ParamUnwritten,
+    // fixed_pointer_abi's bump; without BuildsAtLocation, its
+    // swapped_rel (StableArg has its own).
     if (!later && PtrAbi(pt) && ParamUnwritten(sp, i) && !BuildsAtLocation(sp) &&
         StableArg(node, pt)) {
         args.push_back(cat("&", GenX(node)));
@@ -252,6 +255,11 @@ inline bool CodeGen::EmitArg(FnSpec *sp, const vector<Node *> &an, size_t i,
 // is no other use to order it against, and no reference into the variable
 // without naming it. An Ident reached twice through a shared subtree counts
 // twice. Last uses after earlier ones, or on one branch, are not found.
+// Without the loop check, fixed_pointer_abi's loop_bump prints otherwise.
+// No test fails without counting a use in a deferred body or a nested
+// function twice (a nested function's variable is captured, which
+// MovableArg declines as well). Without a match binder's or a for loop's
+// variable's declloop, fewer uses are single: it costs copies, not values.
 inline const set<const Ident *> &CodeGen::SingleUses(FnSpec *sp) {
     auto it = singleuses.find(sp);
     if (it != singleuses.end()) return it->second;
@@ -303,9 +311,17 @@ inline bool CodeGen::BuildsAtLocation(FnSpec *sp) {
 // a writable reference. A result built in place (NeedsResultLocation) is
 // written piece by piece while the callee may still read its argument, so
 // such a callee gets a copy.
+//
+// Without SingleUses, last_use_moves and fixed_pointer_abi print otherwise;
+// without ParamUnwritten, movable_lent_param; in copy_elision_guards,
+// without captured, captured_moved; without both isglobal and ownerspec
+// (either is enough), global_once. No test fails without BuildsAtLocation or refwrite
+// (a destination or a writable reference names the variable a second time,
+// which SingleUses declines), nor without reusable, the type, splitroots,
+// refalias or fvptr, alone or all at once (#341).
 inline bool CodeGen::MovableArg(FnSpec *sp, Node *n, TypeExpr *pt) {
     auto id = Is<Ident>(n);
-    if (!id || !id->vdef || !curspec) return false;
+    if (noelide || !id || !id->vdef || !curspec) return false;
     if (BuildsAtLocation(sp)) return false;
     auto v = id->vdef;
     if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
@@ -326,6 +342,15 @@ inline bool CodeGen::MovableArg(FnSpec *sp, Node *n, TypeExpr *pt) {
 // a writable reference, nor captured, and no assignment, `++` or `&` in the
 // body rooted at it -- which the optimizer's rewrites, a tail recursion's
 // rebinding of the parameters (optimize_tre.h) among them, may make.
+//
+// Without both isvar and the writes (either is enough for a `var`
+// parameter the body changes), fixed_pointer_abi's bump prints otherwise;
+// isvar alone is checked by last_use_moves' C shapes. Without captured,
+// large_fixed_values fails. No test fails without isextern, refwrite,
+// reusable or IsPoolParam, nor without the writes alone, which only an
+// optimizer rewrite could make to a parameter that is not `var` (#341).
+// Without ConsumedParam, a consumed parameter is lent and MovableArg copies
+// it where it is handed on: a copy, not a value, and no test notices.
 inline bool CodeGen::ParamUnwritten(FnSpec *sp, size_t i) {
     auto it = unwrittenparams.find(sp);
     if (it == unwrittenparams.end()) {
@@ -361,9 +386,15 @@ inline bool CodeGen::ParamUnwritten(FnSpec *sp, size_t i) {
 // only this function's own statements can write: not a global, not one a
 // nested function or function value reaches, never bound to a writable
 // reference (§4.4). While its function waits on a call, nothing writes it.
+//
+// Without both isglobal and ownerspec (either is enough), fixed_pointer_abi's
+// writes_global prints otherwise; in copy_elision_guards, without captured,
+// captured_lent; without refwrite, ref_lent. No test fails without reusable,
+// istemp, resulttemp, the type or fvptr, alone or the first four at once
+// (#341).
 inline bool CodeGen::StableArg(Node *n, TypeExpr *pt) {
     auto id = Is<Ident>(n);
-    if (!id || !id->vdef || !curspec) return false;
+    if (noelide || !id || !id->vdef || !curspec) return false;
     auto v = id->vdef;
     if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
         v->istemp || v->resulttemp || !v->type || !TEq(v->type, pt))
@@ -380,7 +411,8 @@ inline bool CodeGen::StableArg(Node *n, TypeExpr *pt) {
 // Within a recursive cycle, a spec still being looked at consumes nothing
 // yet, which only costs a copy. Whether the hand-off then happens is
 // MovableArg's to say at the call; where it does not, the copy is made
-// there instead of at this spec's callers.
+// there instead of at this spec's callers. A wrong answer here costs a copy,
+// not a value (ParamUnwritten), and no test notices one.
 inline bool CodeGen::ConsumedParam(FnSpec *sp, const VarDef *v) {
     if (!sp || !sp->body || !v || v->isvar || !v->isparam) return false;
     auto it = consumedparams.find(sp);
@@ -416,6 +448,11 @@ inline bool CodeGen::ConsumedParam(FnSpec *sp, const VarDef *v) {
 // before the block's value is complete there, so the local the returns hand
 // back (NamedResult: no other return reads it) can live there from its
 // declaration on. A chain of inlined setters then works in one variable.
+// Without d.fresh, fixed_pointer_abi's reads_global and through_ref print
+// otherwise at -O2; without the `return ... from` check, its outer2 and
+// outer3. No test fails without d.pool, NeedsResultLocation, ibfixed,
+// refalias, reusable or the defer check (fixed_pointer_abi's pick_deferred
+// was written for it), alone or all but refalias at once (#341).
 inline const VarDef *CodeGen::OpenIbFixed(InlineBlock *ib, const Dst &d) {
     if (d.k != DK_LVALUE || !d.fresh || d.pool || !d.t || !PtrAbi(d.t) ||
         NeedsResultLocation(d.t))
@@ -456,8 +493,10 @@ inline const VarDef *CodeGen::OpenIbFixed(InlineBlock *ib, const Dst &d) {
 // value (OpenIbFixed) or a struct literal (LeafAny), received as the type it
 // was checked as. One adapted on the way (AdtFrom), or reaching a
 // relative-reference type's slot, is left to the ordinary snapshot.
+// No test fails without any one of the conditions after PtrAbi, nor
+// without all of them but the call's AdtFrom at once (#341).
 inline bool CodeGen::DiesAtCall(Node *n, TypeExpr *pt) {
-    if (!PtrAbi(pt) || NeedsResultLocation(pt)) return false;
+    if (noelide || !PtrAbi(pt) || NeedsResultLocation(pt)) return false;
     // An inlined call's value and a literal are built where they are put
     // (OpenIbFixed, LeafAny).
     if ((Is<InlineBlock>(n) || Is<StructLit>(n)) && !AdtFrom(n))
@@ -603,6 +642,8 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
             // takes one directly. An argument the callee reads where it
             // lies (StableArg) may be that destination, which a result
             // written before the callee's last read of it would change.
+            // Without `lent`, lent_result_unfresh prints otherwise; without dd.fresh, fixed_pointer_abi's
+            // from_global.
             auto ptrabi = PtrAbi(rt) && !NeedsResultLocation(rt);
             if (dd.k == DK_LVALUE && !NeedsDeref(rt, dd.t) &&
                 (ptrabi || (lent && !NeedsResultLocation(rt))
