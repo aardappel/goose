@@ -1500,9 +1500,10 @@ GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t 
 
 /* The 64 MB of CMakeLists.txt's goose_main_stack. Linux does not reserve the
    main thread's stack at link time: it grows until the soft RLIMIT_STACK,
-   often 8 MB where the process was started. Raised here, and not lowered
-   when it is already higher, and not past the hard limit. goose's main does
-   the same for the compiler process (main.cpp). */
+   often 8 MB where the process was started. This raises it for an executable
+   when the hard limit allows, without lowering a higher soft limit or
+   exceeding the hard limit. goose's main (main.cpp) and a built program's
+   generated main call this; a C host of a --shared library does not. */
 GS_API void gs_raise_main_stack(void) {
 #ifdef __linux__
     struct rlimit rl;
@@ -1568,9 +1569,8 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     #endif
     gs_regions_init();
     gs_regions_begin(mainregions);
-    /* Before the bounds gs_native_stack_init reads. On Linux those bounds are
-       the soft RLIMIT_STACK, which the kernel consults as the main stack grows. */
-    gs_raise_main_stack();
+    /* An executable's main has already raised the limit; a C host of a
+       --shared library has not. Record the bounds as they stand. */
     gs_native_stack_init();
     gs_scan_init();
 }
