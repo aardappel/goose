@@ -1133,7 +1133,11 @@ inline string CodeGen::ExportHeader() {
 }
 
 inline void CodeGen::EmitMain() {
-    Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n",
+    // The raise is the runtime's, before gs_program_init records the stack
+    // bounds. On Linux the generated main is what a built executable runs;
+    // a JIT run of this same main does it again, after goose's own main.
+    Append(code, "int main(int argc, char **argv) {\n    gs_raise_main_stack();\n"
+                 "    gs_program_init(argc, argv);\n",
            MainCall(), "    gs_rt_stats();\n    return 0;\n}\n");
 }
 

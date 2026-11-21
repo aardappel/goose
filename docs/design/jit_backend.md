@@ -47,8 +47,9 @@ deep as the C nests; the program runs on the main thread. On Windows and
 macOS the compiler is linked to
 reserve 64 MB for the main thread's stack, as much as the compile gets,
 whereas an executable built from the same C starts with 1 MB on Windows and
-8 MB on macOS. On Linux both have the stack limit the process started with
-(`ulimit -s`).
+8 MB on macOS. On Linux both raise the soft RLIMIT_STACK to that same
+64 MB at process start, when the hard limit allows it and the limit is not
+already higher.
 
 ## How it is built
 
