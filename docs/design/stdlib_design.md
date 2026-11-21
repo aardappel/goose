@@ -403,7 +403,7 @@ own xorshift. To seed from the OS, use `os`'s `random_seed()`.
 
 ```goose
 fn each_rev<T, F>(xs: T[:])                    // F(x), last to first
-fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); the last chunk may be short
+fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); asserts n > 0; last chunk may be short
 fn find<T, F>(xs: T[:]) -> T?                  // first x with F(x), as a reference; null if none
 fn find_index<T, F>(xs: T[:]) -> i64           // …or its index, -1 if none
 fn position<T>(xs: T[:], v: T) -> i64          // first i with xs[i] == v, -1 if none

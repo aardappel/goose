@@ -248,7 +248,7 @@ results.
 
 ```goose
 fn each_rev<T, F>(xs: T[:])                    // F(x), last to first
-fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); the last chunk may be short
+fn each_chunk<T, F>(xs: T[:], n: i64)          // F(chunk: T[:], i); asserts n > 0; last chunk may be short
 fn find<T, F>(xs: T[:]) -> T?                  // first x with F(x), as a reference
 fn find_index<T, F>(xs: T[:]) -> i64
 fn position<T>(xs: T[:], v: T) -> i64          // first i with xs[i] == v
