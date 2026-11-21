@@ -73,7 +73,7 @@ recursive fn merge_sort_helper(arr: i32[:], temp: i32[:], left: i64, right: i64)
 }
 
 fn merge(arr: i32[:], temp: i32[:], left: i64, mid: i64, right: i64) {
-    copy_into(temp[left..right + 1], arr[left..right + 1]);
+    copy_from(temp[left..right + 1], arr[left..right + 1]);
     var i = left;
     var j = mid + 1;
     var k = left;

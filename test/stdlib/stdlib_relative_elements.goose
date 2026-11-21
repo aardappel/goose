@@ -65,7 +65,7 @@ fn main() {
     show(cells[0].links);
     fill(cells[0].links[3..], cells[1]);
     show(cells[0].links);
-    copy_into(cells[0].links[..2], cells[0].links[3..5]);
+    copy_from(cells[0].links[..2], cells[0].links[3..5]);
     show(cells[0].links);
     insert_at(cells[0].links, 1, &cells[2]);
     show(cells[0].links);

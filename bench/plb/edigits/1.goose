@@ -102,7 +102,7 @@ fn add(r: u64[:], a: u64[:], b: u64[:]) -> u64 {
     assert(r.len == a.len && a.len >= n);
     let c = add_n(r[..n], a[..n], b);
     if r.len == n { return c; }
-    copy_into(r[n..], a[n..]);
+    copy_from(r[n..], a[n..]);
     return add_1(r[n..], c);
 }
 
@@ -112,7 +112,7 @@ fn sub(r: u64[:], a: u64[:], b: u64[:]) -> u64 {
     assert(r.len == a.len && a.len >= n);
     let c = sub_n(r[..n], a[..n], b);
     if r.len == n { return c; }
-    copy_into(r[n..], a[n..]);
+    copy_from(r[n..], a[n..]);
     return sub_1(r[n..], c);
 }
 
@@ -354,7 +354,7 @@ recursive fn mul(r: u64[:], a: u64[:], b: u64[:], s: u64[:]) {
         let t = s[..len + m];
         mul(t, a[off..off + len], b, s[len + m..]);
         let c = add_n(r[off..off + m], r[off..off + m], t[..m]);
-        copy_into(r[off + m..off + m + len], t[m..]);
+        copy_from(r[off + m..off + m + len], t[m..]);
         add_1(r[off + m..off + m + len], c);
         off += len;
     }
@@ -418,7 +418,7 @@ let DC_DIV = 48;               // limbs from which dividing in halves beats the 
 
 fn shl_bits(r: u64[:], a: u64[:], k: i64) -> u64 {
     assert(r.len == a.len);
-    if k == 0 { copy_into(r, a); return 0; }
+    if k == 0 { copy_from(r, a); return 0; }
     var c: u64 = 0;
     for i in a.len {
         let x = a[i];
@@ -647,7 +647,7 @@ fn divrem(q: u64[:], rem: u64[:], num: u64[:], dv: Divisor, s: u64[:]) {
     }
     zero(q);
     let qn = min(q.len, qq.len);
-    copy_into(q[..qn], qq[..qn]);
+    copy_from(q[..qn], qq[..qn]);
 }
 
 // --- decimal conversion ----------------------------------------------------------
@@ -782,7 +782,7 @@ fn main() {
     let qv = pq[pn..pn + qn];
     let pv = s[..max(pn, qn) + 1];
     zero(pv);
-    copy_into(pv[..pn], pq[..pn]);
+    copy_from(pv[..pn], pq[..pn]);
     add_in(pv, qv);
     let p = norm(pv);
     let q = norm(qv);
@@ -801,7 +801,7 @@ fn main() {
     while bit >= 0 {
         sqr(tmp[..2 * pl], pw[..pl], work2);
         pl = top(tmp[..2 * pl]);
-        copy_into(pw[..pl], tmp[..pl]);
+        copy_from(pw[..pl], tmp[..pl]);
         if ((e >> bit) & 1) != 0 {
             let c = mul_1(pw[..pl], pw[..pl], 10);
             if c != 0 { pw[pl] = c; pl++; }

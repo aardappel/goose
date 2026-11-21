@@ -45,7 +45,7 @@ inline fn mbrot(cr: f64[BLOCK], ci: f64) -> u8[BLOCK / 8] {
 simd fn render_row(out: u8[:], xs: f64[BLOCK][:], ci: f64) {
     assert(out.len == xs.len * (BLOCK / 8));
     for cr, i in xs {
-        copy_into(out[i * (BLOCK / 8)..(i + 1) * (BLOCK / 8)], mbrot(cr, ci));
+        copy_from(out[i * (BLOCK / 8)..(i + 1) * (BLOCK / 8)], mbrot(cr, ci));
     }
 }
 
@@ -170,7 +170,7 @@ fn render_rows(xs: f64[BLOCK][:], size: i64, y0: i64, y1: i64) -> u8[>..] {
     row.resize(xs.len * (BLOCK / 8), 0);
     for y in y0..y1 {
         render_row(row, xs, y * inv - 1.0);
-        copy_into(out[(y - y0) * row_bytes..(y - y0 + 1) * row_bytes], row[..row_bytes]);
+        copy_from(out[(y - y0) * row_bytes..(y - y0 + 1) * row_bytes], row[..row_bytes]);
     }
     return out;
 }
@@ -206,7 +206,7 @@ fn main() {
     for k in jobs {
         let r = qget<Rows>();
         let at = r.y0 * row_bytes;
-        copy_into(image[at..at + r.bits.len], r.bits);
+        copy_from(image[at..at + r.bits.len], r.bits);
         ready[r.y0 / ROWS_PER_JOB] = true;
         while next < jobs && ready[next] { next++; }
         let upto = min(size, next * ROWS_PER_JOB) * row_bytes / 64 * 64;

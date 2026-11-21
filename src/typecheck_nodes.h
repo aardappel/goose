@@ -158,6 +158,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
     FnSpec *env = nullptr;
     if (auto fns = tc.LookupLocalFns(name, env); !fns.empty()) {
         fnref = fns[0];
+        WarnDeprecatedValue(tc, this, fns);
         Val v;
         v.type = tc.fntype;
         v.fnv = tc.LocalFnValue(fns, env);
@@ -165,6 +166,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
     }
     if (auto &cands = tc.ast.LookupFunctions(name, ns); !cands.empty()) {
         fnref = cands[0];
+        WarnDeprecatedValue(tc, this, cands);
         for (auto sf : cands)
             if (sf->brokensig) throw Abandoned {};
         Val v;

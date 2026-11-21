@@ -7360,7 +7360,7 @@ refuses outright:
   reason). A callee that stores a view read out of one parameter's storage
   into another parameter's storage is checked in its body by the depths of
   their classes, which bound the storage and not the views it holds. So
-  `copy_into(xs, tmp)` for a local `tmp` of views copied out of the
+  `copy_from(xs, tmp)` for a local `tmp` of views copied out of the
   parameter `xs` is an error, while the same call with slices that may each
   be `xs` or `tmp` is judged at the call by what each holds (std's
   `stable_sort` merges its last pass into `xs` instead of copying back for

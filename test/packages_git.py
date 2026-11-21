@@ -41,6 +41,8 @@ def check_git_packages(exe, base, *, jit):
     # What an earlier run left in the cache, so that this one fetches.
     for cached in (Path(home) / "pkg").glob("gitpkg-*"):
         rmtree(cached)
+    for cached in (Path(home) / "pkg").glob("mylib-*"):
+        rmtree(cached)
     work = base / "work"
     work.mkdir(parents=True)
 
@@ -212,4 +214,22 @@ def check_git_packages(exe, base, *, jit):
     if "updating the package gitpkg" not in err:
         raise RuntimeError(f"goose fetch --update did not report the update:\n{out}{err}")
     expect(use_tag, "6")
+
+    # A fetched package's deprecated calls are its authors' to change; a
+    # pinned version builds without warnings the importing program cannot fix.
+    mylib_source = base / "mylib-source"
+    mylib_source.mkdir()
+    tc.write_text(mylib_source / "mylib.goose",
+                  "namespace mylib;\nimport std;\n"
+                  "fn code() -> i64 { var d = [0]; copy_into(d, [7]); return d[0]; }\n")
+    run_git("init", "-q", "-b", "main", ".", cwd=mylib_source)
+    run_git("add", ".", cwd=mylib_source)
+    run_git("commit", "-q", "-m", "mylib", cwd=mylib_source)
+    run_git("tag", "v1", cwd=mylib_source)
+    mylib_bare = base / "mylib.git"
+    run_git("clone", "-q", "--bare", str(mylib_source), str(mylib_bare))
+    mylib_url = "file:///" + mylib_bare.as_posix().lstrip("/")
+    use_mylib = program("use_mylib", [f'import mylib from "{mylib_url}@v1";',
+                                       "fn main() { print(mylib::code()); }"])
+    expect(use_mylib, "7")
     return None

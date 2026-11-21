@@ -68,7 +68,7 @@ fn product(dst: f64[:], src: f64[:], transposed: bool, slice: i64) {
     }
     for k in parts {
         let p = qget<Part>();
-        copy_into(dst[p.lo..p.lo + p.vals.len], p.vals);
+        copy_from(dst[p.lo..p.lo + p.vals.len], p.vals);
     }
 }
 

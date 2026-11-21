@@ -40,7 +40,7 @@ recursive fn merge_sort(xs: i32[:], tmp: i32[:]) {
     }
     while i < mid { tmp[k] = xs[i]; i++; k++; }
     while j < xs.len { tmp[k] = xs[j]; j++; k++; }
-    copy_into(xs, tmp[..xs.len]);
+    copy_from(xs, tmp[..xs.len]);
 }
 
 // The index of v in a sorted slice, or -1.

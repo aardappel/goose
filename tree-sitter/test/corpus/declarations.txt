@@ -207,6 +207,30 @@ checkfree export "c_name" inline recursive fn geo::f(var a: i64, b = 0) -> i64, 
     (primitive_type)))
 
 ========================================
+Deprecated function
+========================================
+
+deprecated "use copy_from" fn copy_into(dst: i64[:], src: i64[:]);
+
+---
+
+(source_file
+  (function_declaration
+    (function_modifier
+      (string_literal
+        (string_content)))
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (slice_type
+          (primitive_type)))
+      (parameter
+        (identifier)
+        (slice_type
+          (primitive_type))))))
+
+========================================
 Extern symbol after the signature
 ========================================
 

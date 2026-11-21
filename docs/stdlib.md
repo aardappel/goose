@@ -89,7 +89,7 @@ The library uses these conventions:
   `heap_push`) cannot take one that contains self-relative references, because
   those values cannot be copied (spec §3.9). Construct them in place.
 * The functions that move elements around (`swap_at`, `reverse`, `shuffle`,
-  `sort`, `stable_sort`, `fill`, `copy_into`, `insert_at`, `remove_at`,
+  `sort`, `stable_sort`, `fill`, `copy_from`, `insert_at`, `remove_at`,
   `swap_remove`, `retain`, `dedup`, the heap functions) move the elements
   themselves, including references: `reverse(refs)` reorders an array of
   references and leaves what they point to unchanged, and an array of
@@ -343,7 +343,8 @@ let total = fold(xs, 0.0) { a, x => a + x };
 
 ```goose
 fn fill<T>(xs: T[:], v: T)
-fn copy_into<T>(dst: T[:], src: T[:])           // equal lengths; first to last
+fn copy_from<T>(dst: T[:], src: T[:])           // equal lengths; first to last
+fn copy_into<T>(dst: T[:], src: T[:])           // deprecated name of copy_from; a call warns
 fn reverse<T>(xs: T[:])
 fn sort<T>(xs: T[:])                            // by <; sort(xs) { a, b => ... } by the block
 fn stable_sort<T>(xs: T[:])                     // natural merge sort; one temporary of xs.len elements
@@ -351,9 +352,13 @@ fn to_lower(s: u8[:])                           // ASCII, in place
 fn to_upper(s: u8[:])
 ```
 
-`copy_into` preserves its element-by-element, first-to-last semantics. For a
-checked copy that preserves the source values when the slices overlap, use the
-language operation `dst.move_from(src)` (fixed-size, copyable elements).
+`copy_from` preserves its element-by-element, first-to-last semantics.
+`dst.copy_from(src)` reads the same way the call behaves: it copies from
+`src` into `dst`. `copy_into` is that function under its old name. The
+arguments are unchanged, and a call warns (spec §7.15) and names
+`copy_from`. For a checked copy that preserves the source values when the
+slices overlap, use the language operation `dst.move_from(src)` (fixed-size,
+copyable elements).
 
 `sort` is a pattern-defeating quicksort based on pdqsort and Rust's
 ipnsort. It is unstable (the order it leaves equal elements in is
