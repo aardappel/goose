@@ -7,6 +7,8 @@
 let F_ROAD = 4;
 let F_ALL = 7;
 let NOT_ROAD = ~F_ROAD;
+let ONE_U8: u8 = 1;
+let ONE_I8: i8 = 1;
 struct Cell { flags: u8 }
 
 fn narrow(x: u8) -> u8 { x }
@@ -36,4 +38,7 @@ fn main() {
     let h: u8 = c.flags | ~(F_ALL & F_ROAD);
     print(h);                                       // 251
     print(~-1);                                     // 0
+    let au: u8[ONE_U8 & ~0] = [0];
+    let ai: u8[ONE_I8 & ~0] = [0];
+    print(au.len, " ", ai.len);                     // 1 1
 }

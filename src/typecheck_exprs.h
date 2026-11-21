@@ -1695,7 +1695,7 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
             return ast.inttypes[IS_I64];
         }
         auto fits = [&](const Val &c, TypeExpr *t) {
-            return c.flexint ? FlexFits(c, t->intstorage)
+            return c.flexint || c.notconst ? FlexFits(c, t->intstorage)
                    : c.litint ? ConstsFit(c, t->intstorage)
                               : FitsIntStorage(c.ival, c.uns, t->intstorage);
         };
