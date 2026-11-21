@@ -1830,8 +1830,9 @@ size of the system's own, pass `display_scale()` to `ui::set_scale`.
 With `WAIT_WHEN_IDLE`, `frame()` shows the screen only when something used
 the GPU since the last call or the window needs it redrawn. After a frame that
 drew nothing, the next `frame()` waits for an event, up to a second, unless
-`quit()` was called; `delta_time()` leaves the wait out. A resize leaves the
-screen black, so the program redraws when `screen_size()` changes.
+`quit()` was called; `delta_time()` leaves the wait out, so a timer that runs
+while idle reads `time()`. A resize leaves the screen black, so the program
+redraws when `screen_size()` changes.
 
 `set_fullscreen` makes the window borderless fullscreen at the desktop's
 resolution, or a window again. It returns false if the window can't change,
