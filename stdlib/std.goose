@@ -58,8 +58,7 @@ fn sign(x: f64) -> f64 {
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
 
-// The smallest power of two that is at least max(x, 1); asserts x <= 2^62
-// (ordinary assert, all builds) so the result always fits in i64.
+// The smallest power of two that is at least max(x, 1), aborting past 2^62.
 fn next_pow2(x: i64) -> i64 {
     if x <= 1 { return 1; }
     assert(x <= 1 << 62);

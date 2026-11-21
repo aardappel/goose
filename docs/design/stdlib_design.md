@@ -323,10 +323,6 @@ fn gcd<T>(a: T, b: T) -> T      // and lcm; assert the result fits
 fn swap<T>(a: T&, b: T&)
 ```
 
-`next_pow2` aborts with an ordinary `assert` when `x > 2^62`, because the
-next power of two would not fit in `i64` (issue #366). The check is part of
-the public contract in every build, not a debug-only overflow trap.
-
 `rem` and `div_euclid` supply the missing partners of truncating `/` and
 Euclidean `%` without changing either operator. They compute at the
 operands' integer type, using the truncating quotient and its remainder,

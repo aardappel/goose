@@ -145,20 +145,6 @@ fn lcm<T>(a: T, b: T) -> T          // never negative; 0 if either is 0
 fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```
 
-`next_pow2` returns the smallest power of two that is at least `max(x, 1)`.
-For `x <= 1` the result is `1`. Every other result is a positive power of
-two at most `2^62`, the largest that fits in an `i64`. If `x` is greater
-than `2^62`, the function asserts `x <= 1 << 62` and aborts before it
-would return a value that does not fit—for example `next_pow2((1 << 62) + 1)`.
-That failure is an ordinary `assert` (spec §9.3), not a debug-only integer
-overflow check, and applies in release and debug builds alike. Callers may
-rely on abort rather than nontermination or undefined behavior.
-
-```goose
-let slots = next_pow2(n);                     // 1 through 2^62 when n <= 2^62
-// next_pow2((1 << 62) + 1);                   // assert fails: over the contract bound
-```
-
 None of these keeps a bounds check, so a `checkfree` function (spec §7.14)
 can call them.
 
