@@ -104,6 +104,14 @@ static gs_cond test_cond = GS_COND_INIT;
 static int gate_open, waiters_ready;
 static int64_t descendant_id;
 
+/* A stack's region: the one its init reserved, whose page-aligned base the
+   stack's top starts colored from. */
+static gs_region *stack_region(gs_stack *s) {
+    for (long i = 0; i < gs_nregions; i++)
+        if (gs_regions[i].stack == s) return &gs_regions[i];
+    return NULL;
+}
+
 static void exercise_stacks(uint8_t *args) {
     int64_t stamp;
     memcpy(&stamp, args, sizeof(stamp));
@@ -111,12 +119,16 @@ static void exercise_stacks(uint8_t *args) {
     gs_stack_block(GS_MAX_STACKS);
     check(gs_nregions == GS_MAX_STACKS, "worker owns its region registry");
     for (int i = 0; i < GS_MAX_STACKS; ++i) {
+        gs_region *r = stack_region(GS(i));
+        check(r && GS(i)->top >= r->base && GS(i)->top - r->base < 4096,
+              "a stack's top starts at its region's colored offset");
         GS(i)->top[0] = (uint8_t)stamp;
-        GS(i)->top[GS_STACK_RESERVE - 1] = (uint8_t)(stamp + i);
+        r->base[r->usable - 1] = (uint8_t)(stamp + i);
     }
     for (int i = 0; i < GS_MAX_STACKS; ++i) {
+        gs_region *r = stack_region(GS(i));
         check(GS(i)->top[0] == (uint8_t)stamp, "concurrent mappings are disjoint");
-        check(GS(i)->top[GS_STACK_RESERVE - 1] == (uint8_t)(stamp + i),
+        check(r->base[r->usable - 1] == (uint8_t)(stamp + i),
               "last usable page is accessible");
     }
 }

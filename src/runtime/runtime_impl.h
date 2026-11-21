@@ -665,7 +665,15 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     gs_regions[i].stack = stack;
     gs_regions[i].committed = p;
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
-    return p;
+
+    /* Regions start page-aligned and lie whole pages apart, so the same
+       page offset of two stacks lands in one L1 set: bump pointers that
+       grow together from offset 0 collide set for set. Give each stack
+       its color, one 64-byte line per region index wrapping within 4096 bytes,
+       smallest possible page size. */
+    long colors = 4096 / 64;
+    size_t pad = (size_t)(i % colors) * 64;
+    return p + pad;
 }
 
 /* Returns the pages [start, start + len) of one region to the OS, which
