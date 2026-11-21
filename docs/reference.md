@@ -3316,8 +3316,9 @@ message first, then `export` or `extern`, then `checkfree`, `simd`,
 `inline`, `recursive`, and `fn` or `thread_fn`.
 
 `deprecated "use copy_from" fn copy_into(...)` keeps the old function and
-warns at a direct call and where the function is named as a value. The
-warning repeats the string: `copy_into is deprecated: use copy_from`.
+warns at a direct call and where the function is named as a value, except at
+use sites in fetched or builtin packages, whose authors are to change them.
+The warning repeats the string: `copy_into is deprecated: use copy_from`.
 Without the string it is `copy_into is deprecated`. A call through a
 value already warned about does not warn again. `deprecated` is a name
 everywhere it is not that qualifier. Spec §7.15.

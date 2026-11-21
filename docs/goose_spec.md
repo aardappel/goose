@@ -3694,7 +3694,8 @@ stop calling. It changes nothing about what the program computes.
   call through that value does not warn again. The warning names the
   function and, where the declaration gives a string, repeats it:
   `copy_into is deprecated: use copy_from`. With no string the warning is
-  `copy_into is deprecated`.
+  `copy_into is deprecated`. A call site in a fetched or builtin package does
+  not warn, since it is up to that package's authors to change it.
 * The string is an ordinary string literal. `deprecated` comes before the
   other qualifiers (`checkfree`, `export`, `extern`, `simd`, `inline`,
   `recursive`), and the string, when there is one, follows `deprecated`

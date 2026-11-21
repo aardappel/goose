@@ -12,6 +12,7 @@ namespace goose {
 // declaration's string when it has one: `copy_into is deprecated: use copy_from`.
 inline void WarnDeprecatedFn(TypeCheck &tc, Node *at, SFunction *sf) {
     if (!sf || !sf->isdeprecated) return;
+    if (at && tc.ast.FetchedOrBuiltinFile(at->line.fileidx)) return;
     auto msg = cat(sf->name, " is deprecated");
     if (!sf->deprecatemsg.empty()) Append(msg, ": ", sf->deprecatemsg);
     tc.Warn(at, msg);

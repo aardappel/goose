@@ -751,17 +751,8 @@ struct Parser {
         ast.topdecls.push_back(Finish(New<EnumDecl>(line, en)));
     }
 
-    // Whether this file is a package fetched into GOOSE_HOME/pkg, whose
-    // deprecated spellings are its authors' to change, not the program's:
-    // a published version keeps working on older compilers without warning.
     bool InFetchedPackage() const {
-        if (fileidx < 0 || fileidx >= (int)ast.filepkg.size()) return false;
-        auto pkg = ast.filepkg[fileidx];
-        if (pkg < 0 || pkg >= (int)ast.packages.size()) return false;
-        // A package compiled into the compiler was fetched by its build and
-        // is read from there, by path.
-        auto &p = ast.packages[pkg];
-        return !p.cachekey.empty() || p.builtin >= 0;
+        return ast.FetchedOrBuiltinFile(fileidx);
     }
 
     // An `extern` a caller consumed before ParseFnDecl, with its string: a
