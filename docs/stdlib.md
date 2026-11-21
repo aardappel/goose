@@ -1108,7 +1108,8 @@ fn wrap_angle(x: f64) -> f64                                   // into [-PI, PI)
   `0.75`. A tiny negative `x` rounds to `1.0`, as in GLSL.
 - `inverse_lerp(a, b, v)` undoes `lerp(a, b, t)`: 0 at `a`, 1 at `b`, and
   not clamped, so `v` past `b` gives more than 1. It is NaN or an infinity
-  when `a == b`.
+  when `a == b`, and also when `b - a` or `v - a` overflows the type, as
+  for edges near opposite ends of its range.
 - `smoothstep(edge0, edge1, x)` is 0 up to `edge0`, 1 from `edge1`, and
   `3t² - 2t³` of the clamped `t = inverse_lerp(edge0, edge1, x)` between.
   Edges in reverse run it backwards. Equal edges, which GLSL leaves
