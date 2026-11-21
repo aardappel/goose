@@ -426,10 +426,7 @@ fn ends_with<T>(xs: T[:], p: T[:]) -> bool
 
 `each_chunk` exists because row slices are the documented way to get bounds
 checks out of 2-D kernels (`bench/goose/blur_rows.goose`); `for y in h {
-each_chunk(img, w) … }` is that idiom with the arithmetic done once. The
-chunk size must be positive: the implementation asserts `n > 0` on entry,
-including when `xs` is empty, so nonpositive sizes abort instead of looping
-forever. An empty slice with positive `n` invokes the block zero times.
+each_chunk(img, w) … }` is that idiom with the arithmetic done once.
 `find`/`rfind`/`starts_with`/`ends_with` are generic over the element type,
 so they also serve as the string functions (`find(line, "://")`). They
 coexist with the predicate `find` because a function-value argument and a

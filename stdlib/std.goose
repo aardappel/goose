@@ -363,7 +363,7 @@ fn each_rev<T, F>(xs: T[:]) {
     }
 }
 
-// F(chunk, i) over consecutive slices of n elements; asserts n > 0; the last may be short.
+// F(chunk, i) over consecutive slices of n elements; the last may be short.
 fn each_chunk<T, F>(xs: T[:], n: i64) {
     assert(n > 0);
     var i = 0;
