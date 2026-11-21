@@ -447,6 +447,7 @@ fn strings() {
     print(compare("abc", "abd"), " ", compare("b", "a"), " ", compare("a", "a"), " ",
           compare("ab", "abc"));                                               // -1 1 0 -1
     print(trim("  hi \n"), "|", trim_start("  x"), "|", trim_end("y  "), "|");   // hi|x|y|
+    print(trim("\x0bX\x0c").len, " ", words("a\x0bb\x0cc").len);               // 1 3
     let parts = split("a,b,,c", ',');
     print(parts.len, " ", parts[0], parts[3], " ", parts[2].len);              // 4 ac 0
     var n = 0;
