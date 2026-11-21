@@ -6430,13 +6430,19 @@ written is.
   compared with or set to (`EmitRfCheck`, `PropagateReturn`). A number
   stands for its target's function, the one that catches it. Literals and
   comments hold no references.
-* **Groups.** Two functions are alike when their texts with every reference
-  blanked are the same, and each reference, in order, is to a function of
-  the same group. The groups start as "the same blanked text" and split
-  until nothing splits, as minimizing an automaton does. Starting from "all
-  apart" and joining would never merge two copies of a recursion, each
-  calling itself or its own copy of the other function. A target stands
-  only with targets.
+* **Candidates.** Only specializations of one function merge, an
+  element-run twin only with twins, so only a function written more than
+  once is read. Another function's name or number stays in the text, where
+  it matches only itself, and a program with no such function pays for a
+  count. Distinct functions whose C happens to be the same, two empty
+  methods say, stay apart.
+* **Groups.** Two candidates are alike when they are copies of one
+  function, their texts with every reference blanked are the same, and
+  each reference, in order, is to a function of the same group. The groups
+  start as "the same blanked text" and split until nothing splits, as
+  minimizing an automaton does. Starting from "all apart" and joining would
+  never merge two copies of a recursion, each calling itself or its own
+  copy of the other function. A target stands only with targets.
 * **Output.** The first function of a group is kept. In it, and in the rest
   of the C (calls, thunks, exports, `gs_init_globals`), a reference to any
   function of a group names the kept one, and a target's number becomes the
@@ -6449,10 +6455,18 @@ written is.
   same groups. What can change is where a long-distance return to `t`
   stops. A frame it passes compares `gs_rf` with that frame's own number
   where the frame is a target too (§6.6), and a frame of another target of
-  `t`'s group would now catch it. Every specialization such a return passes
-  records `t` in its `needs` (`AddNeed`, §3.12), so a function whose `needs`
-  holds another function of its group is kept apart, and the groups are
-  found again without it. No program in the test suite has such a pair.
+  `t`'s group would now catch it. There is none: `t`'s group holds only
+  specializations of `t`'s function, and a return to `t` passes none but
+  `t`. For `return ... from`, the innermost call of that function on every
+  path the return takes is `t` itself (`CheckReturn`, `NeedOnPath`, §3.12;
+  a function value's body stands on a path as the specialization calling
+  it). A plain return in a function value's body exits the specialization
+  that wrote the body (`FrameOfSpec`). Another copy of that function
+  between them would have to run the body, so be keyed on it, and would
+  write a body of its own to key the next copy on, without end, which
+  `MAXNESTEDSPECS` refuses (§3.11). Codegen stops with
+  an internal error if a specialization that records `t` in its `needs`
+  shares `t`'s group.
 * **What stays apart.** Copies whose C differs in anything else: a loop
   that BCE bounds in one copy and not the other (§6.12), say, or a
   `GS_INLINE` on one (`FnSpec::cinline`, §4).

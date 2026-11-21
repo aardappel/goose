@@ -1836,11 +1836,15 @@ def main():
     r.show_task(last_use_moves)
     # Specializations whose C is the same but for the names of the functions
     # they call and the numbers of their long-distance returns are written
-    # once (CodeGen::MergeSpecs): every function of the fixture but main is
-    # specialized twice (--specs), and has one C function, at -O0, which
-    # inlines nothing, but for mapped, whose copies differ in a constant and
-    # keep two. Each target number thrown is one that a kept target catches,
-    # and only the kept targets' channels are declared.
+    # once (CodeGen::MergeSpecs): every function of the fixture but main and
+    # triple is specialized twice (--specs), and has one C function, at -O0,
+    # which inlines nothing, but for mapped, whose copies differ in a
+    # constant and keep two. total's copies call triple, specialized once,
+    # whose name stays in their text. ignore and discard, two functions
+    # whose C is the same (checked, so that this is not vacuous), keep one
+    # each, as only copies of one function merge. Each target number thrown
+    # is one that a kept target catches, and only the kept targets' channels
+    # are declared.
     def merged_specs():
         f = HERE / "codegen" / "merged_specs.goose"
         cfile = gendir / "merged_specs-merged.c"
@@ -1850,15 +1854,24 @@ def main():
             return
         text = cfile.read_text()
         names = ["total", "ping", "pong", "reject", "check", "scan", "outer", "inner", "leaf",
-                 "wide_sum", "doubled"]
+                 "wide_sum", "doubled", "ignore", "discard"]
         specs = re.findall(r"^// spec \d+:[^\n]*\nfn (\w+)\(", out, re.MULTILINE)
-        wrong = [f"{n}: {specs.count(n)} specializations"
-                 for n in names + ["mapped"] if specs.count(n) != 2]
-        for n, er, want in [(n, "", 1) for n in names] + [("doubled", "_er", 1), ("mapped", "", 2)]:
+        wrong = [f"{n}: {specs.count(n)} specializations, want {want}"
+                 for n, want in [(n, 2) for n in names + ["mapped"]] + [("triple", 1)]
+                 if specs.count(n) != want]
+        for n, er, want in ([(n, "", 1) for n in names + ["triple"]] +
+                            [("doubled", "_er", 1), ("mapped", "", 2)]):
             defs = re.findall(rf"^static [^\n;]*\b{n}_g(?:_\d+)?{er}\([^\n]*\) \{{$",
                               text, re.MULTILINE)
             if len(defs) != want:
                 wrong.append(f"{n}{er}: {len(defs)} C functions, want {want}")
+        # A function's parameters and body, without its name.
+        def body(n):
+            m = re.search(rf"^static [^\n;]*\b{n}_g(?:_\d+)?(\([^\n]*\) \{{\n.*?^\}})$",
+                          text, re.MULTILINE | re.DOTALL)
+            return m.group(1) if m else None
+        if body("ignore") is None or body("ignore") != body("discard"):
+            wrong.append("ignore and discard: not the same C, so keeping them apart tests nothing")
         caught = re.findall(r"\bgs_rf == (\d+)\)", text)
         thrown = set(re.findall(r"\bgs_rf = ([1-9]\d*);", text))
         declared = set(re.findall(r"^static GS_TLS [^\n]*\bgs_lret_(\d+)_0;$", text, re.MULTILINE))

@@ -1,20 +1,24 @@
 // Specializations whose C is the same but for the names of the functions
 // they call and the numbers of their long-distance returns are written once
-// (CodeGen::MergeSpecs). Each function here is specialized twice, for a
-// slice rooted at a global and for one rooted at a local, and run_tests.py
-// counts one C function of each in the -O0 C, where nothing is inlined: a
-// plain function, two functions calling each other, a long-distance return
-// target, a target inside another that passes the outer one's returns on, a
-// simd function with its versions, and an element-run twin (C.3). A
-// function given two blocks is specialized for each, and those copies,
-// whose C differs in a constant, stay two. The runs check that the calls
-// the merge redirected, and the long-distance returns it renumbered, still
-// land where they did.
+// (CodeGen::MergeSpecs). Each function here but triple is specialized
+// twice, for a slice rooted at a global and for one rooted at a local, and
+// run_tests.py counts one C function of each in the -O0 C, where nothing is
+// inlined: a plain function calling triple, which is specialized once, two
+// functions calling each other, a long-distance return target, a target
+// inside another that passes the outer one's returns on, a simd function
+// with its versions, and an element-run twin (C.3). A function given two
+// blocks is specialized for each, and those copies, whose C differs in a
+// constant, stay two. Two distinct functions whose C is the same, ignore
+// and discard, keep one C function each: only copies of one function
+// merge. The runs check that the calls the merge redirected, and the
+// long-distance returns it renumbered, still land where they did.
 var table: i64[>..] = [1, 2, 3, 4, 5];
+
+fn triple(x: i64) -> i64 { return x * 3; }
 
 fn total(xs: i64[:]) -> i64 {
     var s = 0;
-    for x in xs { s += x * 3; }
+    for x in xs { s += triple(x); }
     return s;
 }
 
@@ -68,6 +72,9 @@ fn mapped<F>(xs: i64[:]) -> i64 {
     return s;
 }
 
+fn ignore(xs: i64[:]) {}
+fn discard(xs: i64[:]) {}
+
 fn main() {
     // Built from the global, so that no copy knows a length the other
     // does not (BCE's loop bounds).
@@ -83,4 +90,8 @@ fn main() {
     all.append(doubled(local));
     print(all.len, " ", all[0], " ", all[all.len - 1]);
     print(mapped(table) { x => x * 2 }, " ", mapped(local) { x => x * 5 });
+    ignore(table);
+    ignore(local);
+    discard(table);
+    discard(local);
 }

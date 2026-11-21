@@ -11,31 +11,54 @@
 
 namespace goose {
 
-// Two functions are the same when their C is the same once every reference
-// in it is blanked, and each blank refers to the same group in both. The
-// references are the names of the functions EmitSpec wrote (their own
-// included), and the numbers of long-distance return targets, which stand
-// for the target's function: the one function that catches the number
-// (EmitRfCheck). The groups start as "the same blanked text" and split until
-// nothing splits, as minimizing an automaton does, so that copies calling
-// themselves or each other (a recursive descent parser's) merge as well.
+// Two functions are the same when they are specializations of one function
+// (both element-run twins, or neither), their C is the same once every
+// reference in it is blanked, and each blank refers to the same group in
+// both. Only a function written more than once can merge, so only those are
+// read: a program with none pays for a count. The references are the names
+// of those functions (their own included), and the numbers of their
+// long-distance return targets, which stand for the target's function: the
+// one function that catches the number (EmitRfCheck). Any other function's
+// name or number stays in the text, where it matches only itself. The groups
+// start as "the same blanked text" and split until nothing splits, as
+// minimizing an automaton does, so that copies calling themselves or each
+// other (a recursive descent parser's) merge as well.
 //
 // The kept function of a group is its first; in the kept functions and in
 // the rest of the program's C, a reference to any function of a group names
 // the kept one, and a target's number becomes the number of the kept copy of
 // its target. That is sound because merging changes no control flow, and
 // because a return to target t never passes a frame of another function of
-// t's group, which would now catch t's number: every frame such a return
-// passes records t in its needs (TypeCheck::AddNeed), so a function whose
-// needs hold another function of its group is kept apart.
+// t's group, which would now catch t's number. t's group holds only
+// specializations of t's function, and a return passes none but t. For
+// `return ... from`, the innermost call of t's function on every path the
+// return takes is t (CheckReturn, TypeCheck::NeedOnPath, §7.9). A plain
+// return in a function value's body exits the specialization that wrote the
+// body (FrameOfSpec); another copy of that function between them would have
+// to run the body, so be keyed on it, and write a body of its own to key the
+// next copy on, without end, which MAXNESTEDSPECS refuses (§7.8).
 inline void CodeGen::MergeSpecs() {
     auto n = (int)spectexts.size();
-    // The functions' names, and the function catching each target number.
-    unordered_map<string_view, pair<int, int>> names;
-    vector<int> rfunits(fromids.size() + 1, -1);
+    // Each function (and its element-run twins apart), and how many copies
+    // of it were written: the candidates are the copies of one written more
+    // than once.
+    map<pair<SFunction *, bool>, int> fnids;
+    vector<int> fn(n), copies, cands;
     for (int u = 0; u < n; u++) {
         auto &st = spectexts[u];
         assert(!u || st.begin >= spectexts[u - 1].end);
+        auto [it, fresh] = fnids.try_emplace({ st.sp->sf, st.er }, (int)copies.size());
+        if (fresh) copies.push_back(0);
+        copies[fn[u] = it->second]++;
+    }
+    for (int u = 0; u < n; u++)
+        if (copies[fn[u]] > 1) cands.push_back(u);
+    if (cands.empty()) return;
+    // The candidates' names, and the candidate catching each target number.
+    unordered_map<string_view, pair<int, int>> names;
+    vector<int> rfunits(fromids.size() + 1, -1);
+    for (auto u : cands) {
+        auto &st = spectexts[u];
         for (size_t k = 0; k < st.names.size(); k++) names[st.names[k]] = { u, (int)k };
         if (auto it = fromids.find(st.sp); it != fromids.end() && !st.er) rfunits[it->second] = u;
     }
@@ -50,13 +73,13 @@ inline void CodeGen::MergeSpecs() {
         return j - i;
     };
     // The references in C text s, in order: f(at, len, unit, k, num) for
-    // s[at, at + len), which is either the k-th name of function `unit` or
-    // (num) the number of the target `unit`. A function's names are taken
-    // with Unique, which no local, type or global takes, and a struct
-    // member's name follows `.` or `->`. A number is the K of a channel
-    // gs_lret_K_J, gs_fdst_K_J or gs_fval_K_J (FromChannels), or the operand
-    // gs_rf is compared with or set to (EmitRfCheck, PropagateReturn).
-    // Literals and comments hold none.
+    // s[at, at + len), which is either the k-th name of candidate `unit` or
+    // (num) the number of the candidate target `unit`. A function's names
+    // are taken with Unique, which no local, type or global takes, and a
+    // struct member's name follows `.` or `->`. A number is the K of a
+    // channel gs_lret_K_J, gs_fdst_K_J or gs_fval_K_J (FromChannels), or the
+    // operand gs_rf is compared with or set to (EmitRfCheck,
+    // PropagateReturn). Literals and comments hold none.
     auto scan = [&](string_view s, auto f) {
         auto number = [&](size_t at, size_t len) {
             size_t id = 0;
@@ -111,18 +134,19 @@ inline void CodeGen::MergeSpecs() {
             }
         }
     };
-    // Each function's text with its references blanked, and what they refer
-    // to, in order. A target only ever stands with targets, whose numbers
-    // its blanks may become.
+    // Each candidate's text with its references blanked, and what they refer
+    // to, in order. The text leads with the candidate's function, so that a
+    // group holds copies of one, and a target only ever stands with
+    // targets, whose numbers its blanks may become.
     auto text = [&](int u) {
         return string_view(code).substr(spectexts[u].begin, spectexts[u].end - spectexts[u].begin);
     };
     vector<string> blanked(n);
     vector<vector<int>> refs(n);
-    for (int u = 0; u < n; u++) {
+    for (auto u : cands) {
         auto s = text(u);
         auto &bl = blanked[u];
-        bl = !spectexts[u].er && fromids.count(spectexts[u].sp) ? "T" : "F";
+        bl = cat(fn[u], !spectexts[u].er && fromids.count(spectexts[u].sp) ? "T" : "F");
         size_t p = 0;
         scan(s, [&](size_t at, size_t len, int v, int k, bool num) {
             bl.append(s.substr(p, at - p));
@@ -133,58 +157,53 @@ inline void CodeGen::MergeSpecs() {
         });
         bl.append(s.substr(p));
     }
-    vector<int> group(n);
-    vector<bool> apart(n);
-    int ngroups;
-    for (;;) {
+    // A function that is no candidate is in no group, and kept.
+    vector<int> group(n, -1);
+    int ngroups = 0;
+    {
         unordered_map<string_view, int> first;
-        ngroups = 0;
-        for (int u = 0; u < n; u++) {
-            if (apart[u]) {
-                group[u] = ngroups++;
-                continue;
-            }
+        for (auto u : cands) {
             auto [it, fresh] = first.try_emplace(blanked[u], ngroups);
             if (fresh) ngroups++;
             group[u] = it->second;
         }
-        for (;;) {
-            map<vector<int>, int> ids;
-            vector<int> next(n);
-            for (int u = 0; u < n; u++) {
-                vector<int> key { group[u] };
-                for (auto r : refs[u]) key.push_back(group[r]);
-                auto id = (int)ids.size();
-                next[u] = ids.try_emplace(std::move(key), id).first->second;
-            }
-            if ((int)ids.size() == ngroups) break;
-            group = std::move(next);
-            ngroups = (int)ids.size();
+    }
+    for (;;) {
+        map<vector<int>, int> ids;
+        vector<int> next(n, -1);
+        for (auto u : cands) {
+            vector<int> key { group[u] };
+            for (auto r : refs[u]) key.push_back(group[r]);
+            auto id = (int)ids.size();
+            next[u] = ids.try_emplace(std::move(key), id).first->second;
         }
-        // A frame a return to t passes compares gs_rf with its own number
-        // where it catches returns too; see above.
-        auto split = false;
-        for (int u = 0; u < n; u++) {
-            for (auto t : spectexts[u].sp->needs) {
-                auto v = catcher(t);
-                if (v < 0 || v == u || group[v] != group[u]) continue;
-                apart[u] = true;
-                split = true;
-            }
+        if ((int)ids.size() == ngroups) break;
+        group = std::move(next);
+        ngroups = (int)ids.size();
+    }
+    // A frame a return to t passes compares gs_rf with its own number where
+    // it catches returns too, and would catch t's once t's number is its
+    // own; the checker keeps every such frame out of t's group (see above).
+    for (auto u : cands) {
+        for (auto t : spectexts[u].sp->needs) {
+            auto v = catcher(t);
+            if (v < 0 || v == u || group[v] != group[u]) continue;
+            Fail(spectexts[u].sp->sf->line,
+                 cat("internal: ", spectexts[u].names[0], " lies on the way of a long-distance ",
+                     "return to ", spectexts[v].names[0], ", which it would merge with"));
         }
-        if (!split) break;
     }
     // The text is grouped; what is written is rewritten from `code`.
     vector<string>().swap(blanked);
     vector<vector<int>>().swap(refs);
-    if (ngroups == n) return;
+    if (ngroups == (int)cands.size()) return;
     vector<int> kept(ngroups, -1);
-    for (int u = 0; u < n; u++)
+    for (auto u : cands)
         if (kept[group[u]] < 0) kept[group[u]] = u;
-    auto keep = [&](int u) { return kept[group[u]] == u; };
+    auto keep = [&](int u) { return group[u] < 0 || kept[group[u]] == u; };
     // A merged target's channels are the kept one's: the same C, as the
     // functions writing and reading them are.
-    for (int u = 0; u < n; u++) {
+    for (auto u : cands) {
         auto &st = spectexts[u], &k = spectexts[kept[group[u]]];
         if (keep(u) || st.er || !fromids.count(st.sp)) continue;
         auto chans = FromChannels(st.sp, "K");
