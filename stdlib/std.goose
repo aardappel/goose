@@ -394,7 +394,9 @@ fn position<T>(xs: T[:], v: T) -> i64 {
     return -1;
 }
 
-fn contains<T>(xs: T[:], v: T) -> bool { position(xs, v) >= 0 }
+// any rather than position(xs, v) >= 0, which would pass v on by value: a
+// non-fixed v, such as a string, is never copied implicitly (§4.1).
+fn contains<T>(xs: T[:], v: T) -> bool { any(xs) { it == v } }
 
 fn any<T, F>(xs: T[:]) -> bool {
     for x in xs { if F(x) { return true; } }
