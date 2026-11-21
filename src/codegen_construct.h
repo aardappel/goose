@@ -1129,7 +1129,7 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
     if (al->fillval) {
         int byte;
         if (!HasRelRef(elem) && UniformFillByte(al->fillval, elem, byte)) {
-            L("memset(", base, ".e, ", byte, ", ", count, " * sizeof(", base, ".e[0]));");
+            L("GS_MEMSET(", base, ".e, ", byte, ", ", count, " * sizeof(", base, ".e[0]));");
             return;
         }
         FillScope fill(*this, al->fillval, elem);
