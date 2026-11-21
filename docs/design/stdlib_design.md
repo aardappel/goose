@@ -239,8 +239,9 @@ sidesteps this with the block-taking `update` (§5.2).
   control; `parse_*`: the inverse; `to_*`: in-place case conversion;
   `write_*`: I/O only.
 * No `is_` prefix (`any`, `all`, `contains`, `starts_with`).
-* There is no namespacing in v1 (§11.1), so every library name is global.
-  Names were chosen to be the ones a user would also pick. The reasoning is
+* The core modules' names are global (§11.1); specialized I/O and format
+  modules (`net`, `ffi`, `json`, …) use their own namespaces. Global
+  names were chosen to be the ones a user would also pick. The reasoning is
   that a user who defines their own `find` with a concrete signature gets
   their own version (an exact match is preferred over a generic one), and a
   user who defines a generic `find` gets a clear duplicate or ambiguity
@@ -276,6 +277,7 @@ constant (§2): `format(out, 'x')` appends `120`, and a byte is appended with
 | `stdlib/mat.goose` | `vec`, `math` | `float2x2`…`double4x4` (fixed arrays of columns), transforms, cameras | §6.1 elementwise math on fixed arrays |
 | `stdlib/quat.goose` | `mat`, `vec`, `math` | `quat<T>`, `floatq`, `doubleq`, rotations, slerp, conversions to and from matrices | — |
 | `stdlib/os.goose` | `std` | files, stdio, arguments, environment, time, sleep, entropy | `extern fn`, runtime C in `src/runtime/runtime_os.h` |
+| `stdlib/net.goose` | `std` | blocking TCP sockets | `extern fn`, runtime C in `src/runtime/runtime_net.h` |
 
 `import std;` must be written explicitly; nothing is imported
 automatically. The compiler resolves `import std;` by looking in three
@@ -753,7 +755,7 @@ fn random_seed() -> u64                              // OS entropy, for rng
 fn random_bytes(out: u8[:]) -> bool                  // OS CSPRNG, for keys and nonces
 ```
 
-Directory listing, subprocesses, sockets and date formatting are not in v1.
+Subprocesses and date formatting are not in v1; TCP sockets are `net` (§3).
 `exit(code)` is a builtin rather than an extern because the checker must
 know it diverges (§8.3).
 
@@ -1109,8 +1111,10 @@ These operations can be expressed using existing functions and short loops:
   (`bench/design.md`); `read_file` into a `u8[>..]` and spec TODO 16's
   whole-region copy are the way to do it, and typed `read_u32_le`-style
   accessors can wait for a format that needs them.
-* Date/time formatting, directories, subprocesses, networking: `os` grows
-  when a program needs them, one extern at a time.
+* Date/time formatting and subprocesses: `os` grows when a program needs
+  them, one extern at a time.
+* UDP and nonblocking I/O: `net` grows the same way. TLS, HTTP and the
+  protocols over TCP are packages' work, not the stdlib's.
 * Thread helpers: `thread_fn`s take no function values and no generics
   (§11.2), so a `parallel_for` cannot be written in the library. A
   `wait_all(ids: i64[:])` loop is one line. Revisit with spec TODO 9.

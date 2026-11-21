@@ -15,6 +15,7 @@ print none. A first-line `runtime-debug` marker adds a targeted
 GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
 A first-line `dump-runtime` marker also executes the parser's dump, checking
 that stable roundtripping preserved the original program's behavior.
+A first-line `runtime-timeout` marker caps each execution at 30 seconds.
 
 A compiler built with the TinyCC backend runs the same programs a second way,
 in JIT mode: no C file and no external compiler, the generated C built and run
@@ -123,6 +124,10 @@ def debug_fixture(f, line):
 def fixture_levels(levels, line):
     """Selected optimizer regressions exercise O1 as well as the profile levels."""
     return tuple(sorted(set(levels) | {"1"})) if "all-levels" in line else levels
+
+
+def fixture_timeout(line):
+    return 30 if "runtime-timeout" in line else None
 
 
 def has_bce_annotations(f):
@@ -498,11 +503,20 @@ class Runner:
 
     # --- running the compiler and what it built ---------------------------
 
-    def goose(self, *args):
+    @staticmethod
+    def capture(argv, timeout=None):
+        try:
+            return tc.run_capture(argv, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            out = tc.decode(exc.stdout or b"")
+            err = tc.decode(exc.stderr or b"")
+            return None, out, err + f"\n{timeout}s timeout"
+
+    def goose(self, *args, timeout=None):
         """The compiler under test, as (exit code, stdout, stderr). Both
         streams are captured rather than shown, so a failing step can print
         what happened without having to run the compiler a second time."""
-        return self.screened(args[-1], tc.run_capture(self.goose_argv(args)))
+        return self.screened(args[-1], self.capture(self.goose_argv(args), timeout))
 
     def goose_argv(self, args):
         # Resource-bound regressions use the same runtime configuration
@@ -567,15 +581,18 @@ class Runner:
                 done[f] = tc.run_capture(self.goose_argv([*args, f]))
         return done
 
-    def run_expected(self, argv, name, label):
+    def run_expected(self, argv, name, label, timeout=None):
         """Run a program and validate it. `argv` is the built executable, or
         the compiler running the program in JIT mode; in both cases stdout is
         the program's alone, since the compiler's own progress lines move to
         stderr when it runs a program."""
-        return self.check_run(name, label, *tc.run_capture([str(a) for a in argv]))
+        return self.check_run(name, label, *self.capture(argv, timeout))
 
     def check_run(self, name, label, code, out, err):
         """Validate termination and diagnostics before comparing stdout."""
+        if code is None:
+            self.fail(f"run {label} timed out", out + err)
+            return None
         aborts = (HERE / "expected" / f"{name}.aborts").exists()
         if tc.sanitizer_failure(err):
             self.fail(f"sanitizer {label}", err)
@@ -718,7 +735,8 @@ class Runner:
         if self.jit and debug and "no-jit" not in line and f.name not in res.jitskips:
             with self.into(res.jitdebug):
                 out = self.check_run(f.stem, f"jit-debug {f.name}",
-                                     *self.goose("-O2", "--jit", "-DGS_DEBUG=1", f))
+                                     *self.goose("-O2", "--jit", "-DGS_DEBUG=1", f,
+                                                 timeout=fixture_timeout(line)))
                 if out is not None and self.check_stdout(f.stem, f"jit-debug {f.name}", out):
                     self.ok(f"jit-debug {f.name}")
         return res
@@ -783,7 +801,8 @@ class Runner:
                 if ol in jitlevels:
                     args.append("--jit")
                 with self.gpu(modules):
-                    gen[ol] = self.goose(*args, f)
+                    timeout = fixture_timeout(line) if ol in jitlevels else None
+                    gen[ol] = self.goose(*args, f, timeout=timeout)
 
     def build_options(self, key):
         """How a fixture's C is built: at a level ("0", "2"), its dump's
@@ -874,7 +893,7 @@ class Runner:
                             bad = True
                             continue
                     with self.gpu(modules):
-                        code, out, err = tc.run_capture(argv)
+                        code, out, err = self.capture(argv, fixture_timeout(res.line))
                     if "gfx" in modules and tc.GFX_NO_DEVICE in err:
                         res.nativeskips.append(f.name)
                         bad = True
@@ -943,7 +962,7 @@ class Runner:
             if not ok:
                 self.fail(f"cc-dump {dumpfile.name}", log)
                 return
-        out = self.run_expected(argv, f.stem, f"dump {dumpfile.name}")
+        out = self.run_expected(argv, f.stem, f"dump {dumpfile.name}", fixture_timeout(res.line))
         if out is not None and self.check_stdout(f.stem, f"dump {dumpfile.name}", out):
             self.ok(f"dump+run {dumpfile.name}")
 
@@ -965,7 +984,7 @@ class Runner:
             if not ok:
                 self.fail(f"cgen-debug-cc {f.name}", "\n".join(log.splitlines()[:8]))
                 return
-        out = self.run_expected(argv, name, f"debug {f.name}")
+        out = self.run_expected(argv, name, f"debug {f.name}", fixture_timeout(res.line))
         if out is not None and self.check_stdout(name, f"debug {f.name}", out):
             self.ok(f"cgen-debug {f.name}")
 
@@ -2384,12 +2403,17 @@ def main():
                 script = gendir / f"completion.{shell}"
                 tc.write_text(script, out)
                 if shell == "bash":
-                    tc.write_text(gendir / "complete_me.goose", "fn main() {}\n")
+                    # A clean cwd of its own: the script also completes file names
+                    # from the cwd, and gendir's generated artifacts (the LSP's
+                    # buffer_imports/ workspace among them) would match a `bu` prefix.
+                    compdir = gendir / "completion_run"
+                    compdir.mkdir(exist_ok=True)
+                    tc.write_text(compdir / "complete_me.goose", "fn main() {}\n")
                     probe_sh = (f"source '{script}'; t() {{ COMP_WORDS=(\"$@\"); "
                                 "COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMPREPLY=(); _goose; "
                                 "echo \"${COMPREPLY[*]}\"; }; t goose bu; t goose build --dr; t goose complete_m")
                     r2 = subprocess.run(["bash", "-c", probe_sh], capture_output=True, text=True,
-                                        cwd=gendir)
+                                        cwd=compdir)
                     lines = r2.stdout.splitlines()
                     checks.append(("completion bash, run", lines == ["build", "--dry-run", "complete_me.goose"],
                                    r2.stdout + r2.stderr))

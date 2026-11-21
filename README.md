@@ -391,8 +391,8 @@ extern fn crc32_bytes(s: const u8[:]) -> u32;       // a slice crosses as { data
 extern fn stats_of(xs: i32[:], out: Stats&);        // a struct filled through a pointer
 ```
 
-An `extern fn` binds a Goose signature to a C symbol. The `math` and `os`
-modules use this interface. Only types with supported C representations may
+An `extern fn` binds a Goose signature to a C symbol. The `math`, `os` and
+`net` modules use this interface. Only types with supported C representations may
 cross the boundary; unsupported signatures are rejected at the declaration.
 The compiler emits one C file for the whole program. The bundled TinyCC
 backend can compile and run that C inside the Goose compiler's process.
@@ -578,7 +578,7 @@ has the configuration for Neovim, Helix and Emacs.
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
   file tree built from two pools, a spinning cube on the GPU, thousands of
   boxes raining into a heap and a to-do list in windows of widgets.
-* [Standard library](docs/stdlib.md): fourteen modules, all written in readable
+* [Standard library](docs/stdlib.md): twenty-one modules, all written in readable
   Goose under `stdlib/`. They include `gfx` for graphics on SDL3's GPU API ([how
   it is built](https://github.com/aardappel/goose_gfx/blob/main/docs/gfx.md))
   and `physics` for rigid body physics on Box3D ([how it is
