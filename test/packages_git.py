@@ -208,6 +208,41 @@ def check_git_packages(exe, base, *, jit):
     run_git("tag", "-f", "v1", "HEAD")
     run_git("fetch", "-q", "--tags", "--force", str(work), cwd=bare)
     expect(use_tag, "5")
+    # A cache checkout whose HEAD someone moved off the ref is not the
+    # checkout to trust: the next compile re-fetches it (without --update,
+    # whose reuse this differs from; here the checkout lies, so goose must
+    # notice on its own), and the program then prints the new value. The
+    # tampered checkout is repointed at a commit the shallow clone does not
+    # hold, the way a hostile write would leave it: the ref it stands for
+    # is what counts, not what the checkout's history says.
+    caches = list((Path(home) / "pkg").glob("gitpkg-*/v1"))
+    run_git("checkout", "-q", "--detach", "refs/tags/v1", cwd=caches[0])
+    # Detach HEAD at a commit the checkout does not hold: a real commit the
+    # by-hash fetch brought earlier when one sits beside this checkout, else
+    # a well-formed hash the object store is missing. Either way HEAD is not
+    # the commit the ref resolves to, which is the lie GitHeadIs catches.
+    others = sorted((Path(home) / "pkg").glob("gitpkg-*/[0-9a-f][0-9a-f]*"))
+    other_commit = "0123456789abcdef0123456789abcdef01234567"
+    for other in others:
+        r = subprocess.run([git, "-C", str(other), "rev-parse", "HEAD"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            continue
+        head = r.stdout.strip()
+        held = subprocess.run([git, "-C", str(caches[0]), "cat-file", "-t", head],
+                              capture_output=True, text=True)
+        if held.returncode != 0:
+            other_commit = head
+            break
+    (caches[0] / ".git" / "HEAD").write_text(other_commit + "\n")
+    out, err = goose("fetch", use_tag)
+    if "fetching the package gitpkg" not in err:
+        raise RuntimeError(f"a tampered cache checkout was reused, not "
+                           f"re-fetched:\n{out}{err}")
+    # The re-fetch brings the tag the checkout was tampered away from, which
+    # already points at the second commit by now: the moved tag is what the
+    # ref resolves to, and the checkout now says it.
+    expect(use_tag, "6")
     out, err = goose("fetch", "--update", use_tag)
     if "updating the package gitpkg" not in err:
         raise RuntimeError(f"goose fetch --update did not report the update:\n{out}{err}")

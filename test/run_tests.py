@@ -2081,6 +2081,7 @@ def main():
                     [HERE.parent / "src" / name for name in ("process.cpp", "progress.cpp")],
                     [("/I" if cc.style == "msvc" else "-I") +
                      str(HERE.parent / "third_party" / "subprocess")])
+        r.show_task(compiler_unit, "compiler_symbols")
 
         # Direct runtime lifecycle checks use small region limits and allocator
         # instrumentation that cannot be expressed by a Goose program. Keep
@@ -2099,6 +2100,7 @@ def main():
                     r.ok(f"runtime {name}")
         r.show_task(runtime_lifecycle, "runtime_threads_lifecycle", "threads")
         r.show_task(runtime_lifecycle, "runtime_trim_memory", "runtime")
+        r.show_task(runtime_lifecycle, "gs_fail_overflow", "runtime")
 
         # A library build's C host: goose_exit ends the program and goose_init
         # starts it again over fresh globals and queues, and ending it while a

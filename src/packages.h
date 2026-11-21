@@ -236,6 +236,29 @@ inline string AsShown(const string &output) {
 // checkout in the cache can lie deep, past the path length Windows allows
 // git by default. A checkout at a tag is detached by design, which git
 // would otherwise explain even with -q.
+// Whether the checkout at `dir` is the one `s` names: its HEAD is the ref
+// itself for a commit hash, or the commit the repository resolves the ref
+// to. A cache directory's mere existence is not that proof: whoever can
+// write into GOOSE_HOME/pkg can put any checkout there, and goose compiles
+// what it holds; the fetch path verifies what it wrote, the reuse path
+// verifies what it is about to compile.
+inline bool GitHeadIs(const PackageSource &s, const string &dir) {
+    auto git = FindOnPath("git");
+    if (git.empty()) return false;   // Unverifiable without git: not the checkout to trust.
+    auto want = s.ref;
+    auto head = RunProcess({ git, "-C", dir, "rev-parse", "HEAD" });
+    if (!head.started || head.code != 0) return false;
+    auto line = head.output;
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    if (IsCommitHash(want)) return line.compare(0, want.size(), want) == 0;
+    auto resolved = RunProcess({ git, "-C", dir, "rev-parse", want + "^{commit}" });
+    if (!resolved.started || resolved.code != 0) return false;
+    while (!resolved.output.empty() &&
+           (resolved.output.back() == '\n' || resolved.output.back() == '\r'))
+        resolved.output.pop_back();
+    return resolved.output == line;
+}
+
 inline void RunGit(const string &git, const vector<string> &args) {
     vector<string> argv = { git, "-c", "core.longpaths=true", "-c", "advice.detachedHead=false" };
     for (auto &a : args) argv.push_back(a);
@@ -253,7 +276,11 @@ inline void RunGit(const string &git, const vector<string> &args) {
 inline string FetchPackage(const PackageSource &s, const string &name) {
     auto dir = GitCacheDir(s);
     std::error_code ec;
+    // A checkout is only trusted while it is the one the source names;
+    // GitHeadIs re-checks under the fetch lock, where another process may
+    // have published (or a hostile write may sit) since the first look.
     auto have = filesystem::is_directory(filesystem::path(dir), ec);
+    if (have && !package_nofetch && !GitHeadIs(s, dir)) have = false;
     if (!have && package_nofetch)
         throw CompileError { cat("the package ", name, " from ", s.text, " is not fetched, and "
                                  "--offline fetches nothing: `goose fetch` fetches it") };
@@ -266,8 +293,13 @@ inline string FetchPackage(const PackageSource &s, const string &name) {
         // cleanup and publication never remove a lock another process holds.
         FileLock lock(dir + ".lock", cat("waiting for another goose fetching the package ", name));
         have = filesystem::is_directory(filesystem::path(dir), ec);
+        if (have && !package_nofetch && !GitHeadIs(s, dir)) have = false;
         update = have && package_update && !IsCommitHash(s.ref);
         if (have && !update) return dir + "/";
+        // A checkout that failed its check has to go: the non-update fetch
+        // below publishes a fresh one by rename, which a directory in place
+        // would refuse, and nothing of a checkout that lied is worth keeping.
+        if (!have && filesystem::is_directory(filesystem::path(dir), ec)) RemoveTree(dir);
         auto git = FindOnPath("git");
         if (git.empty())
             throw CompileError { cat("cannot find `git` on PATH, needed to fetch the package ", name,
