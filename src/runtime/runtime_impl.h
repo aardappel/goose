@@ -660,11 +660,13 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     gs_regions[i].committed = p;
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
 
-    /* Regions start page-aligned and lie whole pages apart, so the same
-       page offset of two stacks lands in one L1 set: bump pointers that
-       grow together from offset 0 collide set for set. Give each stack
-       its color, one 64-byte line per region index wrapping within 4096 bytes,
-       smallest possible page size. */
+    /* Region bases agree in their low 16 or more address bits (Windows
+       reserves on 64 KB boundaries; mmap'd regions lie 2 GB + 1 MB apart),
+       so the same offset in two stacks does too. A loop storing to several
+       stacks in step then runs up to 2x slower (Zen 5, six f32 arrays),
+       though sharing a page offset alone costs nothing: bases 4 KB apart
+       run at full speed. A different 64-byte step per region within the
+       smallest page breaks the match. */
     long colors = 4096 / 64;
     size_t pad = (size_t)(i % colors) * 64;
     return p + pad;
