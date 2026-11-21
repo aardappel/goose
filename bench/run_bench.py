@@ -371,19 +371,6 @@ BENCHMARKS = [
             "vectorisation. Compare flat indexing and row-based implementations "
             "separately; all perform the same stencil and include image generation."),
     ),
-    dict(
-        name="thread_local",
-        what="Check access to thread local scalar and vector.",
-        sizes=[2, 4, 8],
-        goose=[dict(label="goose threads", file="thread_local.goose")],
-        cpp=[dict(label="cpp threads", file="thread_local.cpp", variant=0, tier="expert")],
-        rust=[dict(label="rust threads", file="thread_local.rs")],
-        summary=(
-            "A benchmark that demonstrates false sharing between the private heap "
-            "memory. It compares the same workload in Goose, C++ and Rust; all "
-            "three programs must print the same checksums, so they provably do the "
-            "same work."),
-    ),
 ]
 
 # --- build helpers -----------------------------------------------------------
