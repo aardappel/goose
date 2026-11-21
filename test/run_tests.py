@@ -2384,12 +2384,14 @@ def main():
                 script = gendir / f"completion.{shell}"
                 tc.write_text(script, out)
                 if shell == "bash":
-                    tc.write_text(gendir / "complete_me.goose", "fn main() {}\n")
+                    probe_dir = gendir / "completion_probe"
+                    probe_dir.mkdir(parents=True, exist_ok=True)
+                    tc.write_text(probe_dir / "complete_me.goose", "fn main() {}\n")
                     probe_sh = (f"source '{script}'; t() {{ COMP_WORDS=(\"$@\"); "
                                 "COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMPREPLY=(); _goose; "
                                 "echo \"${COMPREPLY[*]}\"; }; t goose bu; t goose build --dr; t goose complete_m")
                     r2 = subprocess.run(["bash", "-c", probe_sh], capture_output=True, text=True,
-                                        cwd=gendir)
+                                        cwd=probe_dir)
                     lines = r2.stdout.splitlines()
                     checks.append(("completion bash, run", lines == ["build", "--dry-run", "complete_me.goose"],
                                    r2.stdout + r2.stderr))
