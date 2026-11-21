@@ -5926,7 +5926,17 @@ captures a reference or a pool. It also reaches everything when a cached
 stack may be a global's or the destination of a `return ... from` target
 up the chain, and the callee names a global or can propagate such a
 return. A callee with no stack among its arguments and none of its own,
-such as a pure helper, reaches nothing and needs no sync. The local is
+such as a pure helper, reaches nothing and needs no sync. An `extern fn`
+reaches nothing by that rule unless it is handed a builder or is marked
+`readsalltops`. `os.trim_memory` is marked, because it reads every top
+from the registry. So is every extern the program itself declares when
+the program has an `export fn`: C it calls may call that export before
+returning, and the export's wrapper enters at `gs_sp` 0 and reads tops
+from memory. A callback that allocated at a stale top would overwrite
+the frames above it. The runtime's own externs are not marked; they
+never call back into the program. `CollectSpecs` sets the flag, and the
+same transitive marking used for `trim_memory` publishes every frame's
+cached tops around the call. The local is
 confined to the loops that grow the stack (`PlanTopCaches`). For growth
 outside every loop, it is confined to the innermost block around the
 growth, which is the whole body for growth at the body's top level. So a

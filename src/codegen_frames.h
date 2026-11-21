@@ -319,6 +319,18 @@ inline void CodeGen::PushRootMembers(vector<string> &args, TypeExpr *t, string v
 inline void CodeGen::CollectSpecs() {
     for (auto sp : ast.fnspecs)
         if (sp->live && sp->body) livespecs.push_back(sp);
+    // A program with an export can be reentered from C before an extern
+    // returns (a toolkit calling a handler, qsort calling a comparator).
+    // The export wrapper enters at gs_sp 0 and reads stack tops from memory,
+    // so every frame above the extern must have published the tops it caches,
+    // or the callback allocates over their live data. That is what
+    // readsalltops does for gs_trim_memory. The runtime's own externs never
+    // call back, and a program with no export is left unchanged.
+    bool exports = false;
+    for (auto sf : ast.functions) exports |= sf->isexport;
+    if (exports)
+        for (auto sf : ast.functions)
+            if (sf->isextern && !ast.StdlibFile(sf->line.fileidx)) sf->readsalltops = true;
     // Names: suffix whenever the goose name maps to more than one live
     // spec (overloads or multiple specializations).
     map<string_view, int> namecount;
