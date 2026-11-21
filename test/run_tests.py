@@ -2081,6 +2081,7 @@ def main():
                     [HERE.parent / "src" / name for name in ("process.cpp", "progress.cpp")],
                     [("/I" if cc.style == "msvc" else "-I") +
                      str(HERE.parent / "third_party" / "subprocess")])
+        r.show_task(compiler_unit, "compiler_symbols")
 
         # Direct runtime lifecycle checks use small region limits and allocator
         # instrumentation that cannot be expressed by a Goose program. Keep
