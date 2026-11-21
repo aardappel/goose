@@ -2018,6 +2018,7 @@ fn save_png(t: Texture, path: const u8[:]) -> bool           // RGBA8 or BGRA8
 fn screenshot(path: const u8[:]) -> bool                     // the screen, as shown
 fn generate_mips(t: Texture)
 fn texture_info(t: Texture) -> TextureDesc
+fn format_supported(format: i32, usage: i32) -> bool
 fn release(t: Texture)
 
 struct Sampler { id: u32 }
@@ -2036,8 +2037,13 @@ Kinds `TEXTURE_2D`, `TEXTURE_2D_ARRAY`, `TEXTURE_3D`, `TEXTURE_CUBE` (faces
 `RGBA8`, `BGRA8`, `RGBA8_SRGB`, `R8`, `RG8`, `RGBA16F`, `RGBA32F`, `R16F`,
 `RG16F`, `R32F`, `RG32F`, `R32UI`, `RGBA8UI`, `RGB10A2`, `RG11B10F`, and
 `DEPTH16`, `DEPTH24`, `DEPTH32F`, `DEPTH24_STENCIL8`, `DEPTH` (32-bit float
-where it can also be sampled). Filters `NEAREST`, `LINEAR`; wraps `REPEAT`,
-`MIRROR`, `CLAMP`; compares `COMPARE_LESS` and the like.
+where it can also be sampled), and the block-compressed `BC1`, `BC3`, `BC7`,
+`ASTC_4x4`, `ASTC_5x5`, `ASTC_6x6`, `ASTC_8x8`: `SAMPLED` only, updated a
+whole mip at a time (region `w` 0, data in whole blocks), and not read back
+or given `generate_mips`. `format_supported` says whether the device makes a
+texture of a format and usage; ask it before using a compressed format.
+Filters `NEAREST`, `LINEAR`; wraps `REPEAT`, `MIRROR`, `CLAMP`; compares
+`COMPARE_LESS` and the like.
 
 ### Pipelines and drawing
 
