@@ -47,8 +47,8 @@
 // the driver -- with its members declared in the order they are defined
 // across codegen_types.h, codegen_frames.h, codegen_values.h,
 // codegen_construct.h, codegen_stmts.h, codegen_calls.h, codegen_builtins.h,
-// codegen_render.h and codegen_emit.h; the per-node CgX / CgAny / CgStmt
-// overrides are codegen_nodes.h.
+// codegen_render.h, codegen_emit.h and codegen_merge.h; the per-node CgX /
+// CgAny / CgStmt overrides are codegen_nodes.h.
 #pragma once
 
 namespace goose {
@@ -553,7 +553,9 @@ struct CodeGen {
     };
     void StackReport(FILE *out, const StackConfig &cfg);
 
-    // Long-distance return targets (§7.9): id, per-ret TLS channels.
+    // Long-distance return targets (§7.9): id, per-ret TLS channels. The C
+    // spells an id only as what gs_rf is compared with or set to and in its
+    // channels' names, which is where MergeSpecs reads it.
     unordered_map<FnSpec *, int> fromids;
     set<FnSpec *> fromemitted;
 
@@ -1368,6 +1370,7 @@ struct CodeGen {
     void GenFromReturn(Return *r);
 
     void EnsureFromChannels(FnSpec *t);
+    string FromChannels(FnSpec *t, const string &tid);
 
     // ------------------------------------------------------------------
     // Calls. Returns one entry per return value: a C expression for fixed
@@ -1550,7 +1553,7 @@ struct CodeGen {
     // version for; runtime.h names them (GS_SIMD_TARGET1, ...).
     static constexpr int SIMD_LEVELS = 2;
     void EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
-                          const string &fnbody);
+                          const string &fnbody, vector<string> &names);
 
     // ------------------------------------------------------------------
     // Globals (§11.1): C globals plus dedicated data stacks for nonfixed
@@ -1582,6 +1585,23 @@ struct CodeGen {
     void EmitExports();
     string MainCall();
     void EmitMain();
+
+    // ------------------------------------------------------------------
+    // Identical functions (codegen_merge.h). Specializations that differ
+    // only in their key often have the same C, but for the names of the
+    // functions they call and the numbers of their long-distance returns:
+    // MergeSpecs keeps one function of each such group.
+
+    // A function EmitSpec wrote: where it lies in `code`, and the names it
+    // defines there (its own, then a simd function's versions).
+    struct SpecText {
+        FnSpec *sp;
+        bool er;
+        size_t begin, end;
+        vector<string> names;
+    };
+    vector<SpecText> spectexts;
+    void MergeSpecs();
 
     // ------------------------------------------------------------------
     // Driver.
@@ -1628,6 +1648,7 @@ struct CodeGen {
         EmitProgramInit();
         EmitExports();
         if (!library) EmitMain();
+        MergeSpecs();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
         // The instance block: with workers each thread reaches its own
         // through gs_gl; without them there is only main's.

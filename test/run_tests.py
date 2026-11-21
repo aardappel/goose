@@ -1834,6 +1834,43 @@ def main():
         else:
             r.ok(f"last-use moves {f.name}")
     r.show_task(last_use_moves)
+    # Specializations whose C is the same but for the names of the functions
+    # they call and the numbers of their long-distance returns are written
+    # once (CodeGen::MergeSpecs): every function of the fixture but main is
+    # specialized twice (--specs), and has one C function, at -O0, which
+    # inlines nothing, but for mapped, whose copies differ in a constant and
+    # keep two. Each target number thrown is one that a kept target catches,
+    # and only the kept targets' channels are declared.
+    def merged_specs():
+        f = HERE / "codegen" / "merged_specs.goose"
+        cfile = gendir / "merged_specs-merged.c"
+        code, out, err = r.goose("-O0", "--specs", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"merged specs {f.name}", out + err)
+            return
+        text = cfile.read_text()
+        names = ["total", "ping", "pong", "reject", "check", "scan", "outer", "inner", "leaf",
+                 "wide_sum", "doubled"]
+        specs = re.findall(r"^// spec \d+:[^\n]*\nfn (\w+)\(", out, re.MULTILINE)
+        wrong = [f"{n}: {specs.count(n)} specializations"
+                 for n in names + ["mapped"] if specs.count(n) != 2]
+        for n, er, want in [(n, "", 1) for n in names] + [("doubled", "_er", 1), ("mapped", "", 2)]:
+            defs = re.findall(rf"^static [^\n;]*\b{n}_g(?:_\d+)?{er}\([^\n]*\) \{{$",
+                              text, re.MULTILINE)
+            if len(defs) != want:
+                wrong.append(f"{n}{er}: {len(defs)} C functions, want {want}")
+        caught = re.findall(r"\bgs_rf == (\d+)\)", text)
+        thrown = set(re.findall(r"\bgs_rf = ([1-9]\d*);", text))
+        declared = set(re.findall(r"^static GS_TLS [^\n]*\bgs_lret_(\d+)_0;$", text, re.MULTILINE))
+        if len(caught) != 3 or len(set(caught)) != 3:
+            wrong.append(f"targets caught: {caught}, want 3 distinct")
+        if not thrown or not thrown <= set(caught) or declared != set(caught):
+            wrong.append(f"thrown {sorted(thrown)}, caught {caught}, declared {sorted(declared)}")
+        if wrong:
+            r.fail(f"merged specs {f.name}", ", ".join(wrong))
+        else:
+            r.ok(f"merged specs {f.name}")
+    r.show_task(merged_specs)
     # Root descriptors expose ordinary component metadata to top caching and
     # loop-view hoisting, even when Goose leaves the helper out of line.
     def root_owner_caches():

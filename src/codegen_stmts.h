@@ -1147,20 +1147,26 @@ inline void CodeGen::GenFromReturn(Return *r) {
 inline void CodeGen::EnsureFromChannels(FnSpec *t) {
     if (fromemitted.count(t)) return;
     fromemitted.insert(t);
-    auto tid = fromids[t];
+    data += FromChannels(t, cat(fromids[t]));
+}
+
+// The declarations of target t's channels, its number spelled tid.
+inline string CodeGen::FromChannels(FnSpec *t, const string &tid) {
+    string decls;
     auto &rets = t->rets;
     for (size_t i = 0; i < rets.size(); i++) {
         if (IsFix(rets[i])) {
-            Append(data, "static GS_TLS ", CT(rets[i]), NeedsResultLocation(rets[i]) ? " *" : " ",
+            Append(decls, "static GS_TLS ", CT(rets[i]), NeedsResultLocation(rets[i]) ? " *" : " ",
                    "gs_lret_", tid, "_", i, ";\n");
             continue;
         }
-        Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
-        Append(data, "static GS_TLS uint8_t *gs_fval_", tid, "_", i, ";\n");
+        Append(decls, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
+        Append(decls, "static GS_TLS uint8_t *gs_fval_", tid, "_", i, ";\n");
         if (IsResz(rets[i]))
-            Append(data, "static GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
+            Append(decls, "static GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
                    " gs_lret_", tid, "_", i, ";\n");
     }
+    return decls;
 }
 
 // ------------------------------------------------------------------
