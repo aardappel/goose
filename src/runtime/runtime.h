@@ -1017,6 +1017,54 @@ static GS_TLS int64_t gs_nstks;
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
+/* The aligned allocators the chunks come from. Windows: the CRT's
+   _aligned_malloc, whose base _aligned_free takes back -- msvcrt exports
+   both, and tcc's small header surface declares calloc and free but not
+   these, so tcc gets them here and the rest of the platform <malloc.h>.
+   Elsewhere: C11's aligned_alloc, which stdlib.h declares and free takes
+   back. TCC compiles this header with -nostdinc (jit.h), so stdlib.h is
+   not there to declare aligned_alloc either: without a declaration here
+   it takes it for one returning int, and the pointer it hands back is
+   cut to 32 bits. */
+#if defined(_MSC_VER)
+#include <malloc.h>
+#elif defined(__TINYC__)
+#if defined(_WIN32)
+void* _aligned_malloc(size_t, size_t);
+void _aligned_free(void*);
+#else
+void* aligned_alloc(size_t, size_t);
+#endif
+#endif
+
+static void *gs_aligned_calloc(size_t n) {
+  /* On Mac cache line is 128-byte size. On x86 64 bytes is the
+   * line size, but Intel's spatial prefetcher fetches pairs of lines, so
+   * 128‑byte alignment is the safe default for hot per‑thread data. */
+  size_t line = 128;
+  /* Whole lines: aligned_alloc's C11 contract wants a size multiple of
+     the alignment, and whole lines keep the chunk's last line its own
+     whatever the allocator packs beside it. */
+  size_t size = (n + line - 1) / line * line;
+  if (!size) size = line;
+#if defined(_WIN32)
+    uint8_t *raw = (uint8_t *)_aligned_malloc(size, line);
+#else
+    uint8_t *raw = (uint8_t *)aligned_alloc(line, size);
+#endif
+    if (!raw) { return NULL; }
+    memset(raw, 0, size);
+    return raw;
+}
+
+static void gs_aligned_free(void *p) {
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+
 #define GS(i) (&gs_stks[i])
 
 static void gs_stack_init(gs_stack *s) {
@@ -1026,7 +1074,7 @@ static void gs_stack_init(gs_stack *s) {
 /* The calling thread program's block of n stacks, each with its region:
    main's from gs_rt_init, a worker's from its entry thunk. */
 static void gs_stack_block(int64_t n) {
-    gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
+    gs_stks = (gs_stack *)gs_aligned_calloc((size_t)(n > 0 ? n : 1) * sizeof(gs_stack));
     if (!gs_stks) gs_panic("out of memory allocating stack block");
     for (int64_t i = 0; i < n; i++) gs_stack_init(&gs_stks[i]);
     gs_nstks = n;
@@ -1060,9 +1108,9 @@ static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
 /* What the thread program holds once it has returned or aborted; the
    runtime releases the regions after this. */
 static void gs_thread_release(void) {
-    free(gs_gl);
+    gs_aligned_free(gs_gl);
     gs_gl = NULL;
-    free(gs_stks);
+    gs_aligned_free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
 }
