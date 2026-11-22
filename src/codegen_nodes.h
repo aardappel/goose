@@ -307,7 +307,7 @@ inline string Dot::CgX(CodeGen &cg) {
         auto vi = ei->en->VariantIndex(variantconst);
         if (et->kind == TY_ENUM && !et->enu->varmode) {
             auto t = cg.T();
-            cg.FixedLocal(et, t);
+            cg.FixedLocal(et, t, cg.HasUninitSlots(et) ? "{0}" : "");
             cg.L(t, ".tag = ", cg.TagConst(ei, vi), ";");
             return t;
         }
