@@ -34,6 +34,8 @@ specification. The other documents cover the library, tools, and compiler.
   and one-key runs.
 * [Other editors](editors.md): the language server in Neovim, Helix,
   Emacs and Zed, and `goose format`, the formatter, on save.
+* [Debugging](debugger.md): `goose build -g`, and stepping the Goose source
+  in LLDB, gdb, Visual Studio, IntelliJ and VS Code.
 
 ## Benchmarks
 

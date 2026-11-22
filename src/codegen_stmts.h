@@ -10,14 +10,19 @@ namespace goose {
 // over (TopW), rather than the whole body.
 inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first, int exitscope) {
     auto region = MarkBlockBegin();
+    if (linedirs) blockends.push_back(b->end.line);
     for (auto i = first; i < b->stmts.size(); ++i) GenStmt(b->stmts[i]);
     if (b->tail && !IsVoidT(b->tail->exprtype) && d.k != DK_DISCARD) {
         // An inlined body's tail is a return too: another named result may
         // already occupy its destination, just as at an explicit return.
+        auto outer = srcline;
+        if (linedirs && b->tail->line.line > 0) srcline = b->tail->line;
         if (exitscope >= 0) GenExitValue(b->tail, exitscope);
         else GenAny(b->tail, d);
+        srcline = outer;
     }
-    else if (b->tail) GenAny(b->tail, Dst {});
+    else if (b->tail) GenAt(b->tail, Dst {});
+    if (linedirs) blockends.pop_back();
     MarkLoopEnd(region);
 }
 
@@ -40,12 +45,18 @@ inline size_t CodeGen::GenInlineArgs(Block *b) {
 inline void CodeGen::GenStmt(Node *n) {
     PushSc(SC_STMT);
     termjump = false;
+    // The statement's own restores (PopSc) are its line; what the enclosing
+    // statement emits after this one (a loop's step, its closing restores) is
+    // the enclosing statement's again.
+    auto outer = srcline;
+    if (n->line.line > 0) srcline = n->line;
     GenStmt2(n);
     if (termjump) {   // Nothing runs after a jump.
         cscopes.back().saves.clear();
         cscopes.back().defers.clear();
     }
     PopSc();
+    srcline = outer;
     termjump = false;
 }
 

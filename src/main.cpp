@@ -46,6 +46,7 @@
 #include "progress.h"
 #include "buildfile.h"
 #include "json.h"
+#include "codegen_debugmap.h"
 #include "toolchain.h"
 #include "builtin.h"
 #include "build.h"
@@ -720,6 +721,9 @@ R"(  --stats               Print what the compile did: the declarations parsed,
 constexpr const char *DEBUGOPTION =
 R"(  --debug               Overflow, range and tag checks that name the source
                         line they fail on.
+  -g, --debug-info      --debug, and the C built for a debugger: #line
+                        directives, a debug map, and -O0 unless an -O is
+                        given.
 )";
 
 // The help on a command or topic, `goose help` or `goose --help`'s for ""
@@ -744,9 +748,11 @@ Commands:
   help       Print this (or --help, -h); with a command, that command's help.
 
 Common options:
-  -O0, -O1, -O2   Inlining level (default -O2).
+  -O0, -O1, -O2   Inlining level (default -O2; -O0 with -g).
   --debug         Overflow, range and tag checks that name the source line
                   they fail on.
+  -g, --debug-info
+                  --debug, and the program built for a debugger.
   --stats         Print what the compile did (declarations, bounds checks
                   removed, files written).
   --color when    Color errors and warnings: auto (on a terminal, unless
@@ -774,7 +780,7 @@ its exit code. What follows -- is the program's arguments. A program that
 starts threads needs goose build.
 
 Options:
-  -O0, -O1, -O2         Inlining level (default -O2).
+  -O0, -O1, -O2         Inlining level (default -O2; -O0 with -g).
 )", DEBUGOPTION, COMPILEOPTIONS,
 R"(  --cc name|path        The C compiler for packages' native parts: msvc,
                         clang-cl, clang, gcc, cc or a path (or GOOSE_CC).
@@ -791,10 +797,13 @@ go under GOOSE_HOME.
 
 Options:
   -o exe                Where the executable goes.
-  -O0, -O1, -O2         Inlining level (default -O2). The C compiler
-                        optimizes at every level, unless --debug.
+  -O0, -O1, -O2         Inlining level (default -O2; -O0 with -g). The C
+                        compiler optimizes at every level, unless --debug.
   --debug               Overflow, range and tag checks that name the source
-                        line they fail on, and the C built for a debugger.
+                        line they fail on, and C debug information.
+  -g, --debug-info      --debug, and the C built for stepping the Goose source
+                        in a debugger: #line directives, no inlining unless an
+                        -O is given, and a debug map beside the C.
 )", COMPILEOPTIONS,
 R"(  --cc name|path        The C compiler: msvc, clang-cl, clang, gcc, cc or a
                         path (or GOOSE_CC; by default the first one found).
@@ -922,7 +931,7 @@ Options:
   --<package>-link msvc|cc
                         Print the response file that links the native part of
                         a package compiled into goose (--gfx-link cc).
-  -O0, -O1, -O2         Inlining level (default -O2).
+  -O0, -O1, -O2         Inlining level (default -O2; -O0 with -g).
 )", DEBUGOPTION, COMPILEOPTIONS);
     if (topic == "internals") return cat(
 R"(usage: goose [options] file.goose
@@ -1407,12 +1416,15 @@ int Main(int argc, char **argv) {
     auto stats = false;
     auto forcejit = false, standalone = false, shared = false;
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
+    auto debuginfo = false;   // -g: --debug, and the C built for stepping the Goose source.
     auto jsondiag = false;
     string ccrequest;
     // The inlining at its highest: what a run or build defaults to
     // (DEFAULTOPTLEVEL, optimize.h). The C compiler optimizes whatever the
     // level, unless --debug (Builder::CFlags).
-    auto optlevel = DEFAULTOPTLEVEL;
+    // -g keeps every function as a frame of its own: no inlining,
+    // unless an -O asks for it.
+    auto optlevel = -1;
     vector<string> cdefines, progargs, includenames, files;
     for (int i = firstarg; i < argc; i++) {
         string arg = argv[i];
@@ -1509,9 +1521,10 @@ int Main(int argc, char **argv) {
         else if (arg == "--cc" && i + 1 < argc) ccrequest = argv[++i];
         else if (arg == "--json") json = true;
         else if (arg == "--refresh") refresh = true;
-        else if (arg == "--debug") {
+        else if (arg == "--debug" || arg == "-g" || arg == "--debug-info") {
+            if (arg != "--debug") debuginfo = true;
+            if (!debug) cdefines.push_back("GS_DEBUG=1");
             debug = true;
-            cdefines.push_back("GS_DEBUG=1");
         }
         else if (arg == "-v") verbose = true;
         else if (arg == "--stats") stats = true;
@@ -1695,6 +1708,7 @@ int Main(int argc, char **argv) {
         TypeCheckProgram(ast, library, nocgen);
         // The checker reported the errors it went on past, root by root.
         if (!ast.errors.empty()) return 1;
+        if (optlevel < 0) optlevel = debuginfo ? 0 : DEFAULTOPTLEVEL;
         Optimizer opt(ast, optlevel);
         if (specs) {
             string s;
@@ -1761,7 +1775,7 @@ int Main(int argc, char **argv) {
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
         auto stackcfg = StackConfigOf(cdefines);
         CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, shared,
-                   stackcfg.maxstacks, noelide);
+                   stackcfg.maxstacks, noelide, debuginfo);
         if (stacks) cg.StackReport(msgs, stackcfg);
         // The packages whose native parts the program needs, which a JIT
         // run takes functions from and a build links: its own, when it has
@@ -1805,12 +1819,30 @@ int Main(int argc, char **argv) {
             if (embedded)
                 Append(out, "\nvoid gs_jit_cleanup(void) { gs_aligned_free(gs_stks); gs_stks = NULL; "
                             "gs_nstks = 0; }\n");
+            // -g's #line directives hand the C back to the C file
+            // after each function, by the name it is compiled under.
+            if (debuginfo) {
+                std::error_code ec;
+                auto cfile = outfile.empty() ? cat(PathStem(filename), ".c")
+                    : filesystem::absolute(filesystem::path(outfile), ec).lexically_normal()
+                          .generic_string();
+                out = CodeGen::ResetLines(out, cfile);
+            }
             return out;
         };
         if (!outfile.empty() && !nocgen) {
             auto out = assemble(!standalone);
             if (!WriteFileMakingDirs(outfile, out))
                 throw CompileError { cat("cannot write output file: ", outfile) };
+            // -g's map, beside the C a debugger finds through its
+            // debug information (codegen_debugmap.h).
+            if (debuginfo) {
+                auto mapfile = outfile.size() > 2 && outfile.compare(outfile.size() - 2, 2, ".c") == 0
+                                   ? outfile.substr(0, outfile.size() - 2) : outfile;
+                mapfile += ".debug.json";
+                if (!WriteFileMakingDirs(mapfile, cg.DebugMap()))
+                    throw CompileError { cat("cannot write output file: ", mapfile) };
+            }
             if (stats) fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
         }
         if (!headername.empty()) {

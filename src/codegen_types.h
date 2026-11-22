@@ -661,6 +661,11 @@ inline string CodeGen::NameCT(TypeExpr *t) {
     auto name = Unique(m);
     ctypes[m] = name;
     if (StructLike(t)) Append(tdecls, "typedef struct ", name, " ", name, ";\n");
+    if (linedirs && (t->kind == TY_STRUCT || t->kind == TY_ENUM)) {
+        string g;
+        t->Dump(g);
+        mapcnames.emplace(g, name);
+    }
     return name;
 }
 
