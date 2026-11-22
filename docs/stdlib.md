@@ -1832,10 +1832,11 @@ size of the system's own, pass `display_scale()` to `ui::set_scale`.
 
 With `WAIT_WHEN_IDLE`, `frame()` shows the screen only when something used
 the GPU since the last call or the window needs it redrawn. After a frame that
-drew nothing, the next `frame()` waits for an event, up to a second, unless
-`quit()` was called; `delta_time()` leaves the wait out, so a timer that runs
-while idle reads `time()`. A resize leaves the screen black, so the program
-redraws when `screen_size()` changes.
+drew nothing, the next `frame()` waits for an event, up to a second (16 ms
+while a gamepad is open and the window has focus), unless `quit()` was
+called; `delta_time()` leaves the wait out, so a timer that runs while idle
+reads `time()`. A resize leaves the screen black, so the program redraws
+when `screen_size()` changes.
 
 With `WINDOW_ONLY`, `open` makes the window, its input, events and time, but
 no GPU device, so another renderer draws into the window; a call that needs
