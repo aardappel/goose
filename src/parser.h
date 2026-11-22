@@ -156,7 +156,7 @@ struct Parser {
             case T_DEFER: case T_RETURN: case T_BREAK: case T_CONTINUE:
                 return !declaration;
             default:
-                return AtInline() || AtCheckfree();
+                return AtInline() || AtCheckfree() || AtDeprecated();
         }
     }
 
@@ -315,6 +315,31 @@ struct Parser {
         auto next = lex.PeekTok();
         return next == T_FN || next == T_RECURSIVE || next == T_THREADFN || next == T_SIMD ||
                next == T_EXTERN || next == T_IDENT;
+    }
+
+    // The tokens after `deprecated` (and its optional message) are a function
+    // declaration. The lexer copy lives here, not in AtDeprecated: that one
+    // runs at every statement, and a copy in its frame overflows the native
+    // stack on a few thousand nested blocks (the formatter's deep-block check).
+    bool DeprecatedIntro() {
+        auto copy = lex;
+        try {
+            copy.Next();
+            if (copy.tok == T_STRLIT) copy.Next();
+        } catch (CompileError &) {
+            return false;
+        }
+        if (copy.tok == T_FN || copy.tok == T_RECURSIVE || copy.tok == T_THREADFN ||
+            copy.tok == T_SIMD || copy.tok == T_EXTERN || copy.tok == T_EXPORT)
+            return true;
+        return copy.tok == T_IDENT && (copy.attr == "inline" || copy.attr == "checkfree");
+    }
+
+    // `deprecated` likewise, first among a declaration's modifiers, with an
+    // optional message string before the rest (§7.15). A name everywhere else.
+    bool AtDeprecated() {
+        if (lex.tok != T_IDENT || lex.attr != "deprecated") return false;
+        return DeprecatedIntro();
     }
 
     void Expect(TType t, const char *context) {
@@ -520,7 +545,7 @@ struct Parser {
             ParseStructDecl(true);
             return;
         }
-        if (AtInline() || AtCheckfree()) goto fndecl;
+        if (AtInline() || AtCheckfree() || AtDeprecated()) goto fndecl;
         switch (lex.tok) {
             case T_STRUCT: ParseStructDecl(); return;
             case T_ENUM:   ParseEnumDecl();   return;
@@ -726,17 +751,8 @@ struct Parser {
         ast.topdecls.push_back(Finish(New<EnumDecl>(line, en)));
     }
 
-    // Whether this file is a package fetched into GOOSE_HOME/pkg, whose
-    // deprecated spellings are its authors' to change, not the program's:
-    // a published version keeps working on older compilers without warning.
     bool InFetchedPackage() const {
-        if (fileidx < 0 || fileidx >= (int)ast.filepkg.size()) return false;
-        auto pkg = ast.filepkg[fileidx];
-        if (pkg < 0 || pkg >= (int)ast.packages.size()) return false;
-        // A package compiled into the compiler was fetched by its build and
-        // is read from there, by path.
-        auto &p = ast.packages[pkg];
-        return !p.cachekey.empty() || p.builtin >= 0;
+        return ast.FetchedOrBuiltinFile(fileidx);
     }
 
     // An `extern` a caller consumed before ParseFnDecl, with its string: a
@@ -799,6 +815,14 @@ struct Parser {
         // for the `= "sym"` after it, and warned of once the name is known.
         auto oldcname = pre && !inblock && !pre->cname.empty();
         auto oldline = line;
+        if (AtDeprecated()) {
+            sf->isdeprecated = true;
+            lex.Next();
+            if (lex.tok == T_STRLIT) {
+                sf->deprecatemsg = lex.sval;
+                lex.Next();
+            }
+        }
         auto checkfree = false;
         if (AtCheckfree()) {
             checkfree = true;
@@ -2122,7 +2146,7 @@ struct Parser {
     // One statement of b, or its tail; returns false once the block has
     // ended (its `}` consumed, by a guard's rest of the block included).
     bool ParseStatement(Block *b) {
-        if (AtInline() || AtCheckfree()) goto nestedfndecl;
+        if (AtInline() || AtCheckfree() || AtDeprecated()) goto nestedfndecl;
         switch (lex.tok) {
             case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: {
                 if (lex.tok == T_CONST && lex.PeekTok() == T_FOR) {
@@ -2221,7 +2245,10 @@ struct Parser {
                 case T_FN: case T_RECURSIVE: case T_THREADFN: case T_EXTERN: case T_EXPORT:
                 case T_SIMD:
                     Error(cat("defer takes a statement or a block, not `", TokStr(), "`"));
-                default: break;
+                default:
+                    if (AtDeprecated())
+                        Error(cat("defer takes a statement or a block, not `", TokStr(), "`"));
+                    break;
             }
             body = New<Block>(line);
             stmt_ended = false;

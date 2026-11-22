@@ -42,7 +42,7 @@ fn main() {
     print(xs, " ", refs);
 
     var others: i64&[6] = [xs[0], xs[0], xs[0], xs[0], xs[0], xs[0]];
-    copy_into(others, refs);
+    copy_from(others, refs);
     print(xs, " ", others);
     fill(others, xs[5]);
     print(xs, " ", others);

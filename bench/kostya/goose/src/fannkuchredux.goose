@@ -25,7 +25,7 @@ fn fannkuchredux(n: i32) -> i32, i32 {
             r--;
         }
 
-        copy_into(perm[..n], perm1[..n]);
+        copy_from(perm[..n], perm1[..n]);
 
         var flips_count: i32 = 0;
         var k = perm[0];

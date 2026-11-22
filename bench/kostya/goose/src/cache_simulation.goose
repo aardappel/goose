@@ -19,7 +19,7 @@ import helper;
 // A copy of text as a new string of the pool.
 fn new_string(strings: u8[>..]&, text: u8[:]) -> u8[:] {
     let s = strings.alloc_slice(text.len);
-    copy_into(s, text);
+    copy_from(s, text);
     return s;
 }
 

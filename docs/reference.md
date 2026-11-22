@@ -77,9 +77,9 @@ uses.
 [Appendix A](#appendix-a-keywords-and-operators). A few words are keywords
 only in one position and names everywhere else: `from` after a `return`
 value, `upto` after an unsigned type in a type, `inline` and `checkfree`
-before `fn`, `fields`, `variants` and `types` in a `const for` header, and
-`has_default` and `same` in a `const if` condition. `in` is a keyword
-throughout.
+before `fn`, `deprecated` before the other function qualifiers, `fields`,
+`variants` and `types` in a `const for` header, and `has_default` and
+`same` in a `const if` condition. `in` is a keyword throughout.
 
 **Integer literals** are decimal (`42`) or hexadecimal (`0xFF`). The whole
 unsigned 64-bit range is accepted: a value above `i64.max` is a `u64`
@@ -3309,9 +3309,19 @@ Spec §7.5.
 | `checkfree fn` | no bounds check may remain in it | [15](#checkfree-fn) |
 | `inline fn` | inlined at every call, whatever its size | below |
 | `simd fn` | built once per instruction-set level | below |
+| `deprecated fn` | a call or a use as a value warns | below |
 
-The qualifiers come in a fixed order: `export` or `extern` first, then
-`checkfree`, `simd`, `inline`, `recursive`, and `fn` or `thread_fn`.
+The qualifiers come in a fixed order: `deprecated` and its optional
+message first, then `export` or `extern`, then `checkfree`, `simd`,
+`inline`, `recursive`, and `fn` or `thread_fn`.
+
+`deprecated "use copy_from" fn copy_into(...)` keeps the old function and
+warns at a direct call and where the function is named as a value, except at
+use sites in fetched or builtin packages, whose authors are to change them.
+The warning repeats the string: `copy_into is deprecated: use copy_from`.
+Without the string it is `copy_into is deprecated`. A call through a
+value already warned about does not warn again. `deprecated` is a name
+everywhere it is not that qualifier. Spec §7.15.
 
 `inline` asks for the function to be inlined at every call; without it
 the compiler decides from the function's size and its number of calls.
@@ -4253,8 +4263,9 @@ varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`.
 
 **Contextual keywords**, which are ordinary names everywhere else: `from`
 (after a `return` value), `upto` (after an unsigned type in a type),
-`inline` and `checkfree` (before `fn`, `recursive`, `simd` or
-`thread_fn`), `fields`, `variants` and `types` (in a `const for` header),
+`inline` and `checkfree` (before `fn`, `recursive`, `simd` or `thread_fn`),
+`deprecated` (before the other function qualifiers, optionally followed by
+a string), `fields`, `variants` and `types` (in a `const for` header),
 `has_default` and `same` (in a `const if` condition).
 
 **Operators**, tightest first; the precedence is Rust's:

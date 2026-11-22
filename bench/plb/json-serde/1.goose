@@ -102,7 +102,7 @@ fn md5_hex(data: u8[:]) -> u8[>..] {
     // The rest, a 0x80, zeros up to 8 bytes short of a block, the length in bits.
     var tail: u8[128] = [0; 128];
     let rest = data.len - full;
-    copy_into(tail[..rest], data[full..]);
+    copy_from(tail[..rest], data[full..]);
     tail[rest] = 0x80;
     let end = if rest < 56 { 64 } else { 128 };
     let bits = (data.len as u64) * 8;

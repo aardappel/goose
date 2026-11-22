@@ -68,6 +68,13 @@ inline string BuiltinCallText(const BuiltinDef &b) {
 // A function's declaration as its header line, defaults elided.
 inline string FnHeader(const SFunction *sf) {
     string s;
+    if (sf->isdeprecated) {
+        s += "deprecated ";
+        if (!sf->deprecatemsg.empty()) {
+            EscapeString(s, sf->deprecatemsg, '"');
+            s += " ";
+        }
+    }
     if (sf->isexport) s += "export ";
     if (sf->isextern) s += "extern ";
     if (sf->checkfree && !sf->isnested) s += "checkfree ";

@@ -57,9 +57,12 @@ def snapshot(out, revision, migrate=False, construct_timer=False, alloc_copy=Fal
             data = text.encode()
         if alloc_copy and name.endswith("/cache_simulation.goose"):
             text = data.decode("utf-8")
-            old = "    let s = strings.alloc_slice(text.len);\n    copy_into(s, text);\n    return s;"
-            assert text.count(old) == 1
-            data = text.replace(old, "    return strings.alloc_copy(text);").encode("utf-8")
+            # Current sources call copy_from; revisions before the rename call copy_into.
+            old = ("    let s = strings.alloc_slice(text.len);\n    copy_from(s, text);\n    return s;",
+                   "    let s = strings.alloc_slice(text.len);\n    copy_into(s, text);\n    return s;")
+            hits = [s for s in old if text.count(s) == 1]
+            assert len(hits) == 1
+            data = text.replace(hits[0], "    return strings.alloc_copy(text);").encode("utf-8")
         dst = out / name
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(data)
