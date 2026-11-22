@@ -9,6 +9,6 @@
 #   or a git repository as a root file would write it, with its ref after @.
 #   Pin commits for reproducible builds; gfx, audio and ui share one revision.
 physics        physics  github.com/aardappel/goose_physics  805ad8698593e2f7fb05d7b3f62d8cf75b6e435f
-gfx            gfx      github.com/aardappel/goose_gfx      2ead63330aed4b2d2fc51eb907b2b56bc3170b8f
-audio          gfx      github.com/aardappel/goose_gfx      2ead63330aed4b2d2fc51eb907b2b56bc3170b8f
-ui             gfx      github.com/aardappel/goose_gfx      2ead63330aed4b2d2fc51eb907b2b56bc3170b8f
+gfx            gfx      github.com/aardappel/goose_gfx      v2
+audio          gfx      github.com/aardappel/goose_gfx      v2
+ui             gfx      github.com/aardappel/goose_gfx      v2
