@@ -3535,7 +3535,15 @@ function. It initializes the runtime and the globals and then runs the Goose
 start-up code; exported functions may be called from it. A second call does
 nothing. Initialization is idempotent on the initializing thread; exported
 calls and mutable Goose globals are not thread-safe and must remain on that
-thread. `--header` requires generated C output and at least one export, and
+thread. Only the C host calls an export through its C symbol, between its
+calls into Goose. C that Goose code called (an `extern fn`, from `main`, a
+worker or a global's initializer) calling an export before it returns is a
+runtime error, since the export would run over the data stacks of the Goose
+code that is still running. In a program that starts threads, a call on a
+thread other than the initializing one is a runtime error too. An `extern
+fn` whose C symbol is one of the program's exports is a compile error: Goose
+code calls the export as the Goose function it is. `--header` requires
+generated C output and at least one export, and
 writes declarations and the required packed C type definitions for the
 exported API.
 

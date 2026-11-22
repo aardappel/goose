@@ -1,0 +1,2 @@
+// The sidecar of export_callback.goose: C that calls the program's export.
+c_headers = ["export_callback.h"];

@@ -6624,6 +6624,23 @@ workers running, which the process ends. Where programs share a runtime
 object, `gs_rt_start` refuses to start one while another's regions are
 live, rather than forget them.
 
+**Entering through an export.** An export's wrapper calls its function at
+`gs_sp` 0, which reads the tops of the thread's stacks from memory. Goose
+code that is running may still hold those tops in locals (§6.10), so the
+export is only entered while no Goose code runs on the thread. A per-thread
+`gs_entry_state` says where the thread stands: 0 on a thread other than the
+one the program started on (and before `goose_init`, or after
+`goose_exit`), 1 there while no Goose code runs, and 2 while it does.
+`gs_program_init` sets 2 before the globals' initializers run, `goose_init`
+sets 1 once `main` returns, `goose_exit` sets 0, and a worker's thunk sets 2
+on its own thread. The wrapper requires 1, holds 2 around the call, and
+otherwise reports why through `gs_export_refused`, which is all an export
+call costs beyond the call itself. Where the program uses no threads,
+`GS_TLS` is empty and the state is one for the process, so a call from
+another thread is not told apart. An `extern fn` that names an export's own
+C symbol, which would make the same call from Goose code, is refused by the
+checker (`CheckExport`).
+
 **Native stacks.** Recursion consumes only the native call stack (spec
 §7.8), whose size is set when its thread starts. A worker reserves
 `GS_THREAD_STACK` (8 MB) where the system's default is less, as on macOS

@@ -1224,7 +1224,8 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
     auto name = thunks[sp];
     auto &ki = sinfo[sp];
     string b;
-    Append(b, "static void ", name, "(uint8_t *p) {\n    gs_stack_block(", stacks, ");\n");
+    Append(b, "static void ", name, "(uint8_t *p) {\n    gs_stack_block(", stacks, ");\n",
+           "    gs_entry_state = 2;\n");
     vector<string> args;
     int regions = 0;    // The dedicated stacks the thunk reserves (thunkregions).
     for (size_t i = 0; i < sp->argtypes.size(); i++) {

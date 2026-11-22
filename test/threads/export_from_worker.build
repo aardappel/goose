@@ -1,0 +1,2 @@
+// The sidecar of export_from_worker.goose: C that calls the program's export.
+c_headers = ["export_from_worker.h"];

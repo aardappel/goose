@@ -4213,7 +4213,11 @@ declaring `goose_init(argc, argv)`, which the host calls once before
 anything else. That function sets up the runtime and the globals and runs
 the Goose `main`, if there is one, so `main` is where a library keeps its
 start-up code. Exported functions are not thread-safe: call them from the
-thread that called `goose_init`. `goose_exit()` ends the program and
+thread that called `goose_init`. Only the host calls them, between its
+calls into Goose: C that Goose code called calling an export back before
+it returns (a toolkit's handler, a `qsort` comparator) is a runtime error.
+Where Goose and C must interleave, have the C return to Goose rather than
+call it back. `goose_exit()` ends the program and
 releases what the start set up, so that `goose_init` can start it, or
 another build of it, again in the same process; it is a runtime error
 while a worker of the program still runs. `goose build --shared --header

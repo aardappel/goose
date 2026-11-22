@@ -1,0 +1,1 @@
+goose runtime error: goose_init must be called before exported functions

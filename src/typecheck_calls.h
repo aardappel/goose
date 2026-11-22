@@ -2801,9 +2801,17 @@ inline void TypeCheck::CheckExport(SFunction *sf) {
     // The symbol is emitted as written, so a C host can ask for a name; a
     // keyword is refused here rather than left to a C compiler's error.
     if (IsCKeyword(sf->cname)) fail("C symbol cannot be a C keyword");
-    for (auto other : ast.functions)
+    for (auto other : ast.functions) {
         if (other != sf && other->isexport && other->cname == sf->cname)
             fail(cat("C symbol ", sf->cname, " is exported more than once"));
+        // The wrapper runs the export on the stacks of whatever Goose code is
+        // running, whose tops that code may still hold in locals; only a C
+        // host may call it, between its calls into Goose (§7.11).
+        if (other->isextern && other->dylib.empty() && other->cname == sf->cname)
+            Error(other->line, cat("extern fn ", other->name, " is the C symbol of export fn ",
+                                   sf->name, ": call ", sf->name,
+                                   " directly; only a C host may call an export (§7.11)"));
+    }
     for (auto &p : sf->params) {
         if (!p.type) fail(cat("parameter ", p.name, " needs a type"));
         if (p.defaultval) fail(cat("parameter ", p.name, " cannot have a default"));
