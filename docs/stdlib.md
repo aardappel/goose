@@ -1805,17 +1805,17 @@ fn time() -> f64            fn delta_time() -> f64            fn frame_count() -
 ```
 
 Flags for `open`: `WINDOW_RESIZABLE`, `WINDOW_HIDDEN`, `WINDOW_FULLSCREEN`,
-`NO_VSYNC`, `DEBUG` (validation layers where installed; on in a debug build
-of the layer). With `GOOSE_GFX_HEADLESS=1` in the environment, `open` opens
-no window; the test runners use this. The screen is an RGBA8 texture the
-size of the window in pixels. Its depth texture is made on the first
-`screen_depth()`, which `begin_screen` calls; a 2D program that needs no
-depth draws with `begin_pass(screen(), Texture { 0 }, clear)`. A frame draws
-into the screen, and `frame()` shows it. A window has the width and height
-that `open` gives, in the display's own coordinates, and it has every pixel
-the display has in that area. On a high-density display, that is more pixels
-than its width and height; `screen_size()` counts these pixels, and the
-mouse position is reported in them.
+`NO_VSYNC`, `DEBUG` (validation layers where installed; on in a debug build of
+the layer), `WAIT_WHEN_IDLE` (below). With `GOOSE_GFX_HEADLESS=1` in the
+environment, `open` opens no window; the test runners use this. The screen is
+an RGBA8 texture the size of the window in pixels. Its depth texture is made
+on the first `screen_depth()`, which `begin_screen` calls; a 2D program that
+needs no depth draws with `begin_pass(screen(), Texture { 0 }, clear)`. A
+frame draws into the screen, and `frame()` shows it. A window has the width
+and height that `open` gives, in the display's own coordinates, and it has
+every pixel the display has in that area. On a high-density display, that is
+more pixels than its width and height; `screen_size()` counts these pixels,
+and the mouse position is reported in them.
 
 `pixel_density()` is the screen's pixels per unit of those coordinates: 2 on
 most high-density displays, 1 elsewhere, including Windows at any scale
@@ -1826,6 +1826,13 @@ with no window open, and they change as the window moves between displays, so
 a program that follows them reads them each frame. They only report: gfx and
 ui apply neither, and how big to draw is the program's choice. For a ui the
 size of the system's own, pass `display_scale()` to `ui::set_scale`.
+
+With `WAIT_WHEN_IDLE`, `frame()` shows the screen only when something used
+the GPU since the last call or the window needs it redrawn. After a frame that
+drew nothing, the next `frame()` waits for an event, up to a second, unless
+`quit()` was called; `delta_time()` leaves the wait out, so a timer that runs
+while idle reads `time()`. A resize leaves the screen black, so the program
+redraws when `screen_size()` changes.
 
 `set_fullscreen` makes the window borderless fullscreen at the desktop's
 resolution, or a window again. It returns false if the window can't change,
