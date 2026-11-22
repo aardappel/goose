@@ -1844,10 +1844,11 @@ draw into: a `CAMetalLayer` on Apple's systems, the `HWND` on Windows, the
 `ANativeWindow` on Android (a new one each time the app comes back to the
 foreground, 0 in the background), and on Linux the `wl_surface` or X11 window,
 with `native_display()` its `wl_display` or `Display*` and `native_kind()`
-`NATIVE_WAYLAND` or `NATIVE_X11`; 0 headless. With `WAIT_WHEN_IDLE` as well,
-the renderer calls `presented(shown)` each frame, and a frame that showed
-nothing makes the next `frame()` wait; `needs_present()` is true while the
-window needs its image again. `presented()` without `WINDOW_ONLY` is a misuse.
+`NATIVE_WAYLAND` or `NATIVE_X11`; 0 headless. Another video driver or
+platform fails the `open`. With `WAIT_WHEN_IDLE` as well, the renderer calls
+`presented(shown)` each frame, and a frame that showed nothing makes the next
+`frame()` wait; `needs_present()` is true while the window needs its image
+again. `presented()` without `WINDOW_ONLY` is a misuse.
 
 `set_fullscreen` makes the window borderless fullscreen at the desktop's
 resolution, or a window again. It returns false if the window can't change,
