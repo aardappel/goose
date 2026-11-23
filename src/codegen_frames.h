@@ -378,6 +378,13 @@ inline void CodeGen::CollectSpecs() {
             if (n->exprtype && n->exprtype->kind != TY_VOID && n->exprtype->kind != TY_FN &&
                 n->exprtype->kind != TY_GENERIC && NeedsStack(n->exprtype))
                 si.needssp = true;
+            // A declared variable is held on a data stack (BindLocal) even
+            // when no expression names it.
+            if (auto vd = Is<VarDecl>(n))
+                for (auto d : vd->defs)
+                    if (d->type && d->type->kind != TY_VOID && d->type->kind != TY_FN &&
+                        d->type->kind != TY_GENERIC)
+                        si.needssp |= NeedsStack(d->type);
             // A slice literal still constructs a fixed array to point at.
             if (auto al = Is<ArrayLit>(n); al && al->exprtype->kind == TY_SLICE &&
                 IsFix(al->exprtype->sub)) {
