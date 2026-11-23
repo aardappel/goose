@@ -54,7 +54,7 @@ fn spare(x) { x }
 // lsp: hover 35:22 "Shape.Square"
 // lsp: hover 33:11 "let sum: i64"
 // lsp: hover 36:19 "fn helper::twice(x: i64) -> i64"
-// lsp: hover 38:7 "builtin .push"
+// lsp: hover 38:7 "builtin fn push(a, v: T) -> T&"
 // lsp: hover 39:13 "builtin .len: i64"
 // lsp: definition 31:15 -> 15:4
 // lsp: definition 31:21 -> 10:5
