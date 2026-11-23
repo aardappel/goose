@@ -790,7 +790,14 @@ inline Dst CodeGen::DeclStackLocal(VarDef *d, bool forlocal) {
     }
     if (IsFrameObj(t)) {
         L(CT(t), " ", name, ";");
-        if (own) SaveBase(forlocal, stk, cat(FoTailHdr(t, name), ".base"));
+        if (own) {
+            // The watermark is set before the literal builds the fixed fields
+            // in front of the tail: one of them can leave the function
+            // (`return ... from`), whose exit restores the stack from it.
+            auto base = cat(FoTailHdr(t, name), ".base");
+            L(base, " = ", Top(stk), ";");
+            SaveBase(forlocal, stk, base);
+        }
         return Dst { DK_STACK, stk, t, name };
     }
     L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");

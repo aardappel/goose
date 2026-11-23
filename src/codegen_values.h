@@ -892,8 +892,11 @@ inline string CodeGen::RzTemp(TypeExpr *t, string &stk) {
     stk = AllocStk(false);
     auto h = T();
     if (IsFrameObj(t)) {
+        // Set before the fixed fields are built, as DeclStackLocal does.
+        auto base = cat(FoTailHdr(t, h), ".base");
         L(CT(t), " ", h, ";");
-        SaveBase(false, stk, cat(FoTailHdr(t, h), ".base"));
+        L(base, " = ", Top(stk), ";");
+        SaveBase(false, stk, base);
     } else {
         L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
         SaveBase(false, stk, cat(h, ".base"));
