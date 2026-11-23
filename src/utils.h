@@ -54,6 +54,31 @@ template<typename... Ts> string cat(const Ts &...args) {
     return s;
 }
 
+// The UTF-8 sequence at the start of text, where its bytes encode a Unicode
+// scalar value; empty where the first byte is malformed or incomplete.
+inline string_view Utf8CharAt(string_view text) {
+    if (text.empty()) return {};
+    auto c = (uint8_t)text[0];
+    size_t len = c < 0x80 ? 1 : c >= 0xC2 && c < 0xE0 ? 2
+               : c >= 0xE0 && c < 0xF0 ? 3 : c >= 0xF0 && c < 0xF5 ? 4 : 0;
+    if (!len || text.size() < len) return {};
+    for (size_t i = 1; i < len; i++)
+        if (((uint8_t)text[i] & 0xC0) != 0x80) return {};
+    auto second = len > 1 ? (uint8_t)text[1] : 0;
+    if ((c == 0xE0 && second < 0xA0) || (c == 0xED && second >= 0xA0) ||
+        (c == 0xF0 && second < 0x90) || (c == 0xF4 && second >= 0x90)) return {};
+    return text.substr(0, len);
+}
+
+// Source buffers are zero-terminated. Include that terminator in the short
+// bounded view when it is reached, so a truncated sequence is rejected
+// without reading beyond it and an ASCII NUL retains its old result.
+inline string_view Utf8CharAt(const char *p) {
+    size_t size = 1;
+    while (size < 4 && p[size - 1]) size++;
+    return Utf8CharAt(string_view(p, size));
+}
+
 // Where a diagnostic is: a file of the program (an index in Ast::sources), the
 // 1-based line and byte column it starts at, and where it ends, one past its
 // last byte. A column of 0 is a line alone; an end on line 0 is unknown.

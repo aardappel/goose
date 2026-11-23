@@ -71,17 +71,6 @@ inline const char *TName(TType t) {
 inline bool IsIdentStart(char c) { return isalpha((uint8_t)c) || c == '_'; }
 inline bool IsIdentCont(char c)  { return isalnum((uint8_t)c) || c == '_'; }
 
-// The UTF-8 sequence at p, where its bytes make one; empty for a byte that
-// is no character on its own, which a message must not quote: a diagnostic
-// is text, and the server sends it as JSON, which is UTF-8 throughout.
-inline string_view Utf8CharAt(const char *p) {
-    auto c = (uint8_t)*p;
-    size_t len = c < 0x80 ? 1 : c >= 0xC2 && c < 0xE0 ? 2 : c >= 0xE0 && c < 0xF0 ? 3 : c >= 0xF0 && c < 0xF5 ? 4 : 0;
-    for (size_t i = 1; i < len; i++)
-        if (((uint8_t)p[i] & 0xC0) != 0x80) return {};
-    return string_view(p, len);
-}
-
 // What a message calls the character at p: quoted, with its code point
 // where it is not ASCII, or the byte's value where it is no character.
 inline string QuotedCharAt(const char *p) {

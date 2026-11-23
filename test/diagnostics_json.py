@@ -11,6 +11,7 @@ function's kept checks are several errors at once, and an error with no
 place in the program is reported as its text alone."""
 import json
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -35,10 +36,20 @@ def check_diagnostics_json(exe, base):
             diagnostic, where it says it is, and that stdout holds the JSON
             alone."""
             if source is not None:
-                tc.write_text(root / name, source)
+                if isinstance(source, bytes):
+                    (root / name).write_bytes(source)
+                else:
+                    tc.write_text(root / name, source)
             code, out, err = tc.run_capture([exe, "check", "--stats", name], cwd=root)
-            jcode, jout, jerr = tc.run_capture([exe, "check", "--stats", "--diagnostics", "json", name],
-                                               cwd=root)
+            jr = subprocess.run([exe, "check", "--stats", "--diagnostics", "json", name],
+                                cwd=root, capture_output=True)
+            try:
+                jout = jr.stdout.decode("utf-8", errors="strict").replace("\r\n", "\n")
+                jerr = jr.stderr.decode("utf-8", errors="strict").replace("\r\n", "\n")
+            except UnicodeDecodeError as e:
+                require(False, f"{name}: output is not UTF-8 ({e})",
+                        (jr.stdout + jr.stderr).hex(" "))
+            jcode = jr.returncode
             require(code == jcode, f"{name}: exit code {code} in text mode, {jcode} as JSON",
                     err + jerr)
             try:
@@ -71,6 +82,38 @@ def check_diagnostics_json(exe, base):
                     require(r["message"] in d["text"], f"{name}: a related line not in the text",
                             jout)
             return diags, text
+
+        # Malformed scalar sequences become one replacement per byte in the
+        # JSON, while the lexer names their first byte rather than quoting the
+        # invalid sequence. These are the constrained second-byte boundaries
+        # after E0, ED, F0 and F4; the surrogate is the issue's original case.
+        malformed = [
+            ("overlong-3.goose", b"\xe0\x80\x80", 224),
+            ("surrogate.goose", b"\xed\xa0\x80", 237),
+            ("overlong-4.goose", b"\xf0\x80\x80\x80", 240),
+            ("past-unicode.goose", b"\xf4\x90\x80\x80", 244),
+        ]
+        for name, source, first in malformed:
+            diags, err = both(name, source)
+            require(len(diags) == 1 and
+                    diags[0]["message"] == f"illegal character: byte {first}" and
+                    diags[0]["text"].count("\ufffd") == len(source),
+                    f"{name}: malformed UTF-8 is replaced byte by byte", err)
+
+        # The lowest valid scalar after each of those boundaries remains
+        # UTF-8 in both the quoted message and the diagnostic's source text.
+        valid = [
+            ("valid-e0.goose", "\u0800", "U+0800"),
+            ("valid-ed.goose", "\ud7ff", "U+D7FF"),
+            ("valid-f0.goose", "\U00010000", "U+10000"),
+            ("valid-f4.goose", "\U0010ffff", "U+10FFFF"),
+        ]
+        for name, source, codepoint in valid:
+            diags, err = both(name, source)
+            require(len(diags) == 1 and
+                    diags[0]["message"] == f"illegal character: '{source}' ({codepoint})" and
+                    source in diags[0]["text"],
+                    f"{name}: well-formed UTF-8 is preserved", err)
 
         # A lexer error: at the caret's column, one byte wide.
         lexer = 'fn main() {\n    let s = "bad\\q";\n}\n'

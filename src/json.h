@@ -8,11 +8,24 @@
 
 namespace goose {
 
-// Appends v as a JSON string literal. The text is UTF-8 and goes through as
-// it is; the characters JSON cannot hold in a string are escaped.
+// Appends v as a JSON string literal. Well-formed UTF-8 goes through as it is,
+// each malformed byte becomes a replacement character, and the characters
+// JSON cannot hold in a string are escaped.
 inline void JsonQuote(string &s, string_view v) {
     s += '"';
-    for (auto c : v) {
+    for (size_t pos = 0; pos < v.size();) {
+        auto seq = Utf8CharAt(v.substr(pos));
+        if (seq.empty()) {
+            s += "\\ufffd";
+            pos++;
+            continue;
+        }
+        if (seq.size() > 1) {
+            s += seq;
+            pos += seq.size();
+            continue;
+        }
+        auto c = seq[0];
         switch (c) {
             case '"':  s += "\\\""; break;
             case '\\': s += "\\\\"; break;
@@ -30,6 +43,7 @@ inline void JsonQuote(string &s, string_view v) {
                     s += c;
                 }
         }
+        pos++;
     }
     s += '"';
 }
