@@ -428,7 +428,7 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, who
 fn parse_uint(s: u8[:], base: i64 = 10) -> u64, bool       // optional '+', whole string; false on '-' or outside u64 or base 2..36
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent, or inf/-inf/nan; correctly rounded
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
-fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
+fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed or not shortest
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
 fn trim(s: u8[:]) -> u8[:]                                 // ASCII whitespace; a sub-slice
 fn trim_start(s: u8[:]) -> u8[:]                           fn trim_end(s: u8[:]) -> u8[:]

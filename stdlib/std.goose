@@ -1193,8 +1193,10 @@ fn format_uleb(out: u8[>..]&, v: i64) {
 }
 
 // The ULEB128 at the front of s: its value and its byte count, or 0, 0 when
-// the bytes do not hold one (unterminated, or past the 64-bit range). Bit 63
-// comes back as the sign, as format_uleb wrote it (`as!` again).
+// the bytes do not hold one (unterminated, past the 64-bit range, or longer
+// than the shortest encoding, which is the only one §3.6 and from_bytes
+// accept). Bit 63 comes back as the sign, as format_uleb wrote it (`as!`
+// again).
 fn parse_uleb(s: u8[:]) -> i64, i64 {
     var v = 0 as u64;
     var shift = 0;
@@ -1204,7 +1206,10 @@ fn parse_uleb(s: u8[:]) -> i64, i64 {
         if shift > 63 || (shift == 63 && (b & 0x7e) != 0) { return 0, 0; }
         v |= (b & 0x7f) as u64 << shift;
         i++;
-        if b < 0x80 { return v as! i64, i; }
+        if b < 0x80 {
+            if b == 0 && shift > 0 { return 0, 0; }
+            return v as! i64, i;
+        }
         shift += 7;
     }
     return 0, 0;
