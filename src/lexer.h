@@ -105,6 +105,9 @@ struct Lexer {
     int line = 1;
     string_view filename;
     const char *source = nullptr;    // The whole text, for the line an error echoes.
+    // One past the text's last byte where the caller knows it: a NUL before
+    // it is a byte of the text rather than its end.
+    const char *end = nullptr;
     int fileidx = 0;                 // The file's index in Ast::sources, for diagnostics.
 
     // One past the previous token: where a construct that ended with it
@@ -136,8 +139,9 @@ struct Lexer {
     // (DepthBefore).
     int curlies = 0;
 
-    Lexer(string_view _filename, const char *_source, int _fileidx = 0)
-        : p(_source), filename(_filename), source(_source), fileidx(_fileidx) {
+    Lexer(string_view _filename, const char *_source, int _fileidx = 0,
+          const char *_end = nullptr)
+        : p(_source), filename(_filename), source(_source), end(_end), fileidx(_fileidx) {
         linestart = p;
         Next();
     }
@@ -250,7 +254,13 @@ struct Lexer {
         };
         auto c = *p++;
         switch (c) {
-            case 0:   p--; Set(T_EOF); return;
+            case 0:
+                // The scan stays past the NUL, where recovery goes on from
+                // (SkipBrokenToken).
+                if (end && p <= end) Error("NUL character in source");
+                p--;
+                Set(T_EOF);
+                return;
 
             case '(': Set(T_LPAREN);   return;
             case ')': Set(T_RPAREN);   return;

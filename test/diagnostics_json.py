@@ -102,6 +102,13 @@ def check_diagnostics_json(exe, base):
         require([d["line"] for d in diags] == [4, 6, 9, 10, 11, 13],
                 "the lines of the errors after a rejected \"\"\" string", err)
 
+        # A NUL byte is an error at it rather than the end of the text, and
+        # the parse goes on past it.
+        diags, err = both("nul.goose", "fn main() {}\0\nfn f() { let x: i64 = ; }\n")
+        require([d["line"] for d in diags] == [1, 2] and
+                diags[0]["message"] == "NUL character in source" and diags[0]["col"] == 13,
+                "a NUL byte", err + "\n" + json.dumps(diags))
+
         # A typecheck error, over the node it is at, reached through a call:
         # the chain's entries are at the calls that made the instantiations.
         chain = ("fn get<T>(a: T) -> i64 { a.nope }\n"

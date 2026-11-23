@@ -106,8 +106,9 @@ struct Parser {
     // the end once more.
     bool eoferror = false;
 
-    Parser(Ast &_ast, string_view filename, const char *source, int _fileidx)
-        : ast(_ast), lex(filename, source, _fileidx), fileidx(_fileidx) {}
+    Parser(Ast &_ast, string_view filename, const string &source, int _fileidx)
+        : ast(_ast), lex(filename, source.c_str(), _fileidx, source.c_str() + source.size()),
+          fileidx(_fileidx) {}
 
     [[noreturn]] void Error(const string &msg) { lex.Error(msg); }
 
