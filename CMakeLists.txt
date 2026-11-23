@@ -76,7 +76,6 @@ add_executable(goose
     src/runtime/runtime_threads.h
     src/runtime/runtime_ext.h
     src/runtime/runtime_os.h
-    src/runtime/runtime_net.h
     src/runtime/goose.h
     src/gfx.h
 )
@@ -107,10 +106,6 @@ target_include_directories(goose PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version")
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
-# The sockets the JIT hosts (runtime_net.h).
-if(WIN32)
-    target_link_libraries(goose PRIVATE ws2_32)
-endif()
 # The library the process runner (process.cpp) is built on.
 target_include_directories(goose PRIVATE third_party/subprocess)
 

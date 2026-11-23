@@ -287,16 +287,13 @@ class CC:
             # object file name for more than one; a directory it takes.
             obj = f"{out.parent}{os.sep}" if len(sources) > 1 or libs or runtime else out.with_suffix(".obj")
             argv += [f"/Fe:{out}", f"/Fo:{obj}"]
-            argv += ["/link", "ws2_32.lib"]
         else:
             argv += ["-o", str(out)]
             # The runtime uses threads and libm, and dlopen for dynamic
             # externs, in libdl on Linux before glibc 2.34 (Builder::SystemLibs);
-            # on Windows those live in the CRT the driver links anyway, and
-            # asking for them by name fails -- winsock does not.
-            if IS_WINDOWS:
-                argv += ["-lws2_32"]
-            else:
+            # on Windows all live in the CRT the driver links anyway, and
+            # asking for them by name fails.
+            if not IS_WINDOWS:
                 argv += ["-pthread", "-lm"] + (["-ldl"] if sys.platform.startswith("linux") else [])
         r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
         output = (r.stdout or "") + (r.stderr or "")

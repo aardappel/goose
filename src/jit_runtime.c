@@ -20,7 +20,6 @@ static void gs_jit_exit(int code);
 #include "runtime/runtime_threads.h"
 #include "runtime/runtime_ext.h"
 #include "runtime/runtime_os.h"
-#include "runtime/runtime_net.h"
 
 static void gs_jit_exit(int code) {
     gs_jit_status = code;

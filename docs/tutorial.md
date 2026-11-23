@@ -1668,7 +1668,7 @@ imposes it.
 * **v1 omissions** you will notice: no move for resizables, no nested owning
   root structs or arrays of them, no labeled break, no namespace privacy
   ([spec §12](goose_spec.md#12-builtins-the-standard-library-and-what-v1-leaves-out)),
-  no subprocesses in the library yet ([`os`](stdlib.md#os)).
+  no subprocesses or networking in the library yet ([`os`](stdlib.md#os)).
 
 An ordinary struct still has at most one resizable tail. A
 [`root struct`](reference.md#root-structs) bundles state with independently
@@ -1747,10 +1747,9 @@ called `goose_init`. The signatures that may cross are the ones from
   `01_tour` and `02_memory`, then jump to whatever looks like your problem.
   `13_linked_list`, `14_bst` and `18_json` are the ones that show the data
   structures in detail; `26_file_tree` uses both pool kinds together.
-* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Twenty-one modules:
-  `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `mat`, `quat`, `math`,
-  `os`, `net`, `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`,
-  `gfx`, `physics`, `ui`, and `exception`, with Goose interfaces
+* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Fourteen modules:
+  `std`, `dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`,
+  `json`, `regex`, `audio`, `gfx`, `physics`, and `ui`, with Goose interfaces
   under `stdlib/`.
 * **[`docs/goose_spec.md`](goose_spec.md)** — the detailed language rules,
   including why a program may fail to compile. Every "spec §" link in this

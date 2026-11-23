@@ -321,8 +321,7 @@ cc -O2 tour.c goose_runtime.o -o tour -lm -pthread
 ```
 
 On Windows the last two are `cl /O2 /c goose_runtime.c` and
-`cl /O2 tour.c goose_runtime.obj /link ws2_32.lib`. For `--standalone` output
-use `cl /O2 tour.c /link ws2_32.lib`. On Linux, add `-ldl` before glibc 2.34.
+`cl /O2 tour.c goose_runtime.obj`. On Linux, add `-ldl` before glibc 2.34.
 
 `-o out.c` writes the program's C and runs nothing; `--jit` also runs the
 program in-process as `goose run` would. The C holds the program and the part

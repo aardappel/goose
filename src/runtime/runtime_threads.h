@@ -2,7 +2,8 @@
    them. Follows runtime_impl.h. A standalone program's unit compiles only
    hardware_threads() unless the program uses threads or queues (the compiler
    defines GS_NEED_THREADS 1 before the runtime paste); the runtime object
-   compiles it all. The mutex primitives are also used by the socket runtime. */
+   compiles it all. This is the one part of the runtime allowed to allocate
+   internally. */
 
 #include <time.h>
 
@@ -73,6 +74,8 @@ GS_API void gs_stack_stats(int64_t stacks) {
             cap);
 }
 
+#if GS_NEED_THREADS
+
 #ifdef _WIN32
 
 typedef SRWLOCK gs_mutex;
@@ -104,8 +107,6 @@ typedef pthread_cond_t gs_cond;
 #define gs_cond_broadcast(c) pthread_cond_broadcast(c)
 
 #endif
-
-#if GS_NEED_THREADS
 
 /* ---------------------------------------------------------------------------
    Workers. Each runs its thread program on a fresh stack block; flat argument

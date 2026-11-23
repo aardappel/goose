@@ -1,0 +1,5 @@
+// The optional TCP package's native part.
+c_sources = ["src/tcp.c"];
+c_libs_windows = ["ws2_32"];
+c_libs_linux = ["pthread"];
+exclude = ["test"];

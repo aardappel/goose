@@ -381,14 +381,3 @@ GS_API int64_t gs_slice_pool_regrow(gs_rref nodes, void *tree, int64_t len, int6
    `items`, elements of `elem` bytes; 0 means an OS request failed. */
 GS_API uint8_t gs_slice_pool_trim(gs_rref nodes, void *tree, sl_u8 items, int64_t elem,
                                   const gs_loc *at);
-/* net's blocking TCP (stdlib/net.goose), defined in runtime_net.h. Socket
-   handles are opaque. Calls fail with -1 or false. recv appends one read's
-   bytes to the builder: their count, 0 at the peer's orderly close, -1 on
-   error. */
-GS_API int64_t gs_net_connect(sl_u8 host, int64_t port);
-GS_API int64_t gs_net_listen(sl_u8 host, int64_t port);
-GS_API int64_t gs_net_accept(int64_t s);
-GS_API uint8_t gs_net_send(int64_t s, sl_u8 data);
-GS_API int64_t gs_net_recv(int64_t s, gs_rref out);
-GS_API uint8_t gs_net_close(int64_t s);
-GS_API int64_t gs_net_local_port(int64_t s);

@@ -13,7 +13,6 @@
 - [quat](#quat)
 - [math](#math)
 - [os](#os)
-- [net](#net)
 - [ffi](#ffi)
 - [binary](#binary)
 - [base64](#base64)
@@ -27,8 +26,8 @@
 
 </details>
 
-The standard library has twenty-one modules under `stdlib/`: `std`,
-`dictionary`, `slot_pool`, `slice_pool`, `vec`, `mat`, `quat`, `math`, `os`, `net`, `ffi`, `binary`,
+The standard library has twenty modules under `stdlib/`: `std`,
+`dictionary`, `slot_pool`, `slice_pool`, `vec`, `mat`, `quat`, `math`, `os`, `ffi`, `binary`,
 `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, `ui`, and `exception`.
 Import each module by name,
 for example `import std;`. The compiler locates the library in its source
@@ -37,7 +36,6 @@ Everything is written in Goose except the following parts, all reached
 through `extern fn` (spec §7.10):
 
 * the C behind `os` (`src/runtime/runtime_os.h`);
-* the C behind `net` (`src/runtime/runtime_net.h`);
 * the byte search behind `std`'s `find_any` and `find_pair`
   (`src/runtime/runtime_impl.h`);
 * `std`'s `popcount`, `clz` and `ctz`, and `ffi`'s two copies
@@ -110,7 +108,7 @@ The library uses these conventions:
   but its temporary array cannot hold copies of self-relative links (spec
   §3.9).
 * The `std`, `dictionary`, `slot_pool`, `slice_pool`, `vec`, `mat`, `quat`, `math`, and `os` names are global;
-  `net`, `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
+  `ffi`, `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`,
   `physics`, `ui` and `exception` use their own namespaces, and so do the
   helpers `std` and `json` read and write float text with, in `float_text`,
   and `std`'s ASCII character classes, in `ascii`.
@@ -1266,77 +1264,8 @@ it is not guaranteed to be writable. User-supplied paths, outputs and saves
 can continue to use ordinary file operations and their chosen locations.
 
 `exit(code)` and `abort(msg)` are builtins, so that the checker knows they
-diverge. Subprocesses are not in v1; they arrive as `extern fn`s when a
-program needs them. TCP sockets are [`net`](#net); UDP and nonblocking I/O
-arrive one extern at a time.
-
-## net
-
-A small interface to `src/runtime/runtime_net.h`: blocking TCP, enough to
-write clients and servers.
-
-```goose
-fn connect(host: const u8[:], port: i64) -> i64, bool   // a connected socket
-fn listen(port: i64) -> i64, bool                       // wildcard any; port 0: ephemeral
-fn listen(host: const u8[:], port: i64) -> i64, bool    // the resolved address
-fn accept(s: i64) -> i64, bool                          // one pending connection
-fn send(s: i64, data: const u8[:]) -> bool              // all the bytes or false
-fn recv(s: i64, out: u8[>..]&) -> i64                   // n bytes appended; 0 at end; -1 on error
-fn close(s: i64) -> bool
-fn local_port(s: i64) -> i64, bool                      // the port the socket is bound to
-```
-
-A socket handle is an opaque `i64` that can cross thread queues (spec §11.2).
-A worker can connect and hand the socket back, or take one to read. A failed
-socket creation returns `(0, false)`. Once closed, a handle stays invalid even
-if the OS reuses the underlying socket number. `close` returns false for an
-invalid handle or while another call is using the socket. A busy socket stays
-open and can be closed after that call finishes. Network I/O blocks without a
-timeout. A contained worker that aborts leaves its sockets open (spec §11.2).
-
-`connect` resolves `host` -- a DNS name or a numeric IPv4/IPv6 literal --
-and tries each address until one connects. The port is 1..65535; an empty
-host, one holding a NUL or over 255 bytes is refused. `listen` binds and
-listens: `listen(port)` takes the wildcard address, IPv6 dual-stack where
-the OS allows it, else IPv4; `listen(host, port)` binds the resolved
-address, its port 0..65535. Port 0 picks an ephemeral port, which
-`local_port` reports -- the way to use it. A wildcard bind can raise an OS
-firewall prompt; a loopback bind (`"127.0.0.1"`) does not.
-
-`send` writes all the bytes or returns false; on false some may already be
-sent -- there is no rollback, unlike `write_file_atomic`. An empty slice on a
-valid handle returns true without a send syscall. A send to a closed peer
-fails without raising SIGPIPE. `recv` appends one read's bytes, at most
-65536, to the builder the caller passes: their count, `0` at the peer's
-orderly close, `-1` on error; neither appends anything. Read in a loop
-until one of them:
-
-```goose
-var msg: u8[>..] = [];
-loop {
-    let n = net::recv(s, msg);
-    if n <= 0 { break; }
-}
-```
-
-A server accepts in a loop of its own, one socket per peer; an echo of
-what arrives is `send` over the same builder `recv` filled:
-
-```goose
-let l, ok = net::listen("127.0.0.1", 8080);
-if ok {
-    loop {
-        let c, got = net::accept(l);
-        if !got { break; }
-        var buf: u8[>..] = [];
-        if net::recv(c, buf) > 0 { net::send(c, buf); }
-        net::close(c);
-    }
-}
-```
-
-TLS, HTTP and the protocols over TCP are packages' work, not the
-stdlib's; UDP and nonblocking I/O grow `net` one extern at a time.
+diverge. Subprocesses and networking are not in v1; they arrive as
+`extern fn`s when a program needs them.
 
 ## ffi
 

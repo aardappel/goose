@@ -1009,13 +1009,13 @@ Each of these is a library, and section 5 shows the first of them:
 
 ## 5. A server on top
 
-A sketch of the layering, on the `net` module: its blocking TCP exists today
-(`stdlib/net.goose`); the nonblocking sockets and readiness poll this needs
-are section 8's networking track. Names beyond today's calls are placeholders.
+A sketch of the layering, with a hypothetical `net` module of `extern fn`
+sockets (there is none yet; section 8 lists it as a prerequisite track).
+Names are placeholders.
 
 ```goose
 import std;
-import net;        // nonblocking sockets and a readiness poll, section 8's track
+import net;        // hypothetical: nonblocking sockets and a readiness poll as externs
 
 // Connections live in a pool. The buffer is a limited array inside the element,
 // so the kernel can write into it while the coroutine is suspended (§5.3).
@@ -1358,10 +1358,10 @@ the relaxation of 6.4, by §3.9's values with self-relative references.
    debug, a wrong answer aborting at its resume with both locations, and a
    `match` over a narrowed yield that needs no `_`.
 6. **Networking track** (independent of 1 to 5, and a prerequisite for the
-   server): blocking TCP sockets are in `net` (`stdlib/net.goose`);
-   nonblocking I/O and a readiness poll grow it as `extern fn`s over the
-   runtime, portable (`poll`) first, `epoll`/`kqueue`/IOCP next, `io_uring`
-   when the completion-shaped protocol of 5 is wanted.
+   server): sockets, nonblocking I/O and a readiness poll in `os` or a new
+   `net` module as `extern fn`s over the runtime, portable (`poll`) first,
+   `epoll`/`kqueue`/IOCP next, `io_uring` when the completion-shaped
+   protocol of 5 is wanted.
 7. **The reference loop in std**: `io::Wait`, `io::Event`, a reactor with
    timers, `run_blocking`, and the thread-per-core skeleton of section 5
    as a sample. Then the server benchmark of step 2 in Goose, which is the
