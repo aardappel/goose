@@ -234,7 +234,19 @@ struct Lexer {
         again:
         for (;;) {
             auto c = *p;
-            if (c == ' ' || c == '\t' || c == '\r') { p++; }
+            if (c == ' ' || c == '\t') { p++; }
+            else if (c == '\r') {
+                if (p[1] != '\n') {
+                    // The scan after the error resumes at the end: past a lone
+                    // CR, lines are no longer the ones diagnostics and editors
+                    // count.
+                    auto at = p;
+                    p += strlen(p);
+                    ErrorAt("a carriage return without a line feed after it: line endings are LF "
+                            "or CRLF", line, linestart, at);
+                }
+                p++;
+            }
             else if (c == '\n') { p++; line++; linestart = p; }
             else break;
         }
@@ -342,9 +354,10 @@ struct Lexer {
                     auto own = true;
                     for (auto q = linestart; q < start; q++) own = own && (*q == ' ' || *q == '\t');
                     if (own && (!docstart || docline + 1 != line)) docstart = start;
-                    while (*p && *p != '\n') p++;
+                    // A CR is left to the scan above, which takes CRLF.
+                    while (*p && *p != '\n' && *p != '\r') p++;
                     if (own) {
-                        docend = p > start && p[-1] == '\r' ? p - 1 : p;
+                        docend = p;
                         docline = line;
                     }
                     goto again;

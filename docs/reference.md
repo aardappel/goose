@@ -67,8 +67,8 @@ without running, and `goose build` makes an executable
 ## 1. Lexical structure
 
 A Goose source file is UTF-8 text. A byte-order mark at its start is
-ignored, and line endings are read as `\n` whatever convention the file
-uses.
+ignored. Lines end in LF or CRLF, both read as `\n`; a carriage return
+without a line feed after it is an error.
 
 **Comments** are `//` to the end of the line and `/* … */`, which nests:
 `/* a /* b */ c */` is one comment.

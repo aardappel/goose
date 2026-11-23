@@ -81,6 +81,15 @@ def check_diagnostics_json(exe, base):
                 diags[0]["endCol"] == diags[0]["col"] + 1 and diags[0]["endLine"] == 2,
                 "lexer error at its caret", err + "\n" + json.dumps(diags))
 
+        # A carriage return ends a line only before a line feed: a lone one is
+        # one error at it, which ends the scan, and CRLF reads as LF.
+        diags, err = both("cr.goose", "//\rfn main() {}\r")
+        require(len(diags) == 1 and diags[0]["line"] == 1 and diags[0]["col"] == 3 and
+                "carriage return" in diags[0]["message"], "a lone CR",
+                err + "\n" + json.dumps(diags))
+        diags, err = both("crlf.goose", "// doc\r\nfn main() {}\r\n")
+        require(diags == [], "CRLF line endings", err)
+
         # The errors after a """ string the lexer rejected, which the parse
         # skips past, at their own lines: a line short of the margin, text
         # before the closing quotes, and text after the opening ones.
