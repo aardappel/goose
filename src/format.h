@@ -681,7 +681,7 @@ inline bool ParseForCheck(const string &filename, const string &text, string &du
     ast.sink = [](const Diagnostic &) {};
     ast.sources.emplace_back(filename, make_unique<string>(text));
     try {
-        Parser p(ast, ast.sources[0].first, ast.sources[0].second->c_str(), 0);
+        Parser p(ast, ast.sources[0].first, *ast.sources[0].second, 0);
         p.ParseTop();
     } catch (CompileError &e) {
         why = e.msg;
@@ -768,7 +768,7 @@ inline FormatResult Format(string_view input, const string &filename, bool verif
     auto &text = *ast.sources[0].second;
     vector<pair<const char *, uint8_t>> roles;
     try {
-        Parser p(ast, ast.sources[0].first, text.c_str(), 0);
+        Parser p(ast, ast.sources[0].first, text, 0);
         p.roles = &roles;
         p.ParseTop();
     } catch (CompileError &e) {

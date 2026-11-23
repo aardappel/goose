@@ -296,7 +296,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
         fileof[path] = fileidx;
         importsof.emplace_back();
         auto &[filename, source] = ast.sources.back();
-        Parser parser(ast, filename, source->c_str(), fileidx);
+        Parser parser(ast, filename, *source, fileidx);
         parser.ParseTop();
         for (auto &imp : parser.imports) {
             // The package this import declares or loads, where it does.

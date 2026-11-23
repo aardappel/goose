@@ -1,5 +1,6 @@
 // Goose compiler — lexer. A hand-written scanner: one big switch over the next
-// character. Input is 0-terminated, so only the 0 case checks for end of input.
+// character. Input is 0-terminated; a parser also supplies its exact end so an
+// embedded NUL is not mistaken for end of input.
 #pragma once
 
 namespace goose {
@@ -105,6 +106,7 @@ struct Lexer {
     int line = 1;
     string_view filename;
     const char *source = nullptr;    // The whole text, for the line an error echoes.
+    const char *sourceend = nullptr; // Its exact end where the caller has one.
     int fileidx = 0;                 // The file's index in Ast::sources, for diagnostics.
 
     // One past the previous token: where a construct that ended with it
@@ -136,11 +138,15 @@ struct Lexer {
     // (DepthBefore).
     int curlies = 0;
 
-    Lexer(string_view _filename, const char *_source, int _fileidx = 0)
-        : p(_source), filename(_filename), source(_source), fileidx(_fileidx) {
+    Lexer(string_view _filename, const char *_source, const char *_sourceend = nullptr,
+          int _fileidx = 0)
+        : p(_source), filename(_filename), source(_source), sourceend(_sourceend),
+          fileidx(_fileidx) {
         linestart = p;
         Next();
     }
+
+    bool EmbeddedNul(const char *at) const { return sourceend && at < sourceend; }
 
     [[noreturn]] void Error(const string &msg) { ErrorAt(msg, tokline, toklinestart); }
 
@@ -250,7 +256,9 @@ struct Lexer {
         };
         auto c = *p++;
         switch (c) {
-            case 0:   p--; Set(T_EOF); return;
+            case 0:
+                if (EmbeddedNul(p - 1)) Error("NUL character in source");
+                p--; Set(T_EOF); return;
 
             case '(': Set(T_LPAREN);   return;
             case ')': Set(T_RPAREN);   return;
@@ -344,7 +352,9 @@ struct Lexer {
                     p++;
                     for (auto nesting = 1; nesting;) {
                         switch (*p++) {
-                            case 0: p--; Error("unterminated /* comment");
+                            case 0:
+                                if (EmbeddedNul(p - 1)) Error("NUL character in source");
+                                p--; Error("unterminated /* comment");
                             case '\n': line++; linestart = p; break;
                             case '*': if (*p == '/') { p++; nesting--; } break;
                             case '/': if (*p == '*') { p++; nesting++; } break;
@@ -492,7 +502,10 @@ struct Lexer {
         smultiline = *q == '\n';
         if (!smultiline) {
             for (; !(p[0] == '"' && p[1] == '"' && p[2] == '"'); p++) {
-                if (!*p) Error("unterminated \"\"\" string");
+                if (!*p) {
+                    if (EmbeddedNul(p)) Error("NUL character in source");
+                    Error("unterminated \"\"\" string");
+                }
                 if (*p == '\n' || (*p == '\r' && p[1] == '\n'))
                     Error("a multi-line string's text starts on the line after its opening \"\"\"");
                 sval += *p;
@@ -503,7 +516,10 @@ struct Lexer {
         auto first = q + 1;
         auto close = first;
         for (; !(close[0] == '"' && close[1] == '"' && close[2] == '"'); close++)
-            if (!*close) Error("unterminated \"\"\" string");
+            if (!*close) {
+                if (EmbeddedNul(close)) Error("NUL character in source");
+                Error("unterminated \"\"\" string");
+            }
         auto closestart = close;
         while (closestart > first && closestart[-1] != '\n') closestart--;
         auto margin = string_view(closestart, (size_t)(close - closestart));
@@ -538,6 +554,7 @@ struct Lexer {
         auto c = *p++;
         if (c == '\\') {
             auto e = *p++;
+            if (!e && EmbeddedNul(p - 1)) Error("NUL character in source");
             switch (e) {
                 case 'n':  return '\n';
                 case 't':  return '\t';
@@ -561,7 +578,10 @@ struct Lexer {
                 }
             }
         }
-        if (!c || c == '\n') { p--; Error(cat("unterminated ", quote == '"' ? "string" : "character", " literal")); }
+        if (!c || c == '\n') {
+            if (!c && EmbeddedNul(p - 1)) Error("NUL character in source");
+            p--; Error(cat("unterminated ", quote == '"' ? "string" : "character", " literal"));
+        }
         return (uint8_t)c;
     }
 };

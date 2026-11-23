@@ -174,11 +174,14 @@ def check_golden(exe, name, src, want):
 
 
 def check_cli(exe, root):
-    def write(rel, text):
+    def write_bytes(rel, data):
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(text.encode("utf-8"))
+        p.write_bytes(data)
         return p
+
+    def write(rel, text):
+        return write_bytes(rel, text.encode("utf-8"))
 
     messy, tidy = "fn f(){a;}\n", "fn f() { a; }\n"
 
@@ -230,6 +233,29 @@ def check_cli(exe, root):
     expect("formats the files that parse and reports the one that does not",
            code == 2 and "error" in err and bad.read_text() == "fn f( {\n" and
            good.read_text() == tidy, f"exit {code}: {out}{err}")
+
+    # An embedded NUL is source text, not the C string terminator. It must
+    # neither hide the source after it nor let a formatter overwrite the
+    # original bytes, including when a scanner branch reaches it first.
+    nul_cases = {
+        "source": b"fn f() {}\0\nfn g() {}\n",
+        "line comment": b"fn f() {} // before\0after\nfn g() {}\n",
+        "string": b'fn f() { let s = "before\0after"; }\n',
+    }
+    for name, original in nul_cases.items():
+        path = write_bytes(f"nul-{name.replace(' ', '-')}.goose", original)
+        code, out, err = run(exe, [path])
+        expect(f"an embedded NUL in a {name}",
+               code == 2 and not out and "NUL character in source" in err and
+               path.read_bytes() == original,
+               f"exit {code}: {out}{err}{path.read_bytes()!r}")
+        if name == "source":
+            checked = subprocess.run([str(exe), "check", str(path)], capture_output=True,
+                                     timeout=60)
+            expect("check rejects an embedded NUL",
+                   checked.returncode == 1 and
+                   b"NUL character in source" in checked.stderr,
+                   f"exit {checked.returncode}: {checked.stdout!r}{checked.stderr!r}")
 
     # A read-only file is not replaced.
     ro = write("ro.goose", messy)
