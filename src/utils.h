@@ -54,6 +54,24 @@ template<typename... Ts> string cat(const Ts &...args) {
     return s;
 }
 
+// The well-formed UTF-8 sequence at p, of the bytes before e, where they
+// make one: shortest form, no surrogate, nothing past U+10FFFF. Empty for a
+// byte that begins none.
+inline string_view Utf8CharAt(const char *p, const char *e) {
+    auto c = (uint8_t)*p;
+    if (c < 0x80) return string_view(p, 1);
+    size_t len = c >= 0xC2 && c < 0xE0 ? 2 : c >= 0xE0 && c < 0xF0 ? 3 : c >= 0xF0 && c < 0xF5 ? 4 : 0;
+    if (!len || (size_t)(e - p) < len) return {};
+    // The second byte's range is narrower after E0 and F0 (overlong forms),
+    // ED (surrogates) and F4 (past U+10FFFF).
+    auto lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80;
+    auto hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+    if ((uint8_t)p[1] < lo || (uint8_t)p[1] > hi) return {};
+    for (size_t i = 2; i < len; i++)
+        if (((uint8_t)p[i] & 0xC0) != 0x80) return {};
+    return string_view(p, len);
+}
+
 // Where a diagnostic is: a file of the program (an index in Ast::sources), the
 // 1-based line and byte column it starts at, and where it ends, one past its
 // last byte. A column of 0 is a line alone; an end on line 0 is unknown.

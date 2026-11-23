@@ -11,6 +11,7 @@ function's kept checks are several errors at once, and an error with no
 place in the program is reported as its text alone."""
 import json
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -203,6 +204,23 @@ def check_diagnostics_json(exe, base):
                 diags[0]["message"].startswith("cannot open file") and
                 diags[0]["text"] == diags[0]["message"],
                 "an error with no place", err + "\n" + json.dumps(diags))
+
+        # Source bytes that are no UTF-8 (U+D800's encoding): the message names
+        # the byte, and the source line has U+FFFD for each, so stdout is
+        # strict UTF-8 still.
+        (root / "utf8.goose").write_bytes(b"\xed\xa0\x80\n")
+        diags, err = both("utf8.goose")
+        raw = subprocess.run([str(exe), "check", "--diagnostics", "json", "utf8.goose"], cwd=root,
+                             capture_output=True).stdout
+        try:
+            strict = json.loads(raw.decode("utf-8"))
+        except ValueError as e:
+            strict = None
+            require(False, f"invalid UTF-8 source: stdout is not UTF-8 JSON ({e})", repr(raw))
+        require(strict == diags and len(diags) == 1 and
+                diags[0]["message"] == "illegal character: byte 237" and
+                diags[0]["text"].splitlines()[1] == "\ufffd" * 3,
+                "invalid UTF-8 source", repr(raw))
 
         code, out, err = tc.run_capture([exe, "check", "--diagnostics", "yaml", "ok.goose"],
                                         cwd=root)
