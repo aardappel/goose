@@ -1,6 +1,7 @@
 // runtime-debug: format_uleb and parse_uleb carry every i64, a negative one as the ten bytes of
-// its 64 bits (§3.6: 1-10 bytes, full 64-bit range), and parse_uleb refuses what does not fit in
-// 64 bits; valid input must not trip GS_DEBUG's `as` check inside std.
+// its 64 bits (§3.6: 1-10 bytes, full 64-bit range). parse_uleb rejects encodings
+// outside the 64-bit range and encodings that are longer than necessary.
+// Valid input must not trip GS_DEBUG's `as` check inside std.
 import std;
 
 fn round_trip(v: i64, bytes: u8[:]) {
@@ -26,4 +27,10 @@ fn main() {
     show([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);                 // -1 10
     show([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02]);                 // 0 0
     show([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00]);           // 0 0
+    // A redundant final zero group is invalid, even in the tenth byte.
+    show([0x80, 0x00]);                                                                  // 0 0
+    show([0x81, 0x00]);                                                                  // 0 0
+    show([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);                 // 0 0
+    // A canonical prefix still parses when followed by more data.
+    show([0x80, 0x80, 0x01, 0xff]);                                                      // 16384 3
 }
