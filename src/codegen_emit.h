@@ -997,6 +997,10 @@ inline void CodeGen::EmitGlobalInit() {
     code += decls;
     code += body;
     code += "}\n\n";
+    // As after a function: the initializers' statements were written under
+    // their Goose lines, and what follows (gs_program_init, main) is not.
+    if (linedirs) Append(code, LINE_RESET, "\n");
+    srcline = Line {};
 }
 
 // x, a pure expression, as a value of index or bound type t: checked below

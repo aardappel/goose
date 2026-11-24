@@ -2746,6 +2746,16 @@ def main():
             r.fail("main stack", str(e))
     r.show_task(main_stack)
 
+    def line_directives():
+        from line_directives import check_line_directives
+        try:
+            n = check_line_directives(exe, gendir)
+            r.ok(f"line directives: under -g, the C of {n} fixtures charges no gs_* function "
+                 "and not main to a Goose line")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("line directives", str(e))
+    r.show_task(line_directives)
+
     def diagnostics_json():
         from diagnostics_json import check_diagnostics_json
         try:
