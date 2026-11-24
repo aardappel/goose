@@ -790,7 +790,12 @@ inline Dst CodeGen::DeclStackLocal(VarDef *d, bool forlocal) {
     }
     if (IsFrameObj(t)) {
         L(CT(t), " ", name, ";");
-        if (own) SaveBase(forlocal, stk, cat(FoTailHdr(t, name), ".base"));
+        if (own) {
+            // A fixed field initializer can leave before the tail is built.
+            auto base = cat(FoTailHdr(t, name), ".base");
+            L(base, " = ", Top(stk), ";");
+            SaveBase(forlocal, stk, base);
+        }
         return Dst { DK_STACK, stk, t, name };
     }
     L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");
