@@ -503,8 +503,8 @@ struct TypeCheck {
                              bool forwarding = false);
     void CheckCalleeRelative(Call *call, FnSpec *spec, vector<Val> &args);
     bool ResultLayoutFits(TypeExpr *from, TypeExpr *to);
-    // Root owners construct only as a declaration's immediate initializer.
-    // A destination alone is insufficient: a block/call can inherit it.
+    // A declaration's immediate initializer and its owner, for root construction
+    // and direct result bindings. A block or call can inherit the destination.
     Node *rootinit = nullptr;
     VarDef *rootowner = nullptr;
     struct RootInitScope {

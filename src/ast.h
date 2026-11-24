@@ -698,6 +698,9 @@ struct Val : Prov {
     double fval = 0;
     bool strlit = false;         // String literal: adaptable to u8 array types.
     bool emptyarr = false;       // [] with as yet unknown element type.
+    // The array may hold self-relative links between its elements. Moving the
+    // complete element run preserves them, but a grow-shrink array cannot (§5.2).
+    bool elementlinks = false;
     bool isnull = false;         // The null literal: adaptable to any optional.
     // A literal parameter read inside its specialization (§7.7): a constant
     // of unknown value at its nominal type, adapting to any type of its
@@ -2198,6 +2201,7 @@ struct RetRoot {
     bool writable = true;      // Writable only where every return is (§9.5).
     bool byteview = false;
     bool freshview = false;    // Prov::freshview.
+    bool elementlinks = false; // Any return may give an array with Val::elementlinks.
     bool set = false;          // A non-null return has recorded its root.
     // The by-value holder parameter every return gives as it was passed,
     // nothing stored into it since its binding: the result holds what the

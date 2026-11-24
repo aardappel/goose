@@ -356,10 +356,18 @@ fn framing() {
     print("kinds ", iok, " ", ints.len, " ", vok, " ", va.len, " ", wok, " ",
           vv.len, " ", va[3].v);                        // kinds true 24 true 4 true 4 44
 
+    // Discarding the verdict leaves a complete array with links into its own elements.
+    let decoded = from_bytes<Tree[]>(img);
+    var grown: Tree[>..] = from_bytes<Tree[>..]>(img);
+    assert(decoded[2].l .== decoded[0]);
+    assert(grown[2].l .== grown[0]);
+
     // A prefix that does not account for exactly the rest is not an image.
     img[0] = img[0] + 1;
     var b2, bok = from_bytes<Tree[>..]>(img);
     print("prefix ", bok);                              // prefix false
+    const rejected: Tree[] = from_bytes<Tree[]>(img);
+    assert(rejected.len == 0);
 }
 
 // --- destinations -----------------------------------------------------------
@@ -376,10 +384,19 @@ fn nodes_in(b: u8[:]) -> i64 {
     return a.len;
 }
 
+fn decode_trees(image: u8[:]) -> Tree[>..] {
+    let trees = from_bytes<Tree[>..]>(image);
+    return trees;
+}
+
 fn destinations() {
     var pool: Tree[>..] = [];
     build(pool);
     let flat: u8[] = pool.to_bytes();
+    let trees: Tree[>..] = decode_trees(flat);
+    assert(trees[2].l .== trees[0]);
+    let compact: Tree[] = decode_trees(flat);
+    assert(compact[2].l .== compact[0]);
     let s = Saved { name: "tree", blob: pool.to_bytes() };
     print("dest ", flat.len, " ", s.blob.len, " ", nodes_in(pool.to_bytes()), " ",
           image_of(pool).len, " ", nodes_in(s.blob));   // dest 49 49 4 49 4

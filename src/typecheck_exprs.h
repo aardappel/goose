@@ -1318,6 +1318,12 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
             }
             if (dt->arr->akind == A_FIXED) return false;
             if (!TypeEq(selem, dt->arr->sub)) return false;
+            if (dt->arr->akind == A_GROWSHRINK && v.elementlinks) {
+                fitfail = cat("cannot construct ", TypeStr(dt), " from ", TypeStr(t),
+                              ": a shrink could remove an element that a self-relative "
+                              "reference still names (§5.2)");
+                return false;
+            }
             v.type = dt;
             return true;
         }

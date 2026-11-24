@@ -1150,6 +1150,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     // Both []: still a [], which takes the array type it meets (§6.4).
     v.emptyarr = a.emptyarr && b.emptyarr;
+    v.elementlinks = a.elementlinks || b.elementlinks;
     // Array literals of adaptable elements, of one type, adapt as one.
     if (a.litelems && b.litelems && TypeEq(a.type, b.type) && TypeEq(v.type, a.type)) {
         v.litelems = true;
@@ -2617,12 +2618,12 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         auto d = MakeDef(i);
         Val v;
         calls = frames[fi].cyclecalls;
+        RootInitScope ris(*this, vd->inits[i], d);
         {
             // The new variable's storage is the destination; a reference
             // or slice variable binds a value rather than storing one. An
             // annotated variable is a typed slot for constness (§9.5).
             DestScope ds(*this, Dest(d, ann && (ann->kind == TY_REF || ann->kind == TY_SLICE)));
-            RootInitScope ris(*this, vd->inits[i], d);
             SlotScope ss(*this, ann != nullptr);
             auto refinit = Is<Unary>(vd->inits[i]);
             if (refinit && refinit->synth) {

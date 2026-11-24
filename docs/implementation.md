@@ -3658,6 +3658,17 @@ return or an inlined body's exit ever copies such a local instead
 * at a return inferring the result type (`CheckInferredResult`);
 * at `copy(x)`.
 
+When `from_bytes<A>(image)` directly initializes a variable of type `A`,
+the decoder builds the array in that variable's storage. `NoRelRefCopy`
+therefore accepts a single-name binding even when `A` contains self-relative
+links. The type match allows top-level `const`.
+
+A verified array can contain links between elements, as can a named array
+result populated before its return. `Val::elementlinks` carries this fact
+through branches and each forwarded result slot. `FitsAt` rejects adapting
+such a result to a grow-shrink array: removing an element could leave a
+stored link to it (§5.2).
+
 A rejected un-annotated declaration of storage or of a reference result
 suggests the `.=` binding it most likely meant. The same rule rejects
 by-value `for` and `match` bindings of such elements and payloads, the

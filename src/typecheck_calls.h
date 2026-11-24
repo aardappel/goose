@@ -1364,8 +1364,8 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
     CalleesReturn(c->dispatch, argsreach);
     // The cases are alternatives of one call, like a match's arms: the result
     // is only as long-lived, exact and writable as every case's result. A case
-    // checked without recording a root for a result only returns null there or
-    // never returns, and like such an arm it does not constrain the result.
+    // with neither a recorded root nor links between result elements adds
+    // no provenance to the result.
     vector<Val> results;
     vector<bool> reached;
     for (auto spec : c->dispatch) {
@@ -1373,7 +1373,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
         results.resize(lastcallrets.size());
         reached.resize(lastcallrets.size());
         for (size_t r = 0; r < lastcallrets.size(); r++) {
-            auto reaches = spec->inprogress ||
+            auto reaches = spec->inprogress || lastcallrets[r].elementlinks ||
                            (r < spec->record.retroots.size() && spec->record.retroots[r].set);
             results[r] = MergeVals(results[r], reached[r], lastcallrets[r], reaches, c, true);
             reached[r] = reached[r] || reaches;
@@ -2967,7 +2967,8 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
     for (size_t i = 0; i < a.retroots.size(); i++) {
         auto &p = a.retroots[i], &q = b.retroots[i];
         if (!sameroots(p.alts, q.alts) || p.writable != q.writable || p.byteview != q.byteview ||
-            p.freshview != q.freshview || p.set != q.set || p.heldparam != q.heldparam)
+            p.freshview != q.freshview || p.elementlinks != q.elementlinks ||
+            p.set != q.set || p.heldparam != q.heldparam)
             return why("return roots");
     }
     if (a.shrinkexternals != b.shrinkexternals || a.shrinkparams != b.shrinkparams)
@@ -3512,6 +3513,8 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         tspec->record.retroots.resize(tspec->rets.size());
     for (size_t i = 0; i < vals.size(); i++) {
         auto rt = tspec->rets[i];
+        auto &rr = tspec->record.retroots[i];
+        rr.elementlinks |= vals[i].elementlinks;
         auto isrs = IsRefOrSlice(rt);
         auto holder = !isrs && HoldsPlainRef(rt);
         if (!isrs && !holder) continue;
@@ -3526,7 +3529,6 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // activation it was read out of, which a cycle's next round would
         // take for its own (RecordStore).
         for (auto &a : roots.alts) a.from = nullptr;
-        auto &rr = tspec->record.retroots[i];
         for (auto &a : roots.alts) {
             auto root = a.root;
             // Anything whose storage the callee's frame owns dies on return;
@@ -3623,10 +3625,10 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     for (size_t i = 0; i < spec->rets.size(); i++) {
         Val v;
         v.type = spec->rets[i];
+        RetRoot none;
+        auto &ri = rec && i < rec->retroots.size() ? rec->retroots[i] : none;
         auto holder = !IsRefOrSlice(v.type) && HoldsPlainRef(v.type);
         if (IsRefOrSlice(v.type) || holder) {
-            RetRoot none;
-            auto &ri = rec && i < rec->retroots.size() ? rec->retroots[i] : none;
             auto backedge = spec->inprogress;
             if (backedge && holder && unkeyed) {
                 // A root of this activation's own that outlives nothing it
@@ -3691,6 +3693,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             v.Set(TempRoot(), false);
             v.writable = false;
         }
+        v.elementlinks = ri.elementlinks;
         lastcallrets.push_back(v);
     }
     if (spec->rets.empty()) return VoidVal();
@@ -3864,6 +3867,14 @@ inline void TypeCheck::CheckReturn(Return *r) {
         // written in a named function must conservatively be rooted at
         // globals/static.
         if (tf != (int)frames.size() - 1) {
+            // These links are recorded in the target's summary. Recheck the
+            // intervening calls if a later round rebuilds that summary.
+            if (any_of(vals.begin(), vals.end(), [](const Val &v) { return v.elementlinks; })) {
+                for (auto k = tf + 1; k < (int)frames.size(); k++) {
+                    auto s = frames[k].spec;
+                    if (!frames[k].isfunval && s && s != tspec) s->storesout = true;
+                }
+            }
             for (auto &v : vals) {
                 if (frames.back().isfunval) {
                     ReturnThroughCalls(v, tf, r);

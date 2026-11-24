@@ -875,11 +875,16 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t, size_t result, const V
     if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
     if (BuiltWhereReceived(n, result)) return;
     if (auto id = Is<Ident>(n); id && n == retvalnode && AllowNamedResult(id, t)) return;
+    // A declaration can take just the array from from_bytes (§12). As in a
+    // two-name binding, the decoder builds it directly in the variable's
+    // storage when the array type matches.
+    auto c = Is<Call>(n);
+    if (n == rootinit && c && c->builtin == B_FROM_BYTES && result == 0 &&
+        TopConstEq(c->rettypes[0], t)) return;
     auto msg = cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                    "references, is not supported; construct it in place");
     // A declaration copying storage or what a reference points at most
     // likely meant to bind it (§3.8).
-    auto c = Is<Call>(n);
     auto refcall = c && result < c->rettypes.size() && IsPlainRef(c->rettypes[result]);
     auto path = Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n);
     if (bind && src && ((path && (src->lvalue || src->pointee)) || refcall)) {
@@ -988,6 +993,10 @@ inline void TypeCheck::CheckNamedResultUses(FnSpec *spec) {
                             " is built where the result goes only where every return of ",
                             spec->sf->name, " gives it (§7.3); construct it in place"));
         spec->relnamedresult = true;
+        // The local may have acquired links between its elements before it
+        // was returned, either by construction or from a verified image.
+        if (named->type->kind == TY_ARRAY && !IsArrayKind(named->type, A_GROWSHRINK))
+            spec->record.retroots[0].elementlinks = true;
     }
 }
 

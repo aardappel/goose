@@ -259,7 +259,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // array's own contents still hold it: the store rule that keeps
             // references into a T[>..<] out of storage (§5.2) never ran,
             // because the verified copy is not a store.
-            if (ak == A_GROWSHRINK && HoldsRelRef(el))
+            auto elementlinks = HoldsRelRef(el);
+            if (ak == A_GROWSHRINK && elementlinks)
                 Error(c, cat("from_bytes<", TypeStr(t),
                              "> cannot hold relative references: a shrink would free "
                              "what they still name"));
@@ -268,6 +269,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(ast.booltype);
             Val first;
             first.type = t;
+            first.elementlinks = elementlinks;
             first.Set(TempRoot(), false);
             Val ok;
             ok.type = ast.booltype;
