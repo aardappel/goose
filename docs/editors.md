@@ -156,6 +156,27 @@ ElDoc, go to definition (`M-.`), references (`M-?`), rename
 the newest Eglot, from GNU ELPA, highlights with semantic tokens too
 (`eglot-semantic-tokens-mode`). Eglot has no folding or code lenses.
 
+## Zed and Gram
+
+Zed installs language support as extensions, and its registry has a Goose
+one: `goose` in the extensions page, source at
+https://github.com/ZHENGSY/goose-zed, which brings the grammar,
+highlighting, snippets and `goose lsp`. Gram, a fork of Zed, does not
+install from that registry; it takes an extension from a repository URL or
+a folder, and the same repository works there.
+
+Entry files go in the server initialization options in `settings.json`:
+
+```json
+{
+  "lsp": {
+    "goose": {
+      "initializationOptions": { "entryFiles": ["/path/to/project/main.goose"] }
+    }
+  }
+}
+```
+
 ## Formatting
 
 `goose format` rewrites files in the standard layout: indentation, the
