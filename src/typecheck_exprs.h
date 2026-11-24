@@ -1051,6 +1051,8 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
     fitnode = n;
     auto from = LoadType(v.type);
     if (FitsAt(v, dt)) {
+        if (v.elementlinks && !IsRefOrSlice(dt) && !curdst.roots.None())
+            RecordElementLinks(curdst.roots, curdst.reached ? curdst.reached : dt, v.elementlinks, n);
         if (IsIntT(dt) && !TypeEq(from, dt)) {
             RelyOnNamed(v, n);
             if (v.flexint && dt->intstorage != IS_VARINT) RetypeFlexInt(n, dt);
@@ -1324,6 +1326,12 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                               "reference still names (§5.2)");
                 return false;
             }
+            if (IsArrayKind(t, A_LIMITED) && v.elementlinks == EL_ANY) {
+                fitfail = cat("cannot construct ", TypeStr(dt), " from ", TypeStr(t),
+                              ": a self-relative link may name a slot beyond the live length "
+                              "that the conversion would discard (§5.3)");
+                return false;
+            }
             v.type = dt;
             return true;
         }
@@ -1390,6 +1398,9 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                                   : cat("this reference is rooted at ", vroot));
                     return false;
                 }
+                if (recordingrelative && !dt->ref->pool && !curdst.result)
+                    RecordElementLinks(curdst.roots, curdst.reached ? curdst.reached : dt,
+                                       curdst.appended ? EL_BACKWARD : EL_ANY, fitnode);
                 v.type = dt;
                 return true;
             }

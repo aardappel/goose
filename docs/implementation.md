@@ -2740,8 +2740,10 @@ a writable reference noted later an error. The resize's balance is recorded
 by then, and a loop checked in one pass, or a nested function checked once,
 can run the write before the resize's next run, which nothing judges again.
 No other shrink in a body is balanced: `pop`, `pop_n`, `clear`, other
-resizes, whole assignment, and a grow-only array's shrinks
-(`GrowOnlyShrinkAt` records every shrink unbalanced). The body's own scans
+resizes, whole assignment, and a grow-only array's shrinks.
+`SB_EMPTIES` distinguishes a grow-only shrink that removes all elements
+from one that may retain an element linked to the removed suffix. Both
+invalidate external views. The body's own scans
 are unchanged, a balanced resize included, and so are the pairs
 `NoteLiveViews` keeps for it.
 
@@ -3663,11 +3665,21 @@ the decoder builds the array in that variable's storage. `NoRelRefCopy`
 therefore accepts a single-name binding even when `A` contains self-relative
 links. The type match allows top-level `const`.
 
-A verified array can contain links between elements, as can a named array
-result populated before its return. `Val::elementlinks` carries this fact
-through branches and each forwarded result slot. `FitsAt` rejects adapting
-such a result to a grow-shrink array: removing an element could leave a
-stored link to it (§5.2).
+A verified array can contain links between elements. A non-null
+self-relative store also records a link on the receiving storage. A store
+into a newly pushed grow-only element can refer back to existing elements,
+whereas decoding or rebinding can introduce forward links.
+`RecordElementLinks` records these stores on the owner and replays them at
+calls through the destination parameter. A partial grow-only shrink checks
+whether a retained slot may still point into the removed elements (§5.1).
+
+`Val::elementlinks` carries the owner's links through branches, named
+results and each forwarded result slot. `FitsAt` checks them when the
+result changes array kind. A grow-shrink array cannot hold a link into its
+elements (§5.2), and an adapter that copies a limited array's live prefix
+can discard a target (§5.3). An array initialized with null links and
+returned by name uses the ordinary named-result entry when adapting it.
+The element-run entry would copy the local on return.
 
 A rejected un-annotated declaration of storage or of a reference result
 suggests the `.=` binding it most likely meant. The same rule rejects

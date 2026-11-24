@@ -685,6 +685,10 @@ struct Prov : Roots {
     const Roots &AsRoots() const { return *this; }
 };
 
+// A relative link built into a newly appended element can reach only existing
+// storage. A decoded run or a rebind may also link into a later element.
+enum ElementLinks { EL_NONE, EL_BACKWARD, EL_ANY };
+
 // The checked value of an expression (typecheck.h): its type, where it
 // points when it is a reference or slice, and the constant folding used for
 // literal fit and array sizes. Lives here because every node's Check
@@ -700,7 +704,7 @@ struct Val : Prov {
     bool emptyarr = false;       // [] with as yet unknown element type.
     // The array may hold self-relative links between its elements. Moving the
     // complete element run preserves them, but a grow-shrink array cannot (§5.2).
-    bool elementlinks = false;
+    ElementLinks elementlinks = EL_NONE;
     bool isnull = false;         // The null literal: adaptable to any optional.
     // A literal parameter read inside its specialization (§7.7): a constant
     // of unknown value at its nominal type, adapting to any type of its
@@ -1820,6 +1824,7 @@ struct VarDef {
     // that class's storage holds (RootAlt::classread).
     Roots contents;
     bool contentbyteview = false; // A stored reference may view raw typed storage.
+    ElementLinks elementlinks = EL_NONE; // A store into this owner may have linked its elements.
     // A store other than a parameter's binding has been made into it, in
     // any round of a cycle's check (TypeCheck::HeldParam).
     bool storedinto = false;
@@ -2097,10 +2102,12 @@ struct RootArg {
 // How a body's shrinks of one array leave it (§5.2): balanced where each
 // resizes it back to a length it had during the call, or is a balanced call,
 // so that it is never shorter than when the call began and no view taken
-// before the call can tell; unbalanced where one may leave it shorter. A grow-only array's
-// shrinks are never balanced (§5.1): a callee may store references to its
+// before the call can tell; unbalanced where one may leave it shorter.
+// A grow-only array's shrinks are never balanced (§5.1): a callee may store references to its
 // new elements into the caller's holders before popping them.
-enum ShrinkBalance { SB_BALANCED, SB_UNBALANCED };
+// An emptying shrink still invalidates external views, but leaves no element
+// in the array holding a link to the freed suffix. A partial shrink dominates it.
+enum ShrinkBalance { SB_BALANCED, SB_EMPTIES, SB_UNBALANCED };
 
 // A shrink a body records against what one of its parameters' or outside
 // roots' storage only leads to, through the references it holds: an array
@@ -2116,6 +2123,9 @@ template<typename K> struct BoundShrink {
 // into an array.
 struct StoreEvent {
     VarDef *container = nullptr;
+    // Links within this owner's storage, from either a relative store or a
+    // verified element run. Mapping this event requires only the destination.
+    ElementLinks elementlinks = EL_NONE;
     // What was stored: a reference to something rooted at `root`, or (a
     // copy of) the contents of container `src` -- a holder value read out
     // of it, whose own events say what it points at. Never a local reference
@@ -2201,7 +2211,7 @@ struct RetRoot {
     bool writable = true;      // Writable only where every return is (§9.5).
     bool byteview = false;
     bool freshview = false;    // Prov::freshview.
-    bool elementlinks = false; // Any return may give an array with Val::elementlinks.
+    ElementLinks elementlinks = EL_NONE; // Any return may give an array with Val::elementlinks.
     bool set = false;          // A non-null return has recorded its root.
     // The by-value holder parameter every return gives as it was passed,
     // nothing stored into it since its binding: the result holds what the
@@ -2236,6 +2246,7 @@ struct EnvRead {
     Roots contents;
     bool contentbyteview = false;
     bool slotref = false;
+    ElementLinks elementlinks = EL_NONE;
 };
 
 // An exit of a body outside a specialization's activation that its check

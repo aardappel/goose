@@ -295,6 +295,8 @@ struct TypeCheck {
         // A resize's fill value: built once and copied into each slot the
         // resize adds, so no position in the array is its own (§3.9).
         bool fill = false;
+        // New elements at the end of a grow-only array.
+        bool appended = false;
         Dest() {}
         Dest(const Roots &r, bool vb = false, TypeExpr *re = nullptr)
             : roots(r), varbind(vb), reached(re), unknown(r.None()) {}
@@ -2444,6 +2446,7 @@ struct TypeCheck {
     struct LitDeep {
         Roots roots;
         bool byteview = false;
+        ElementLinks elementlinks = EL_NONE;
     };
     bool InitOrderStoreSafe(Node *n, TypeExpr *dest);
     bool InitOrderSafe(Node *n, set<FnSpec *> &visiting, FnSpec *callee = nullptr);
@@ -2522,8 +2525,10 @@ struct TypeCheck {
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
     const string *EmbedFile(Call *c, vector<Node *> &args);
-    void CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv);
+    void CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv,
+                         ShrinkBalance balance);
     void GrowOnlyAssignKnown(Assign *a, const Roots &built, bool whole);
+    bool RetainsRelativeSlot(VarDef *owner, TypeExpr *target, bool partial);
     // Whether a shrink whose receiver has these roots knows the arrays it
     // frees: none is static data or a temporary (§5.1).
     static bool ShrinkRootsKnown(const Roots &roots) {
@@ -2535,8 +2540,8 @@ struct TypeCheck {
     // `viaclass`: judged here, recorded for the callers as a class's bound
     // (ShrinkTarget::viaclass).
     void GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd, const string &what,
-                          TypeExpr *bound = nullptr, TypeExpr *arr = nullptr,
-                          bool viaclass = false);
+                          TypeExpr *bound, TypeExpr *arr,
+                          bool viaclass, ShrinkBalance balance);
     // Kills (Kill): the part of a holder a checked location path names, a
     // whole assignment's of a value holding no references, and whether those
     // in force empty every slot of a `t` at `base` in container c that can
@@ -2591,6 +2596,7 @@ struct TypeCheck {
     void NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeExpr *t);
     void HolderFromLit(Val &v, const LitDeep &deep);
     void AddStoreEvent(const StoreEvent &e);
+    void RecordElementLinks(const Roots &owners, TypeExpr *reached, ElementLinks links, Node *at);
     void NoteSlotStore(const StoreEvent &e);
     // How NeverStoredError words a grow-shrink array `gs` a value pointing at
     // `roots` may point into: as the array itself where it is the value's one
@@ -2651,9 +2657,10 @@ struct TypeCheck {
         Line at;
         string prefix;
         vector<Diagnostic::Related> chain;
+        bool partial;
     };
     vector<GlobalShrink> globalshrinks;
-    void NoteGlobalShrink(Node *at, const string &prefix, VarDef *vd, TypeExpr *bound);
+    void NoteGlobalShrink(Node *at, const string &prefix, VarDef *vd, TypeExpr *bound, bool partial);
     [[noreturn]] void ThreadIndexError(Node *at, TypeExpr *t);
     void CheckGlobalShrinks();
     // Whether what a store record leads to may point into the array `arr`
@@ -2925,7 +2932,7 @@ struct TypeCheck {
     // later check changes.
     map<FnSpec *, vector<VarDef *>> namedoutside;
     // `fill`: a resize's fill value (Dest::fill).
-    void ElemArg(Node *&n, TypeExpr *elem, Val &rv, bool fill = false);
+    void ElemArg(Node *&n, TypeExpr *elem, Dest dest);
 
     // ------------------------------------------------------------------
     // Calling a function value F(a): the body is cloned and checked inline

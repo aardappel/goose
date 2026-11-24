@@ -1569,9 +1569,17 @@ reference into the array was stored into it.
 
 A value is never a holder if its type cannot hold a reference to anything
 the array's elements contain by value, through any number of references. Nor
-is a value linked by relative references alone (a node pool), since relative
-references point within their own root. A reference to a whole array or
-table is not a reference into its elements, and a shrink leaves it pointing
+can a self-relative link in a separate node pool point into this array.
+Within the array's own storage, a shrink must preserve the target of any
+self-relative link that survives it. A newly pushed element can link back
+to an earlier element and still be popped. A decoded array, however, can
+contain forward links. Removing a suffix of that array could leave a
+retained element pointing into the suffix. Emptying the array with
+`clear()` or `resize(0)` removes all its elements together. If it is a
+struct's tail, links in fields before the tail must still be considered.
+
+A reference to a whole array or table is not a reference into its
+elements, and a shrink leaves it pointing
 at the array or table:
 `struct Walk { start: Cell&, text: u8[>..]&, path: Pos[>..] }` holds nothing
 a shrink of `path` frees, and `w.path.clear()` through `w: Walk&` may be
@@ -1910,6 +1918,11 @@ reference reads a valid, possibly-different value ("type-safe reuse", §9.4),
 never corrupt memory. Indexing through the array checks against current
 length; access through retained references does not (they were validly
 created).
+
+An array conversion that takes only the live elements of a limited array
+must also preserve their self-relative links. The compiler rejects the
+conversion if a retained link may point to a slot beyond the live length.
+An array whose relative fields are known to be null can be converted.
 
 ### 5.4 `reusable` arrays (safe allocation escape hatch)
 

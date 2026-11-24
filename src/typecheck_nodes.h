@@ -107,6 +107,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         } else {
             v.Set(vd, true);
             v.byteview = vd->contentbyteview;
+            v.elementlinks = vd->elementlinks;
             v.writable = !vd->copybind && !(vd->type && vd->type->cq);
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;

@@ -422,8 +422,10 @@ inline string CodeGen::EnsureEr(FnSpec *sp) {
     auto it = ernames.find(sp);
     if (it != ernames.end()) return it->second;
     auto rt = sp->rets.size() == 1 ? sp->rets[0] : nullptr;
+    // The twin copies named locals on return. A named result with relative
+    // fields needs the value entry, which builds it at its destination.
     auto ok = rt && rt->kind == TY_ARRAY && rt->arr->akind == A_VAR && sp->body &&
-              !fromids.count(sp);
+              !sp->relnamedresult && !fromids.count(sp);
     if (!ok) return ernames[sp] = "";
     auto name = Unique(cat(sinfo[sp].cname, "_er"));
     ernames[sp] = name;

@@ -389,6 +389,19 @@ fn decode_trees(image: u8[:]) -> Tree[>..] {
     return trees;
 }
 
+fn unlinked_trees() -> Tree[] {
+    let trees: Tree[] = [Tree { v: 42, l: null, r: null }];
+    return trees;
+}
+
+fn short_unlinked_trees() -> Tree[..] {
+    var trees: Tree[..] = [Tree { v: 7 }, Tree { v: 8 }];
+    trees.pop_n(1);
+    return trees;
+}
+
+fn empty_trees(trees: Tree[>..]&) { trees.clear(); }
+
 fn destinations() {
     var pool: Tree[>..] = [];
     build(pool);
@@ -397,6 +410,14 @@ fn destinations() {
     assert(trees[2].l .== trees[0]);
     let compact: Tree[] = decode_trees(flat);
     assert(compact[2].l .== compact[0]);
+    var shrinkable: Tree[>..<] = unlinked_trees();
+    assert(shrinkable[0].v == 42);
+    shrinkable.clear();
+    let prefix: Tree[] = short_unlinked_trees();
+    assert(prefix.len == 1 && prefix[0].v == 7);
+    var scratch = decode_trees(flat);
+    empty_trees(scratch);
+    assert(scratch.len == 0);
     let s = Saved { name: "tree", blob: pool.to_bytes() };
     print("dest ", flat.len, " ", s.blob.len, " ", nodes_in(pool.to_bytes()), " ",
           image_of(pool).len, " ", nodes_in(s.blob));   // dest 49 49 4 49 4

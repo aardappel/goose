@@ -1150,7 +1150,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     // Both []: still a [], which takes the array type it meets (§6.4).
     v.emptyarr = a.emptyarr && b.emptyarr;
-    v.elementlinks = a.elementlinks || b.elementlinks;
+    v.elementlinks = std::max(a.elementlinks, b.elementlinks);
     // Array literals of adaptable elements, of one type, adapt as one.
     if (a.litelems && b.litelems && TypeEq(a.type, b.type) && TypeEq(v.type, a.type)) {
         v.litelems = true;
@@ -2714,6 +2714,7 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
     auto t = v.type;
     if (!t || v.isnull) return;
     auto isrs = IsRefOrSlice(t);
+    if (v.elementlinks && !isrs) RecordElementLinks(RootsOf(d), t, v.elementlinks, at);
     if (!isrs && !HoldsPlainRef(t)) return;
     const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
     // A global is storage, which no reference into a grow-shrink array is
@@ -2776,7 +2777,8 @@ inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *
                 ~Restore() { flag = saved; }
             } restore { rebuilding, rebuilding };
             rebuilding = true;
-            ShrinkThrough(a, "assign", ExprStr(a->lval), built, target);
+            ShrinkThrough(a, "assign", ExprStr(a->lval), built, target,
+                          GrowOnlyTail(target) ? SB_EMPTIES : SB_UNBALANCED);
         }
         NoteGrow(a, built, cat("assign ", ExprStr(a->lval)), target);
     }

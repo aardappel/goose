@@ -1876,7 +1876,7 @@ inline vector<VarDef *> TypeCheck::NarrowedOptionals(const MatchInfo &mi) {
 
 inline EnvRead TypeCheck::EnvReadOf(VarDef *vd) {
     return { vd, vd->assigned, vd->maybeassigned, vd->refrootknown, vd->ref, vd->contents,
-             vd->contentbyteview, vd->slotref };
+             vd->contentbyteview, vd->slotref, vd->elementlinks };
 }
 
 // A body names vd outside its activation: a nested function one of its
@@ -1916,7 +1916,8 @@ inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
            (vd->isvar || vd->maybeassigned == r.maybeassigned) &&
            vd->refrootknown == r.refrootknown &&
            vd->ref == r.ref && vd->contents == r.contents &&
-           vd->contentbyteview == r.contentbyteview && vd->slotref == r.slotref;
+           vd->contentbyteview == r.contentbyteview && vd->slotref == r.slotref &&
+           vd->elementlinks == r.elementlinks;
 }
 
 // Whether each variable the body read outside its activation is as it was
@@ -1954,6 +1955,8 @@ inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
         v->ref = x.ref;
         v->contents = x.contents;
         v->contentbyteview = x.contentbyteview;
+        if (x.elementlinks > v->elementlinks)
+            RecordElementLinks(RootsOf(v), v->type, x.elementlinks, spec->body);
         v->slotref = v->slotref || x.slotref;
         NoteFact(v);
     }
@@ -3007,7 +3010,8 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
             return why("live shrinks");
     }
     auto sameevents = [&](const StoreEvent &p, const StoreEvent &q) {
-        return p.container == q.container && p.root == q.root && p.src == q.src &&
+        return p.container == q.container && p.elementlinks == q.elementlinks &&
+               p.root == q.root && p.src == q.src &&
                p.exact == q.exact && p.byteview == q.byteview && p.bound == q.bound &&
                p.slot == q.slot && p.sliceref == q.sliceref && p.classread == q.classread &&
                sametype(p.pointee, q.pointee) && sametype(p.reached, q.reached);
@@ -3514,7 +3518,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
     for (size_t i = 0; i < vals.size(); i++) {
         auto rt = tspec->rets[i];
         auto &rr = tspec->record.retroots[i];
-        rr.elementlinks |= vals[i].elementlinks;
+        rr.elementlinks = std::max(rr.elementlinks, vals[i].elementlinks);
         auto isrs = IsRefOrSlice(rt);
         auto holder = !isrs && HoldsPlainRef(rt);
         if (!isrs && !holder) continue;
@@ -4185,9 +4189,12 @@ inline void TypeCheck::CheckCalleeRelative(Call *call, FnSpec *spec, vector<Val>
             auto want = i == 0 ? callresulttype : nullptr;
             if (!want && dest.result && (size_t)dest.resultindex < dest.result->rets.size())
                 want = dest.result->rets[dest.resultindex];
-            if (i < spec->rets.size() && !ResultLayoutFits(spec->rets[i], want))
-                Error(call, "a result containing relative links to its destination cannot change "
-                            "representation; return the receiver's type");
+            if (i < spec->rets.size()) {
+                if (!ResultLayoutFits(spec->rets[i], want))
+                    Error(call, "a result containing relative links to its destination cannot change "
+                                "representation; return the receiver's type");
+                if (!dest.reached) dest.reached = spec->rets[i];
+            }
         }
         if (!RelativeDestination(source, dest, call, true, true)) {
             auto target = source.Root() ? string(source.Root()->name) : string("static data");
@@ -4197,6 +4204,8 @@ inline void TypeCheck::CheckCalleeRelative(Call *call, FnSpec *spec, vector<Val>
                             "(§3.9); call of ", spec->sf->name, " links a target rooted at ",
                             target, " to receiving storage ", receiver));
         }
+        if (s.result >= 0 && dest.reached && !dest.result && !source.None())
+            RecordElementLinks(dest.roots, dest.reached, dest.appended ? EL_BACKWARD : EL_ANY, call);
     }
 }
 

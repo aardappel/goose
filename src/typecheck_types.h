@@ -993,10 +993,6 @@ inline void TypeCheck::CheckNamedResultUses(FnSpec *spec) {
                             " is built where the result goes only where every return of ",
                             spec->sf->name, " gives it (§7.3); construct it in place"));
         spec->relnamedresult = true;
-        // The local may have acquired links between its elements before it
-        // was returned, either by construction or from a verified image.
-        if (named->type->kind == TY_ARRAY && !IsArrayKind(named->type, A_GROWSHRINK))
-            spec->record.retroots[0].elementlinks = true;
     }
 }
 
