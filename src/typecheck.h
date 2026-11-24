@@ -1777,6 +1777,7 @@ struct TypeCheck {
     LVal CheckLValue(Node *n);
     LVal LValueBase(Node *n, bool cmpview = false);
     void NoTemporaryLiteral(Node *n, TypeExpr *t);
+    [[noreturn]] void OptionalDerefError(Node *receiver, Node *at);
     void DerefLValue(LVal &lv, Node *at);
     void RequireAssigned(VarDef *vd, Node *at, string_view use = {});
     void RequireIndexArray(TypeExpr *t, Node *at, string_view what);
