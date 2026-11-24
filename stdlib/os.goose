@@ -78,6 +78,39 @@ fn time() -> f64 { time_ns() / 1000000000.0 }
 fn clock() -> f64 { clock_ns() / 1000000000.0 }
 fn sleep(seconds: f64) { sleep_ms((seconds * 1000.0) as! i64) }
 
+// Append YYYY-MM-DDTHH:MM:SSZ for a whole Unix second in years 0001-9999.
+// Leave out unchanged when the timestamp is outside that range.
+fn format_time_utc(out: u8[>..]&, seconds: i64) -> bool {
+    if seconds < -62135596800 || seconds > 253402300799 { return false; }
+    let day = div_euclid(seconds, 86400);
+    let second = seconds % 86400;
+    // March-based Gregorian calendar in 400-year eras (civil_from_days).
+    // https://howardhinnant.github.io/date_algorithms.html#civil_from_days
+    let shifted = day + 719468;
+    let era = shifted / 146097;
+    let day_of_era = shifted % 146097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let march_month = (5 * day_of_year + 2) / 153;
+    let day_of_month = day_of_year - (153 * march_month + 2) / 5 + 1;
+    let month = if march_month < 10 { march_month + 3 } else { march_month - 9 };
+    let year = era * 400 + year_of_era + (if month <= 2 { 1 } else { 0 });
+
+    format_int(out, year, 10, 4, '0');
+    out.push('-');
+    format_int(out, month, 10, 2, '0');
+    out.push('-');
+    format_int(out, day_of_month, 10, 2, '0');
+    out.push('T');
+    format_int(out, second / 3600, 10, 2, '0');
+    out.push(':');
+    format_int(out, second / 60 % 60, 10, 2, '0');
+    out.push(':');
+    format_int(out, second % 60, 10, 2, '0');
+    out.push('Z');
+    return true;
+}
+
 // Entropy, for seeding an rng.
 extern fn random_seed() -> u64 = "gs_os_random_u64";
 
