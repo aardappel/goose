@@ -1136,6 +1136,7 @@ A small interface to `src/runtime/runtime_os.h`:
 
 ```goose
 fn read_file(path: const u8[:], out: u8[>..]&) -> bool     // appends the whole file
+fn read_file(path: const u8[:], offset: i64, max: i64, out: u8[>..]&) -> i64
 fn write_file(path: const u8[:], data: const u8[:]) -> bool
 fn write_file_atomic(path: const u8[:], data: const u8[:]) -> bool   // the old file or all of the new
 fn append_file(path: const u8[:], data: const u8[:]) -> bool
@@ -1163,6 +1164,13 @@ fn sleep(seconds: f64)      fn sleep_ms(ms: i64)
 fn random_seed() -> u64                              // entropy, for rng
 fn random_bytes(out: u8[:]) -> bool                  // cryptographic; false: the OS gave none
 ```
+
+The offset overload of `read_file` opens and seeks the file on each call.
+It appends up to `max` bytes from the zero-based byte offset and returns
+the number appended, with a short count at EOF. It returns `-1` on an
+open, seek, or read error or for a negative offset or count, leaving the
+builder unchanged. Reuse a builder between calls to bound memory use
+when processing a large file.
 
 `trim_memory` asks the OS to discard complete pages beyond every current
 data-stack top in the calling thread program, including its globals and

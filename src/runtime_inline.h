@@ -2095,11 +2095,13 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
 
 )GSRT"
-R"GSRT(    /* Regions start page-aligned and lie whole pages apart, so the same
-       page offset of two stacks lands in one L1 set: bump pointers that
-       grow together from offset 0 collide set for set. Give each stack
-       its color, one 64-byte line per region index wrapping within 4096 bytes,
-       smallest possible page size. */
+R"GSRT(    /* Region bases agree in their low 16 or more address bits (Windows
+       reserves on 64 KB boundaries; mmap'd regions lie 2 GB + 1 MB apart),
+       so the same offset in two stacks does too. A loop storing to several
+       stacks in step then runs up to 2x slower (Zen 5, six f32 arrays),
+       though sharing a page offset alone costs nothing: bases 4 KB apart
+       run at full speed. A different 64-byte step per region within the
+       smallest page breaks the match. */
     long colors = 4096 / 64;
     size_t pad = (size_t)(i % colors) * 64;
     return p + pad;
@@ -4330,6 +4332,7 @@ static uint64_t gs_byte_swap64(uint64_t x) {
 
 )GSRT"
 R"GSRT(GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
+GS_API int64_t gs_os_read_file_range(sl_u8 path, int64_t offset, int64_t max, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_append_file(sl_u8 path, sl_u8 data);
@@ -4528,28 +4531,59 @@ static int gs_os_kind(const gs_os_char *p) {
 }
 
 )GSRT"
-R"GSRT(/* Appends the whole file; on a failure, nothing. */
-GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
+R"GSRT(static FILE *gs_os_open_read(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
-    if (gs_os_native(path, p) < 0) return 0;
-    FILE *f = gs_os_fopen(p, "rb");
-    if (!f) return 0;
+    if (gs_os_native(path, p) < 0) return NULL;
+    return gs_os_fopen(p, "rb");
+}
+
+)GSRT"
+R"GSRT(/* Appends up to max bytes. On a read error, roll back the builder. */
+static int64_t gs_os_read_stream(FILE *f, int64_t max, gs_rref out) {
     int64_t len = out.hdr->len;
     uint8_t *top = out.stk->top;
     uint8_t buf[65536];
-    for (;;) {
-        size_t n = fread(buf, 1, sizeof buf, f);
+    int64_t got = 0;
+    while (got < max) {
+        int64_t left = max - got;
+        size_t want = left < (int64_t)sizeof buf ? (size_t)left : sizeof buf;
+        size_t n = fread(buf, 1, want, f);
         if (n == 0) break;
         gs_bld_append(out, buf, (int64_t)n);
+        got += (int64_t)n;
     }
-    int bad = ferror(f);
-    fclose(f);
-    if (bad) {
+    if (ferror(f)) {
         out.hdr->len = len;
         out.stk->top = top;
-        return 0;
+        return -1;
     }
-    return 1;
+    return got;
+}
+
+)GSRT"
+R"GSRT(/* Appends the whole file; on a failure, nothing. */
+GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
+    FILE *f = gs_os_open_read(path);
+    if (!f) return 0;
+    int64_t got = gs_os_read_stream(f, INT64_MAX, out);
+    fclose(f);
+    return got >= 0;
+}
+
+)GSRT"
+R"GSRT(GS_API int64_t gs_os_read_file_range(sl_u8 path, int64_t offset, int64_t max, gs_rref out) {
+    if (offset < 0 || max < 0) return -1;
+    FILE *f = gs_os_open_read(path);
+    if (!f) return -1;
+#ifdef _WIN32
+    int seek_ok = _fseeki64(f, offset, SEEK_SET) == 0;
+#else
+    off_t pos = (off_t)offset;
+    int seek_ok = (int64_t)pos == offset && fseeko(f, pos, SEEK_SET) == 0;
+#endif
+    int64_t got = seek_ok ? gs_os_read_stream(f, max, out) : -1;
+    fclose(f);
+    return got;
 }
 
 )GSRT"

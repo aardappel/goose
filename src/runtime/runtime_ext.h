@@ -328,6 +328,7 @@ static uint64_t gs_byte_swap64(uint64_t x) {
 }
 
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
+GS_API int64_t gs_os_read_file_range(sl_u8 path, int64_t offset, int64_t max, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_append_file(sl_u8 path, sl_u8 data);
