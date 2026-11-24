@@ -524,8 +524,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     } else {
         tc.Error(this, cat("cannot slice a value of type ", tc.TypeStr(lv.type)));
     }
-    // A comparison's view reads no link out of what it compares (§4.5).
-    if (lv.intemp && !cmpview) tc.NoRelRefTempRead(obj, lv.type, elem);
+    if (lv.intemp) tc.NoRelRefTempRead(obj, lv.type, elem);
     if (lo) tc.CheckIntAny(lo);
     if (hi) tc.CheckIntAny(hi);
     Val v;

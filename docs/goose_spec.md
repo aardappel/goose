@@ -910,8 +910,10 @@ array/pool* as the location storing it.
   names storage (§4.1). The fields or elements of such a value that hold
   self-relative references are not read, sliced or iterated; a `match`
   does not bind its payload by reference; and `print`, which renders a
-  reference as its pointee, does not render the value. A scalar field of
-  such a value reads as usual (`a.pop().v`).
+  reference as its pointee, does not render the value. Structural equality
+  (`==` and `!=`, §4.5) also reads those links to compare their targets and
+  is rejected for such a copy. A scalar field of such a value reads as
+  usual (`a.pop().v`).
 
   Construct such values in
   place, with literals. A field that a literal's `..` fills takes its
