@@ -55,6 +55,8 @@ fn sign(x: f64) -> f64 {
     return 0.0;
 }
 
+// a + (b - a) * t, as HLSL does. When b - a overflows although a and b are
+// finite, the result is not finite.
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
 
