@@ -2727,10 +2727,13 @@ def main():
     def main_stack():
         from main_stack import check_main_stack
         try:
-            check_main_stack(exe, cc, gendir)
-            where = "run" + (" and built" if cc else "")
-            limit = " with the soft stack limit lowered to 8 MB" if sys.platform.startswith("linux") else ""
-            r.ok(f"main stack: a recursion of about 12 MB, {where}{limit}")
+            skipped = check_main_stack(exe, cc, gendir)
+            if skipped:
+                r.say(f"skip main stack ({skipped})")
+            else:
+                where = "run" + (" and built" if cc else "")
+                r.ok(f"main stack: a recursion of about 12 MB built / 24 MB in goose run, "
+                     f"{where} with the soft stack limit lowered to 8 MB")
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             r.fail("main stack", str(e))
     r.show_task(main_stack)

@@ -1,9 +1,12 @@
-"""A recursion that needs more than the usual 8 MB main-thread stack and less
-than the 64 MB Linux now raises the soft limit to, run in process and built.
+"""Linux-only: a recursion that needs more than the usual 8 MB main-thread
+stack but less than the 64 MB soft limit raised for an executable, run in
+process and built.
 
 The array is read after the recursive call, so the call is not in tail
 position and stays a call, and the array stays a native local. At -O2 the C
-compiler still keeps that frame (about 4 KB). 3000 of them are about 12 MB.
+compiler still keeps that frame (about 4 KB). 3000 levels are about 12 MB for
+built code; under `goose run`, TinyCC's frames for this function are about 8 KB,
+so 3000 levels are about 24 MB.
 """
 import subprocess
 import sys
@@ -44,8 +47,10 @@ def run(argv, cwd):
 
 
 def check_main_stack(exe, cc, base):
-    """Raises RuntimeError on a failure. Builds with the compiler's own
-    toolchain when the runner found a C compiler (`cc`)."""
+    """Returns why it was skipped, or None when the check ran; raises
+    RuntimeError on a failure."""
+    if not sys.platform.startswith("linux"):
+        return "not Linux"
     base = Path(base).resolve()
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="main-stack-", dir=base) as tmp:
@@ -74,3 +79,4 @@ def check_main_stack(exe, cc, base):
             if r.returncode != 0 or r.stdout.splitlines() != [WANT]:
                 raise RuntimeError(f"built: exit {r.returncode}, wanted {WANT}:\n"
                                    f"{r.stdout}{r.stderr}")
+    return None

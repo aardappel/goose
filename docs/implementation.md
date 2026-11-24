@@ -105,10 +105,11 @@ run has TinyCC compile the C on such a thread as well (`CompileJit` in
 the program back on the main thread (`RunJit`), because macOS only lets a
 window be created on the main thread. On Windows and macOS the link also
 reserves 64 MB for the main thread's stack (`CMakeLists.txt`). On Linux
-nothing in the link sets it. goose and a built program each raise the soft
-RLIMIT_STACK to that same 64 MB at process start (`gs_raise_main_stack`),
-when the hard limit allows it and the limit is not already higher, and the
-runtime reads the overflow guard's stack bounds after that.
+nothing in the link sets it. An executable—goose, or a program `goose build`
+writes—raises the soft RLIMIT_STACK to that same 64 MB at process start
+(`gs_raise_main_stack`), when the hard limit allows it and the limit is not
+already higher, and the runtime reads the overflow guard's stack bounds after
+that. A C host using a `--shared` library does not raise its limit.
 
 **Verbs** (`Main` in `main.cpp`):
 
@@ -6645,10 +6646,10 @@ already has one (ASan gives every thread its own), and releases it together
 with a worker's data stacks. A fault from 64 KB below the thread's stack up
 to its top counts as that stack overflowing. The bounds of the stack are
 read as the thread starts (`pthread_getattr_np` on Linux,
-`pthread_get_stackaddr_np` and `pthread_get_stacksize_np` on macOS). On
-Linux the main thread's soft limit has already been raised to 64 MB, so
-those bounds are that limit rather than the 8 MB a process often starts
-with.
+`pthread_get_stackaddr_np` and `pthread_get_stacksize_np` on macOS).
+For an executable, Linux's main-thread soft limit has already been raised
+to 64 MB, so those bounds are that limit rather than the 8 MB a process often
+starts with. A C host using a `--shared` library keeps its original limit.
 Elsewhere there is no way to read them, and the overflow is not reported.
 For a fault of neither kind, the runtime reinstates the handler it replaced
 and lets the fault recur under that handler, which gives the default action
