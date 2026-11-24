@@ -468,8 +468,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     obj->exprtype = ov.type;
     auto t = ov.type;
     if (t->kind == TY_REF) {
-        if (t->ref->optional)
-            tc.Error(this, "optional value must be narrowed (if/guard/assert) before use");
+        if (t->ref->optional) tc.OptionalDerefError(obj, this);
         t = t->ref->sub;  // Auto-deref; ov's roots are already the pointee's owner.
         // As DerefLValue.
         ov.ClearReads();

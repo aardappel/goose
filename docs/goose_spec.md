@@ -822,6 +822,10 @@ rebinding the variable ends the narrowing. `o .= &x` / `o .= null` rebind
 an optional. A rebind to a plain reference narrows it, and a rebind to
 anything that may be null un-narrows it.
 
+Only variables narrow. Bind an optional field or element to a local with
+`.=` before testing and using it. For example, write
+`let next .= node.next; if next { print(next.key); }`.
+
 **What references may point to.** Anything except the interior of a
 fixed-mode ADT payload (§3.5). A reference into a grow-shrink array `[>..<]`
 is held only in a variable, and must no longer be live when the array next
