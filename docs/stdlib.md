@@ -135,6 +135,10 @@ fn next_pow2(x: i64) -> i64         // smallest power of two >= max(x, 1); abort
 fn popcount(x: u64) -> i64
 fn clz(x: u64) -> i64               // 64 for 0
 fn ctz(x: u64) -> i64               // 64 for 0
+fn mul_hi(a: u64, b: u64) -> u64    // the high 64 bits of a * b
+fn mul_wide(a: u64, b: u64) -> u64, u64   // a * b as high, low
+fn add_carry(a: u64, b: u64, c: u64) -> u64, u64    // a + b + c and its carry, c 0 or 1
+fn sub_borrow(a: u64, b: u64, c: u64) -> u64, u64   // a - b - c and its borrow, c 0 or 1
 fn rotl<N>(x: u32, n: N) -> u32     // and u64; rotr rotates right
 fn byte_swap(x: u32) -> u32         // and u16, u64
 fn is_pow2<T>(x: T) -> bool         // integers; false for x <= 0
@@ -150,7 +154,15 @@ can call them.
 
 `popcount`, `clz` and `ctz` are implemented in the runtime. Each is a single
 instruction where the C compiler has one (MSVC's `popcount` needs
-`/arch:AVX` or higher for that), and a loop under TinyCC. `rotl`, `rotr`
+`/arch:AVX` or higher for that), and a loop under TinyCC. So is `mul_hi`,
+through a 128-bit type or MSVC's `__umulh` (four 32-bit products under
+TinyCC); `mul_wide` gives both halves (one 128-bit product under clang
+and GCC 14 on), which is what multi-precision arithmetic on 64-bit limbs
+needs, with `add_carry` and `sub_borrow` for its carry chains: the sum and
+its carry come from one runtime call, `__builtin_addcll`/`__builtin_subcll`
+under clang and GCC 14 on or MSVC's `_addcarry_u64`/`_subborrow_u64` where
+there is one (unsigned comparisons elsewhere), so the C compiler chains
+them through the flags (`adc`, `sbb`; `adcs`, `sbcs`) rather than a branch. `rotl`, `rotr`
 and `byte_swap` are the runtime's as well, and one instruction each under
 GCC, clang and MSVC; the rest are Goose.
 

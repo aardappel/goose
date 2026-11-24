@@ -1,6 +1,6 @@
 // runtime-debug: std's bit helpers -- rotations, byte swaps, is_pow2, ilog2,
-// isqrt, gcd and lcm -- at the edges of their domains. Valid input trips
-// none of GS_DEBUG's checks inside std.
+// isqrt, gcd, lcm, mul_hi and mul_wide -- at the edges of their domains.
+// Valid input trips none of GS_DEBUG's checks inside std.
 import std;
 
 fn rotations() {
@@ -93,10 +93,68 @@ fn divisors() {
     print(lcm(r, s), " ", lcm(t, 1), " ", lcm(mn + 1, -1));                       // 255 127 9223372036854775807
 }
 
+// mul_hi and mul_wide at the edges, and mul_hi against four 32-bit products
+// over a pseudo-random sequence (the runtime's instruction or its fallback).
+fn products() {
+    let m: u64 = 0xFFFFFFFFFFFFFFFF;
+    let pairs: u64[14] = [0, 0, 1, 1, m, m, 0x8000000000000000, 2, 0x0123456789ABCDEF,
+                          0xFEDCBA9876543210, 0x100000000, 0x100000000, m, 1];
+    for i in 7 {
+        let hi, lo = mul_wide(pairs[2 * i], pairs[2 * i + 1]);
+        print(hi, " ", lo);
+    }
+    var x: u64 = 0x9E3779B97F4A7C15;
+    var bad = 0;
+    for i in 10000 {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        let y = x * 0xD1B54A32D192ED03 + i as! u64;
+        let a0 = x & 0xFFFFFFFF;
+        let a1 = x >> 32;
+        let b0 = y & 0xFFFFFFFF;
+        let b1 = y >> 32;
+        let mid = ((a0 * b0) >> 32) + ((a0 * b1) & 0xFFFFFFFF) + ((a1 * b0) & 0xFFFFFFFF);
+        let hi = a1 * b1 + ((a0 * b1) >> 32) + ((a1 * b0) >> 32) + (mid >> 32);
+        if mul_hi(x, y) != hi { bad++; }
+    }
+    print("mul_hi mismatches: ", bad);
+}
+
+// add_carry and sub_borrow at the edges, and against 32-bit halves over a
+// pseudo-random sequence.
+fn carries() {
+    let m: u64 = 0xFFFFFFFFFFFFFFFF;
+    let s0, c0 = add_carry(m, 0, 1);
+    let s1, c1 = add_carry(m, m, 1);
+    let s2, c2 = add_carry(1, 2, 0);
+    let d0, b0 = sub_borrow(0, 0, 1);
+    let d1, b1 = sub_borrow(0, m, 1);
+    let d2, b2 = sub_borrow(5, 3, 1);
+    print(s0, " ", c0, " ", s1, " ", c1, " ", s2, " ", c2);                    // 0 1 18446744073709551615 1 3 0
+    print(d0, " ", b0, " ", d1, " ", b1, " ", d2, " ", b2);                    // 18446744073709551615 1 0 1 1 0
+    var x: u64 = 0x9E3779B97F4A7C15;
+    var bad = 0;
+    for i in 10000 {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        let y = x * 0xD1B54A32D192ED03;
+        let c = (x >> 17) & 1;
+        let lo = (x & 0xFFFFFFFF) + (y & 0xFFFFFFFF) + c;
+        let hi = (x >> 32) + (y >> 32) + (lo >> 32);
+        let s, carry = add_carry(x, y, c);
+        if s != (hi << 32 | (lo & 0xFFFFFFFF)) || carry != hi >> 32 { bad++; }
+        // a - b - c borrows when b + c > a.
+        let d, borrow = sub_borrow(x, y, c);
+        let want: u64 = if y > x || (y == x && c == 1) { 1 } else { 0 };
+        if d + y + c != x || borrow != want { bad++; }
+    }
+    print("add_carry and sub_borrow mismatches: ", bad);
+}
+
 fn main() {
     rotations();
     swaps();
     powers();
     roots();
     divisors();
+    products();
+    carries();
 }

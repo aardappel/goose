@@ -681,7 +681,7 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_sub_i32(a, b, f, l) ((int32_t)((int64_t)(a) - (int64_t)(b)))
 #define gs_mul_i32(a, b, f, l) ((int32_t)((int64_t)(a) * (int64_t)(b)))
 #define gs_neg_i32(a, f, l)    ((int32_t)(-(int64_t)(a)))
-#define gs_shl_i32(a, n) ((int32_t)((uint64_t)(a) << ((n) & 31)))
+#define gs_shl_i32(a, n) ((int32_t)((uint32_t)(a) << (uint32_t)((n) & 31)))
 #define gs_shr_i32(a, n) ((int32_t)((int64_t)(a) >> ((n) & 31)))
 
 #define gs_add_u8(a, b)  ((uint8_t)((a) + (b)))
@@ -699,8 +699,11 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_add_u32(a, b) ((uint32_t)((a) + (b)))
 #define gs_sub_u32(a, b) ((uint32_t)((a) - (b)))
 #define gs_mul_u32(a, b) ((uint32_t)((uint64_t)(a) * (uint64_t)(b)))
-#define gs_shl_u32(a, n) ((uint32_t)((uint64_t)(a) << ((n) & 31)))
-#define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
+/* 32-bit shifts in 32 bits: through uint64_t the C compiler vectorizes a
+   loop of them on 64-bit lanes (x86-64's SSE2 then widens and narrows every
+   four limbs), and BigInt's shifts ran at a third of the speed. */
+#define gs_shl_u32(a, n) ((uint32_t)((uint32_t)(a) << (uint32_t)((n) & 31)))
+#define gs_shr_u32(a, n) ((uint32_t)((uint32_t)(a) >> (uint32_t)((n) & 31)))
 
 #define gs_add_i64(a, b, f, l) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
 #define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
