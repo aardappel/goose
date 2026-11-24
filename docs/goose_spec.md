@@ -5288,10 +5288,11 @@ compiler's own description, pass by pass and analysis by analysis, is
   stdout is left to the program. It runs on the compiler's main thread. The
   compiler reserves that thread's stack at 64 MB on Windows and macOS,
   where an executable's main thread gets 1 MB and 8 MB respectively by
-  default; on Linux it is the stack limit the process started with
-  (`ulimit -s`), as for an executable. The program's own C is the same for
-  both backends, and `-D` is written into that C rather than passed to a
-  backend so that this stays true. What differs is the runtime around it.
+  default; on Linux goose and a built executable each raise the soft
+  RLIMIT_STACK to that same 64 MB at process start, when the hard limit
+  allows it and the limit is not already higher. The program's own C is the
+  same for both backends, and `-D` is written into that C rather than passed
+  to a backend so that this stays true. What differs is the runtime around it.
   The in-process build compiles the whole runtime with the program. The
   file holds only the parts of the runtime that have to be inlined into the
   program and declares the rest; `goose --emit-runtime` writes that rest as

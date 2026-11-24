@@ -914,6 +914,12 @@ typedef struct {
    an --include header including it gets nothing more. */
 #define GOOSE_H 1
 
+/* Linux: raise the soft RLIMIT_STACK to the 64 MB a Windows or macOS link
+   reserves for the main thread, when the hard limit allows and the soft
+   limit is not already higher. Nothing elsewhere. Called from a program's
+   main and again from gs_rt_start, before the overflow guard's stack bounds
+   are recorded. */
+GS_API void gs_raise_main_stack(void);
 /* Starts the runtime on main's thread: the program's arguments, each
    region's usable reservation and trailing guard gap, the address space
    budgeted for regions over the whole program, and the most regions the
