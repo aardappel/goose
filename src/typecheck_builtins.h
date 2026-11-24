@@ -132,6 +132,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (av.type->kind == TY_VOID || av.type->kind == TY_FN || !IsFlat(av.type))
                 Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(av.type)));
             if (HoldsIndexT(av.type)) ThreadIndexError(c, av.type);
+            NoteQueue(true, av.type, c);
             // false when the queue is full (§11.2); a call statement drops it.
             Val ok;
             ok.type = ast.booltype;
@@ -153,6 +154,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 c->qtype = t;
                 return VoidVal();
             }
+            NoteQueue(false, t, c);
             c->rettypes.push_back(t);
             Val first;
             first.type = t;
@@ -697,6 +699,75 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         default: assert(false);
     }
     return v;
+}
+
+// Whether two element types select one queue. Codegen names a queue after
+// its type's mangling (QueueFor), which leaves constness out.
+inline bool TypeCheck::SameQueue(TypeExpr *a, TypeExpr *b) {
+    if (a->kind != b->kind) return false;
+    auto args = [&](vector<TypeExpr *> &x, vector<TypeExpr *> &y) {
+        if (x.size() != y.size()) return false;
+        for (size_t i = 0; i < x.size(); i++)
+            if (!SameQueue(x[i], y[i])) return false;
+        return true;
+    };
+    switch (a->kind) {
+        case TY_STRUCT:
+            return a->struc->st == b->struc->st && args(a->struc->args, b->struc->args);
+        case TY_ENUM:
+            return a->enu->en == b->enu->en && a->enu->varmode == b->enu->varmode &&
+                   args(a->enu->args, b->enu->args);
+        case TY_VARIANT:
+            return a->var->variant == b->var->variant && SameQueue(a->var->adt, b->var->adt);
+        default: return TopConstEq(a, b);
+    }
+}
+
+// A qput's element type, or a qget's or qpoll's with the call. A call
+// checked again, or in another specialization with the same type, adds
+// nothing.
+inline void TypeCheck::NoteQueue(bool send, TypeExpr *t, Call *c) {
+    if (send) {
+        for (auto s : queuesends) if (SameQueue(s, t)) return;
+        queuesends.push_back(t);
+        return;
+    }
+    for (auto &[r, rc] : queuereceives)
+        if (rc->Origin() == c->Origin() && SameQueue(r, t)) return;
+    queuereceives.push_back({ t, c });
+}
+
+// Once the whole program is checked, a qget or qpoll whose queue no qput
+// sends on warns: it receives nothing, and a qget waits forever (§11.2). A
+// type a qput sends that is near the one received -- a variant beside its
+// enum, or another width of integer or float -- is named, as the likely
+// slip: each has a queue of its own.
+inline void TypeCheck::ReportUnsentQueues() {
+    // An error leaves some of the program unchecked, and so its sends unknown.
+    if (!ast.errors.empty()) return;
+    auto adt = [](TypeExpr *t) {
+        auto a = AdtOf(t);
+        return a ? a->enu->en : nullptr;
+    };
+    for (auto &[t, c] : queuereceives) {
+        auto sent = false;
+        TypeExpr *near = nullptr;
+        for (auto s : queuesends) {
+            if (SameQueue(s, t)) {
+                sent = true;
+                break;
+            }
+            if (!near && ((adt(s) && adt(s) == adt(t)) || (IsIntT(s) && IsIntT(t)) ||
+                          (s->kind == TY_FLT && t->kind == TY_FLT)))
+                near = s;
+        }
+        if (sent) continue;
+        auto ts = TypeStr(t);
+        auto msg = cat("no qput sends ", ts, ", so ", c->builtin == B_QPOLL ? "qpoll" : "qget",
+                       "<", ts, "> receives nothing (§11.2)");
+        if (near) Append(msg, "; ", TypeStr(near), ", which a qput sends, has a queue of its own");
+        Warn(c, msg);
+    }
 }
 
 // The growable u8 array a builtin's `out` argument appends to (BF_OUTARG),

@@ -4663,7 +4663,11 @@ relative of the Linda tuple-space / coordination style.
   `qget<T>(ms: i64) -> T, bool` (like `qpoll`, after waiting at most `ms`
   milliseconds; zero or less does not wait) and `qlimit<T>(n: i64)` select
   the queue by type. Queues are stored outside stack memory
-  (runtime-internal allocation is permitted here).
+  (runtime-internal allocation is permitted here). `qput` uses the queue of
+  its argument's type: a variant literal has its variant type (§3.5) and an
+  integer literal is an `i64`, so `qput(Shape.Circle { r: 1.0 })` does not
+  feed `qget<Shape>()`. A `qget` or `qpoll` of a type that no `qput` in the
+  program sends is a warning, since it can receive nothing.
 * **Bounded queues**: `qput` never blocks. It returns `true` once the value
   is queued, and returns `false` immediately, queueing nothing, when the
   queue holds its limit of messages. A call statement drops the result

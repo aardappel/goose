@@ -3894,6 +3894,11 @@ Goose value is contiguous, so a job or a result carries real data,
 including its variable-size parts, as a single copy. A `thread_fn`'s
 parameters have no defaults.
 
+The queue is the one for the type the value has: a variant literal such as
+`Shape.Circle { r: 1.0 }` has its variant's type, and `7` is an `i64`, so
+neither reaches a `qget<Shape>()` or a `qget<i32>()`. A `qget` or `qpoll`
+of a type that no `qput` in the program sends gives a warning.
+
 <!-- check-only -->
 ```goose
 struct Job    { n: i32 }

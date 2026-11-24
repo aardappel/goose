@@ -2176,6 +2176,13 @@ struct TypeCheck {
     string CastReason(const CastAlt &a, TypeExpr *reach, bool bycast = false);
     void CastVerdict(const CastAlt &a, const string &reason, const AsCast *dependson = nullptr);
     void ReportRedundantCasts();
+    // The element types the program's qput calls send, and the qget and qpoll
+    // calls with the types they receive (§11.2), for ReportUnsentQueues.
+    vector<TypeExpr *> queuesends;
+    vector<pair<TypeExpr *, Call *>> queuereceives;
+    bool SameQueue(TypeExpr *a, TypeExpr *b);
+    void NoteQueue(bool send, TypeExpr *t, Call *c);
+    void ReportUnsentQueues();
     bool ElementwiseOK(TypeExpr *t);
     TypeExpr *ElementwiseScalarType(TypeExpr *t);
     TypeExpr *UnsignedLeaf(TypeExpr *t);
@@ -3170,6 +3177,7 @@ struct TypeCheck {
         CheckRoot([&] { ResolveGrowConflicts(); });
         CheckRoot([&] { VerifyLiterals(); });
         CheckRoot([&] { ReportRedundantCasts(); });
+        CheckRoot([&] { ReportUnsentQueues(); });
         CheckRoot([&] { CheckDefers(); });
         if (ast.exemplars) CheckExemplars();
     }

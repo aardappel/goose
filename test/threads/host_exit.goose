@@ -11,6 +11,7 @@ var calls: i64;
 var seen: i64[>..] = [];
 
 // Never gets its Stop: a worker that runs for as long as the program does.
+// warning: no qput sends Stop, so qget<Stop> receives nothing (§11.2)
 thread_fn parked() {
     let s = qget<Stop>();
     print("parked: ", s.n);
