@@ -939,6 +939,7 @@ struct CodeGen {
     Loc BytesLoc(const string &ptr, TypeExpr *t, const Loc &from);
     void RelParts(const Loc &lv, string &faddr, string &off);
     string RelOrigin(TypeExpr *rt, const string &faddr);
+    string RelTarget(TypeExpr *rt, const string &faddr, const string &off);
     string PointeeLv(const string &p, TypeExpr *t);
     void DerefLoc(Loc &lv);
     void PinLoc(Loc &lv);
@@ -1162,11 +1163,11 @@ struct CodeGen {
     void EmitArrayCount(const string &stk, TypeExpr *at, const string &lenlv, const string &n,
                         bool check);
     void EmitVarintStore(const string &stk, const string &x);
-    void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
+    void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln);
     RelFacts RelValue(Node *v);
     bool RelSlotApart(TypeExpr *rt, TypeExpr *holder, int64_t off);
     string RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln, RelFacts f);
-    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot,
+    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln,
                         RelFacts f = {});
     void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln,
                       RelFacts f = {});
@@ -1180,14 +1181,6 @@ struct CodeGen {
     void NoSelfRelCopy(Node *val);
     bool HasUninitSlots(TypeExpr *t);
 
-    // Byte span of the largest fixed value that can be a relative
-    // reference's root array (§3.9). Roots are variables, so this is the
-    // widest offset a store into a root that is *not* on a data stack can
-    // produce; stack roots are bounded by GS_STACK_RESERVE instead. Both
-    // bounds decide whether EmitRelStoreAt emits its range check.
-    int64_t relrootmax = 0;
-
-    void ComputeRelRootMax();
     void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n);
 
     // Element count + elements pointer of an array/slice-valued source node,
@@ -1220,7 +1213,7 @@ struct CodeGen {
     void FixedLitAtStk(Node *n, const string &stk);
     void FixedLitAt(Node *n, const string &dst);
     void FixedLitAtLv(Node *n, const string &base, bool inroot);
-    void FixedArrayLitAt(ArrayLit *al, const string &base, bool inroot);
+    void FixedArrayLitAt(ArrayLit *al, const string &base);
     void StructLitAt(StructLit *sl, const string &base, bool inroot);
     void EmitValStoreTag(const string &stk, IntStorage ts, const string &x);
     // How many elements an array literal writes: its fill count, which the
@@ -1630,7 +1623,6 @@ struct CodeGen {
           norfcheck(_norfcheck), noelide(_noelide), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
-        ComputeRelRootMax();
         CollectSpecs();
         for (auto sp : livespecs)
             for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);

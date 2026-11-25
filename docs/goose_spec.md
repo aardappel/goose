@@ -883,12 +883,11 @@ array/pool* as the location storing it.
   the offset would span. A reference read out of a container qualifies
   exactly when the read-back rule of §9.5 names a single candidate.
   Otherwise, the error names the candidates the rule could not choose
-  between. The offset is range-checked at the store (aborting on overflow
-  of the width). Both ends lie in one root array, so the offset cannot
-  exceed that array's span. The check therefore exists only where a root
-  can be wider than the width's signed range. A root on a data stack spans
-  at most the reservation (§10.4), so a reservation of 2 GB or less needs no
-  check for `u32`, and one of 32 KB or less needs none for `u16`.
+  between. A store aborts if the signed byte distance from the slot to the
+  target falls outside the range of the declared width. A compiler may omit
+  this check when it proves the distance fits. A frame object (C.2) can hold a
+  target in its fixed header and a slot in its separately allocated tail,
+  so the distance can exceed the size of a data-stack reservation (§10.4).
   Varint-width relative references are written only at construction, like
   varint fields (re-encoding could change the byte length); fixed widths may
   be re-stored with `.=`/`=`.
@@ -4017,8 +4016,7 @@ the last two ends only that worker:
 * shrinking below empty (`pop` on an empty array, `pop_n` of a negative
   count or of more elements than the array holds, `resize` to a negative
   length);
-* relative-reference offset overflow at store (only where a root array, or
-  a named pool, can span more than the width holds, §3.9);
+* relative-reference offset overflow at store (§3.9);
 * debug only: integer overflow (per operation as it executes, §6.2), `as`
   conversions that change the value (§6.3; conversions to a float
   excepted);

@@ -787,7 +787,7 @@ inline void Call::CgAny(CodeGen &cg, const Dst &d) {
         (!cg.IsBytesT(exprtype) || IsVarintT(exprtype) || exprtype->kind == TY_REF)) {
         auto r0 = cg.CallVal0(this, rets[0], d.t);
         if (d.k == DK_LVALUE && d.t && IsRelRef(d.t))
-            cg.EmitRelStoreAt(cat("(uint8_t *)&", d.s), d.t, r0, line, false);
+            cg.EmitRelStoreAt(cat("(uint8_t *)&", d.s), d.t, r0, line);
         else if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
     }
 }
@@ -1210,15 +1210,12 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         } else if (IsRelRef(v.elem)) {
             // A relative-reference element bound by value: the binding is the
             // decoded pointer, as indexing the array would give (§3.9).
-            auto fa = cg.T();
-            cg.L("uint8_t *", fa, " = (uint8_t *)&", elem, ";");
-            auto off = cg.T();
-            cg.L("int64_t ", off, " = (int64_t)*(", cg.RelCT(v.elem), " *)(", fa, ");");
-            auto target = cat("(", cg.CT(et), ")(", cg.RelOrigin(v.elem, fa), " + ", off, ")");
-            if (v.elem->ref->optional)
-                cg.L(cg.CT(et), " ", iv, " = ", off, " ? ", target, " : NULL;");
-            else
-                cg.L(cg.CT(et), " ", iv, " = ", target, ";");
+            CodeGen::Loc slot;
+            slot.val = true;
+            slot.t = v.elem;
+            slot.s = elem;
+            auto ref = cg.LoadLoc(slot, et, line);
+            cg.L(cg.CT(et), " ", iv, " = ", ref, ";");
         } else {
             cg.FixedLocal(et, iv, elem, true);
             cg.vnames[vdef] = iv;

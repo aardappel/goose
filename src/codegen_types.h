@@ -1397,7 +1397,7 @@ inline string CodeGen::EqFn(TypeExpr *t) {
             Append(bo, "    return oa == ob;\n");
         } else {
             auto target = [&](const string &field, const string &off) {
-                auto p = cat("(", field, " + ", off, ")");
+                auto p = RelTarget(t, field, off);
                 return t->ref->optional ? cat("(", off, " ? ", p, " : NULL)") : p;
             };
             Append(bo, "    return ", target(fa, "oa"), " == ", target(fb, "ob"), ";\n");

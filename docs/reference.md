@@ -1906,9 +1906,9 @@ A node is 16 bytes: two `i32`s and two 4-byte links. `cur.left .=
 pool.push(…)` pushes the node and stores the offset, and the push cannot
 invalidate `cur`, because nothing moves. Storing a self-relative link
 requires the compiler to see that the reference and the destination derive
-from the **same root array, exactly**: here both are `pool`. The offset is
-range-checked at the store only where the array could span more than the
-width holds.
+from the **same root array, exactly**: here both are `pool`. The store
+aborts if the signed byte distance from the link to its target does not
+fit the declared width.
 
 ### Copying values that hold self-relative links
 

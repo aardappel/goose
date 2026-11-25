@@ -99,19 +99,10 @@ inline void CodeGen::EmitVarintStore(const string &stk, const string &x) {
     Bump(stk, cat("gs_zig_write(", Top(stk), ", ", x, ")"));
 }
 
-// The range check a store of `off` into a relative slot of width `w`
-// needs (§3.9). The self-relative form is signed and bounded by the span
-// of the root array; the `in pool` form is unsigned and bounded by the
-// pool, so its width covers 2^N - 1 bytes of one. Either way a root on a
-// data stack is inside one reservation of GS_STACK_RESERVE bytes (guard
-// region behind it, so nothing past it is ever written), and a fixed root
-// is at most `relrootmax`. The check is emitted only where one of those
-// exceeds the width; GS_STACK_RESERVE is a C macro, so that half of the
-// test is left to the C preprocessor.
-//
-// `inroot` says the slot address is its real one inside the root array,
-// which holds everywhere except the literal-temp path in StructLit::CgX.
-inline void CodeGen::EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot) {
+// A named pool's elements lie in a single data-stack reservation. A
+// self-relative target and slot can share a root even when one lies in a
+// frame object's header and the other in its separately stored tail.
+inline void CodeGen::EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln) {
     auto w = (IntStorage)rt->ref->lenstorage;
     auto bits = IntSize(w) * 8;
     if (bits >= 64) return;
@@ -122,12 +113,9 @@ inline void CodeGen::EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln,
         L("#endif");
         return;
     }
-    auto guarded = inroot && relrootmax <= (1ll << (bits - 1));
-    if (guarded) L("#if GS_STACK_RESERVE > (1ull << ", bits - 1, ")");
     L("if (", off, " < -(1LL << ", bits - 1, ") || ", off, " >= (1LL << ",
       bits - 1, ")) gs_abort(GS_E_RELOFF, ",
       LocArgs(ln), ");");
-    if (guarded) L("#endif");
 }
 
 // A reference of a non-optional type is never null (§3.8): the value of
@@ -171,12 +159,15 @@ inline bool CodeGen::RelSlotApart(TypeExpr *rt, TypeExpr *holder, int64_t off) {
 // itself, which aborts, unless the facts rule that target out.
 inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln,
                                  RelFacts f) {
-    auto addr = cat("(uint8_t *)(", rv, ")");
+    auto addr = cat("(uintptr_t)(", rv, ")");
+    // The supported targets have flat user addresses whose distances fit
+    // int64_t, and convert the unsigned difference to two's-complement signed.
+    auto distance = cat("(int64_t)((uint64_t)", addr, " - ", org, ")");
     auto off = T();
     if (rt->ref->optional && !f.nonnull)
-        L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
+        L("int64_t ", off, " = ", addr, " ? ", distance, " : 0;");
     else
-        L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+        L("int64_t ", off, " = ", distance, ";");
     if (rt->ref->optional && !rt->ref->pool && !f.apart)
         L("if (", f.nonnull ? string() : cat(addr, " && "), "!", off, ") gs_abort(GS_E_RELNULL, ",
           LocArgs(ln), ");");
@@ -187,11 +178,11 @@ inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &
 // `fa` (§3.9), range-checked. Fixed widths only; the varint form exists
 // only in the stack-top variant below.
 inline void CodeGen::EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln,
-                                    bool inroot, RelFacts f) {
+                                    RelFacts f) {
     assert(rt->ref->lenstorage != IS_VARINT);
     assert(!IsResz(rt->ref->sub));
     auto off = RelOffset(rt, RelOrigin(rt, fa), rv, ln, f);
-    EmitRelRangeCheck(rt, off, ln, inroot);
+    EmitRelRangeCheck(rt, off, ln);
     L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
 }
 
@@ -206,7 +197,7 @@ inline void CodeGen::EmitRelStore(const string &stk, TypeExpr *rt, const string 
         Bump(stk, rt->ref->pool ? cat("gs_uleb_write(", fa, ", (uint64_t)", off, ")")
                                 : cat("gs_zig_write(", fa, ", ", off, ")"));
     } else {
-        EmitRelStoreAt(fa, rt, rv, ln, true, f);
+        EmitRelStoreAt(fa, rt, rv, ln, f);
         Bump(stk, cat(IntSize(w)));
     }
 }
@@ -229,9 +220,9 @@ inline void CodeGen::EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t field
                          " field needs the value's final address, which this literal is "
                          "not being built at"));
         auto off = T();
-        L("int64_t ", off, " = (int64_t)((", fa, ") - ", fieldoff, " - (",
-          RelOrigin(rt, fa), "));");
-        EmitRelRangeCheck(rt, off, ln, true);
+        L("int64_t ", off, " = (int64_t)((uintptr_t)(", fa, ") - ", fieldoff, " - ",
+          RelOrigin(rt, fa), ");");
+        EmitRelRangeCheck(rt, off, ln);
         L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
         return;
     }
@@ -321,13 +312,6 @@ inline void CodeGen::NoSelfRelCopy(Node *val) {
     if (id && id->vdef && id->vdef->type && HasSelfRelRef(id->vdef->type))
         Fail(val->line, cat("internal error: ", id->vdef->name, " holds self-relative "
                             "references and is not built where it is returned"));
-}
-
-inline void CodeGen::ComputeRelRootMax() {
-    for (auto vd : ast.vardefs) {
-        if (!vd->type || !IsFix(vd->type) || !HasRelRef(vd->type)) continue;
-        relrootmax = std::max(relrootmax, FixedSize(vd->type));
-    }
 }
 
 // Copies `n` elements of type `elem` from `src` (typed or byte pointer)
@@ -1108,20 +1092,19 @@ inline void CodeGen::FixedLitAt(Node *n, const string &dst) {
 
 // As above, for a destination cheap enough to name per field.
 inline void CodeGen::FixedLitAtLv(Node *n, const string &base, bool inroot) {
-    if (auto al = Is<ArrayLit>(n)) { FixedArrayLitAt(al, base, inroot); return; }
+    if (auto al = Is<ArrayLit>(n)) { FixedArrayLitAt(al, base); return; }
     auto sl = Is<StructLit>(n);
     assert(sl);
     StructLitAt(sl, base, inroot);
 }
 
-inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inroot) {
+inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base) {
     auto et = al->exprtype;
     assert(et->kind == TY_ARRAY);
     auto elem = et->arr->sub;
     auto rel = IsRelRef(elem);
     auto emitelem = [&](Node *e, const string &path) {
-        if (rel) EmitRelStoreAt(cat("(uint8_t *)&", path), elem, GenX(e), al->line, inroot,
-                                RelValue(e));
+        if (rel) EmitRelStoreAt(cat("(uint8_t *)&", path), elem, GenX(e), al->line, RelValue(e));
         else GenAny(e, Dst { DK_LVALUE, path, elem });
     };
     auto count = LitCount(al);
@@ -1152,8 +1135,7 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
         emitelem(al->elems[i], cat(base, ".e[", i, "]"));
 }
 
-// `inroot` says `base` is the value's real address inside its root (see
-// EmitRelStoreAt); a temporary that is copied afterwards is not.
+// A pool-relative `self` needs the value's final address (`inroot`).
 inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot) {
     auto et = sl->exprtype;
     if (ZeroDefaultValue(sl, et)) {
@@ -1181,7 +1163,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
                 else {
                     auto f = RelValue(init);
                     f.apart = RelSlotApart(ft, et, baseoff + lo.offs[i]);
-                    EmitRelStoreAt(cat("(uint8_t *)&", path), ft, GenX(init), sl->line, inroot, f);
+                    EmitRelStoreAt(cat("(uint8_t *)&", path), ft, GenX(init), sl->line, f);
                 }
                 continue;
             }
@@ -1354,8 +1336,7 @@ inline void CodeGen::GenFrameObjLit(StructLit *sl, StructInst *si, const string 
         // Only the `in pool` form can be a frame object's field (C.2), so
         // the offset does not depend on where the object is built.
         if (IsRelRef(ft)) {
-            EmitRelStoreAt(cat("(uint8_t *)&", flv), ft, GenX(init), sl->line, true,
-                           RelValue(init));
+            EmitRelStoreAt(cat("(uint8_t *)&", flv), ft, GenX(init), sl->line, RelValue(init));
             continue;
         }
         GenAny(init, Dst { DK_LVALUE, flv, ft });

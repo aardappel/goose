@@ -79,12 +79,16 @@ inline void CodeGen::RelParts(const Loc &lv, string &faddr, string &off) {
     }
 }
 
-// What a relative offset is measured from (§3.9): the offset field's own
-// address, or, for an `in pool` reference, the pool's base biased by one
-// so that a target at the base still encodes non-zero and 0 stays null.
+// Measure offsets in integer addresses (§3.9). A frame object's header
+// and its tail can lie in different C objects, and a named pool's bias
+// puts the origin one byte before the first element.
 inline string CodeGen::RelOrigin(TypeExpr *rt, const string &faddr) {
-    if (!rt->ref->pool) return faddr;
-    return cat("(", PoolBase(rt->ref->pool), " - 1)");
+    if (!rt->ref->pool) return cat("(uintptr_t)(", faddr, ")");
+    return cat("((uintptr_t)(", PoolBase(rt->ref->pool), ") - 1)");
+}
+
+inline string CodeGen::RelTarget(TypeExpr *rt, const string &faddr, const string &off) {
+    return cat("(uint8_t *)(", RelOrigin(rt, faddr), " + (uintptr_t)(", off, "))");
 }
 
 // The pointee of `p`, a plain pointer to a fixed-class value of type t, as a
@@ -114,7 +118,7 @@ inline void CodeGen::DerefLoc(Loc &lv) {
         string faddr, off;
         RelParts(lv, faddr, off);
         auto p = T();
-        L("uint8_t *", p, " = ", RelOrigin(lv.t, faddr), " + ", off, ";");
+        L("uint8_t *", p, " = ", RelTarget(lv.t, faddr, off), ";");
         auto nl = BytesLoc(p, r.sub, lv);
         lv = nl;
         return;
@@ -1021,13 +1025,13 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
         auto &r = *lv.t->ref;
         string faddr, off;
         RelParts(lv, faddr, off);
-        auto org = RelOrigin(lv.t, faddr);
         auto ov = T(), p = T();
         L("int64_t ", ov, " = ", off, ";");
+        auto target = RelTarget(lv.t, faddr, ov);
         // Offset 0 is null only for the optional spelling (§3.9); a
         // non-optional slot holds a reference, so the address is the sum.
-        if (r.optional) L("uint8_t *", p, " = ", ov, " ? ", org, " + ", ov, " : NULL;");
-        else L("uint8_t *", p, " = ", org, " + ", ov, ";");
+        if (r.optional) L("uint8_t *", p, " = ", ov, " ? ", target, " : NULL;");
+        else L("uint8_t *", p, " = ", target, ";");
         // Relative references never point at resizables: pool elements
         // are at most variable-class (§3.3).
         assert(!IsResz(r.sub));
@@ -1609,7 +1613,7 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
     assert(et->kind == TY_ARRAY);
     auto tv = T();
     FixedLocal(et, tv, HasUninitSlots(et) ? "{0}" : "");
-    FixedArrayLitAt(al, tv, false);
+    FixedArrayLitAt(al, tv);
     return tv;
 }
 
