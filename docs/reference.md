@@ -3460,6 +3460,11 @@ foo(1, h)                            // a named function
 * A block's value type is inferred without the destination type its call
   meets, so a block's value cannot be `[]`. The storage that receives it
   is still known, and is used to check relative links in a fresh result.
+* A block's value is received after the block ends, like a bare block's
+  ([section 12](#12-lifetimes-roots-stores-and-writability)), so it may
+  not view the block's own locals or its by-value parameters:
+  `{ xs: i64[>..] => xs[..] }` is an error, even where the value is only
+  passed to another call.
 
 ```goose
 fn each_pair<T, F>(xs: T[:]) {
