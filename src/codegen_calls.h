@@ -337,18 +337,191 @@ inline bool CodeGen::MovableArg(FnSpec *sp, Node *n, TypeExpr *pt) {
     return SingleUses(curspec).count(id) > 0;
 }
 
-// A by-pointer parameter whose storage the callee never writes, so that it
-// can be the caller's own variable: not `var` (§4.4), never written through
-// a writable reference, nor captured, and no assignment, `++` or `&` in the
-// body rooted at it -- which the optimizer's rewrites, a tail recursion's
-// rebinding of the parameters (optimize_tre.h) among them, may make.
+// How a spec uses its variables, told by where each is named. A variable is
+// exposed unless every place that names it is known to do no more than load
+// its bytes -- a field or an element of it, or the whole, read as a value by
+// what is around it (READ) -- or store to them directly (STORED). Everything
+// not named here exposes: a slice, written or where an array converts to
+// one, a reference (`&`, `.=`, a by-reference `for` or `match`), a builtin's
+// receiver, what a `format` overload is handed, the dispatched argument, a
+// worker's. So an unexposed variable has no other name: no reference or
+// slice anywhere leads to its storage, and only the spec's own stores, which
+// name it, write it. A node or a form of one the checker or optimizer comes
+// to make exposes what it names until it is added here.
 //
-// Without both isvar and the writes (either is enough for a `var`
-// parameter the body changes), fixed_pointer_abi's bump prints otherwise;
-// isvar alone is checked by last_use_moves' C shapes. Without captured,
-// large_fixed_values fails. No test fails without isextern, refwrite,
-// reusable or IsPoolParam, nor without the writes alone, which only an
-// optimizer rewrite could make to a parameter that is not `var` (#341).
+// A conversion keeps the operand's node in some places and changes its type
+// in others, so each step of a path must have the type of what it names, and
+// the whole the type its user takes (`want`; with none, only a scalar, a
+// slice or a reference held there is loaded, whose own type a conversion
+// cannot make a view of the variable's bytes).
+inline const CodeGen::VarUses &CodeGen::UsesOf(FnSpec *sp) {
+    auto it = varuses.find(sp);
+    if (it != varuses.end()) return it->second;
+    auto &uses = varuses[sp];
+    enum How { EXPOSED, READ, STORED };
+    auto scalar = [](TypeExpr *t) {
+        return t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL;
+    };
+    auto same = [&](TypeExpr *a, TypeExpr *b) {
+        return a && b && (scalar(a) ? a->kind == b->kind : TEq(a, b));
+    };
+    // The type of the field or element n names, where n lies in its object's
+    // own storage.
+    auto partof = [&](Node *n) -> TypeExpr * {
+        if (auto ix = Is<Index>(n)) {
+            auto t = ix->obj->exprtype;
+            return t && t->kind == TY_ARRAY && IsFix(t) ? t->arr->sub : nullptr;
+        }
+        auto d = Is<Dot>(n);
+        auto t = d->obj->exprtype;
+        if (!t || d->fieldidx < 0) return nullptr;
+        if (t->kind == TY_STRUCT && IsFix(t)) return SI(t)->ftypes[d->fieldidx];
+        if (t->kind != TY_VARIANT || !IsFix(t)) return nullptr;
+        auto ei = EIVar(t);
+        return ei->vftypes[ei->en->VariantIndex(t->var->variant)][d->fieldidx];
+    };
+    auto ispath = [](Node *n) {
+        auto d = Is<Dot>(n);
+        return Is<Ident>(n) || Is<Index>(n) || (d && d->IsField());
+    };
+    function<void(Node *, How, TypeExpr *)> walk;
+    function<void(Node *, How)> path = [&](Node *n, How how) {
+        auto t = n->exprtype;
+        if (auto id = Is<Ident>(n)) {
+            auto v = id->vdef;
+            if (!v) return;
+            if (how == EXPOSED || !v->type || !t || !TEq(t, v->type)) uses.exposed.insert(v);
+            else if (how == STORED) uses.stored.insert(v);
+            return;
+        }
+        auto ix = Is<Index>(n);
+        auto obj = ix ? ix->obj : Is<Dot>(n)->obj;
+        if (ix) walk(ix->idx, READ, nullptr);
+        // Through a reference or slice, which is loaded, to other storage.
+        auto ot = obj->exprtype;
+        if (ot && (ot->kind == TY_REF || ot->kind == TY_SLICE)) return walk(obj, READ, ot);
+        if (!ispath(obj)) return walk(obj, EXPOSED, nullptr);
+        path(obj, same(partof(n), t) ? how : EXPOSED);
+    };
+    walk = [&](Node *n, How how, TypeExpr *want) {
+        if (!n) return;
+        if (ispath(n)) {
+            auto t = n->exprtype;
+            auto held = t && (scalar(t) || t->kind == TY_SLICE || (t->kind == TY_REF && !IsRelRef(t)));
+            auto ok = want ? same(want, t) : held;
+            return path(n, ok ? how : EXPOSED);
+        }
+        if (how == STORED) how = EXPOSED;
+        auto rest = [&](Node *x) { walk(x, EXPOSED, nullptr); };
+        auto read = [&](Node *x) { walk(x, READ, nullptr); };
+        auto u = Is<Unary>(n);
+        if ((u && u->op != T_BITAND) || Is<AsCast>(n) || Is<RangeExpr>(n) || Is<Break>(n)) {
+            RunChildren(n, read);
+        } else if (auto d = Is<Dot>(n)) {
+            // .len and .cap; a variant constant's obj names a type.
+            if (d->member == B_LEN || d->member == B_CAP) walk(d->obj, READ, d->obj->exprtype);
+            else rest(d->obj);
+        } else if (auto b = Is<Binary>(n)) {
+            walk(b->left, READ, b->left->exprtype);
+            walk(b->right, READ, b->right->exprtype);
+        } else if (auto i = Is<IfExpr>(n)) {
+            read(i->cond);
+            walk(i->thenb, how, want);
+            walk(i->elseb, how, want);
+        } else if (auto b = Is<Block>(n)) {
+            for (auto st : b->stmts) rest(st);
+            walk(b->tail, how, want);
+        } else if (auto ib = Is<InlineBlock>(n)) {
+            // Its value is a copy, as the call's would be.
+            auto one = ib->spec && ib->spec->rets.size() == 1;
+            walk(ib->body, READ, one ? ib->spec->rets[0] : nullptr);
+        } else if (auto e = Is<EarlyBlock>(n)) {
+            walk(e->body, how, want);
+        } else if (auto w = Is<While>(n)) {
+            read(w->cond);
+            rest(w->body);
+        } else if (auto f = Is<ForLoop>(n)) {
+            if (f->iterkind == IK_RANGE || f->iterkind == IK_COUNT) read(f->iter);
+            else rest(f->iter);
+            rest(f->body);
+        } else if (auto r = Is<Return>(n)) {
+            auto fits = r->targetspec && r->targetspec->rets.size() == r->vals.size();
+            for (size_t k = 0; k < r->vals.size(); k++)
+                walk(r->vals[k], READ, fits ? r->targetspec->rets[k] : nullptr);
+        } else if (auto vd = Is<VarDecl>(n)) {
+            auto fits = !vd->byref && vd->defs.size() == vd->inits.size();
+            for (size_t k = 0; k < vd->inits.size(); k++) {
+                if (fits && vd->defs[k] && vd->defs[k]->type)
+                    walk(vd->inits[k], READ, vd->defs[k]->type);
+                else rest(vd->inits[k]);
+            }
+        } else if (auto a = Is<Assign>(n)) {
+            if (a->pointee) rest(a->lval);
+            else walk(a->lval, STORED, a->lval->exprtype);
+            if (a->op == T_DOTASSIGN) rest(a->rhs);
+            else walk(a->rhs, READ, a->op == T_ASSIGN ? a->lval->exprtype : nullptr);
+        } else if (auto x = Is<IncDec>(n)) {
+            walk(x->lval, STORED, nullptr);
+        } else if (auto sl = Is<StructLit>(n)) {
+            for (size_t k = 0; k < sl->inits.size(); k++) {
+                auto known = sl->sinst && k < sl->fieldindices.size();
+                walk(sl->inits[k].val, READ, known ? sl->sinst->ftypes[sl->fieldindices[k]] : nullptr);
+            }
+        } else if (auto al = Is<ArrayLit>(n)) {
+            auto at = al->exprtype;
+            auto et = at && at->kind == TY_ARRAY ? at->arr->sub : nullptr;
+            for (auto x : al->elems) walk(x, READ, et);
+            walk(al->fillval, READ, et);
+        } else if (auto c = Is<Call>(n)) {
+            // Arguments by the parameters they are copied, moved or lent to,
+            // and scalars that are rendered with no user overload.
+            auto d = Is<Dot>(c->callee);
+            if (!d) rest(c->callee);
+            auto renders = c->builtin == B_PRINT || c->builtin == B_STR || c->builtin == B_ASSERT;
+            renders = renders && c->fmtspecs.empty();
+            for (auto x : c->fmtcontexts) renders = renders && x->fmtspecs.empty();
+            auto called = !c->dispatch.empty() ? c->dispatch[0] : c->spec;
+            auto an = c->ArgNodes();
+            for (size_t k = 0; k < an.size(); k++) {
+                TypeExpr *pt = nullptr;
+                if (c->fvbody) {
+                    if (!d && k < c->fvparams.size()) pt = c->fvparams[k]->type;
+                } else if (c->builtin < 0 && called && k < called->argtypes.size() &&
+                           (c->dispatch.empty() || (int)k != c->dispatcharg)) {
+                    pt = called->argtypes[k];
+                }
+                if (pt) walk(an[k], READ, pt);
+                else if (renders) read(an[k]);
+                else rest(an[k]);
+            }
+            rest(c->fvbody);
+            rest(c->defaultinit);
+        } else if (auto m = Is<MatchExpr>(n)) {
+            RunChildren(n, [&](Node *x) {
+                if (x == m->scrutinee) rest(x);
+                else walk(x, how, want);
+            });
+        } else {
+            RunChildren(n, rest);
+        }
+    };
+    walk(sp->body, READ, sp->rets.size() == 1 ? sp->rets[0] : nullptr);
+    return uses;
+}
+
+// A by-pointer parameter whose storage the callee never writes, so that it
+// can be the caller's own variable: not `var` (§4.4), nor captured, and the
+// body only loads it (UsesOf): it neither stores to it -- which an optimizer
+// rewrite may, a tail recursion's rebinding of the parameters
+// (optimize_tre.h) among them -- nor makes anything that leads to its
+// storage. Nor does the value itself: one with relative references, which may
+// lead into it, is copied.
+//
+// Without `exposed`, large_fixed_views prints otherwise; without `stored`, its
+// store, and fixed_pointer_abi's bump where isvar is left out too (either is
+// enough for a `var` parameter the body changes); isvar alone is checked by
+// last_use_moves' C shapes. Without captured, large_fixed_values fails. No test
+// fails without isextern, refwrite, reusable, HasRelRef or IsPoolParam (#341).
 // Without ConsumedParam, a consumed parameter is lent and MovableArg copies
 // it where it is handed on: a copy, not a value, and no test notices.
 inline bool CodeGen::ParamUnwritten(FnSpec *sp, size_t i) {
@@ -361,21 +534,9 @@ inline bool CodeGen::ParamUnwritten(FnSpec *sp, size_t i) {
             // so that it can be handed on with no other (ConsumedParam).
             ok[p] = sp->body && !sp->sf->isextern && v && !v->isvar && !v->captured &&
                     !v->refwrite && !v->reusable && PtrAbi(sp->argtypes[p]) &&
-                    !IsPoolParam(sp, p) && !ConsumedParam(sp, v);
+                    !IsPoolParam(sp, p) && !HasRelRef(v->type) && !UsesOf(sp).exposed.count(v) &&
+                    !UsesOf(sp).stored.count(v) && !ConsumedParam(sp, v);
         }
-        auto written = [&](Node *lv) {
-            auto v = Reassociator::RootVar(lv);
-            for (size_t p = 0; p < sp->params.size(); p++)
-                if (v && v == sp->params[p]) ok[p] = false;
-        };
-        function<void(Node *)> walk = [&](Node *n) {
-            if (!n) return;
-            if (auto a = Is<Assign>(n)) written(a->lval);
-            else if (auto x = Is<IncDec>(n)) written(x->lval);
-            else if (auto u = Is<Unary>(n); u && u->op == T_BITAND) written(u->child);
-            RunChildren(n, walk);
-        };
-        if (sp->body) walk(sp->body);
         it = unwrittenparams.emplace(sp, ok).first;
     }
     return i < it->second.size() && it->second[i];
@@ -385,19 +546,24 @@ inline bool CodeGen::ParamUnwritten(FnSpec *sp, size_t i) {
 // a C object of its own (a by-reference binding has a reference type), that
 // only this function's own statements can write: not a global, not one a
 // nested function or function value reaches, never bound to a writable
-// reference (§4.4). While its function waits on a call, nothing writes it.
+// reference (§4.4), and not exposed (UsesOf), so that nothing made here leads
+// to its storage, for the callee to write it through. While its function
+// waits on a call, nothing writes it. A parameter may itself be lent: the
+// function that owns the storage waits too.
 //
 // Without both isglobal and ownerspec (either is enough), fixed_pointer_abi's
 // writes_global prints otherwise; in copy_elision_guards, without captured,
-// captured_lent; without refwrite, ref_lent. No test fails without reusable,
-// istemp, resulttemp, the type or fvptr, alone or the first four at once
-// (#341).
+// captured_lent; without refwrite and exposed (either is enough for a `&`),
+// ref_lent; without exposed, large_fixed_views' beside. No test fails without
+// reusable, istemp, resulttemp, the type, HasRelRef or fvptr, alone or the
+// first four at once (#341).
 inline bool CodeGen::StableArg(Node *n, TypeExpr *pt) {
     auto id = Is<Ident>(n);
     if (noelide || !id || !id->vdef || !curspec) return false;
     auto v = id->vdef;
     if (v->isglobal || v->ownerspec != curspec || v->captured || v->refwrite || v->reusable ||
-        v->istemp || v->resulttemp || !v->type || !TEq(v->type, pt))
+        v->istemp || v->resulttemp || !v->type || !TEq(v->type, pt) || HasRelRef(pt) ||
+        UsesOf(curspec).exposed.count(v))
         return false;
     // A parameter arrives as a pointer to its storage; any other variable
     // is one in this frame or on a data stack.

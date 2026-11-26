@@ -1411,6 +1411,12 @@ struct CodeGen {
     // A PtrAbi argument whose value is a call result in a temporary of its
     // own, which dies at the call: the callee can have it without a copy.
     bool DiesAtCall(Node *n, TypeExpr *pt);
+    // What a spec does with its variables (UsesOf): `exposed` are those named
+    // anywhere but where their bytes are only loaded, or stored to directly;
+    // `stored` those stored to. Made on first asking.
+    struct VarUses { set<const VarDef *> exposed, stored; };
+    map<FnSpec *, VarUses> varuses;
+    const VarUses &UsesOf(FnSpec *sp);
     // A PtrAbi parameter its function never writes (ParamUnwritten), and a
     // variable of the caller's whose storage nothing but the caller can
     // write (StableArg): such an argument is passed as a pointer to the
