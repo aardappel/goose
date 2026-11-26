@@ -1238,3 +1238,9 @@ GS_API void gs_out_bytes(const uint8_t *p, int64_t len);
 GS_API int64_t gs_scan_any(const uint8_t *p, int64_t n, const void *set);
 GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t d,
                             const void *b);
+/* Byte search behind std's find_all: the indexes i < n with p[i] in the
+   set, ascending, written to out while it has room. The return is the count
+   written, so a return of cap says more hits may follow, collected by a call
+   on what is left past the last one. */
+GS_API int64_t gs_scan_collect(const uint8_t *p, int64_t n, const void *set,
+                               int64_t *out, int64_t cap);
