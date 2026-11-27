@@ -1044,7 +1044,7 @@ inline void CodeGen::EmitProgramInit() {
                      "    if (!gs_program_initialized) return;\n"
                      "    gs_entry_state = 0;\n"
                      "    gs_rt_stop();\n"
-                     "    free(gs_stks);\n"
+                     "    gs_aligned_free(gs_stks);\n"
                      "    gs_stks = NULL;\n"
                      "    gs_nstks = 0;\n");
         for (auto &q : qnames) Append(code, "    gs_qfree(&", q, ");\n");
