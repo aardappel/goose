@@ -91,6 +91,19 @@ def check_diagnostics_json(exe, base):
         diags, err = both("crlf.goose", "// doc\r\nfn main() {}\r\n")
         require(diags == [], "CRLF line endings", err)
 
+        # A lone CR in a nested block comment must stop the lexer, and one
+        # inside a function must not cause a second, spurious EOF diagnostic.
+        for name, source, line, col in (
+            ("cr_block_comment.goose", "/* outer /* nested */\r */\nfn main() {}\n", 1, 22),
+            ("cr_inside_body.goose", "fn main() {\r\n    print(1);\r    print(2);\r}\n", 2, 14),
+        ):
+            diags, err = both(name, source)
+            require(len(diags) == 1 and diags[0]["severity"] == "error" and
+                    "carriage return" in diags[0]["message"] and
+                    (diags[0]["line"], diags[0]["col"]) == (line, col) and
+                    (diags[0]["endLine"], diags[0]["endCol"]) == (line, col + 1),
+                    f"{name}: one diagnostic at the lone CR", err + "\n" + json.dumps(diags))
+
         # The errors after a """ string the lexer rejected, which the parse
         # skips past, at their own lines: a line short of the margin, text
         # before the closing quotes, and text after the opening ones.

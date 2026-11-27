@@ -217,6 +217,16 @@ struct Lexer {
         Next();
     }
 
+    [[noreturn]] void BareCarriageReturn(const char *at) {
+        // Past a lone CR, the lexer and the editor disagree on line numbers.
+        // Mark EOF immediately so parser recovery does not read a stale token.
+        p = end ? end : at + strlen(at);
+        tok = T_EOF;
+        scanning = false;
+        ErrorAt("a carriage return without a line feed after it: line endings are LF "
+                "or CRLF", line, linestart, at);
+    }
+
     void Next() {
         prevend = p;
         prevendline = line;
@@ -231,15 +241,7 @@ struct Lexer {
             auto c = *p;
             if (c == ' ' || c == '\t') { p++; }
             else if (c == '\r') {
-                if (p[1] != '\n') {
-                    // The scan after the error resumes at the end: past a lone
-                    // CR, lines are no longer the ones diagnostics and editors
-                    // count.
-                    auto at = p;
-                    p += strlen(p);
-                    ErrorAt("a carriage return without a line feed after it: line endings are LF "
-                            "or CRLF", line, linestart, at);
-                }
+                if (p[1] != '\n') BareCarriageReturn(p);
                 p++;
             }
             else if (c == '\n') { p++; line++; linestart = p; }
@@ -363,6 +365,7 @@ struct Lexer {
                     for (auto nesting = 1; nesting;) {
                         switch (*p++) {
                             case 0: p--; Error("unterminated /* comment");
+                            case '\r': if (*p != '\n') BareCarriageReturn(p - 1); break;
                             case '\n': line++; linestart = p; break;
                             case '*': if (*p == '/') { p++; nesting--; } break;
                             case '/': if (*p == '*') { p++; nesting++; } break;
