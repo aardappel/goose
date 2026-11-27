@@ -1163,11 +1163,11 @@ struct CodeGen {
     void EmitArrayCount(const string &stk, TypeExpr *at, const string &lenlv, const string &n,
                         bool check);
     void EmitVarintStore(const string &stk, const string &x);
-    void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln);
+    void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
     RelFacts RelValue(Node *v);
     bool RelSlotApart(TypeExpr *rt, TypeExpr *holder, int64_t off);
     string RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln, RelFacts f);
-    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln,
+    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot,
                         RelFacts f = {});
     void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln,
                       RelFacts f = {});
@@ -1181,6 +1181,14 @@ struct CodeGen {
     void NoSelfRelCopy(Node *val);
     bool HasUninitSlots(TypeExpr *t);
 
+    // A frame object's tail can hold a link to its separately allocated
+    // header (§C.2). Such programs need integer address arithmetic and
+    // have no size bound for self-relative stores (relrootmax = INT64_MAX).
+    bool splitrelroot = false;
+    // Otherwise the largest fixed root and GS_STACK_RESERVE bound the span.
+    int64_t relrootmax = 0;
+
+    void ComputeRelRootMax();
     void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n);
 
     // Element count + elements pointer of an array/slice-valued source node,
@@ -1213,7 +1221,7 @@ struct CodeGen {
     void FixedLitAtStk(Node *n, const string &stk);
     void FixedLitAt(Node *n, const string &dst);
     void FixedLitAtLv(Node *n, const string &base, bool inroot);
-    void FixedArrayLitAt(ArrayLit *al, const string &base);
+    void FixedArrayLitAt(ArrayLit *al, const string &base, bool inroot);
     void StructLitAt(StructLit *sl, const string &base, bool inroot);
     void EmitValStoreTag(const string &stk, IntStorage ts, const string &x);
     // How many elements an array literal writes: its fill count, which the
@@ -1623,6 +1631,7 @@ struct CodeGen {
           norfcheck(_norfcheck), noelide(_noelide), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
+        ComputeRelRootMax();
         CollectSpecs();
         for (auto sp : livespecs)
             for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);

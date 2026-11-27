@@ -5642,10 +5642,11 @@ behind the prefix the fixup moves.
 A relative load is the field's own address (or, `in pool`, the pool's base
 minus one) plus the stored offset, with a null test only for the optional
 form (`LoadLoc`, `RelTarget`). A store subtracts the same origin
-(`EmitRelStoreAt`). Both operations use integer addresses. A frame
-object's header and its tail can occupy different C allocations, and a
-pool's biased origin lies one byte before its element region.
-Into an optional slot, the store tests the value for
+(`EmitRelStoreAt`). If any frame object's tail holds a self-relative
+reference, `ComputeRelRootMax` selects integer address arithmetic for
+relative stores and loads throughout the program. The slot and target can
+then belong to different C allocations. Other programs use byte-pointer
+arithmetic. Into an optional slot, the store tests the value for
 null unless the value is a plain `T&`: a node of that type, a call declared
 to return one, or a block or `if` all of whose values are one
 (`RelValue`). Into a self-relative optional slot, the store aborts on a
@@ -5671,10 +5672,13 @@ initializer starts as `null` (`DefaultValue`). An identity comparison
 does. A call's value is plain too, since `default<T>()` of a relative
 reference is the null pointer. So where `default<Rel[N]>()` fills its
 temporary's elements with that null pointer, the lvalue store encodes it
-(`Call::CgAny`). A dynamic self-relative store checks that the signed
-distance fits before narrowing to 8, 16 or 32 bits. A named pool's
-elements share one reservation, so its unsigned offset needs a check
-only under `#if GS_STACK_RESERVE >= 2^bits`. A pool's
+(`Call::CgAny`). For an 8-, 16- or 32-bit self-relative store into its
+final slot, the check is guarded by `#if GS_STACK_RESERVE > 2^(bits-1)`
+when the largest fixed root (`relrootmax`) fits that span. A frame object
+with self-relative links sets `relrootmax` to `INT64_MAX`, so these stores
+always check the signed distance before narrowing. A named pool's elements
+share one reservation, so its unsigned offset needs a check only under
+`#if GS_STACK_RESERVE >= 2^bits`. A pool's
 base is loaded once per function into a local (`PoolBase`), and element
 access through a pool global reads that local too. `self` is stored as
 minus the field's own offset (self-relative), or as the value's own pool
@@ -7105,9 +7109,10 @@ an array of them, syncs every cached stack.
 * An optional link needs a null test on every load; a sentinel-terminated
   structure with non-optional links initialized through `self` loads with a
   plain add (`lru_nonopt`: 1.10x under MSVC).
-* A pool-relative `u32` link needs no store-time range check at the default
-  reservation. Dynamic self-relative stores check the signed distance
-  before narrowing.
+* At the default reservation, a `u32` link into a named pool needs no
+  store-time range check. The same holds for a self-relative store into
+  its root when all fixed roots fit in 2 GB and no frame object holds
+  self-relative links.
 * A structure whose links stay within one root array has no rebasing cost
   when moved or serialized; `bytes_of` is a zero-copy view of it.
 * A plain reference parameter outside a recursive cycle has its own root

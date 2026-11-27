@@ -79,16 +79,19 @@ inline void CodeGen::RelParts(const Loc &lv, string &faddr, string &off) {
     }
 }
 
-// Measure offsets in integer addresses (§3.9). A frame object's header
-// and its tail can lie in different C objects, and a named pool's bias
-// puts the origin one byte before the first element.
+// What a relative offset is measured from (§3.9): the offset field's own
+// address, or, for an `in pool` reference, the pool's base biased by one
+// so that a target at the base still encodes non-zero and 0 stays null.
 inline string CodeGen::RelOrigin(TypeExpr *rt, const string &faddr) {
-    if (!rt->ref->pool) return cat("(uintptr_t)(", faddr, ")");
-    return cat("((uintptr_t)(", PoolBase(rt->ref->pool), ") - 1)");
+    auto base = rt->ref->pool ? PoolBase(rt->ref->pool) : faddr;
+    if (splitrelroot) base = cat("(uintptr_t)(", base, ")");
+    return rt->ref->pool ? cat("(", base, " - 1)") : base;
 }
 
 inline string CodeGen::RelTarget(TypeExpr *rt, const string &faddr, const string &off) {
-    return cat("(uint8_t *)(", RelOrigin(rt, faddr), " + (uintptr_t)(", off, "))");
+    auto org = RelOrigin(rt, faddr);
+    if (splitrelroot) return cat("(uint8_t *)(", org, " + (uintptr_t)(", off, "))");
+    return cat(org, " + ", off);
 }
 
 // The pointee of `p`, a plain pointer to a fixed-class value of type t, as a
@@ -1026,8 +1029,8 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
         string faddr, off;
         RelParts(lv, faddr, off);
         auto ov = T(), p = T();
-        L("int64_t ", ov, " = ", off, ";");
         auto target = RelTarget(lv.t, faddr, ov);
+        L("int64_t ", ov, " = ", off, ";");
         // Offset 0 is null only for the optional spelling (§3.9); a
         // non-optional slot holds a reference, so the address is the sum.
         if (r.optional) L("uint8_t *", p, " = ", ov, " ? ", target, " : NULL;");
@@ -1613,7 +1616,7 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
     assert(et->kind == TY_ARRAY);
     auto tv = T();
     FixedLocal(et, tv, HasUninitSlots(et) ? "{0}" : "");
-    FixedArrayLitAt(al, tv);
+    FixedArrayLitAt(al, tv, false);
     return tv;
 }
 

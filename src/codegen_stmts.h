@@ -726,7 +726,8 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     // initializer, its value is the plain reference to encode.
     if (IsRelRef(t)) {
         L(CT(t), " ", name, ";");
-        EmitRelStoreAt(cat("(uint8_t *)&", name), t, GenX(init), init->line, RelValue(init));
+        EmitRelStoreAt(cat("(uint8_t *)&", name), t, GenX(init), init->line, true,
+                       RelValue(init));
         return;
     }
     // Literals holding relative references, and slices, construct into the
@@ -858,7 +859,7 @@ inline void CodeGen::GenRelAssign(Loc lv, Node *lval, Node *rhs, Line ln) {
         if (ht && ht->kind == TY_STRUCT && IsFix(ht))
             f.apart = RelSlotApart(lv.t, ht, StructLayout(SI(ht)).offs[(size_t)d->fieldidx]);
     }
-    EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln, f);
+    EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln, true, f);
 }
 
 inline void CodeGen::GenRebind(Assign *a, Loc lv) {

@@ -464,11 +464,12 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                     ind++;
                     if (relref) {
                         if (ak == A_LIMITED) {
-                            EmitRelStoreAt(cat("(uint8_t *)(", ElemAddr(v, iv), ")"), elem, fv, ln);
+                            EmitRelStoreAt(cat("(uint8_t *)(", ElemAddr(v, iv), ")"), elem, fv, ln,
+                                           true);
                         } else if (cur.empty()) {
                             EmitRelStore(lv.stk, elem, fv, ln);
                         } else {
-                            EmitRelStoreAt(cur, elem, fv, ln);
+                            EmitRelStoreAt(cur, elem, fv, ln, true);
                             L(cur, " += ", esz, ";");
                         }
                     } else if (ak == A_LIMITED) {
@@ -649,7 +650,7 @@ inline void CodeGen::StoreElemAt(Node *n, TypeExpr *elem, const string &e, const
     // A relative-reference element stores the offset from its own slot,
     // not the pointer (§3.9).
     if (IsRelRef(elem))
-        EmitRelStoreAt(cat("(uint8_t *)", e), elem, ev, ln, RelValue(n));
+        EmitRelStoreAt(cat("(uint8_t *)", e), elem, ev, ln, true, RelValue(n));
     else if (ev.empty()) GenAny(n, Dst { DK_LVALUE, cat("(*", e, ")"), elem });
     else StoreWhole(e, elem, ev);
 }
@@ -780,7 +781,7 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
         auto rt = CT(src->exprtype);
         auto p = T();
         L(rt, " *", p, " = (", rt, " *)(", at, ");");
-        FixedArrayLitAt(al, cat("(*", p, ")"));
+        FixedArrayLitAt(al, cat("(*", p, ")"), true);
         if (ak == A_LIMITED) {
             L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", count, ");");
         } else {

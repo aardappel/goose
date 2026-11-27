@@ -884,10 +884,12 @@ array/pool* as the location storing it.
   exactly when the read-back rule of §9.5 names a single candidate.
   Otherwise, the error names the candidates the rule could not choose
   between. A store aborts if the signed byte distance from the slot to the
-  target falls outside the range of the declared width. A compiler may omit
-  this check when it proves the distance fits. A frame object (C.2) can hold a
-  target in its fixed header and a slot in its separately allocated tail,
-  so the distance can exceed the size of a data-stack reservation (§10.4).
+  target falls outside the range of the declared width. The check is needed
+  only where a root can span more than the width's signed range. A root
+  stored wholly on a data stack spans at most the reservation (§10.4), so
+  2 GB or less needs no check for `u32`, and 32 KB or less needs none for
+  `u16`. A frame object (C.2) can hold the slot in its tail and the target
+  in its separately allocated header. Their distance can exceed the reservation.
   Varint-width relative references are written only at construction, like
   varint fields (re-encoding could change the byte length); fixed widths may
   be re-stored with `.=`/`=`.
@@ -5092,7 +5094,9 @@ reference like any standalone resizable; `s.f` through either is a plain
 member access. Copying, passing by value and returning such a value move
 the frame object where an array moves its header (C.3) and the elements
 where an array moves its elements. Nesting composes: a struct whose tail is
-a frame object embeds it.
+a frame object embeds it. A self-relative link from a tail element to a
+fixed field can exceed even the signed range of a `u32` offset. Use a
+`<u64>` link or a plain reference to reach the field regardless of placement.
 
 The two shapes that are not frame objects keep the bytes-on-stack form
 behind a base pointer: a struct with a *variable-size* prefix (a `u8[]`

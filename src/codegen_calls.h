@@ -201,7 +201,7 @@ inline bool CodeGen::EmitArg(FnSpec *sp, const vector<Node *> &an, size_t i,
     if (IsRelRef(pt)) {
         auto t = T();
         L(CT(pt), " ", t, ";");
-        EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, RelValue(node));
+        EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, true, RelValue(node));
         args.push_back(t);
         return false;
     }
