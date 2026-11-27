@@ -314,6 +314,10 @@ fn next_pow2(x: i64) -> i64     // smallest power of two >= max(x, 1); asserts x
 fn popcount(x: u64) -> i64
 fn clz(x: u64) -> i64           // 64 for x == 0
 fn ctz(x: u64) -> i64           // 64 for x == 0
+fn mul_hi(a: u64, b: u64) -> u64            // the high 64 bits of a * b
+fn mul_wide(a: u64, b: u64) -> u64, u64     // a * b as high, low
+fn add_carry(a: u64, b: u64, c: u64) -> u64, u64   // a + b + c, carry; c != 0 is 1
+fn sub_borrow(a: u64, b: u64, c: u64) -> u64, u64  // a - b - c, borrow; c != 0 is 1
 fn rotl<N>(x: u32, n: N) -> u32 // and u64, and rotr; n modulo the width
 fn byte_swap(x: u32) -> u32     // and u16, u64
 fn is_pow2<T>(x: T) -> bool
