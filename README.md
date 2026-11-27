@@ -466,6 +466,15 @@ directory.
 
 On macOS, a recent release is also on Homebrew: `brew install goose-lang`.
 
+`mise-en-place` (https://mise.jdx.dev/) can also be used to install Goose. First create file `mise.toml` with contents:
+
+```toml
+[tools]
+"github:aardappel/goose" = "latest"
+```
+
+and run `mise install` to install Goose and its dependencies.
+
 ## Build and run
 
 You need CMake 3.27 or later, a C++20 compiler (MSVC, clang or gcc) and Python
