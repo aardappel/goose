@@ -1157,12 +1157,17 @@ fn trim_memory() -> bool                            // return unused data-stack 
 fn resource_dir() -> u8[>..]                         // absolute directory, trailing separator
 fn resource_dir(out: u8[>..]&) -> bool               // appends; unchanged on failure
 fn time() -> f64                                     // seconds since the epoch
+fn format_time_utc(out: u8[>..]&, seconds: i64) -> bool  // append YYYY-MM-DDTHH:MM:SSZ (years 0001-9999)
 fn clock() -> f64                                    // monotonic, high resolution
 fn time_ns() -> i64         fn clock_ns() -> i64
 fn sleep(seconds: f64)      fn sleep_ms(ms: i64)
 fn random_seed() -> u64                              // entropy, for rng
 fn random_bytes(out: u8[:]) -> bool                  // cryptographic; false: the OS gave none
 ```
+
+`format_time_utc` takes whole seconds since the Unix epoch and appends a UTC
+timestamp using the proleptic Gregorian calendar. It returns `false` and
+leaves the builder unchanged outside years 0001 through 9999.
 
 `trim_memory` asks the OS to discard complete pages beyond every current
 data-stack top in the calling thread program, including its globals and
