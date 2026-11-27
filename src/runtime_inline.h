@@ -2095,11 +2095,13 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
 
 )GSRT"
-R"GSRT(    /* Regions start page-aligned and lie whole pages apart, so the same
-       page offset of two stacks lands in one L1 set: bump pointers that
-       grow together from offset 0 collide set for set. Give each stack
-       its color, one 64-byte line per region index wrapping within 4096 bytes,
-       smallest possible page size. */
+R"GSRT(    /* Region bases agree in their low 16 or more address bits (Windows
+       reserves on 64 KB boundaries; mmap'd regions lie 2 GB + 1 MB apart),
+       so the same offset in two stacks does too. A loop storing to several
+       stacks in step then runs up to 2x slower (Zen 5, six f32 arrays),
+       though sharing a page offset alone costs nothing: bases 4 KB apart
+       run at full speed. A different 64-byte step per region within the
+       smallest page breaks the match. */
     long colors = 4096 / 64;
     size_t pad = (size_t)(i % colors) * 64;
     return p + pad;
@@ -4259,6 +4261,105 @@ static int64_t gs_ctz(uint64_t x) {
         n++;
     }
     return n;
+#endif
+}
+/* std's mul_hi: the high 64 bits of a * b, one instruction (umulh on
+   arm64, mul on x86-64) through the divisions' gs_mulhi_u64 where the C
+   compiler has 128-bit products, and four 32-bit products elsewhere
+   (TinyCC). */
+static uint64_t gs_mul_hi(uint64_t a, uint64_t b) {
+#if GS_HAVE_U128
+    return gs_mulhi_u64(a, b);
+#else
+    uint64_t a0 = a & 0xFFFFFFFF, a1 = a >> 32, b0 = b & 0xFFFFFFFF, b1 = b >> 32;
+    uint64_t p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0;
+    uint64_t mid = (p00 >> 32) + (p01 & 0xFFFFFFFF) + (p10 & 0xFFFFFFFF);
+    return a1 * b1 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+#endif
+}
+
+)GSRT"
+R"GSRT(/* std's mul_wide: the 128-bit product of a and b, its low half through lo.
+   Under clang and GCC 14 on one unsigned __int128 product (mul on x86-64,
+   mul and umulh on arm64), which keeps the halves together in the carry
+   chains that follow: with GCC 16 on an i7-8700 RSA ran 8-22% and the NIST
+   curves 5-9% faster than with the halves apart. GCC 9 made slower code of
+   it than of the high half from gs_mul_hi and the low one from a * b, which
+   older GCCs keep. */
+static uint64_t gs_mul_wide(uint64_t a, uint64_t b, uint64_t *lo) {
+#if (defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 14)) && defined(__SIZEOF_INT128__)
+    unsigned __int128 p = (unsigned __int128)a * b;
+    *lo = (uint64_t)p;
+    return (uint64_t)(p >> 64);
+#elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
+    uint64_t hi;
+    *lo = _umul128(a, b, &hi);
+    return hi;
+#else
+    *lo = a * b;
+    return gs_mul_hi(a, b);
+#endif
+}
+
+)GSRT"
+R"GSRT(/* std's add_carry and sub_borrow: a + b + c with its carry out through k,
+   and a - b - c with its borrow out, where any nonzero c counts as 1. c is
+   normalized on every path because MSVC's intrinsics read only a byte of
+   it, as zero or nonzero, while the builtins and the comparisons would add
+   all of it. In a chain c is the last call's 0 or 1, and the C compiler
+   drops the test. Sum and carry come from
+   one call, so that the C compiler sees one addition with carry in and out:
+   clang's (and GCC 14's) __builtin_addcll and __builtin_subcll, which LLVM
+   chains through the flags (adc and sbb on x86-64, adcs and sbcs on arm64),
+   MSVC's _addcarry_u64 and _subborrow_u64, and elsewhere unsigned
+   comparisons. With the sum and the carry apart, as comparisons on a sum
+   computed again, clang left a setb or cset and an add at every limb: P-256
+   ECDH ran 10.8k op/s against 13.7k on an i7-8700 (clang 17), and 10.5k
+   against 16.2k on an Apple M1. */
+#if defined(__has_builtin) && !defined(__TINYC__)
+#if __has_builtin(__builtin_addcll) && __has_builtin(__builtin_subcll)
+#define GS_ADDC_BUILTIN 1
+#endif
+#endif
+#if !defined(GS_ADDC_BUILTIN) && defined(_MSC_VER) && !defined(__clang__) && defined(_M_X64)
+#include <intrin.h>
+#define GS_ADDC_MSVC 1
+#endif
+static uint64_t gs_add_carry(uint64_t a, uint64_t b, uint64_t c, uint64_t *k) {
+    c = c != 0;
+#if defined(GS_ADDC_BUILTIN)
+    unsigned long long co;
+    uint64_t s = __builtin_addcll(a, b, c, &co);
+    *k = co;
+    return s;
+#elif defined(GS_ADDC_MSVC)
+    unsigned long long s;
+    *k = _addcarry_u64((unsigned char)c, a, b, &s);
+    return s;
+#else
+    uint64_t s = a + b;
+    uint64_t t = s + c;
+    *k = (uint64_t)(s < a) | (uint64_t)(t < s);
+    return t;
+#endif
+}
+
+)GSRT"
+R"GSRT(static uint64_t gs_sub_borrow(uint64_t a, uint64_t b, uint64_t c, uint64_t *k) {
+    c = c != 0;
+#if defined(GS_ADDC_BUILTIN)
+    unsigned long long bo;
+    uint64_t d = __builtin_subcll(a, b, c, &bo);
+    *k = bo;
+    return d;
+#elif defined(GS_ADDC_MSVC)
+    unsigned long long d;
+    *k = _subborrow_u64((unsigned char)c, a, b, &d);
+    return d;
+#else
+    uint64_t d = a - b;
+    *k = (uint64_t)(a < b) | (uint64_t)(d < c);
+    return d - c;
 #endif
 }
 

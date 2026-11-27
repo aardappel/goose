@@ -73,6 +73,36 @@ extern fn popcount(x: u64) -> i64 = "gs_popcount";
 extern fn clz(x: u64) -> i64 = "gs_clz";
 extern fn ctz(x: u64) -> i64 = "gs_ctz";
 
+// a * b in 128 bits: mul_hi is the high half (the runtime's, one
+// instruction where the C compiler has one), and mul_wide both halves from
+// one multiplication. Multi-precision arithmetic multiplies 64-bit limbs
+// with it.
+extern fn mul_hi(a: u64, b: u64) -> u64 = "gs_mul_hi";
+extern fn bits_detail::mul_wide(a: u64, b: u64, lo: u64&) -> u64 = "gs_mul_wide";
+fn mul_wide(a: u64, b: u64) -> u64, u64 {
+    var lo: u64 = 0;
+    let hi = bits_detail::mul_wide(a, b, lo);
+    return hi, lo;
+}
+
+// a + b + c with its carry out, and a - b - c with its borrow out, where
+// any nonzero carry or borrow c in counts as 1: the chains of
+// multi-precision addition and subtraction. Sum and carry are one call to
+// the runtime, so that the C compiler sees one addition with carry (adc,
+// adcs; no branch).
+extern fn bits_detail::add_carry(a: u64, b: u64, c: u64, k: u64&) -> u64 = "gs_add_carry";
+extern fn bits_detail::sub_borrow(a: u64, b: u64, c: u64, k: u64&) -> u64 = "gs_sub_borrow";
+fn add_carry(a: u64, b: u64, c: u64) -> u64, u64 {
+    var k: u64 = 0;
+    let s = bits_detail::add_carry(a, b, c, k);
+    return s, k;
+}
+fn sub_borrow(a: u64, b: u64, c: u64) -> u64, u64 {
+    var k: u64 = 0;
+    let d = bits_detail::sub_borrow(a, b, c, k);
+    return d, k;
+}
+
 // x's bits rotated by n, an integer of any type taken modulo the width: a
 // negative n turns the other way. Masking n first makes its conversion to
 // i64 exact at every count type. These and byte_swap are the runtime's, so
