@@ -997,7 +997,14 @@ R"GSRT(/* The program defines what goose.h gives C compiled on its own (gs_stack
 #define GOOSE_H 1
 
 )GSRT"
-R"GSRT(/* Starts the runtime on main's thread: the program's arguments, each
+R"GSRT(/* Linux: raise the soft RLIMIT_STACK to the 64 MB a Windows or macOS link
+   reserves for the main thread, when the hard limit allows and the soft
+   limit is not already higher. Called from an executable's main (a built
+   program's generated main and goose's own main), before the overflow guard's
+   stack bounds are recorded. A C host of a --shared library does not go
+   through it and keeps the limit it started with. */
+GS_API void gs_raise_main_stack(void);
+/* Starts the runtime on main's thread: the program's arguments, each
    region's usable reservation and trailing guard gap, the address space
    budgeted for regions over the whole program, and the most regions the
    main program and any one worker hold (the compiler's static counts),
@@ -1909,6 +1916,9 @@ R"GSRT(#include <sys/mman.h>
 #include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
 
 )GSRT"
 R"GSRT(/* The calling thread's native stack, from GS_NATIVE_SLOP below its lowest
@@ -3139,6 +3149,30 @@ R"GSRT(GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, i
 }
 
 )GSRT"
+R"GSRT(/* The 64 MB of CMakeLists.txt's goose_main_stack. Linux does not reserve the
+   main thread's stack at link time: it grows until the soft RLIMIT_STACK,
+   often 8 MB where the process was started. This raises it for an executable
+   when the hard limit allows, without lowering a higher soft limit or
+   exceeding the hard limit. goose's main (main.cpp) and a built program's
+   generated main call this; a C host of a --shared library does not. */
+GS_API void gs_raise_main_stack(void) {
+#ifdef __linux__
+    struct rlimit rl;
+    const rlim_t want = (rlim_t)64 << 20;
+    if (getrlimit(RLIMIT_STACK, &rl)) return;
+    if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want) {
+        if (rl.rlim_cur < rl.rlim_max) {
+            rl.rlim_cur = rl.rlim_max;
+            (void)setrlimit(RLIMIT_STACK, &rl);
+        }
+    } else if (rl.rlim_cur < want) {
+        rl.rlim_cur = want;
+        (void)setrlimit(RLIMIT_STACK, &rl);
+    }
+#endif
+}
+
+)GSRT"
 R"GSRT(GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions) {
     /* A host's goose_init of a second program (an image it reloaded, say)
@@ -3187,6 +3221,8 @@ R"GSRT(GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t
     #endif
     gs_regions_init();
     gs_regions_begin(mainregions);
+    /* An executable's main has already raised the limit; a C host of a
+       --shared library has not. Record the bounds as they stand. */
     gs_native_stack_init();
     gs_scan_init();
 }

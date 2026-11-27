@@ -447,6 +447,9 @@ static GS_NORETURN void gs_park(void) {
 #include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
 
 /* The calling thread's native stack, from GS_NATIVE_SLOP below its lowest
    usable address up to its top: a fault in there is that stack overflowing,
@@ -1592,6 +1595,29 @@ GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t 
     return gs_scan_pair_bytes(p, np, sa, d, sb);
 }
 
+/* The 64 MB of CMakeLists.txt's goose_main_stack. Linux does not reserve the
+   main thread's stack at link time: it grows until the soft RLIMIT_STACK,
+   often 8 MB where the process was started. This raises it for an executable
+   when the hard limit allows, without lowering a higher soft limit or
+   exceeding the hard limit. goose's main (main.cpp) and a built program's
+   generated main call this; a C host of a --shared library does not. */
+GS_API void gs_raise_main_stack(void) {
+#ifdef __linux__
+    struct rlimit rl;
+    const rlim_t want = (rlim_t)64 << 20;
+    if (getrlimit(RLIMIT_STACK, &rl)) return;
+    if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max < want) {
+        if (rl.rlim_cur < rl.rlim_max) {
+            rl.rlim_cur = rl.rlim_max;
+            (void)setrlimit(RLIMIT_STACK, &rl);
+        }
+    } else if (rl.rlim_cur < want) {
+        rl.rlim_cur = want;
+        (void)setrlimit(RLIMIT_STACK, &rl);
+    }
+#endif
+}
+
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions) {
     /* A host's goose_init of a second program (an image it reloaded, say)
@@ -1640,6 +1666,8 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     #endif
     gs_regions_init();
     gs_regions_begin(mainregions);
+    /* An executable's main has already raised the limit; a C host of a
+       --shared library has not. Record the bounds as they stand. */
     gs_native_stack_init();
     gs_scan_init();
 }
