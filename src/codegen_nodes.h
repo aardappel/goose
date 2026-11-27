@@ -1214,7 +1214,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             cg.L("uint8_t *", fa, " = (uint8_t *)&", elem, ";");
             auto off = cg.T();
             cg.L("int64_t ", off, " = (int64_t)*(", cg.RelCT(v.elem), " *)(", fa, ");");
-            auto target = cat("(", cg.CT(et), ")(", cg.RelOrigin(v.elem, fa), " + ", off, ")");
+            auto target = cat("(", cg.CT(et), ")(", cg.RelTarget(v.elem, fa, off), ")");
             if (v.elem->ref->optional)
                 cg.L(cg.CT(et), " ", iv, " = ", off, " ? ", target, " : NULL;");
             else

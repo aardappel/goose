@@ -1,7 +1,5 @@
 // A relative-reference store whose offset does not fit the declared width
-// is a runtime abort (§3.9, §9.3). The check is emitted whenever a data
-// stack's reservation exceeds the width's signed range, which the default
-// GS_STACK_RESERVE of 2 GB does for every width below `u64`.
+// is a runtime abort (§3.9, §9.3).
 
 struct RNode { v: i64, link: RNode&<u16>? }
 

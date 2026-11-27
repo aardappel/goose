@@ -1807,6 +1807,26 @@ def main():
         else:
             r.ok(f"member parameters {f.name}")
     r.show_task(member_params)
+    # Both functions store a u32 link. Only set_narrow can cross from a
+    # frame object's tail to its header. Check the emitted paths independently
+    # of the addresses chosen when the programs run.
+    def relative_store_c(f, fn, split):
+        label = f"relative store in {f.stem}.{fn}"
+        cfile = gendir / f"{f.stem}-store-check.c"
+        code, out, err = r.goose("-O0", "-o", cfile, f)
+        if code != 0:
+            r.fail(label, out + err)
+            return
+        body = re.search(r"^static [^\n;]*\b" + fn + r"_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
+                         cfile.read_text(), re.MULTILINE | re.DOTALL)
+        if not body or "gs_abort(GS_E_RELOFF" not in body[1]:
+            r.fail(label, body[1] if body else f"missing {fn}")
+        elif ("#if GS_STACK_RESERVE" in body[1]) == split or ("(uintptr_t)" in body[1]) != split:
+            r.fail(label, body[1])
+        else:
+            r.ok(label)
+    r.show_task(relative_store_c, HERE / "codegen" / "frame_relative_offsets.goose", "set_narrow", True)
+    r.show_task(relative_store_c, HERE / "storage" / "relative_destination_results.goose", "make", False)
     # A large fixed variable at its only use is the callee's argument itself
     # (CodeGen::SingleUses, MovableArg); one read again, or read through a
     # reference or a deferred body, or used in a loop it is declared outside

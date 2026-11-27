@@ -939,6 +939,7 @@ struct CodeGen {
     Loc BytesLoc(const string &ptr, TypeExpr *t, const Loc &from);
     void RelParts(const Loc &lv, string &faddr, string &off);
     string RelOrigin(TypeExpr *rt, const string &faddr);
+    string RelTarget(TypeExpr *rt, const string &faddr, const string &off);
     string PointeeLv(const string &p, TypeExpr *t);
     void DerefLoc(Loc &lv);
     void PinLoc(Loc &lv);
@@ -1180,11 +1181,11 @@ struct CodeGen {
     void NoSelfRelCopy(Node *val);
     bool HasUninitSlots(TypeExpr *t);
 
-    // Byte span of the largest fixed value that can be a relative
-    // reference's root array (§3.9). Roots are variables, so this is the
-    // widest offset a store into a root that is *not* on a data stack can
-    // produce; stack roots are bounded by GS_STACK_RESERVE instead. Both
-    // bounds decide whether EmitRelStoreAt emits its range check.
+    // A frame object's tail can hold a link to its separately allocated
+    // header (§C.2). Such programs need integer address arithmetic and
+    // have no size bound for self-relative stores (relrootmax = INT64_MAX).
+    bool splitrelroot = false;
+    // Otherwise the largest fixed root and GS_STACK_RESERVE bound the span.
     int64_t relrootmax = 0;
 
     void ComputeRelRootMax();

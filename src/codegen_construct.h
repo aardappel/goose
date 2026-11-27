@@ -102,12 +102,10 @@ inline void CodeGen::EmitVarintStore(const string &stk, const string &x) {
 // The range check a store of `off` into a relative slot of width `w`
 // needs (§3.9). The self-relative form is signed and bounded by the span
 // of the root array; the `in pool` form is unsigned and bounded by the
-// pool, so its width covers 2^N - 1 bytes of one. Either way a root on a
-// data stack is inside one reservation of GS_STACK_RESERVE bytes (guard
-// region behind it, so nothing past it is ever written), and a fixed root
-// is at most `relrootmax`. The check is emitted only where one of those
-// exceeds the width; GS_STACK_RESERVE is a C macro, so that half of the
-// test is left to the C preprocessor.
+// pool, so its width covers 2^N - 1 bytes of one. A contiguous root spans
+// at most GS_STACK_RESERVE bytes on a data stack, or `relrootmax` for a
+// fixed variable. A split root disables that bound (ComputeRelRootMax).
+// The C preprocessor handles the reservation part of the check.
 //
 // `inroot` says the slot address is its real one inside the root array,
 // which holds everywhere except the literal-temp path in StructLit::CgX.
@@ -171,12 +169,15 @@ inline bool CodeGen::RelSlotApart(TypeExpr *rt, TypeExpr *holder, int64_t off) {
 // itself, which aborts, unless the facts rule that target out.
 inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln,
                                  RelFacts f) {
-    auto addr = cat("(uint8_t *)(", rv, ")");
+    auto addr = cat(splitrelroot ? "(uintptr_t)(" : "(uint8_t *)(", rv, ")");
+    // Widen before unsigned subtraction so a backward distance sign-extends
+    // correctly even on a target with 32-bit addresses.
+    auto distance = cat("(int64_t)(", splitrelroot ? "(uint64_t)" : "", addr, " - (", org, "))");
     auto off = T();
     if (rt->ref->optional && !f.nonnull)
-        L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
+        L("int64_t ", off, " = ", addr, " ? ", distance, " : 0;");
     else
-        L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+        L("int64_t ", off, " = ", distance, ";");
     if (rt->ref->optional && !rt->ref->pool && !f.apart)
         L("if (", f.nonnull ? string() : cat(addr, " && "), "!", off, ") gs_abort(GS_E_RELNULL, ",
           LocArgs(ln), ");");
@@ -229,7 +230,8 @@ inline void CodeGen::EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t field
                          " field needs the value's final address, which this literal is "
                          "not being built at"));
         auto off = T();
-        L("int64_t ", off, " = (int64_t)((", fa, ") - ", fieldoff, " - (",
+        auto addr = cat(splitrelroot ? "(uintptr_t)(" : "(", fa, ")");
+        L("int64_t ", off, " = (int64_t)(", addr, " - ", fieldoff, " - (",
           RelOrigin(rt, fa), "));");
         EmitRelRangeCheck(rt, off, ln, true);
         L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
@@ -324,6 +326,14 @@ inline void CodeGen::NoSelfRelCopy(Node *val) {
 }
 
 inline void CodeGen::ComputeRelRootMax() {
+    for (auto si : ast.structinsts) {
+        // A frame object's fixed prefix is free of self-relative links.
+        if (si->frameobj && HasSelfRelRef(si->ftypes.back())) {
+            splitrelroot = true;
+            relrootmax = INT64_MAX;
+            return;
+        }
+    }
     for (auto vd : ast.vardefs) {
         if (!vd->type || !IsFix(vd->type) || !HasRelRef(vd->type)) continue;
         relrootmax = std::max(relrootmax, FixedSize(vd->type));
