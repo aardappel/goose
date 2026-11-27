@@ -5,10 +5,11 @@ finds nothing can tell (the default) and with every copy made
 
 The programs mix what the elision's conditions guard: a variable both an
 argument and the call's destination, written by a later argument, a function
-value or a reference while the callee reads it, handed on to a `var`
-parameter directly, through dispatch or through a parameter of the caller's
-own, at its only use or in a loop, to callees kept as calls (`recursive`) and
-callees the inliner takes.
+value, a reference or a slice while the callee reads it, written by the callee
+through a slice of its parameter or in a loop, handed on to a `var` parameter
+directly, through dispatch or through a parameter of the caller's own, at its
+only use or in a loop, to callees kept as calls (`recursive`) and callees the
+inliner takes.
 
 Run on its own for a wider sweep:
 
@@ -43,7 +44,8 @@ enum Shape {
 var g = Big { a: 1, b: 2, c: 3, .. };
 var shapes: Shape[>..] = [];
 
-fn sum(d: Big) -> i64 { d.a + d.b * 3 + d.c * 7 }
+fn sum(d: Big) -> i64 { d.a + d.b * 3 + d.c * 7 + d.rest[0] * 11 }
+fn put(s: i64[:], k: i64) { s[0] = k; }
 """
 
 # The callees, each twice: `recursive` keeps one a call at -O2, while the
@@ -66,6 +68,10 @@ CALLEES = """\
 {R}fn relay{S}(d: Big) -> Big {{ bump{S}(d) }}
 {R}fn relay_ro{S}(d: Big) -> i64 {{ peek{S}(d, 1) }}
 {R}fn ro_ref{S}(d: Big, r: Big&) -> i64 {{ r.a = 50; d.a }}
+{R}fn ro_slice{S}(d: Big, s: i64[:]) -> i64 {{ s[0] += 70; d.a + d.rest[0] }}
+{R}fn view{S}(d: Big, k: i64) -> i64 {{ let s = d.rest[..]; s[0] += k + 1; d.a + d.rest[0] }}
+{R}fn convert{S}(d: Big, k: i64) -> i64 {{ put(d.rest, k + 80); d.a + d.rest[0] }}
+{R}fn each{S}(d: Big) -> i64 {{ for &x in d.rest {{ x += 90; }} d.a + d.rest[0] }}
 {R}fn tag{S}(s: Shape.Thin, d: Big) -> i64 {{ d.a + s.n }}
 {R}fn tag{S}(s: Shape.Wide, var d: Big) -> i64 {{ d.a = 60; d.a + s.w }}
 {R}fn relay_tag{S}(s: Shape, d: Big) -> i64 {{ tag{S}(s, d) }}
@@ -80,7 +86,7 @@ BIG_FNS = [("mirror", "B"), ("bump", "B"), ("swap2", "BB"), ("rebuild", "BI"),
            ("fromg", "B"), ("relay", "B")]
 # Callees giving an i64.
 INT_FNS = [("peek", "BI"), ("poke", "BI"), ("both", "BB"), ("setg", "B"),
-           ("relay_ro", "B"), ("sum", "B")]
+           ("relay_ro", "B"), ("sum", "B"), ("view", "BI"), ("convert", "BI"), ("each", "B")]
 
 
 class Var:
@@ -167,6 +173,8 @@ class Gen:
             return [f"{ind}acc += with_f{self.sfx()}({v}) {{ {v}.a = 77; it }};"]
         if w and roll < 0.80:
             v = r.choice(w).name
+            if r.random() < 0.5:
+                return [f"{ind}acc += ro_slice{self.sfx()}({v}, {v}.rest[..]);"]
             return [f"{ind}acc += ro_ref{self.sfx()}({v}, {v});"]
         if roll < 0.90 and depth == 0:
             # A loop, which may declare a variable of its own used once.
@@ -204,7 +212,8 @@ class Gen:
         for _ in range(r.randint(2, 5)):
             lines += self.stmt(vs, "    ")
         shown = [v for v in vs if v.printed]
-        fields = "".join(f', " ", {v.name}.a, " ", {v.name}.b, " ", {v.name}.c' for v in shown)
+        fields = "".join(f', " ", {v.name}.a, " ", {v.name}.b, " ", {v.name}.c, " ", {v.name}.rest[0]'
+                         for v in shown)
         # Not g, which main prints: named once here, it may be at its only use.
         lines.append(f'    print("case{k} ", acc{fields});')
         lines.append("    acc")
