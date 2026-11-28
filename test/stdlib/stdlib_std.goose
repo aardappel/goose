@@ -359,6 +359,23 @@ fn strings() {
     small.push('|');
     format_uint(small, 255, 16, 0, ' ');
     print(small);                                                              // -007|ff
+    var defs: u8[..64] = [];
+    format_int(defs, -42);
+    defs.push('|');
+    format_int(defs, 255, 16);
+    defs.push('|');
+    format_uint(defs, 42);
+    defs.push('|');
+    format_uint(defs, 255, 16);
+    defs.push('|');
+    format_flt(defs, 3.14159, 2);
+    defs.push('|');
+    format_flt_exact(defs, 0.1, 6);
+    print(defs);                                                               // -42|ff|42|ff|3.14|0.100000
+    var uleb: u8[..16] = [];
+    format_uleb(uleb, 300);
+    let uv, un = parse_uleb(uleb);
+    print(uv, " ", un);                                                        // 300 2
     var f: u8[>..] = [];
     format_flt(f, 3.14159, 2);
     f.push(' ');

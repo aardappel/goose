@@ -1128,7 +1128,7 @@ fn make_heap<A, F>(xs: A&) {
 // Base ten is the builtin text of the integer, the runtime's digit loop
 // writing straight into `out`; other bases divide by the `base` parameter,
 // a real division per digit. A base outside 2..36 is a contract violation.
-fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8) {
+fn format_uint<B>(out: B&, v: u64, base: i64 = 10, width: i64 = 0, padc: u8 = ' ') {
     if base < 2 || base > 36 { abort("format_uint: base out of range"); }
     if base == 10 {
         if width > 1 {
@@ -1169,7 +1169,7 @@ fn format_uint<B>(out: B&, v: u64, base: i64, width: i64, padc: u8) {
 // The sign goes in front of any padding: -0042. The magnitude is taken in
 // unsigned arithmetic, which holds i64.min's. A base outside 2..36 is a
 // contract violation.
-fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8) {
+fn format_int<B>(out: B&, v: i64, base: i64 = 10, width: i64 = 0, padc: u8 = ' ') {
     if base < 2 || base > 36 { abort("format_int: base out of range"); }
     if v < 0 {
         out.push('-');
@@ -1184,7 +1184,7 @@ fn format_int<B>(out: B&, v: i64, base: i64, width: i64, padc: u8) {
 // array's bytes, so that a reader of a stream or a file can size its read
 // before it has the whole image. A negative v goes out as its 64 bits, ten
 // bytes (`as!`, since that conversion changes the value on purpose).
-fn format_uleb(out: u8[>..]&, v: i64) {
+fn format_uleb<B>(out: B&, v: i64) {
     var x = v as! u64;
     loop {
         let b = (x & 0x7f) as u8;
@@ -1219,7 +1219,7 @@ fn parse_uleb(s: u8[:]) -> i64, i64 {
 
 // v with a fixed number of decimals, its exact value rounded half up;
 // infinities and NaN in their text form (§3.7).
-fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
+fn format_flt<B>(out: B&, v: f64, decimals: i64) {
     if v != v || v - v != 0.0 {
         format(out, v);
         return;
@@ -1261,7 +1261,7 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
 // m * 5^-e / 10^-e otherwise, so the product, worked out in limbs of nine
 // digits, holds every digit of x: up to 309 before the point and 767
 // significant ones after it.
-fn format_flt_exact(out: u8[>..]&, x: f64, d: i64) {
+fn format_flt_exact<B>(out: B&, x: f64, d: i64) {
     let b = float_text::bits_of(x);
     let be = ((b >> 52) & 0x7FF) as i64;
     var m = b & 0xFFFFFFFFFFFFF;

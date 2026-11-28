@@ -540,9 +540,9 @@ queue container; a limited `[..k]` inside a struct works too.
 ### 4.8 Strings
 
 ```goose
-fn format_int(out: u8[>..]&, v: i64, base: i64, width: i64, pad: u8)   // base 2..36, right-aligned
-fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, pad: u8)
-fn format_flt(out: u8[>..]&, v: f64, decimals: i64)   // fixed decimals
+fn format_int<B>(out: B&, v: i64, base: i64 = 10, width: i64 = 0, padc: u8 = ' ')   // base 2..36, right-aligned
+fn format_uint<B>(out: B&, v: u64, base: i64 = 10, width: i64 = 0, padc: u8 = ' ')
+fn format_flt<B>(out: B&, v: f64, decimals: i64)   // fixed decimals
 fn parse_int(s: u8[:]) -> i64, bool              // optional sign, base 10, whole string
 fn parse_int(s: u8[:], base: i64) -> i64, bool
 fn parse_flt(s: u8[:]) -> f64, bool              // sign, fraction, exponent, or inf/-inf/nan; correctly rounded
