@@ -33,10 +33,14 @@ jobs:
           python-version: '3.x'
 
       # A pinned pandoc rather than the distribution's, so that the build
-      # here and on a developer's machine agree on the HTML.
+      # here and on a developer's machine agree on the HTML. The checksum
+      # is the published 3.6.4-1 amd64 package's: an archive that does not
+      # match is not the pandoc this build was checked against, and the
+      # job stops before unpacking it.
       - name: Install pandoc
         run: |
           wget -q https://github.com/jgm/pandoc/releases/download/3.6.4/pandoc-3.6.4-1-amd64.deb
+          echo "68e5516a5464b12354146e9e23bc41a4c05f302f4ba5def9bdc49f1e2db0d1e0  pandoc-3.6.4-1-amd64.deb" | sha256sum -c -
           sudo dpkg -i pandoc-3.6.4-1-amd64.deb
           pandoc --version | head -1
 
