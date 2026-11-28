@@ -232,8 +232,9 @@ def check_cli(exe, root):
            good.read_text() == tidy, f"exit {code}: {out}{err}")
 
     # A NUL byte is text the parse rejects, not the file's end that would
-    # leave the rest out of the rewrite.
-    nul = write("nul.goose", "fn f(){a;}\0\nfn g() {}\n")
+    # leave the rest out of the rewrite. Not nul.goose: NUL is a device name on
+    # Windows, whatever the extension.
+    nul = write("nul_byte.goose", "fn f(){a;}\0\nfn g() {}\n")
     code, out, err = run(exe, [nul])
     expect("a file with a NUL byte", code == 2 and "NUL character" in err and
            nul.read_bytes() == b"fn f(){a;}\0\nfn g() {}\n", f"exit {code}: {out}{err}")

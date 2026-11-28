@@ -113,8 +113,9 @@ def check_diagnostics_json(exe, base):
                 "the lines of the errors after a rejected \"\"\" string", err)
 
         # A NUL byte is an error at it rather than the end of the text, and
-        # the parse goes on past it.
-        diags, err = both("nul.goose", "fn main() {}\0\nfn f() { let x: i64 = ; }\n")
+        # the parse goes on past it. Not nul.goose: NUL is a device name on
+        # Windows, whatever the extension.
+        diags, err = both("nul_byte.goose", "fn main() {}\0\nfn f() { let x: i64 = ; }\n")
         require([d["line"] for d in diags] == [1, 2] and
                 diags[0]["message"] == "NUL character in source" and diags[0]["col"] == 13,
                 "a NUL byte", err + "\n" + json.dumps(diags))
