@@ -71,7 +71,7 @@ fn fract(x: f32) -> f32 { x - floor(x) }
 
 // The fraction of the way from a to b that v is, the inverse of std's lerp:
 // 0 at a, 1 at b, and past them outside [a, b]. Not clamped; NaN or an
-// infinity when a == b.
+// infinity when a == b, or when b - a or v - a overflows.
 fn inverse_lerp(a: f64, b: f64, v: f64) -> f64 { (v - a) / (b - a) }
 fn inverse_lerp(a: f32, b: f32, v: f32) -> f32 { (v - a) / (b - a) }
 
