@@ -13,6 +13,8 @@ extern fn trim_memory() -> bool = "gs_trim_memory";
 
 // Files. Paths are UTF-8 everywhere, Windows included.
 extern fn read_file(path: const u8[:], out: u8[>..]&) -> bool = "gs_os_read_file";    // appends the whole file
+// Appends up to max bytes starting at a byte offset. Returns -1 on error.
+extern fn read_file(path: const u8[:], offset: i64, max: i64, out: u8[>..]&) -> i64 = "gs_os_read_file_range";
 extern fn write_file(path: const u8[:], data: const u8[:]) -> bool = "gs_os_write_file";
 // All or nothing: a new file beside `path`, flushed to disk and renamed over it.
 extern fn write_file_atomic(path: const u8[:], data: const u8[:]) -> bool = "gs_os_write_file_atomic";
