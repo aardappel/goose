@@ -237,8 +237,10 @@ let height = 170.0 + 7.5 * r.rand_gaussian();
 ```
 
 `rand_range` takes a count rather than an end, as a slice's length does, so
-`rand_range(r, lo, n)` has exactly `n` results; `lo + size - 1` has to fit
-in `i64`. Without `lo` it starts at 0, the same as `rand_int`. `rand_flt`
+`rand_range(r, lo, size)` has exactly `size` results. The last possible
+result, `lo + (size - 1)`, must fit in `i64`. For an invalid range, a draw
+whose addition overflows aborts in a debug build and can wrap otherwise.
+Without `lo` it starts at 0, the same as `rand_int`. `rand_flt`
 and `rand_f32` take the top 53 or 24 bits of a draw, so every result is a
 multiple of 2^-53 or 2^-24 and each is equally likely. `rand_gaussian` draws
 from the normal (Gaussian) distribution by Marsaglia's polar method. It
