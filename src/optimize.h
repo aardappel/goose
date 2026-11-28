@@ -55,6 +55,11 @@
 
 namespace goose {
 
+// The inlining level a run or build takes when no -O is given, which the
+// language server's analyses also take, so that their checkfree verdicts
+// are the ones a default run would print (their Optimizer, lsp_workspace.h).
+constexpr int DEFAULTOPTLEVEL = 2;
+
 struct BaseCaseInliner;   // optimize_basecase.h.
 struct Reassociator;      // optimize_reassoc.h.
 
