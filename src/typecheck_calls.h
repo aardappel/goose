@@ -4076,6 +4076,9 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
     PopScope();
     frames.pop_back();
     cur.kills.clear();
+    // The block's parameters and locals end with it, before whatever
+    // receives its value, as a bare block's do.
+    CheckBranchRoot(v, CurDepth(), c->fvbody->tail, "block");
     // The result has the calling statement's lifetime (§9.2), with no
     // storage to bind by reference even where the tail names a variable.
     // Fresh construction still uses the receiver (BuiltWhereReceived).
