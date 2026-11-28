@@ -1386,13 +1386,23 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *e
 
 // A slice parameter takes a copy of the slice a reference argument points at
 // (§4.1), so the argument's provenance is that slice's (SlotView), however the
-// reference names the variable holding it.
+// reference names the variable holding it. A reference to a grow-shrink array
+// decays to a slice of elements a shrink can free, so it is no read-back of
+// the slot the reference was loaded from -- that load passed the store rule
+// itself -- and the view it gives faces the rule like an explicit `a[..]`
+// does (§5.2).
 inline void TypeCheck::LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes) {
     for (size_t i = 0; i < argvals.size() && i < ptypes.size(); i++) {
         auto &av = argvals[i];
-        if (ptypes[i]->kind == TY_SLICE && IsPlainRef(av.type) &&
-            av.type->ref->sub->kind == TY_SLICE)
-            av.SetProv(SlotView(av, av.type->ref->sub));
+        if (ptypes[i]->kind != TY_SLICE || !IsPlainRef(av.type)) continue;
+        auto sub = av.type->ref->sub;
+        if (sub->kind == TY_SLICE) {
+            av.SetProv(SlotView(av, sub));
+        } else if (sub->kind == TY_ARRAY && sub->arr->akind == A_GROWSHRINK) {
+            for (auto &a : av.alts) a.slotread = a.classread = false;
+            av.freshview = false;
+            av.reached = sub->arr->sub;
+        }
     }
 }
 
