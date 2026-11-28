@@ -1302,8 +1302,9 @@ inline Val TypeCheck::TempCopy(Val v) {
     if (!v.type || v.isnull || v.type->kind == TY_REF || v.type->kind == TY_VOID ||
         v.type->kind == TY_FN)
         return v;
+    v.lvalue = false;
+    v.pointee = false;
     if (v.type->kind == TY_SLICE) {
-        v.lvalue = false;
         v.slot = Prov {};
         v.hasslot = false;
         return v;
@@ -1317,7 +1318,6 @@ inline Val TypeCheck::TempCopy(Val v) {
     }
     v.Set(TempRoot(), false);
     v.reached = nullptr;
-    v.lvalue = false;
     v.writable = false;
     return v;
 }

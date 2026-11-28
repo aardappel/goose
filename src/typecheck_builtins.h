@@ -803,7 +803,7 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
     NoUntypedEmptyArray(av, a, what);
     // A reference is rendered as its pointee, so the links of a copy would
     // be followed from the copy.
-    if (!av.lvalue && !av.pointee) NoRelRefTempRead(a, av.type, av.type);
+    NoRelRefTempRead(a, av);
     // A value that is no storage -- neither a variable, field or element nor
     // what a reference names -- is rendered from a temporary codegen puts it
     // in (GenLoc), which a format hook taking it by reference is handed,

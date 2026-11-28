@@ -819,43 +819,44 @@ inline bool TypeCheck::HasRelRefT(TypeExpr *t, bool inpool) {
     return HasRelRefOf(t, inpool, [&](TypeExpr *x) { return FieldRuns(x); });
 }
 
-// Whether n's value (`result`: which of a multi-value call's results) is
-// built where it is received rather than copied out of storage, so that
-// its self-relative references point within it whatever it lands in.
-inline bool TypeCheck::BuiltWhereReceived(Node *n, size_t result) {
+// Whether n constructs its result with valid self-relative links for this use.
+// A temporary read uses the result's own storage. A copy destination can
+// require another representation. `result` selects a multi-value call's result.
+inline bool TypeCheck::BuiltWhereReceived(Node *n, size_t result, RelRefUse use) {
     if (!n || (n->exprtype && n->exprtype->kind == TY_VOID)) return true;
-    if (auto b = Is<Block>(n)) return BuiltWhereReceived(b->tail, result);
-    if (auto x = Is<IfExpr>(n))
-        return BuiltWhereReceived(x->thenb, result) && BuiltWhereReceived(x->elseb, result);
+    auto built = [&](Node *branch) { return BuiltWhereReceived(branch, result, use); };
+    if (auto b = Is<Block>(n)) return built(b->tail);
+    if (auto x = Is<IfExpr>(n)) return built(x->thenb) && built(x->elseb);
     if (auto m = Is<MatchExpr>(n))
         return all_of(m->arms.begin(), m->arms.end(), [&](const MatchArm &a) {
-            return BuiltWhereReceived(a.body, result);
+            return built(a.body);
         });
     auto breaks = [&](const vector<Break *> &bs) {
-        return all_of(bs.begin(), bs.end(), [&](Break *b) {
-            return BuiltWhereReceived(b->val, result);
-        });
+        return all_of(bs.begin(), bs.end(), [&](Break *b) { return built(b->val); });
     };
     if (auto l = Is<LoopExpr>(n)) return breaks(l->breaks);
     if (auto b = Is<EarlyBlock>(n))
-        return breaks(b->breaks) && BuiltWhereReceived(b->body->tail, result);
+        return breaks(b->breaks) && built(b->body->tail);
     if (Is<StructLit>(n) || Is<ArrayLit>(n)) return true;   // Constructed in place.
     if (auto d = Is<Dot>(n); d && d->variantconst) return true;   // A payload-less variant: a tag.
+    auto c = Is<Call>(n);
+    if (!c) return false;
     // A default value's relative references are nulls, an empty limited
     // array's none, and `self` where a field's default says so: offsets that
     // mean the same wherever the value sits.
-    if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT) return true;
+    if (c->builtin == B_DEFAULT) return true;
+    // from_bytes verifies links within its first result's own element region (§12).
+    // A read uses that region directly. A copy destination can change its kind or layout.
+    if (c->builtin == B_FROM_BYTES) return use == RRU_TEMP_READ && result == 0;
     // The inline body's tail is checked as a value before the call can
     // expose it as fresh; returning existing relative storage is a copy.
-    if (auto c = Is<Call>(n); c && c->fvbody && result == 0)
-        return BuiltWhereReceived(c->fvbody->tail, 0);
+    if (c->fvbody && result == 0) return built(c->fvbody->tail);
     // A function's fresh relative aggregate is built at its receiver
     // (§4.3, §7.3); its returns obey this same rule and any links into the
     // receiving root are validated at each call (CheckCalleeRelative).
     // A reference result is none of these: what it points at is copied, out
     // of the storage its links point within.
-    if (auto c = Is<Call>(n); c && c->builtin < 0 && result < c->rettypes.size() &&
-                              !IsRefOrSlice(c->rettypes[result])) {
+    if (c->builtin < 0 && result < c->rettypes.size() && !IsRefOrSlice(c->rettypes[result])) {
         auto user = [](FnSpec *s) { return s && s->sf && !s->sf->isextern; };
         auto &ds = c->dispatch;
         return ds.empty() ? user(c->spec) : all_of(ds.begin(), ds.end(), user);
@@ -873,7 +874,7 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t, size_t result, const V
                                     const Val *src) {
     if (!reachable || !t) return;
     if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
-    if (BuiltWhereReceived(n, result)) return;
+    if (BuiltWhereReceived(n, result, RRU_COPY)) return;
     if (auto id = Is<Ident>(n); id && n == retvalnode && AllowNamedResult(id, t)) return;
     auto msg = cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                    "references, is not supported; construct it in place");
@@ -900,7 +901,7 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t, size_t result, const V
 // base checked.
 inline void TypeCheck::NoRelRefTempRead(Node *base, TypeExpr *t, TypeExpr *member) {
     if (!reachable || Is<Ident>(base) || Is<Dot>(base) || Is<Index>(base)) return;
-    if (!HasRelRefT(member) || BuiltWhereReceived(base, 0)) return;
+    if (!HasRelRefT(member) || BuiltWhereReceived(base, 0, RRU_TEMP_READ)) return;
     Error(base, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                     "references, is not supported: its links, read out of this copy, would be "
                     "measured from the copy; read them where the value is stored"));

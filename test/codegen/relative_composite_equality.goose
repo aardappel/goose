@@ -6,15 +6,25 @@ struct Links { refs: (ArrayNode&<u32>?)[1] }
 struct ArrayNode { value: i64, links: Links }
 struct LimitedNode { value: i64, refs: (LimitedNode&<u32>?)[..2] }
 fn identity<T>(n: T&) -> T& { n }
+fn fresh() -> Node { Node { value: 2, next: null } }
 
 fn main() {
     var ns: Node[>..] = [];
     ns.push(Node { value: 2, next: null });
+    let image = to_bytes(ns);
+    assert(from_bytes<Node[>..]>(image) == ns);
+    assert(ns[..] == from_bytes<Node[]>(image));
+    assert(({ from_bytes<Node[]>(image) }) == ns[..]);
+    assert(ns[..] == [Node { value: 2, next: null }]);
     ns.push(Node { value: 2, next: ns[0] });
+    // The decoded link points into the new array.
+    assert(from_bytes<Node[>..]>(to_bytes(ns)) != ns);
     ns.push(Node { value: 2, next: ns[0] });
     ns.push(Node { value: 2, next: ns[2] });
     ns.push(Node { value: 2, next: null });
     ns.push(Node { value: 3, next: ns[0] });
+    assert(fresh() == ns[0]);
+    assert(ns[1] != Node { value: 2, next: null });
     print("targets ", ns[1].next .== ns[2].next, " ", ns[1].next .== ns[3].next);
     print("records ", ns[1] == ns[2], " ", ns[1] == ns[3], " ", ns[1] != ns[2], " ", ns[1] != ns[3]);
     print("calls ", ns[1] == identity(ns[2]), " ", ns[1] == identity(ns[3]), " ", identity(ns[1]) == ns[2]);

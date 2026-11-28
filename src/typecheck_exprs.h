@@ -108,7 +108,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
 // result, a string literal, ...) whose value is then addressed. A null
 // root means static data; a temporary has a root of its own (TempRoot).
 // `cmpview`: the path is the slice `==` compares an operand as (§4.5),
-// which ends with the comparison, so it may view any temporary.
+// which ends with the comparison, so it may view a temporary array literal.
 inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
     DestScope ds(*this, Dest {});
     if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n)) return CheckLValue(n);
@@ -1927,6 +1927,9 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
             if (!TopConstEq(lt, rt))
                 Error(b, cat("== requires operands of the same type, got ",
                              TypeStr(lt), " and ", TypeStr(rt)));
+            // Structural equality reads self-relative fields to compare their targets (§4.5).
+            NoRelRefTempRead(b->left, lv);
+            NoRelRefTempRead(b->right, rv);
             return v;
         }
     }

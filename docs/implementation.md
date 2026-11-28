@@ -3669,15 +3669,16 @@ element that is itself a self-relative reference), and a `resize` fill
 value, literal or not, which is built once and copied into every slot
 added. Varint-width relative references are construction-only.
 
-`NoRelRefTempRead` closes the other way out of a root. A value that is not
-storage and is materialized in a temporary (`TempContents`: a popped
-element, or a control construct's value, which copies its branch's value)
-may be a copy. Unless such a value is `BuiltWhereReceived`, a field or
-element holding self-relative references may not be read out of it
-(`Dot::Check`, `CheckLValue`). Nor may the value be sliced (except as the
-view `==` compares), iterated, bound by a `match` reference binder or
-rendered by `print`/`str`/`format` (`CheckPrintable`). The check is made
-where a path leaves the value itself, so a scalar field of a popped
+`NoRelRefTempRead` checks reads of self-relative links from temporaries.
+A popped element or a control construct's result can hold a copy. Reading
+a link there would measure its offset from the copy's address. The check
+applies to field and element reads (`Dot::Check`, `CheckLValue`), slicing,
+iteration, `match` reference binders, and rendering (`CheckPrintable`).
+It also applies to both operands of `==` and `!=`, including the implicit
+whole slice used to compare different array kinds. A comparison can view
+an array literal built in place. It can also read the first result of
+`from_bytes`, whose links were verified within the decoded array. Copy
+destinations still go through `NoRelRefCopy`. A scalar field of a popped
 element reads as usual.
 
 A value is never relative (`FitsAt` refuses a relative value anywhere but

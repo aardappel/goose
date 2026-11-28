@@ -1666,10 +1666,14 @@ struct TypeCheck {
     static bool ImplicitInt(IntStorage from, IntStorage to);
     Val CheckIntAny(Node *n);
     bool HasRelRefT(TypeExpr *t, bool inpool = false);
-    bool BuiltWhereReceived(Node *n, size_t result);
+    enum RelRefUse { RRU_COPY, RRU_TEMP_READ };
+    bool BuiltWhereReceived(Node *n, size_t result, RelRefUse use);
     void NoRelRefCopy(Node *n, TypeExpr *t, size_t result = 0, const VarDecl *bind = nullptr,
                       const Val *src = nullptr);
     void NoRelRefTempRead(Node *base, TypeExpr *t, TypeExpr *member);
+    void NoRelRefTempRead(Node *n, const Val &v) {
+        if (!v.lvalue && !v.pointee) NoRelRefTempRead(n, v.type, v.type);
+    }
     // The single value a return or a body's tail is checking (CheckReturn,
     // CheckSpecBody), which a named result may be (AllowNamedResult).
     Node *retvalnode = nullptr;
