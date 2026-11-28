@@ -812,6 +812,10 @@ inline string_view CodeGen::NextLine(const string &b, size_t &i, size_t &ind0) {
 // The count a growth site writes, for caching with the stack's top when its
 // header qualifies (LenSlot).
 inline void CodeGen::NoteLen(const string &stk, const string &lenlv, const string &component) {
+    // Under -g a count is written where it changes: a debugger reads the
+    // header, in this frame and in every caller's, and a cached count would
+    // show the array empty until the extent ends.
+    if (linedirs) return;
     string root = component;
     if (!CacheableStk(stk) || (root.empty() && !LenRoot(lenlv, root))) return;
     auto k = TopIdx(stk);
@@ -1154,6 +1158,7 @@ inline string CodeGen::LocalName(VarDef *vd) {
     assert(!vd->isglobal);
     auto it = vnames.find(vd);
     if (it != vnames.end()) return it->second;
+    if (linedirs && !blockends.empty()) scopeends[vd] = blockends.back();
     if (vd->componentowner)
         return vnames[vd] = Unique2(cat("gs_component_", Sanitize(vd->componentowner->name),
                                        "_", vd->componentfield));

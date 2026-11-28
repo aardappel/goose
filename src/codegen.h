@@ -193,6 +193,89 @@ struct CodeGen {
     // test/copy_elision.py checks on programs it generates.
     bool noelide = false;
 
+    // -g: every line of a function's C is preceded by a #line naming
+    // the Goose statement it came from, so a debugger shows and steps the
+    // Goose source. One directive per C line, not per statement: after
+    // `#line N` the next C lines would count on as N+1, N+2. A function
+    // ends with LINE_RESET, which ResetLines turns into a #line back to
+    // the C file itself, so what follows is not charged to Goose; and
+    // ResetLines repeats a #line before any line put in after L wrote it.
+    bool linedirs = false;
+    Line srcline;                        // The statement being emitted; line 0 = none.
+    map<int, string> linefiles;          // fileidx -> its #line file literal.
+    static constexpr const char *LINE_RESET = "#line @@gs_reset";
+    // And a debug map beside the C (codegen_debugmap.h): what a debugger
+    // cannot learn from the C's own debug information, the Goose names and
+    // types of functions, locals and fields, and where each local is in
+    // scope. A local's scope ends with the innermost block around its
+    // declaration, which blockends keeps the last lines of.
+    vector<int> blockends;
+    unordered_map<const VarDef *, int> scopeends;
+    // Each function's C name and JSON object; MergeSpecs drops the copies
+    // it merges away, so every entry names a function in the C.
+    vector<pair<string, string>> mapfns;
+    map<string, string> maptypes;        // A struct's or enum's Goose name -> its JSON members.
+    unordered_map<string, string> mapcnames;   // Goose name -> C name, as NameCT makes them.
+    void MapFunction(FnSpec *sp, const string &cname);
+    void MapType(TypeExpr *t);
+    string DebugMap();
+
+    string SourcePath(int fileidx) {   // Absolute and normalized, with forward slashes.
+        string f = fileidx >= 0 && fileidx < (int)ast.sources.size()
+                       ? ast.sources[fileidx].first : string("?");
+        std::error_code ec;
+        auto abs = filesystem::absolute(filesystem::path(f), ec);
+        return ec ? f : abs.lexically_normal().generic_string();
+    }
+    string LineFile(int fileidx) {
+        auto it = linefiles.find(fileidx);
+        if (it != linefiles.end()) return it->second;
+        return linefiles.emplace(fileidx, CStr(SourcePath(fileidx))).first->second;
+    }
+    void LineDir(string &s, Line l) {
+        if (linedirs && l.line > 0) Append(s, "#line ", l.line, " ", LineFile(l.fileidx), "\n");
+    }
+    // The assembled C made exact. Inside a function every line of code
+    // gets a #line of its own, the one before it repeated where the line
+    // was put in after L wrote it (a hoisted declaration, a cached top,
+    // a function's prologue): the C after a #line counts on from it and
+    // would charge its next line to the next Goose line. Each LINE_RESET
+    // becomes a #line that gives the following lines their own numbers in
+    // `cfile` again.
+    static string ResetLines(const string &c, const string &cfile) {
+        string out, name = CStr(cfile), cur;
+        string_view mark = LINE_RESET;
+        out.reserve(c.size() + c.size() / 2);
+        size_t ln = 1;   // The line of out being written.
+        bool after = false;   // Right after a #line.
+        for (size_t pos = 0, nl; pos < c.size(); pos = nl + 1) {
+            nl = c.find('\n', pos);
+            if (nl == string::npos) nl = c.size() - 1;
+            string_view line(c.data() + pos, nl - pos);
+            if (line == mark) {
+                Append(out, "#line ", ln + 1, " ", name, "\n");
+                cur.clear();
+            } else if (line.substr(0, 6) == "#line ") {
+                out.append(line);
+                out += '\n';
+                cur = line;
+                after = true;
+                ln++;
+                continue;
+            } else {
+                if (!cur.empty() && !after && !line.empty()) {
+                    Append(out, cur, "\n");
+                    ln++;
+                }
+                out.append(line);
+                out += '\n';
+            }
+            after = false;
+            ln++;
+        }
+        return out;
+    }
+
     [[noreturn]] void Fail(Line l, const string &msg) {
         auto s = cat("codegen: ", msg);
         if (l.fileidx >= 0 && l.fileidx < (int)ast.sources.size())
@@ -679,6 +762,7 @@ struct CodeGen {
     // calls therefore never share an argument list (or any one expression):
     // the earlier goes to a local of its own first.
     template<typename... Ts> void L(const Ts &...args) {
+        LineDir(body, srcline);
         body.append((size_t)ind * 4, ' ');
         Append(body, args...);
         body += '\n';
@@ -1100,6 +1184,16 @@ struct CodeGen {
         else n->CgAny(*this, d);
     }
     void GenStmt2(Node *n) { n->CgStmt(*this); }
+    // GenAny for a value that stands in a statement's place -- a block's
+    // tail, a function's, a match arm's -- under the value's own line, as
+    // GenStmt puts a statement under its line (-g): a function whose body
+    // is a match would charge every arm to the `fn` line.
+    void GenAt(Node *n, Dst d) {
+        auto outer = srcline;
+        if (linedirs && n->line.line > 0) srcline = n->line;
+        GenAny(n, d);
+        srcline = outer;
+    }
 
     string CtlValX(Node *n);
     void LeafAny(Node *n, const Dst &d);
@@ -1625,9 +1719,9 @@ struct CodeGen {
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
             bool _norfcheck = false, bool _library = false, bool _sharedlibrary = false,
-            int64_t _maxstacks = 0, bool _noelide = false)
+            int64_t _maxstacks = 0, bool _noelide = false, bool _linedirs = false)
         : ast(_ast), library(_library), sharedlibrary(_sharedlibrary),
-          norfcheck(_norfcheck), noelide(_noelide), maxstacks(_maxstacks) {
+          norfcheck(_norfcheck), noelide(_noelide), linedirs(_linedirs), maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();

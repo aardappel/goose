@@ -125,6 +125,7 @@ It takes no `-o`: the flag form `goose -o out.c` writes C instead
 goose build hello.goose && ./hello
 goose build -o out/hello hello.goose     # the executable elsewhere
 goose build --debug hello.goose          # checked, with debug information
+goose build -g hello.goose               # checked, for stepping it in a debugger
 goose build --dry-run hello.goose        # print the commands and run none
 goose build --shared hello.goose         # libhello.so/.dylib, or hello.dll
 ```
@@ -161,6 +162,7 @@ beyond those in [§5](#5-options-for-run-build-and-check):
 |---|---|
 | `-o exe` | Where the executable goes. Its directory is made if needed. |
 | `--debug` | Turn on the overflow, range and tag checks (`GS_DEBUG=1`), and build the C without optimization and with debug information (`/Od /Zi`, or `-O0 -g`), for a debugger. |
+| `-g`, `--debug-info` | `--debug`, and the C built for stepping the Goose source in a debugger: `#line` directives, so a debugger shows, steps and stops on the Goose source, one breakpoint location to a line; a `<stem>.debug.json` beside the C, which gives a debugger's Goose support the Goose names, types and scopes of functions and locals and the fields and variants of their types; and, unless an `-O` says otherwise, no inlining (`-O0`), so every function keeps a frame of its own. [Debugging](debugger.md) has how to use it. |
 | `--cc name\|path` | The C compiler, as above. |
 | `--standalone` | Compile the runtime into the program, rather than linking the runtime object built once per C compiler. |
 | `--shared` | Build a self-contained shared library (`lib<stem>.so`, `lib<stem>.dylib` or `<stem>.dll`) instead of an executable. The library has no C `main`; `goose_init`, `goose_exit` and the program's `export fn` symbols are its host API ([reference §24](reference.md#24-calling-c-and-being-called-from-c)). This implies `--standalone`; `--header out.h` ([§8](#8-writing-the-c-yourself)) writes the host's header too. |
@@ -195,8 +197,9 @@ These options have the same meaning for `goose run`, `goose build`,
 
 | Option | What it does |
 |---|---|
-| `-O0`, `-O1`, `-O2` | How much the Goose compiler inlines: nothing, a little, or the most (the default). Constant folding and propagation run at every level, and a build's C compiler optimizes at every level. |
+| `-O0`, `-O1`, `-O2` | How much the Goose compiler inlines: nothing, a little, or the most (the default; `-O0` with `-g`). Constant folding and propagation run at every level, and a build's C compiler optimizes at every level. |
 | `--debug` | Turn on the overflow checks, the range checks of `as` casts and the tag checks (`GS_DEBUG=1`). Each failure names its source line, and an overflow or a cast names the values involved. A build also gets debug information ([§3](#3-building-an-executable)). |
+| `-g`, `--debug-info` | `--debug`, and a program built for a debugger ([§3](#3-building-an-executable)). |
 | `-D NAME[=VALUE]` | Define a C macro in the generated program, as `-DNAME[=VALUE]` does too. The define is written into the C itself, so a run and a build see the same source. The value is 1 when none is given. |
 | `--stack-reserve size` | The address space reserved for each data stack, from 64K up to 256T with a `K`, `M`, `G` or `T` suffix. The default is 2G. The address space is committed as it is used, so a large reservation costs nothing until it is used. |
 | `--stacks` | Report how many data stacks the program and each of its workers use, what that adds up to, and the cap it puts on `hardware_threads()`. |

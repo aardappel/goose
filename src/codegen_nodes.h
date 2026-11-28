@@ -567,7 +567,7 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             first = false;
             cg.ind++;
             cg.PushSc(CodeGen::SC_PLAIN);
-            cg.GenAny(arm.body, d);
+            cg.GenAt(arm.body, d);
             cg.PopSc();
             cg.ind--;
         }
@@ -646,7 +646,7 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             }
             cg.vnames[arm.binder] = bn;
         }
-        cg.GenAny(arm.body, d);
+        cg.GenAt(arm.body, d);
         cg.PopSc();
         cg.ind--;
         cg.L("} break;");

@@ -256,6 +256,13 @@ inline void CodeGen::MergeSpecs() {
     };
     droplines(protos);
     droplines(data);
+    // Nor does the debug map list a function the C no longer has.
+    if (!mapfns.empty()) {
+        unordered_set<string> gone;
+        for (auto u : cands)
+            if (!keep(u)) gone.insert(spectexts[u].names.begin(), spectexts[u].names.end());
+        erase_if(mapfns, [&](auto &f) { return gone.count(f.first) > 0; });
+    }
 }
 
 }  // namespace goose
