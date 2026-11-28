@@ -1504,7 +1504,9 @@ type. They compare:
   too, as slices, whenever their slices would have one type (§3.10): a
   `u8[>..]` field against a string literal, or a `u8[..32]` against a
   `u8[:]`, with no `[..]` needed;
-* ADTs by tag, then payload.
+* ADTs by tag, then payload. A variant can be compared with its own enum in
+  either operand order. The variant is compared with the tag it would have
+  in that enum.
 
 References and slices follow a *top-level rule*. As the direct operands of
 `==` they have value-like semantics: a reference compares its pointee

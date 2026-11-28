@@ -203,6 +203,31 @@ inline string Binary::CgX(CodeGen &cg) {
             return cat("(", addr, op == T_EQ ? " == NULL)" : " != NULL)");
         }
     }
+    auto rt = cg.OperandT(right->exprtype);
+    if ((op == T_EQ || op == T_NEQ) &&
+        ((lt->kind == TY_ENUM && rt->kind == TY_VARIANT) ||
+         (lt->kind == TY_VARIANT && rt->kind == TY_ENUM))) {
+        auto et = lt->kind == TY_ENUM ? lt : rt;
+        auto operand = [&](Node *n, TypeExpr *from, bool first) {
+            if (from->kind == TY_ENUM)
+                return first ? cg.GenOperandVal(n, cg.HasStmts(right)) : cg.GenVal(n);
+            auto build = [&](const Dst &d) { cg.GenAny(n, d); };
+            if (cg.IsBytesT(et)) {
+                string stk;
+                auto base = cg.BytesTemp(stk);
+                cg.GenAdtAdapted(from, et, Dst { DK_STACK, stk, et }, n->line, build);
+                return base;
+            }
+            auto value = cg.T();
+            cg.FixedLocal(et, value);
+            cg.GenAdtAdapted(from, et, Dst { DK_LVALUE, value, et }, n->line, build);
+            return value;
+        };
+        auto l = operand(left, lt, true);
+        auto r = operand(right, rt, false);
+        auto eq = cg.GenEquality(et, l, r);
+        return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
+    }
     // Resizable operands compare as element ranges through their views.
     if ((op == T_EQ || op == T_NEQ) && cg.IsResz(cg.OperandT(left->exprtype))) {
         if (left->exprtype->kind != right->exprtype->kind ||
