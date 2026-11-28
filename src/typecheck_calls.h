@@ -1566,7 +1566,10 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             else ra.gselems = r->gselems;
             ra.gsvia = ra.gselems.empty();
         }
-        ra.slotread = (gsroot || gspointee) && ar.AllSlotRead();
+        // A callee may return a subview of a slice argument. Keep its
+        // slot-read proof even when the root is not known to reach a
+        // grow-shrink array, so the returned slice keeps it at the call.
+        ra.slotread = (gsroot || gspointee || pt->kind == TY_SLICE) && ar.AllSlotRead();
         // A reference to a slice names the slot holding it: the class is a
         // byte view where a slice variable it names holds one.
         ra.byteview = argvals[i].byteview ||
