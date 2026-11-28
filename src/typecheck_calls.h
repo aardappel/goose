@@ -4057,6 +4057,22 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
             DestScope rd(*this, dest);
             v = CheckValue(c->fvbody->tail, nullptr);
             NoRelRefCopy(c->fvbody->tail, v.type);
+            // The result is the caller's, so the block's own storage ends
+            // before it: a view of a by-value parameter or of a local does not
+            // outlive the block that returns it (§9.2, §7.6). A parameter
+            // taken by reference is rooted at the caller's storage, which
+            // outlives the result, and stays allowed.
+            if (reachable && IsRefOrSlice(v.type)) {
+                auto dies = v.Any([&](const RootAlt &a) {
+                    return (a.root && a.root->depth > f.scopebase) || IsTemp(a.root);
+                });
+                if (dies) {
+                    auto what = ExprStr(c->fvbody->tail);
+                    Error(c->fvbody->tail, cat(what,
+                          " views storage of its own block, which ends with it (§9.2, §7.6): "
+                          "return copy(", what, ") or take the parameter by reference"));
+                }
+            }
         }
     }
     // Storage provenance is supplied independently of a destination type:
