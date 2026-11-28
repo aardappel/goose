@@ -186,6 +186,10 @@ the truncating remainder (`fmod`). The identities
 `b * div_euclid(a, b) + a % b == a` hold mathematically when the quotient
 is representable, but evaluating their intermediate products can overflow.
 
+`lerp` is the plain `a + (b - a) * t` of HLSL and most graphics libraries.
+When `b - a` overflows although `a` and `b` are finite, the result is not
+finite.
+
 ### Hashing
 
 ```goose
