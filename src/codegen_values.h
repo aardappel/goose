@@ -1353,10 +1353,13 @@ inline void CodeGen::GenBranch(Node *n, bool when, string lbl, int exitscope) {
         return;
     }
     auto jump = [&](const string &c) {
+        // A branch out of an inlined call's scopes runs their exits: the
+        // data-stack restores and the deferred bodies (§6.6), which a bare
+        // goto would skip.
         auto restores = false;
         if (exitscope >= 0)
             for (auto i = exitscope; i < (int)cscopes.size(); i++)
-                restores = restores || !cscopes[i].saves.empty();
+                restores = restores || !cscopes[i].saves.empty() || !cscopes[i].defers.empty();
         if (!restores) {
             L(c.empty() ? "" : cat("if (", c, ") "), "goto ", lbl, ";");
             return;

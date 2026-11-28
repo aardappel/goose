@@ -1,0 +1,57 @@
+r = true
+  done plain
+plain -> then
+  done plain
+not plain -> else
+  done and
+and -> then
+  done or
+or -> then
+  done bound
+bound -> then
+  done second
+  done first
+two -> then
+  done text
+text -> then
+  done plain
+  done outer
+outer -> then
+  done plain
+  done plain
+plain && plain -> then
+r = false
+  done plain
+plain -> else
+  done plain
+not plain -> then
+  done and
+and -> else
+  done or
+or -> else
+  done bound
+bound -> else
+  done second
+  done first
+two -> else
+  done text
+text -> else
+  done plain
+  done outer
+outer -> else
+  done plain
+plain && plain -> else
+  done early
+early -> else
+  done early
+early -> else
+  done early
+early -> then
+  done plain
+  done plain
+  done plain
+i = 2
+  done and
+  done and
+j = 1
+calls = 31
