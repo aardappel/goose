@@ -1903,6 +1903,20 @@ inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
         if (!numeric(lt) || !numeric(rt)) {
             if (lt->kind == TY_FN || lt->kind == TY_VOID)
                 Error(b, "these values cannot be compared");
+            if ((lt->kind == TY_ENUM && rt->kind == TY_VARIANT) ||
+                (lt->kind == TY_VARIANT && rt->kind == TY_ENUM)) {
+                auto target = lt->kind == TY_ENUM ? lt : rt;
+                auto variant = lt->kind == TY_VARIANT ? lt : rt;
+                if (SameAdt(AdtOf(variant), target)) {
+                    if (ClassOf(target) == SC_RESIZABLE)
+                        Error(b, "resizable enums cannot be compared");
+                    auto n = lt->kind == TY_VARIANT ? b->left : b->right;
+                    NoRelRefCopy(n, variant);
+                    if (lt->kind == TY_ENUM) NoRelRefTempRead(b->left, lv);
+                    else NoRelRefTempRead(b->right, rv);
+                    return v;
+                }
+            }
             // Two arrays or slices of one element type compare as slices,
             // whatever their kinds (§4.5): `name == "x"`, `a[..] == b`.
             auto elemof = [](TypeExpr *t) -> TypeExpr * {
