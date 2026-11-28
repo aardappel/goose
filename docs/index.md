@@ -32,8 +32,8 @@ specification. The other documents cover the library, tools, and compiler.
   Mandelbrot, a spinning cube and two small games.
 * [VS Code extension](../vscode/README.md): highlighting, checks on save,
   and one-key runs.
-* [Other editors](editors.md): the language server in Neovim, Helix and
-  Emacs, and `goose format`, the formatter, on save.
+* [Other editors](editors.md): the language server in Neovim, Helix,
+  Emacs and Zed, and `goose format`, the formatter, on save.
 
 ## Benchmarks
 
